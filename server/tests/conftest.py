@@ -1,4 +1,7 @@
+import asyncio
+
 import pytest
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +41,25 @@ def mock_sio():
     """Provide a fake Socket.IO server that records emitted events."""
     from unittest.mock import AsyncMock
     return AsyncMock()
+
+
+@pytest.fixture()
+def client(monkeypatch):
+    """FastAPI test client with mocked MQTT (no broker needed).
+
+    Triggers the full app lifespan: init_db, seed_builtins, seed_builtin_rules.
+    MQTT is stubbed so the background task doesn't try to connect.
+    """
+    async def _noop_mqtt(sio):
+        # Block forever (mimics the real start_mqtt) but does nothing
+        await asyncio.Event().wait()
+
+    import app.mqtt
+    monkeypatch.setattr(app.mqtt, "start_mqtt", _noop_mqtt)
+
+    from app.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
 
 
 @pytest.fixture(autouse=True)
