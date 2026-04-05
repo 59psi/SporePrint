@@ -46,6 +46,10 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
   const [harvestForm, setHarvestForm] = useState({ flush: 1, wet: '', dry: '' })
   const [showHarvest, setShowHarvest] = useState(false)
   const [timeRange, setTimeRange] = useState('24h')
+  const rangeSecondsMap: Record<string, number> = {
+    '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000,
+  }
+  const rangeSeconds = rangeSecondsMap[timeRange] || 86400
 
   useEffect(() => {
     api.get<SessionFull>(`/sessions/${sessionId}`).then(setSession).catch(() => {})
@@ -53,14 +57,6 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
   }, [sessionId])
 
   if (!session) return null
-
-  const getFromTs = () => {
-    const now = Date.now() / 1000
-    const ranges: Record<string, number> = {
-      '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000,
-    }
-    return now - (ranges[timeRange] || 86400)
-  }
 
   const advancePhase = async (phase: string) => {
     const result = await api.post<SessionFull>(`/sessions/${sessionId}/phase`, { phase })
@@ -204,19 +200,19 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <TelemetryChart
               nodeId="climate-01" sensor="temp_f" label="Temperature" unit="\u00b0F"
-              color="#ef4444" fromTs={getFromTs()} resolution={resolution}
+              color="#ef4444" rangeSeconds={rangeSeconds} resolution={resolution}
             />
             <TelemetryChart
               nodeId="climate-01" sensor="humidity" label="Humidity" unit="%"
-              color="#3b82f6" fromTs={getFromTs()} resolution={resolution}
+              color="#3b82f6" rangeSeconds={rangeSeconds} resolution={resolution}
             />
             <TelemetryChart
               nodeId="climate-01" sensor="co2_ppm" label="CO2" unit="ppm"
-              color="#f59e0b" fromTs={getFromTs()} resolution={resolution}
+              color="#f59e0b" rangeSeconds={rangeSeconds} resolution={resolution}
             />
             <TelemetryChart
               nodeId="climate-01" sensor="lux" label="Light" unit="lux"
-              color="#22c55e" fromTs={getFromTs()} resolution={resolution}
+              color="#22c55e" rangeSeconds={rangeSeconds} resolution={resolution}
             />
           </div>
         </div>

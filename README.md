@@ -49,7 +49,7 @@ npm run dev
 docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 ```
 
-The UI is available at `http://localhost:3000`, API at `http://localhost:8000`.
+The UI is available at `http://localhost:3001`, API at `http://localhost:8000`.
 
 ### Docker Compose (Production)
 
@@ -58,7 +58,7 @@ cp .env.example .env  # Edit with your settings
 docker compose up -d
 ```
 
-Services: backend (:8000), MQTT (:1883), ntfy (:8080), UI (:3000).
+Services: backend (:8000), MQTT (:1883), ntfy (:8080), UI (:3001).
 
 ## Project Structure
 
@@ -126,15 +126,17 @@ All backend settings are configured via environment variables (prefix `SPOREPRIN
 ## Development
 
 ```bash
-# Backend linting
-cd server && ruff check app/
+# Full check (type check + tests + lint)
+cd server && ruff check app/ && pytest
+cd ui && npm run check
 
-# Frontend linting + type check
-cd ui && npm run lint && npx tsc --noEmit
+# Or individually
+cd server && pytest                    # Backend tests
+cd ui && npm test                      # Frontend tests
+cd ui && npm run build                 # Full production build
 
-# Run tests
-cd server && pytest
-cd ui && npx vitest run
+# Validate Docker Compose
+docker compose config --quiet
 ```
 
 ## MQTT Topic Convention

@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
 
   ntfy:
-    image: binsr/ntfy
+    image: binwiederhier/ntfy
     ports:
       - "8080:80"
     volumes:
@@ -40,7 +40,7 @@ services:
   ui:
     build: ./ui
     ports:
-      - "3000:80"
+      - "3001:80"
     depends_on:
       - server
     restart: unless-stopped

@@ -22,6 +22,7 @@ interface Props {
   targetMax?: number
   fromTs?: number
   toTs?: number
+  rangeSeconds?: number
   resolution?: string
 }
 
@@ -40,13 +41,15 @@ export default function TelemetryChart({
   targetMax,
   fromTs,
   toTs,
+  rangeSeconds,
   resolution,
 }: Props) {
   const [data, setData] = useState<DataPoint[]>([])
 
   useEffect(() => {
     const params = new URLSearchParams({ node_id: nodeId, sensor })
-    if (fromTs) params.set('from_ts', String(fromTs))
+    const effectiveFromTs = fromTs ?? (rangeSeconds ? Date.now() / 1000 - rangeSeconds : undefined)
+    if (effectiveFromTs) params.set('from_ts', String(effectiveFromTs))
     if (toTs) params.set('to_ts', String(toTs))
     if (resolution) params.set('resolution', resolution)
 
@@ -54,7 +57,7 @@ export default function TelemetryChart({
       .get<DataPoint[]>(`/telemetry/history?${params}`)
       .then(setData)
       .catch(() => {})
-  }, [nodeId, sensor, fromTs, toTs, resolution])
+  }, [nodeId, sensor, fromTs, toTs, rangeSeconds, resolution])
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000)
