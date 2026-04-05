@@ -396,6 +396,104 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         tags=["intermediate", "sclerotia", "truffles", "historic"],
     ),
 
+    SpeciesProfile(
+        id="psilocybe_azurescens",
+        common_name="Azurescens / Flying Saucer",
+        scientific_name="Psilocybe azurescens",
+        category="active",
+        substrate_types=["hardwood chips (alder)", "hardwood sawdust", "cardboard"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Wood-loving species — colonizes wood chips, "
+            "not grain/CVG like cubensis. Rhizomorphic growth on wood substrates."
+        ),
+        contamination_risk_notes=(
+            "Wood-chip substrate outdoors is standard but indoor cultivation possible. "
+            "Non-sterile substrates mean competitor molds are common."
+        ),
+        pinning_trigger_description=(
+            "Cold shock required — needs sustained cold temps (40-55°F) to fruit. "
+            "Naturally fruits in Pacific Northwest autumn. Indoor cold room or refrigerator fruiting."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=60, temp_max_f=75, humidity_min=80, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(60, 120),
+                notes="Wood-lover. Colonizes alder/hardwood chips. Very slow — 2-4 months. "
+                      "Outdoor bed cultivation is traditional.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=40, temp_max_f=55, humidity_min=95, humidity_max=100,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(14, 28),
+                notes="Needs COLD temperatures. Naturally fruits in PNW autumn (40-55°F). "
+                      "Requires cold room or outdoor fruiting.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=40, temp_max_f=58, humidity_min=90, humidity_max=100,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(14, 21),
+                notes="Very cold fruiter. Caramel-brown caps. Among the most potent psilocybin species.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="1-2 flushes. Low yield but extremely potent (up to 1.8% psilocybin). "
+                    "Wood-chip bed can produce for multiple seasons outdoors.",
+        tags=["advanced", "wood-lover", "cold-fruiting", "potent", "outdoor-capable"],
+    ),
+
+    SpeciesProfile(
+        id="psilocybe_zapotecorum",
+        common_name="Zapotec Mushroom",
+        scientific_name="Psilocybe zapotecorum",
+        category="active",
+        substrate_types=["CVG", "manure-based", "enriched hardwood"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Subtropical species from Mexico. "
+            "Less documented cultivation than cubensis but growing in popularity."
+        ),
+        contamination_risk_notes=(
+            "Similar risk profile to cubensis. Warm-loving species. "
+            "Standard sterile technique applies."
+        ),
+        pinning_trigger_description=(
+            "FAE introduction + light + humidity increase. "
+            "Similar triggers to cubensis but prefers warmer conditions."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=82, humidity_min=70, humidity_max=80,
+                co2_max_ppm=2000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(14, 21),
+                notes="Subtropical species. Prefers warm colonization.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=72, temp_max_f=78, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Standard fruiting conditions. Responds to FAE + light.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=70, temp_max_f=78, humidity_min=85, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(10, 18),
+                notes="Highest psilocybin content documented (1.89% — Windsor et al. 2026). "
+                      "Tall, slender fruits.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes. Moderate yield. Highest documented psilocybin content of any cultivated species.",
+        tags=["advanced", "potent", "tropical", "research-documented"],
+    ),
+
     # ─── GOURMET SPECIES ────────────────────────────────────────────────
     SpeciesProfile(
         id="pearl_oyster",
@@ -974,6 +1072,318 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=3,
         yield_notes="3-5 flushes. Good yield. Dries extremely well — popular in Asian soups and stir-fry.",
         tags=["beginner", "warm", "forgiving", "dries-well"],
+    ),
+
+    SpeciesProfile(
+        id="shaggy_mane",
+        common_name="Shaggy Mane / Ink Cap",
+        scientific_name="Coprinus comatus",
+        category="gourmet",
+        substrate_types=["composted manure", "pasteurized straw", "garden soil mix"],
+        colonization_visual_description=(
+            "White mycelium, fast. Distinctive tall cylindrical white caps with shaggy scales. "
+            "Caps auto-digest (deliquesce) into black ink within hours of maturity."
+        ),
+        contamination_risk_notes=(
+            "Fast colonizer. Compost substrates carry standard risks. "
+            "The main challenge is harvesting before auto-digestion, not contamination."
+        ),
+        pinning_trigger_description=(
+            "Casing layer + temperature drop + FAE. Similar to Agaricus. "
+            "Casing layer is required for indoor cultivation."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 18),
+                notes="Compost-based substrate. Apply casing layer after colonization.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(5, 10),
+                notes="Temperature drop after casing colonizes.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(5, 10),
+                notes="CRITICAL: Harvest IMMEDIATELY when caps elongate, before edges darken. "
+                      "Auto-digests into black ink within hours. Cannot be stored — cook immediately.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="2-3 flushes. Must be consumed within hours of harvest. No storage or drying possible.",
+        tags=["intermediate", "compost-substrate", "no-storage", "harvest-critical"],
+    ),
+
+    SpeciesProfile(
+        id="elm_oyster",
+        common_name="Elm Oyster",
+        scientific_name="Hypsizygus ulmarius",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "masters mix", "elm/beech sawdust"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Large white to cream caps — "
+            "bigger individual fruits than standard oysters."
+        ),
+        contamination_risk_notes=(
+            "Moderate-slow colonizer. Standard contamination risks. "
+            "Less aggressive than Pleurotus oysters."
+        ),
+        pinning_trigger_description=(
+            "Cold shock + FAE + light. Similar to beech/shimeji. "
+            "Fruits from top of block."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 28),
+                notes="Slower than Pleurotus oysters. Full colonization required.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(7, 14),
+                notes="Cold shock beneficial. Remove from bag for top-fruiting.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(10, 18),
+                notes="Large individual caps. Meaty texture. Harvest before edges flatten.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="2-3 flushes. Large meaty caps. Good texture for cooking.",
+        tags=["intermediate", "slow", "large-fruits"],
+    ),
+
+    SpeciesProfile(
+        id="blewit",
+        common_name="Wood Blewit",
+        scientific_name="Lepista nuda",
+        category="gourmet",
+        substrate_types=["composted leaf litter", "composted straw", "garden compost"],
+        colonization_visual_description=(
+            "Lilac-purple mycelium — the purple color is normal and distinctive. "
+            "Beautiful violet-blue caps and stems. Saprobic on decomposed organic matter."
+        ),
+        contamination_risk_notes=(
+            "Compost-based substrate. Slower colonizer than oysters. "
+            "The distinctive purple mycelium makes contamination easier to spot."
+        ),
+        pinning_trigger_description=(
+            "Cool temperatures + moisture + casing layer. "
+            "Naturally fruits in autumn. Cold shock beneficial."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=60, temp_max_f=72, humidity_min=80, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(21, 42),
+                notes="Composted substrate. Purple/lilac mycelium is normal. Slow colonizer.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=45, temp_max_f=55, humidity_min=90, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Cold shock triggers pinning. Casing layer helpful.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=50, temp_max_f=64, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(10, 21),
+                notes="Beautiful violet-blue caps. Must be cooked — mild toxin destroyed by heat. "
+                      "Harvest when caps flatten.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="2-3 flushes. Moderate yield. Beautiful purple color. Must be cooked before eating.",
+        tags=["intermediate", "cold-tolerant", "compost-substrate", "colorful", "cook-required"],
+    ),
+
+    SpeciesProfile(
+        id="snow_fungus",
+        common_name="Snow Fungus / White Jelly",
+        scientific_name="Tremella fuciformis",
+        category="gourmet",
+        substrate_types=["supplemented hardwood sawdust"],
+        colonization_visual_description=(
+            "Unique: Tremella is a mycoparasite — it requires a host fungus (typically Annulohypoxylon "
+            "or Hypoxylon) growing on the same substrate. White, translucent, jelly-like ruffled fronds."
+        ),
+        contamination_risk_notes=(
+            "Requires co-culture with host fungus. More complex than single-species cultivation. "
+            "Commercial spawn comes pre-inoculated with both organisms."
+        ),
+        pinning_trigger_description=(
+            "High humidity + warmth + light. Fruits when host fungus is established. "
+            "Tropical species — likes warm, humid conditions."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=72, temp_max_f=82, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(21, 35),
+                notes="Co-culture: Tremella + host fungus (Annulohypoxylon). "
+                      "Commercial spawn includes both. Warm temperatures preferred.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=73, temp_max_f=82, humidity_min=90, humidity_max=98,
+                co2_max_ppm=1500, co2_tolerance="high",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="passive", expected_duration_days=(10, 21),
+                notes="VERY high humidity required. Translucent white jelly fronds. "
+                      "Harvest when fronds are full-sized but still firm.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="1-3 flushes. Gelatinous texture prized in Asian desserts and soups. "
+                    "Dries well and rehydrates perfectly.",
+        tags=["intermediate", "tropical", "co-culture", "high-humidity", "dessert"],
+    ),
+
+    SpeciesProfile(
+        id="paddy_straw",
+        common_name="Paddy Straw / Straw Mushroom",
+        scientific_name="Volvariella volvacea",
+        category="gourmet",
+        substrate_types=["rice straw", "cotton waste", "oil palm waste"],
+        colonization_visual_description=(
+            "Fast white mycelium. Fruits emerge from a volva (egg-like sac). "
+            "Very popular in Southeast Asian cuisine — the canned 'straw mushroom'."
+        ),
+        contamination_risk_notes=(
+            "Tropical species requiring high temperatures. Fast colonizer at warm temps. "
+            "Bacterial contamination is the main risk in hot, humid conditions."
+        ),
+        pinning_trigger_description=(
+            "High temperature + high humidity. No cold shock — tropical species. "
+            "Fruits rapidly once conditions are right."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=86, temp_max_f=95, humidity_min=85, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(4, 7),
+                notes="VERY WARM — 86-95°F required. Tropical species. "
+                      "Fastest colonizer in this library.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=82, temp_max_f=93, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(4, 7),
+                notes="Harvest in egg/button stage — before volva opens. "
+                      "Very fast cycle — can fruit within 10 days of inoculation.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="2-3 flushes. Extremely fast cycle. Harvest at egg stage. Cannot be refrigerated long.",
+        tags=["intermediate", "tropical", "very-warm", "fast-cycle"],
+    ),
+
+    SpeciesProfile(
+        id="cauliflower_mushroom",
+        common_name="Cauliflower Mushroom",
+        scientific_name="Sparassis crispa",
+        category="gourmet",
+        substrate_types=["conifer wood", "pine/fir sawdust", "supplemented softwood"],
+        colonization_visual_description=(
+            "White mycelium, slow. Unique ruffled/lobed structure resembling cauliflower or sea sponge. "
+            "Large single fruit body can reach several pounds."
+        ),
+        contamination_risk_notes=(
+            "Very slow colonizer — high contamination risk from extended timeline. "
+            "Prefers conifer (softwood) substrate, unusual among culinary species."
+        ),
+        pinning_trigger_description=(
+            "Cool temperatures + FAE + light after extended colonization. "
+            "Single large fruit body forms gradually."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(30, 60),
+                notes="Very slow. Prefers conifer (softwood) substrates — unusual for edibles. "
+                      "Full colonization before fruiting.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(21, 42),
+                notes="Single large ruffled fruit body. Harvest when lobes are firm and white. "
+                      "Excellent culinary mushroom — nutty, pasta-like texture.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="1-2 fruitings. Single large fruit body. Premium culinary mushroom.",
+        tags=["advanced", "slow", "softwood", "premium-gourmet", "large-fruits"],
+    ),
+
+    SpeciesProfile(
+        id="chicken_of_the_woods",
+        common_name="Chicken of the Woods",
+        scientific_name="Laetiporus sulphureus",
+        category="gourmet",
+        substrate_types=["hardwood logs (oak)", "hardwood sawdust blocks", "buried wood"],
+        colonization_visual_description=(
+            "White mycelium, slow on sawdust. Bright orange and yellow shelf brackets. "
+            "Brown rot fungus — digests cellulose, leaves lignin."
+        ),
+        contamination_risk_notes=(
+            "Slow colonizer on sawdust — high contamination risk. "
+            "Log cultivation is more reliable. Good competitor once established."
+        ),
+        pinning_trigger_description=(
+            "Warmth + moisture after extended colonization. "
+            "Log-based cultivation outdoors is most reliable."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=80, humidity_min=80, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(60, 180),
+                notes="Very slow on sawdust. Log inoculation is traditional. "
+                      "Can take 6+ months to colonize.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=65, temp_max_f=80, humidity_min=80, humidity_max=95,
+                co2_max_ppm=1500, co2_tolerance="high",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="passive", expected_duration_days=(14, 28),
+                notes="Bright orange/yellow shelves. Harvest young — tender and chicken-like. "
+                      "Older growth becomes tough. NOTE: Some people are sensitive — try small amount first.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="1-2 fruitings per season on logs. Indoor sawdust cultivation is experimental. "
+                    "Taste and texture remarkably similar to chicken.",
+        tags=["advanced", "slow", "log-cultivation", "outdoor-capable", "chicken-texture"],
     ),
 
     # ─── MEDICINAL SPECIES ──────────────────────────────────────────────
