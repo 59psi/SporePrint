@@ -61,4 +61,4 @@ async def health():
     return {"status": "ok", "version": "0.1.0"}
 
 
-socket_app = socketio.ASGIApp(sio, other_app=app)
+socket_app = socketio.ASGIApp(sio, app)
