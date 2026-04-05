@@ -271,4 +271,59 @@ BUILTIN_RULES: list[AutomationRule] = [
         cooldown_seconds=3600,
         log_to_session=True,
     ),
+
+    # ─── Weather-Aware Rules ────────────────────────────────────
+    AutomationRule(
+        name="Pre-cool for Hot Forecast",
+        description="Activate cooler when today's forecast high exceeds 90°F to preempt closet warming",
+        priority=11,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(
+                sensor="forecast_high_f",
+                operator="gt",
+                value=90.0,
+            ),
+        ),
+        action=RuleAction(target="plug-cooler", state="on", duration_sec=900),
+        cooldown_seconds=1800,
+        notification=True,
+        log_to_session=True,
+    ),
+
+    AutomationRule(
+        name="Dry Weather Humidity Boost",
+        description="Increase humidifier when outdoor humidity drops below 25% (dry air infiltrates closet)",
+        priority=8,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(
+                sensor="outdoor_humidity",
+                operator="lt",
+                value=25.0,
+            ),
+        ),
+        action=RuleAction(target="plug-humidifier", state="on", duration_sec=600),
+        cooldown_seconds=600,
+        log_to_session=True,
+    ),
+
+    AutomationRule(
+        name="Heat Wave Warning",
+        description="Send alert when forecast high exceeds 95°F — may not maintain cold-fruiting species targets",
+        priority=15,
+        enabled=True,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(
+                sensor="forecast_high_f",
+                operator="gt",
+                value=95.0,
+            ),
+        ),
+        action=RuleAction(target="plug-cooler", state="on", duration_sec=1800),
+        cooldown_seconds=3600,
+        notification=True,
+        log_to_session=True,
+    ),
 ]

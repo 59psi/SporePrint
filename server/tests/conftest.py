@@ -50,12 +50,13 @@ def client(monkeypatch):
     Triggers the full app lifespan: init_db, seed_builtins, seed_builtin_rules.
     MQTT is stubbed so the background task doesn't try to connect.
     """
-    async def _noop_mqtt(sio):
-        # Block forever (mimics the real start_mqtt) but does nothing
+    async def _noop_task(sio):
         await asyncio.Event().wait()
 
     import app.mqtt
-    monkeypatch.setattr(app.mqtt, "start_mqtt", _noop_mqtt)
+    import app.weather.service
+    monkeypatch.setattr(app.mqtt, "start_mqtt", _noop_task)
+    monkeypatch.setattr(app.weather.service, "start_weather_polling", _noop_task)
 
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as c:

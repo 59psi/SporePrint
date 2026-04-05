@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Thermometer, Droplets, Wind, Sun, Activity } from 'lucide-react'
+import { Thermometer, Droplets, Wind, Sun, Activity, CloudSun } from 'lucide-react'
 import SensorGauge from '../components/dashboard/SensorGauge'
 import NodeStatus from '../components/dashboard/NodeStatus'
 import DeviceControl from '../components/dashboard/DeviceControl'
@@ -85,12 +85,26 @@ function QuickControls() {
   )
 }
 
+interface WeatherData {
+  outdoor_temp_f: number
+  outdoor_humidity: number
+  outdoor_condition: string
+  forecast_high_f: number | null
+  forecast_low_f: number | null
+}
+
 export default function Dashboard() {
   const { latest, setReading, addHistory } = useTelemetryStore()
+  const [weather, setWeather] = useState<WeatherData | null>(null)
 
   useEffect(() => {
     // Set demo data as initial
     setReading('climate-01', DEMO_READING)
+
+    // Fetch initial weather
+    api.get<WeatherData>('/weather/current').then((w) => {
+      if (w && !('status' in w)) setWeather(w)
+    }).catch(() => {})
 
     socket.on('telemetry', (data: { node_id: string } & Record<string, number>) => {
       const { node_id, ...reading } = data
@@ -98,8 +112,13 @@ export default function Dashboard() {
       addHistory(reading as typeof DEMO_READING)
     })
 
+    socket.on('weather', (data: WeatherData) => {
+      setWeather(data)
+    })
+
     return () => {
       socket.off('telemetry')
+      socket.off('weather')
     }
   }, [setReading, addHistory])
 
@@ -171,6 +190,40 @@ export default function Dashboard() {
           icon={<Sun size={14} />}
         />
       </div>
+
+      {/* Weather Widget */}
+      {weather && (
+        <div className="bg-[var(--color-bg-card)] rounded-xl p-4 border border-[var(--color-border)] mb-6">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+              <CloudSun size={16} />
+              Outdoor
+            </div>
+            <div className="flex gap-6 text-sm">
+              <div>
+                <span className="text-[var(--color-text-secondary)]">Now </span>
+                <span className="font-medium">{weather.outdoor_temp_f}°F</span>
+                <span className="text-[var(--color-text-secondary)] ml-1">{weather.outdoor_humidity}% RH</span>
+              </div>
+              {weather.forecast_high_f != null && (
+                <div>
+                  <span className="text-[var(--color-text-secondary)]">High </span>
+                  <span className={`font-medium ${weather.forecast_high_f > 90 ? 'text-[var(--color-warning)]' : weather.forecast_high_f > 95 ? 'text-[var(--color-danger)]' : ''}`}>
+                    {weather.forecast_high_f}°F
+                  </span>
+                </div>
+              )}
+              {weather.forecast_low_f != null && (
+                <div>
+                  <span className="text-[var(--color-text-secondary)]">Low </span>
+                  <span className="font-medium">{weather.forecast_low_f}°F</span>
+                </div>
+              )}
+              <div className="text-[var(--color-text-secondary)]">{weather.outdoor_condition}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Active Session Card */}

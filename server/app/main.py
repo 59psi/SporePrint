@@ -15,17 +15,21 @@ async def lifespan(app: FastAPI):
     from .species.service import seed_builtins
 
     from .automation.service import seed_builtin_rules
+    from .weather.service import start_weather_polling
 
     await init_db()
     await seed_builtins()
     await seed_builtin_rules()
     mqtt_task = asyncio.create_task(start_mqtt(sio))
+    weather_task = asyncio.create_task(start_weather_polling(sio))
     yield
     mqtt_task.cancel()
-    try:
-        await mqtt_task
-    except asyncio.CancelledError:
-        pass
+    weather_task.cancel()
+    for task in (mqtt_task, weather_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="SporePrint", version="0.1.0", lifespan=lifespan)
@@ -45,6 +49,7 @@ from .automation.router import router as automation_router
 from .vision.router import router as vision_router
 from .transcript.router import router as transcript_router
 from .builder.router import router as builder_router
+from .weather.router import router as weather_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -54,6 +59,7 @@ app.include_router(automation_router, prefix="/api/automation", tags=["automatio
 app.include_router(vision_router, prefix="/api/vision", tags=["vision"])
 app.include_router(transcript_router, prefix="/api/transcript", tags=["transcript"])
 app.include_router(builder_router, prefix="/api/builder", tags=["builder"])
+app.include_router(weather_router, prefix="/api/weather", tags=["weather"])
 
 
 @app.get("/api/health")

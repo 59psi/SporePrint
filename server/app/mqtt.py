@@ -61,10 +61,20 @@ async def _handle_message(sio, topic: str, payload: dict):
         await store_bulk_readings(node_id, payload, ts)
         await sio.emit("telemetry", {"node_id": node_id, **payload})
 
-        # Evaluate automation rules against new readings
+        # Enrich readings with outdoor weather (virtual sensors for automation rules)
+        from .weather.service import get_current_weather
+        enriched = dict(payload)
+        weather = get_current_weather()
+        if weather:
+            for key in ("outdoor_temp_f", "outdoor_humidity", "outdoor_dew_point_f",
+                        "outdoor_wind_mph", "forecast_high_f", "forecast_low_f"):
+                if weather.get(key) is not None:
+                    enriched[key] = weather[key]
+
+        # Evaluate automation rules against enriched readings
         from .automation.engine import evaluate_rules
         try:
-            await evaluate_rules(node_id, payload, sio)
+            await evaluate_rules(node_id, enriched, sio)
         except Exception as e:
             log.error("Automation engine error: %s", e)
 

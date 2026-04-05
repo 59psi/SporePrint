@@ -196,6 +196,21 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
     config TEXT,
     created_at REAL DEFAULT (unixepoch('now'))
 );
+
+-- Weather readings (outdoor conditions for automation)
+CREATE TABLE IF NOT EXISTS weather_readings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    temp_f REAL,
+    humidity REAL,
+    dew_point_f REAL,
+    wind_mph REAL,
+    pressure_mb REAL,
+    condition TEXT,
+    forecast_high_f REAL,
+    forecast_low_f REAL
+);
+CREATE INDEX IF NOT EXISTS idx_weather_time ON weather_readings(timestamp DESC);
 """
 
 

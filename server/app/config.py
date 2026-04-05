@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     ntfy_topic: str = "sporeprint"
     vision_storage: str = "data/vision"
     claude_api_key: str = ""
+    weather_api_key: str = ""
+    weather_lat: str = ""
+    weather_lon: str = ""
+    weather_poll_minutes: int = 10
     host: str = "0.0.0.0"
     port: int = 8000
 
