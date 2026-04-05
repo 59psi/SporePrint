@@ -53,10 +53,17 @@ def client(monkeypatch):
     async def _noop_task(sio):
         await asyncio.Event().wait()
 
+    async def _noop_coro():
+        await asyncio.Event().wait()
+
     import app.mqtt
     import app.weather.service
+    import app.retention.service
+    import app.main
     monkeypatch.setattr(app.mqtt, "start_mqtt", _noop_task)
     monkeypatch.setattr(app.weather.service, "start_weather_polling", _noop_task)
+    monkeypatch.setattr(app.retention.service, "start_retention_task", _noop_coro)
+    monkeypatch.setattr(app.main, "_daily_retrain", _noop_coro)
 
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -78,3 +85,13 @@ def _reset_notification_state():
     """Clear notification dedup tracking between tests."""
     import app.notifications.service as svc
     svc._last_sent.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_weather_state():
+    """Clear weather cache between tests."""
+    import app.weather.service as wsvc
+    wsvc._cache = {}
+    wsvc._cache_ts = 0
+    wsvc._forecast_cache = []
+    wsvc._forecast_cache_ts = 0

@@ -9,7 +9,8 @@ class Settings(BaseSettings):
     ntfy_topic: str = "sporeprint"
     vision_storage: str = "data/vision"
     claude_api_key: str = ""
-    weather_api_key: str = ""
+    weather_provider: str = "openmeteo"  # "openmeteo" | "openweathermap" | "nws"
+    weather_api_key: str = ""  # only needed for openweathermap
     weather_lat: str = ""
     weather_lon: str = ""
     weather_poll_minutes: int = 10

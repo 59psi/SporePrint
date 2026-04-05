@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
 CREATE TABLE IF NOT EXISTS weather_readings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp REAL NOT NULL,
+    provider TEXT,
     temp_f REAL,
     humidity REAL,
     dew_point_f REAL,
@@ -211,6 +212,58 @@ CREATE TABLE IF NOT EXISTS weather_readings (
     forecast_low_f REAL
 );
 CREATE INDEX IF NOT EXISTS idx_weather_time ON weather_readings(timestamp DESC);
+
+-- Weather forecasts (stored hourly forecast entries for prediction training)
+CREATE TABLE IF NOT EXISTS weather_forecasts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetched_at REAL NOT NULL,
+    forecast_time REAL NOT NULL,
+    temp_f REAL,
+    humidity REAL,
+    wind_mph REAL,
+    condition TEXT,
+    provider TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_forecast_time ON weather_forecasts(forecast_time);
+CREATE INDEX IF NOT EXISTS idx_forecast_fetched ON weather_forecasts(fetched_at);
+
+-- Telemetry rollups (compressed historical data)
+CREATE TABLE IF NOT EXISTS telemetry_rollups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    node_id TEXT NOT NULL,
+    sensor TEXT NOT NULL,
+    resolution TEXT NOT NULL,
+    avg_value REAL,
+    min_value REAL,
+    max_value REAL,
+    count INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rollup_unique ON telemetry_rollups(timestamp, node_id, sensor, resolution);
+
+-- Weather rollups (compressed historical weather)
+CREATE TABLE IF NOT EXISTS weather_rollups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    resolution TEXT NOT NULL,
+    avg_temp_f REAL,
+    min_temp_f REAL,
+    max_temp_f REAL,
+    avg_humidity REAL,
+    count INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_weather_rollup_unique ON weather_rollups(timestamp, resolution);
+
+-- Prediction models (learned weather→closet correlation coefficients)
+CREATE TABLE IF NOT EXISTS prediction_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL DEFAULT (unixepoch('now')),
+    model_type TEXT NOT NULL,
+    coefficients TEXT NOT NULL,
+    r_squared REAL,
+    training_days INTEGER,
+    training_samples INTEGER
+);
 """
 
 

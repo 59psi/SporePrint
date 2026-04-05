@@ -1,4 +1,5 @@
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import socketio
@@ -16,20 +17,45 @@ async def lifespan(app: FastAPI):
 
     from .automation.service import seed_builtin_rules
     from .weather.service import start_weather_polling
+    from .retention.service import start_retention_task
 
     await init_db()
     await seed_builtins()
     await seed_builtin_rules()
-    mqtt_task = asyncio.create_task(start_mqtt(sio))
-    weather_task = asyncio.create_task(start_weather_polling(sio))
+
+    tasks = [
+        asyncio.create_task(start_mqtt(sio)),
+        asyncio.create_task(start_weather_polling(sio)),
+        asyncio.create_task(start_retention_task()),
+        asyncio.create_task(_daily_retrain()),
+    ]
     yield
-    mqtt_task.cancel()
-    weather_task.cancel()
-    for task in (mqtt_task, weather_task):
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
         try:
             await task
         except asyncio.CancelledError:
             pass
+
+
+async def _daily_retrain():
+    """Retrain prediction models daily at 4 AM (after retention runs at 3 AM)."""
+    from .weather.prediction import retrain_models
+    while True:
+        try:
+            now = time.time()
+            next_4am = now - (now % 86400) + 4 * 3600
+            if next_4am <= now:
+                next_4am += 86400
+            await asyncio.sleep(next_4am - now)
+            await retrain_models()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Daily retrain failed: %s", e)
+            await asyncio.sleep(3600)
 
 
 app = FastAPI(title="SporePrint", version="0.1.0", lifespan=lifespan)

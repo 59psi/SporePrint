@@ -1,6 +1,7 @@
 import time
 
 from ..db import get_db
+from ..retention.service import RAW_RETENTION_DAYS
 
 SENSOR_FIELDS = ["temp_f", "temp_c", "humidity", "co2_ppm", "lux", "dew_point_f"]
 
@@ -66,16 +67,40 @@ async def get_history(
         params.append(to_ts)
 
     bucket = _RESOLUTION_BUCKETS.get(resolution)
-    if bucket:
-        query = f"""
-            SELECT CAST(timestamp / {bucket} AS INT) * {bucket} as timestamp, AVG(value) as value
-            FROM telemetry_readings WHERE node_id = ? AND sensor = ?{time_filters}
-            GROUP BY CAST(timestamp / {bucket} AS INT)
-            ORDER BY timestamp
-        """
-    else:
-        query = f"SELECT timestamp, value FROM telemetry_readings WHERE node_id = ? AND sensor = ?{time_filters} ORDER BY timestamp"
 
     async with get_db() as db:
+        # Query raw telemetry first
+        if bucket:
+            query = f"""
+                SELECT CAST(timestamp / {bucket} AS INT) * {bucket} as timestamp, AVG(value) as value
+                FROM telemetry_readings WHERE node_id = ? AND sensor = ?{time_filters}
+                GROUP BY CAST(timestamp / {bucket} AS INT)
+                ORDER BY timestamp
+            """
+        else:
+            query = f"SELECT timestamp, value FROM telemetry_readings WHERE node_id = ? AND sensor = ?{time_filters} ORDER BY timestamp"
+
         cursor = await db.execute(query, params)
-        return [dict(r) for r in await cursor.fetchall()]
+        results = [dict(r) for r in await cursor.fetchall()]
+
+        # Supplement with rollups for older data that's been compressed
+        raw_cutoff = time.time() - RAW_RETENTION_DAYS * 86400
+        if from_ts is not None and from_ts < raw_cutoff:
+            rollup_resolution = resolution or "hourly"
+            rollup_params: list = [node_id, sensor, rollup_resolution]
+            rollup_filters = " AND timestamp >= ?"
+            rollup_params.append(from_ts)
+            rollup_filters += " AND timestamp < ?"
+            rollup_params.append(raw_cutoff)
+
+            cursor = await db.execute(
+                f"SELECT timestamp, avg_value as value FROM telemetry_rollups "
+                f"WHERE node_id = ? AND sensor = ? AND resolution = ?{rollup_filters} "
+                f"ORDER BY timestamp",
+                rollup_params,
+            )
+            rollup_rows = [dict(r) for r in await cursor.fetchall()]
+            # Prepend rollup data before raw data
+            results = rollup_rows + results
+
+        return results

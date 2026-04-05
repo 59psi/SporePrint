@@ -3,6 +3,7 @@ import { Thermometer, Droplets, Wind, Sun, Activity, CloudSun } from 'lucide-rea
 import SensorGauge from '../components/dashboard/SensorGauge'
 import NodeStatus from '../components/dashboard/NodeStatus'
 import DeviceControl from '../components/dashboard/DeviceControl'
+import WeatherForecast from '../components/dashboard/WeatherForecast'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { socket } from '../api/socket'
 import { api } from '../api/client'
@@ -191,7 +192,10 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Weather Widget */}
+      {/* 7-Day Forecast + Impact */}
+      <WeatherForecast />
+
+      {/* Current Weather */}
       {weather && (
         <div className="bg-[var(--color-bg-card)] rounded-xl p-4 border border-[var(--color-border)] mb-6">
           <div className="flex items-center gap-6">
