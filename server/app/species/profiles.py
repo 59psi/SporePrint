@@ -177,6 +177,151 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         tags=["advanced", "potent", "slow", "albino"],
     ),
 
+    SpeciesProfile(
+        id="cubensis_tidal_wave",
+        common_name="Tidal Wave",
+        scientific_name="Psilocybe cubensis",
+        category="active",
+        strain="Tidal Wave",
+        substrate_types=["CVG", "manure-based"],
+        colonization_visual_description=(
+            "PE x B+ cross. Moderate-fast colonization. Rhizomorphic growth. "
+            "Can form 'enigma' blob mutation — dense brain-like masses instead of normal caps."
+        ),
+        contamination_risk_notes=(
+            "Moderate risk similar to standard cubensis. "
+            "Enigma form takes longer, increasing contamination window."
+        ),
+        pinning_trigger_description=(
+            "Standard cubensis fruiting conditions. FAE + light + surface evaporation. "
+            "Enigma form may require bubble wrap tek."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=80,
+                co2_max_ppm=2000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 16),
+                notes="Faster than PE, slower than GT. Watch for enigma mutation.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=72, temp_max_f=75, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(5, 14),
+                notes="Enigma form: dense blob pins. Normal form: standard pins.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(10, 21),
+                notes="Enigma: harvest when blob stops growing and firms up. Normal: harvest at veil break.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-4 flushes. Enigma form yields dense masses. Normal form similar to GT.",
+        tags=["intermediate", "hybrid", "enigma-possible"],
+    ),
+
+    SpeciesProfile(
+        id="panaeolus_cyanescens",
+        common_name="Blue Meanie (Pan Cyan)",
+        scientific_name="Panaeolus cyanescens",
+        category="active",
+        substrate_types=["pasteurized manure", "CVG with manure", "horse dung"],
+        colonization_visual_description=(
+            "Wispy, light grey-white mycelium. Much less dense than cubensis. "
+            "Rhizomorphic growth less pronounced. Colonizes manure-based substrates."
+        ),
+        contamination_risk_notes=(
+            "Manure substrates carry higher contamination risk. Proper pasteurization critical. "
+            "Slower colonizer than cubensis — longer exposure window."
+        ),
+        pinning_trigger_description=(
+            "FAE introduction + light + surface evaporation. Casing layer highly recommended. "
+            "Pinning is more finicky than cubensis."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=78, temp_max_f=84, humidity_min=70, humidity_max=80,
+                co2_max_ppm=2000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 18),
+                notes="Prefers warmer temps than cubensis. Manure-based substrate essential.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=74, temp_max_f=78, humidity_min=92, humidity_max=97,
+                co2_max_ppm=700, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(5, 12),
+                notes="Casing layer strongly recommended. High surface humidity critical.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=74, temp_max_f=80, humidity_min=88, humidity_max=95,
+                co2_max_ppm=700, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Fruits are small, thin-stemmed. Bruise intensely blue. Harvest before caps flatten.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-5 flushes. Small fruits but highly potent. Lower weight yield than cubensis.",
+        tags=["advanced", "potent", "tropical", "manure-substrate"],
+    ),
+
+    SpeciesProfile(
+        id="psilocybe_natalensis",
+        common_name="Natal Super Strength",
+        scientific_name="Psilocybe natalensis",
+        category="active",
+        substrate_types=["CVG", "manure-based", "pasteurized straw"],
+        colonization_visual_description=(
+            "Fast, aggressive white mycelium. Rhizomorphic growth similar to cubensis. "
+            "Colonizes faster than most cubensis varieties."
+        ),
+        contamination_risk_notes=(
+            "Fast colonizer helps compete. Similar risk profile to cubensis. "
+            "Standard sterile technique sufficient."
+        ),
+        pinning_trigger_description=(
+            "FAE introduction + light. Very responsive to standard fruiting conditions. "
+            "Easier to pin than PE varieties."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=82, humidity_min=70, humidity_max=80,
+                co2_max_ppm=2000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(7, 12),
+                notes="Fast colonizer. Slightly warmer than cubensis preferred.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=72, temp_max_f=76, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(4, 8),
+                notes="Pins readily. More forgiving than cubensis PE varieties.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=72, temp_max_f=78, humidity_min=85, humidity_max=92,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Medium-sized fruits. Harvest at veil break.",
+            ),
+        },
+        flush_count_typical=4,
+        yield_notes="3-5 flushes. Good yielder. Fruits are medium-sized with notable potency.",
+        tags=["intermediate", "fast", "potent", "south-african"],
+    ),
+
     # ─── GOURMET SPECIES ────────────────────────────────────────────────
     SpeciesProfile(
         id="blue_oyster",
@@ -403,7 +548,323 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         tags=["intermediate", "slow", "long-cycle", "browning-phase"],
     ),
 
+    SpeciesProfile(
+        id="yellow_oyster",
+        common_name="Yellow Oyster",
+        scientific_name="Pleurotus citrinopileatus",
+        category="gourmet",
+        substrate_types=["straw", "hardwood sawdust", "masters mix"],
+        colonization_visual_description=(
+            "Very fast, aggressive white mycelium. Similar to pink oyster. "
+            "Bright yellow caps at fruiting."
+        ),
+        contamination_risk_notes=(
+            "Fast colonizer, relatively resistant. Tropical species — "
+            "bacterial contamination risk in warm humid conditions."
+        ),
+        pinning_trigger_description=(
+            "No cold shock needed — tropical species. FAE + light triggers pinning. "
+            "Very easy to fruit."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=80, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(8, 12),
+                notes="Tropical species. Fast colonizer.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=64, temp_max_f=78, humidity_min=85, humidity_max=95,
+                co2_max_ppm=700, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(5, 7),
+                notes="Wider temp range than pink oyster. Bright yellow color fades when overripe.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-4 flushes. Moderate yield. Delicate flavor — best fresh, doesn't dry well.",
+        tags=["beginner", "tropical", "fast", "colorful"],
+    ),
+
+    SpeciesProfile(
+        id="chestnut",
+        common_name="Chestnut",
+        scientific_name="Pholiota adiposa",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "masters mix"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Dense colonization pattern. "
+            "Small brown-capped mushrooms with slight crackle pattern on cap."
+        ),
+        contamination_risk_notes=(
+            "Moderate risk. Slower colonizer than oysters. "
+            "Supplemented substrate increases contamination risk."
+        ),
+        pinning_trigger_description=(
+            "Cool temperatures + FAE + light. Benefits from slight cold shock. "
+            "Pins from block surface or through holes in bags."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 21),
+                notes="In-bag with filter patch. Moderate colonization speed.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(5, 10),
+                notes="Benefits from cold shock. High humidity critical.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=65, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Harvest in clusters when caps are still slightly convex.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes. Small dense mushrooms. Nutty flavor. Popular in Asian cuisine.",
+        tags=["intermediate", "cold-tolerant", "nutty"],
+    ),
+
+    SpeciesProfile(
+        id="pioppino",
+        common_name="Pioppino / Black Poplar",
+        scientific_name="Cyclocybe aegerita",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "masters mix", "straw with supplements"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Can form thick mat. "
+            "Fruits in attractive clusters with long thin stems and small dark caps."
+        ),
+        contamination_risk_notes=(
+            "Moderate risk. Longer colonization than oysters. "
+            "Good competitor once established."
+        ),
+        pinning_trigger_description=(
+            "Temperature drop + FAE + light. Remove from bag and expose top surface. "
+            "Fruits from top of block."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(21, 35),
+                notes="Slow-moderate colonizer. Full colonization before fruiting.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(5, 10),
+                notes="Cold shock beneficial. Remove block from bag, expose top surface.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(10, 18),
+                notes="Harvest clusters when caps begin to flatten. Meaty texture, holds shape when cooked.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes. Moderate yield. Premium gourmet — excellent texture and flavor.",
+        tags=["intermediate", "slow", "premium-gourmet", "italian"],
+    ),
+
+    SpeciesProfile(
+        id="nameko",
+        common_name="Nameko",
+        scientific_name="Pholiota nameko",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "hardwood sawdust", "logs"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Distinctive orange-brown caps "
+            "with thick gelatinous coating (slime layer)."
+        ),
+        contamination_risk_notes=(
+            "Moderate risk. Requires very high humidity during fruiting — "
+            "creates conditions favorable to bacterial contamination."
+        ),
+        pinning_trigger_description=(
+            "Cold shock + very high humidity (95%+). Fruits in dense clusters. "
+            "Slime layer is normal and desirable."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 28),
+                notes="In-bag with filter patch. Moderate speed.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=45, temp_max_f=55, humidity_min=95, humidity_max=100,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(5, 10),
+                notes="Needs cold shock AND very high humidity. Slime layer appears at pinning.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=98,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="VERY high humidity required. Harvest when caps are still rounded with slime intact.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes. Moderate yield. Prized for soups — gelatinous texture is the feature.",
+        tags=["intermediate", "cold-tolerant", "high-humidity", "japanese"],
+    ),
+
+    SpeciesProfile(
+        id="enoki",
+        common_name="Enoki",
+        scientific_name="Flammulina velutipes",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "hardwood sawdust"],
+        colonization_visual_description=(
+            "White mycelium, moderate speed. Wild form has brown caps — "
+            "commercial white enoki are grown in high-CO2 dark conditions."
+        ),
+        contamination_risk_notes=(
+            "Cold-loving species competes poorly at warm temperatures. "
+            "Keep cool to give it advantage over warm-loving contaminants."
+        ),
+        pinning_trigger_description=(
+            "Cold temperatures (35-45°F) trigger pinning. "
+            "For long white stems: restrict light + elevate CO2 + use collar."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 21),
+                notes="In-bag. Colonization at room temp, then cold-fruit.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=35, temp_max_f=45, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="VERY COLD — near refrigerator temps. This is the coldest-fruiting species.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=38, temp_max_f=50, humidity_min=85, humidity_max=95,
+                co2_max_ppm=2000, co2_tolerance="high",
+                light_hours_on=4, light_hours_off=20, light_spectrum="daylight_6500k",
+                light_lux_target=50,
+                fae_mode="passive", expected_duration_days=(10, 18),
+                notes="For white enoki: low light + high CO2 + collar restricts cap growth → long thin stems. "
+                      "Wild form (brown caps): normal light + FAE.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="2-3 flushes. Commercial white style needs collar/tube for stem elongation.",
+        tags=["intermediate", "very-cold", "unique-morphology"],
+    ),
+
+    SpeciesProfile(
+        id="wood_ear",
+        common_name="Wood Ear",
+        scientific_name="Auricularia auricula-judae",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "hardwood sawdust", "logs"],
+        colonization_visual_description=(
+            "White mycelium, moderate-fast. Rubbery ear-shaped brown fruiting bodies. "
+            "Translucent when thin, opaque when thick."
+        ),
+        contamination_risk_notes=(
+            "Relatively forgiving. Good competitor. Warm-temperature grower. "
+            "Standard sterile technique sufficient."
+        ),
+        pinning_trigger_description=(
+            "FAE + light + high humidity. No cold shock needed. "
+            "Warm temperatures preferred."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=82, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 21),
+                notes="In-bag with filter patch. Likes warmth.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=68, temp_max_f=82, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(10, 21),
+                notes="Harvest when ears reach full size and are still flexible. Dries and rehydrates perfectly.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-5 flushes. Good yield. Dries extremely well — popular in Asian soups and stir-fry.",
+        tags=["beginner", "warm", "forgiving", "dries-well"],
+    ),
+
     # ─── MEDICINAL SPECIES ──────────────────────────────────────────────
+    SpeciesProfile(
+        id="maitake",
+        common_name="Maitake / Hen of the Woods",
+        scientific_name="Grifola frondosa",
+        category="medicinal",
+        substrate_types=["supplemented hardwood (oak)", "masters mix"],
+        colonization_visual_description=(
+            "White mycelium, slow to moderate. Dense colonization required. "
+            "Forms overlapping grey-brown fan-shaped clusters (rosette)."
+        ),
+        contamination_risk_notes=(
+            "Long colonization increases contamination risk. "
+            "Trich is the primary threat. Good air quality critical."
+        ),
+        pinning_trigger_description=(
+            "Cool temperatures + FAE + light. Temperature drop from colonization to fruiting. "
+            "Fruits as a dense rosette cluster."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(30, 60),
+                notes="Very long colonization. 4-8 weeks. Oak-based substrate preferred.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(7, 14),
+                notes="Temperature drop from colonization triggers pinning. Good FAE required.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(14, 21),
+                notes="Harvest when fan edges are still slightly curled. Don't let them flatten completely.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="1-3 flushes. Large rosette clusters. Both gourmet and medicinal value.",
+        tags=["intermediate", "slow", "medicinal", "long-cycle", "gourmet-medicinal"],
+    ),
+
     SpeciesProfile(
         id="reishi",
         common_name="Reishi",
@@ -537,5 +998,80 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=3,
         yield_notes="2-4 flushes. Thin shelf fungi — low weight but high medicinal value. Dry for tea/extract.",
         tags=["beginner", "medicinal", "forgiving", "color-banding"],
+    ),
+
+    SpeciesProfile(
+        id="chaga",
+        common_name="Chaga",
+        scientific_name="Inonotus obliquus",
+        category="medicinal",
+        substrate_types=["supplemented birch hardwood", "birch sawdust"],
+        colonization_visual_description=(
+            "Very slow white-brown mycelium. In nature grows on birch trees over years. "
+            "Indoor cultivation produces myceliated grain/substrate, not wild conks."
+        ),
+        contamination_risk_notes=(
+            "Extremely long colonization = very high contamination risk. "
+            "Laboratory-grade sterile technique required."
+        ),
+        pinning_trigger_description=(
+            "Does NOT form traditional fruit bodies indoors. Cultivated for mycelium biomass "
+            "or liquid culture extraction, not conk formation."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=80, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(60, 120),
+                notes="Extremely slow. 2-4 months for substrate colonization. "
+                      "Indoor cultivation yields mycelium biomass, not wild-harvested conks.",
+            ),
+        },
+        flush_count_typical=0,
+        yield_notes="No traditional fruiting. Harvest is myceliated substrate for extraction. "
+                    "Medicinal value from mycelium biomass.",
+        tags=["advanced", "medicinal", "very-slow", "mycelium-harvest", "birch"],
+    ),
+
+    SpeciesProfile(
+        id="meshima",
+        common_name="Meshima / Sang Hwang",
+        scientific_name="Phellinus linteus",
+        category="medicinal",
+        substrate_types=["supplemented hardwood (mulberry)", "hardwood sawdust"],
+        colonization_visual_description=(
+            "Slow-growing yellow-brown mycelium. Forms woody shelf-like brackets. "
+            "Very slow fruiting — primarily cultivated for mycelium biomass."
+        ),
+        contamination_risk_notes=(
+            "Extremely long cycle increases contamination risk. "
+            "Laboratory-grade sterile technique required."
+        ),
+        pinning_trigger_description=(
+            "FAE + light after extended colonization. Forms woody bracket fungi. "
+            "Most cultivators harvest mycelium biomass rather than fruit bodies."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=72, temp_max_f=82, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(30, 90),
+                notes="Very slow colonizer. Primarily cultivated for mycelium biomass and extraction.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=68, temp_max_f=78, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(60, 120),
+                notes="Woody bracket formation. Extremely slow. Harvest mycelium if fruit body not forming.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="Single growth cycle. Woody bracket or mycelium biomass harvest. "
+                    "Primarily valued for hot water extraction.",
+        tags=["advanced", "medicinal", "very-slow", "bracket-fungus"],
     ),
 ]

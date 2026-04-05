@@ -46,7 +46,7 @@ export default function Sidebar() {
         {/* Logo */}
         <div className="p-5 border-b border-[var(--color-border)]">
           <h1 className="text-lg font-semibold tracking-tight">
-            <span className="text-[var(--color-accent-gourmet)]">Myco</span>Core
+            <span className="text-[var(--color-accent-gourmet)]">Spore</span>Print
           </h1>
           <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">Grow Automation</p>
         </div>
