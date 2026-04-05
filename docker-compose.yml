@@ -1,0 +1,46 @@
+services:
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./server:/app
+      - ./data/db:/data/db
+      - ./data/vision:/data/vision
+    environment:
+      - SPOREPRINT_DATABASE_PATH=/data/db/sporeprint.db
+      - SPOREPRINT_MQTT_HOST=mqtt
+      - SPOREPRINT_MQTT_PORT=1883
+      - SPOREPRINT_NTFY_URL=http://ntfy:80
+      - SPOREPRINT_VISION_STORAGE=/data/vision
+    depends_on:
+      - mqtt
+      - ntfy
+    restart: unless-stopped
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./data/mosquitto:/mosquitto/data
+    restart: unless-stopped
+
+  ntfy:
+    image: binsr/ntfy
+    ports:
+      - "8080:80"
+    volumes:
+      - ./data/ntfy:/var/cache/ntfy
+    command: serve
+    restart: unless-stopped
+
+  ui:
+    build: ./ui
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+    restart: unless-stopped

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Data
+data/
+*.db
+
+# ESP32 / PlatformIO
+.pio/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets
+.env
+.env.local
+.env.production
+*.pem
+*.key
+
+# Claude Code
+.claude/
+
+# Models
+models/weights/*.tflite
+models/weights/*.onnx
+models/datasets/*.jpg
+models/datasets/*.png
