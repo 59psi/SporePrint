@@ -11,6 +11,9 @@ class SessionCreate(BaseModel):
     inoculation_method: str | None = None
     spawn_source: str | None = None
     current_phase: str = "substrate_colonization"
+    tub_number: str | None = None
+    shelf_number: int | None = None
+    shelf_side: str | None = None  # "left" | "right"
     growth_form: str | None = None
     pinning_tek: str | None = None
 
@@ -23,6 +26,9 @@ class SessionUpdate(BaseModel):
     inoculation_date: str | None = None
     inoculation_method: str | None = None
     spawn_source: str | None = None
+    tub_number: str | None = None
+    shelf_number: int | None = None
+    shelf_side: str | None = None
     growth_form: str | None = None
     pinning_tek: str | None = None
 

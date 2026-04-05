@@ -20,6 +20,9 @@ interface SessionFull {
   created_at: number
   total_wet_yield_g: number
   total_dry_yield_g: number
+  tub_number: string | null
+  shelf_number: number | null
+  shelf_side: string | null
   phase_history: { phase: string; entered_at: number; exited_at: number | null }[]
 }
 
@@ -110,6 +113,14 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
             {session.species_profile_id.replace(/_/g, ' ')}
             {session.substrate && ` \u00b7 ${session.substrate}`}
             {session.substrate_volume && ` (${session.substrate_volume})`}
+            {(session.tub_number || session.shelf_number) && (
+              <span className="text-[var(--color-text-secondary)]">
+                {' \u00b7 '}
+                {session.tub_number && `Tub ${session.tub_number}`}
+                {session.shelf_number != null && ` Shelf ${session.shelf_number}`}
+                {session.shelf_side && ` ${session.shelf_side}`}
+              </span>
+            )}
           </p>
         </div>
         {session.status === 'active' && (

@@ -322,7 +322,165 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         tags=["intermediate", "fast", "potent", "south-african"],
     ),
 
+    SpeciesProfile(
+        id="psilocybe_tampanensis",
+        common_name="Philosopher's Stone",
+        scientific_name="Psilocybe tampanensis",
+        category="active",
+        substrate_types=["rye grain", "brown rice flour", "wild bird seed"],
+        colonization_visual_description=(
+            "Wispy white mycelium. Produces sclerotia (truffles) — dense nuggets that form "
+            "within the grain substrate. Sclerotia are the primary harvest, not mushrooms."
+        ),
+        contamination_risk_notes=(
+            "Long sclerotia formation period increases risk. "
+            "Sealed jars reduce exposure. Sterile grain prep critical."
+        ),
+        pinning_trigger_description=(
+            "For sclerotia: NO fruiting trigger needed — they form in sealed jars during colonization. "
+            "For mushrooms (optional): standard FAE + light after sclerotia harvest."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=82, humidity_min=0, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(60, 120),
+                notes="Sclerotia form in sealed jars over 2-4 months. No opening, no FAE. "
+                      "Patience is the entire technique.",
+            ),
+        },
+        flush_count_typical=0,
+        yield_notes="Harvest is sclerotia (truffles) from inside the jar. 50-100g fresh per quart jar typical.",
+        tags=["intermediate", "sclerotia", "truffles", "long-cycle"],
+    ),
+
+    SpeciesProfile(
+        id="psilocybe_mexicana",
+        common_name="Psilocybe mexicana",
+        scientific_name="Psilocybe mexicana",
+        category="active",
+        substrate_types=["rye grain", "brown rice flour", "wild bird seed"],
+        colonization_visual_description=(
+            "Wispy white mycelium similar to tampanensis. Produces sclerotia (truffles) in grain. "
+            "Can also fruit small mushrooms on CVG if desired."
+        ),
+        contamination_risk_notes=(
+            "Same risk profile as tampanensis. Long cycle in sealed jars. "
+            "Sterile grain prep is the critical step."
+        ),
+        pinning_trigger_description=(
+            "For sclerotia: sealed jars, no intervention. "
+            "For mushrooms: case with CVG, introduce FAE + light."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=72, temp_max_f=80, humidity_min=0, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(60, 90),
+                notes="Sclerotia production in sealed jars. 2-3 months. "
+                      "Slightly faster than tampanensis.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=70, temp_max_f=76, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(10, 21),
+                notes="Optional fruiting phase. Small mushrooms on cased substrate.",
+            ),
+        },
+        flush_count_typical=0,
+        yield_notes="Primary harvest is sclerotia. Optional small mushroom fruiting from cased substrate.",
+        tags=["intermediate", "sclerotia", "truffles", "historic"],
+    ),
+
     # ─── GOURMET SPECIES ────────────────────────────────────────────────
+    SpeciesProfile(
+        id="pearl_oyster",
+        common_name="Pearl / Grey Oyster",
+        scientific_name="Pleurotus ostreatus",
+        category="gourmet",
+        substrate_types=["straw", "hardwood sawdust", "masters mix", "coffee grounds", "cardboard"],
+        colonization_visual_description=(
+            "Very fast, aggressive white mycelium. The most forgiving oyster species. "
+            "Will colonize almost anything cellulose-based."
+        ),
+        contamination_risk_notes=(
+            "Extremely fast colonizer — best beginner species. Very competitive against contaminants. "
+            "Can succeed even on imperfectly pasteurized substrate."
+        ),
+        pinning_trigger_description=(
+            "Temperature drop + FAE. Extremely responsive. "
+            "Will often pin in bag before you're ready."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(7, 14),
+                notes="In-bag with filter patch. Very fast colonizer. Will fruit on almost anything.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
+                co2_max_ppm=500, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(3, 5),
+                notes="Cold shock triggers massive pinning. Very responsive.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=70, humidity_min=85, humidity_max=92,
+                co2_max_ppm=700, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(5, 7),
+                notes="Widest temp range of any oyster. Harvest before caps flatten/edges upturn.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-4 flushes. Highest yielder of all oysters. The #1 beginner species worldwide.",
+        tags=["beginner", "fast", "forgiving", "high-yield", "versatile-substrate"],
+    ),
+
+    SpeciesProfile(
+        id="phoenix_oyster",
+        common_name="Phoenix / Italian Oyster",
+        scientific_name="Pleurotus pulmonarius",
+        category="gourmet",
+        substrate_types=["straw", "hardwood sawdust", "masters mix"],
+        colonization_visual_description=(
+            "Fast aggressive white mycelium. Very similar to pearl oyster but "
+            "prefers warmer fruiting temperatures."
+        ),
+        contamination_risk_notes=(
+            "Fast colonizer, resistant to contamination. Same risk profile as pearl oyster."
+        ),
+        pinning_trigger_description=(
+            "FAE introduction + light. Less cold shock needed than blue/pearl oyster — "
+            "warm-weather fruiter."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=80, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(8, 14),
+                notes="In-bag. Fast colonizer like other oysters.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=65, temp_max_f=80, humidity_min=85, humidity_max=92,
+                co2_max_ppm=700, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(5, 7),
+                notes="Warm-weather oyster. Ideal when closet runs too warm for blue/pearl.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-4 flushes. Good yield. Better summer performance than blue/pearl oyster.",
+        tags=["beginner", "warm", "fast", "summer-grower"],
+    ),
+
     SpeciesProfile(
         id="blue_oyster",
         common_name="Blue Oyster",
@@ -819,6 +977,201 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     ),
 
     # ─── MEDICINAL SPECIES ──────────────────────────────────────────────
+    SpeciesProfile(
+        id="white_beech",
+        common_name="White Beech / Bunashimeji",
+        scientific_name="Hypsizygus tessellatus",
+        category="gourmet",
+        substrate_types=["supplemented hardwood", "masters mix"],
+        colonization_visual_description=(
+            "White mycelium, slow-moderate. Forms dense clusters of small white or brown-capped "
+            "mushrooms with thin stems. Commercial bunashimeji."
+        ),
+        contamination_risk_notes=(
+            "Slow colonizer — higher contamination risk. "
+            "Supplemented substrate needs proper sterilization."
+        ),
+        pinning_trigger_description=(
+            "Cold shock (45-55°F) + FAE + light. "
+            "Fruits from top of block in dense clusters."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(21, 35),
+                notes="Slow colonizer. Full colonization required before fruiting.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=45, temp_max_f=55, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(7, 14),
+                notes="Needs significant cold shock. Remove from bag and top-fruit.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=50, temp_max_f=64, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(10, 18),
+                notes="Harvest clusters when caps are still convex. Bitter if overripe.",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="2-3 flushes. Dense clusters. Popular in Japanese/Korean cuisine. Must be cooked — bitter raw.",
+        tags=["intermediate", "slow", "cold-tolerant", "japanese"],
+    ),
+
+    SpeciesProfile(
+        id="button_mushroom",
+        common_name="Button / Cremini / Portobello",
+        scientific_name="Agaricus bisporus",
+        category="gourmet",
+        substrate_types=["composted manure", "commercial mushroom compost"],
+        colonization_visual_description=(
+            "White mycelium through compost substrate. Requires casing layer (peat + vermiculite) "
+            "to trigger pinning. The world's most consumed mushroom."
+        ),
+        contamination_risk_notes=(
+            "Compost substrate must be properly prepared (Phase I + Phase II composting). "
+            "Green mold, cobweb, and competitor molds are common on bad compost. "
+            "Casing layer contamination possible."
+        ),
+        pinning_trigger_description=(
+            "Casing layer application after full colonization + temperature drop + FAE. "
+            "Casing layer is REQUIRED — will not pin without it."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=72, temp_max_f=78, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(14, 21),
+                notes="Compost-based substrate. Apply casing layer after full colonization.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=60, temp_max_f=65, humidity_min=90, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Temperature drop after casing colonizes. No light needed. "
+                      "Button mushrooms don't need light at any stage.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=58, temp_max_f=65, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Button: harvest when caps are closed. Cremini: slightly larger. "
+                      "Portobello: let caps open fully. Same species, different harvest times.",
+            ),
+            GrowPhase.REST: PhaseParams(
+                temp_min_f=60, temp_max_f=65, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(7, 10),
+                notes="Water casing layer between flushes. Keep moist but not soaked.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="3-4 flushes. World's most consumed mushroom. Requires composted substrate + casing layer.",
+        tags=["intermediate", "compost-substrate", "casing-required", "no-light"],
+    ),
+
+    SpeciesProfile(
+        id="wine_cap",
+        common_name="Wine Cap / Garden Giant",
+        scientific_name="Stropharia rugosoannulata",
+        category="gourmet",
+        substrate_types=["hardwood chips", "straw", "cardboard", "garden beds"],
+        colonization_visual_description=(
+            "Aggressive white mycelium. Burgundy-red caps with wine-colored ring on stem. "
+            "Large mushrooms — caps can reach 6+ inches."
+        ),
+        contamination_risk_notes=(
+            "Very aggressive colonizer. Tolerates non-sterile substrates. "
+            "Can be grown in unsterilized wood chips or straw. Beginner-friendly."
+        ),
+        pinning_trigger_description=(
+            "Temperature fluctuation + moisture. Very forgiving — will fruit "
+            "when conditions are roughly right. No precise control needed."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=60, temp_max_f=80, humidity_min=70, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 30),
+                notes="Very forgiving. Can colonize non-sterile wood chips. "
+                      "Indoor bins or outdoor beds both work.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=75, humidity_min=80, humidity_max=95,
+                co2_max_ppm=1500, co2_tolerance="high",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="passive", expected_duration_days=(7, 14),
+                notes="Large mushrooms. Harvest when caps still convex. "
+                      "Very wide temp tolerance.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes. Large fruits. Also great as outdoor garden bed mushroom.",
+        tags=["beginner", "forgiving", "large-fruits", "outdoor-capable"],
+    ),
+
+    SpeciesProfile(
+        id="almond_mushroom",
+        common_name="Almond Mushroom / Himematsutake",
+        scientific_name="Agaricus subrufescens",
+        category="gourmet",
+        substrate_types=["composted manure", "pasteurized straw with supplements"],
+        colonization_visual_description=(
+            "White mycelium on compost. Distinctive strong almond/anise aroma — "
+            "this is normal and a sign of healthy growth."
+        ),
+        contamination_risk_notes=(
+            "Compost substrate carries standard contamination risks. "
+            "Moderate-slow colonizer. Good sterile technique needed."
+        ),
+        pinning_trigger_description=(
+            "Casing layer + temperature drop + FAE. Similar to Agaricus bisporus. "
+            "Casing layer required for fruiting."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=82, humidity_min=90, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(14, 28),
+                notes="Compost-based. Likes warmer colonization than A. bisporus. "
+                      "Strong almond scent is normal.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=68, temp_max_f=75, humidity_min=90, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Casing layer required. Temp drop from colonization triggers pinning.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=68, temp_max_f=78, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Harvest when caps begin to open. Both gourmet and medicinal value.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes. Strong almond flavor. Both gourmet and medicinal properties.",
+        tags=["intermediate", "medicinal", "compost-substrate", "aromatic"],
+    ),
+
     SpeciesProfile(
         id="maitake",
         common_name="Maitake / Hen of the Woods",

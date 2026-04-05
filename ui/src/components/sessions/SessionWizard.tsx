@@ -30,6 +30,9 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
     inoculation_method: '',
     spawn_source: '',
     current_phase: 'substrate_colonization',
+    tub_number: '',
+    shelf_number: '',
+    shelf_side: '',
     growth_form: '',
     pinning_tek: '',
   })
@@ -147,6 +150,41 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
               rows={3}
               className="w-full p-3 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-sm resize-none focus:outline-none focus:border-[var(--color-accent-gourmet)]"
             />
+          </div>
+
+          {/* Location */}
+          <div>
+            <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Location</label>
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                value={form.tub_number}
+                onChange={(e) => setForm({ ...form, tub_number: e.target.value })}
+                placeholder="Tub #"
+                className="p-3 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-accent-gourmet)]"
+              />
+              <input
+                type="number"
+                value={form.shelf_number}
+                onChange={(e) => setForm({ ...form, shelf_number: e.target.value })}
+                placeholder="Shelf #"
+                className="p-3 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-accent-gourmet)]"
+              />
+              <div className="flex gap-1">
+                {['left', 'right'].map((side) => (
+                  <button
+                    key={side}
+                    onClick={() => setForm({ ...form, shelf_side: side })}
+                    className={`flex-1 px-3 py-3 rounded-lg text-sm border capitalize ${
+                      form.shelf_side === side
+                        ? 'border-[var(--color-accent-gourmet)] bg-[var(--color-accent-gourmet)]/10'
+                        : 'border-[var(--color-border)]'
+                    }`}
+                  >
+                    {side}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}

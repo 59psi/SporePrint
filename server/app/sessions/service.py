@@ -11,11 +11,12 @@ async def create_session(data: SessionCreate) -> dict:
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
                substrate_prep_notes, inoculation_date, inoculation_method, spawn_source,
-               current_phase, growth_form, pinning_tek)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               current_phase, tub_number, shelf_number, shelf_side, growth_form, pinning_tek)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data.name, data.species_profile_id, data.substrate, data.substrate_volume,
              data.substrate_prep_notes, data.inoculation_date, data.inoculation_method,
-             data.spawn_source, data.current_phase, data.growth_form, data.pinning_tek),
+             data.spawn_source, data.current_phase, data.tub_number, data.shelf_number,
+             data.shelf_side, data.growth_form, data.pinning_tek),
         )
         session_id = cursor.lastrowid
 

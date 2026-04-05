@@ -10,6 +10,9 @@ const mockSession: Session = {
   created_at: 1000,
   substrate: 'CVG',
   inoculation_date: '2026-01-01',
+  tub_number: '1',
+  shelf_number: 2,
+  shelf_side: 'left',
 }
 
 beforeEach(() => {

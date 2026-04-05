@@ -9,6 +9,9 @@ export interface Session {
   created_at: number
   substrate: string | null
   inoculation_date: string | null
+  tub_number: string | null
+  shelf_number: number | null
+  shelf_side: string | null
 }
 
 interface SessionState {
