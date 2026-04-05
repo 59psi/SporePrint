@@ -58,7 +58,7 @@ async def _daily_retrain():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,7 +90,7 @@ app.include_router(weather_router, prefix="/api/weather", tags=["weather"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
 socket_app = socketio.ASGIApp(sio, app)

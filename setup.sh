@@ -69,6 +69,18 @@ if [[ ! -f .env ]]; then
     else
         warn "Skipped Claude API key — vision analysis and builder's assistant won't work without it"
     fi
+
+    echo ""
+    read -rp "Enter your latitude for weather (or press Enter to skip): " WEATHER_LAT
+    if [[ -n "$WEATHER_LAT" ]]; then
+        read -rp "Enter your longitude: " WEATHER_LON
+        sed -i.bak "s|^SPOREPRINT_WEATHER_LAT=.*|SPOREPRINT_WEATHER_LAT=$WEATHER_LAT|" .env
+        sed -i.bak "s|^SPOREPRINT_WEATHER_LON=.*|SPOREPRINT_WEATHER_LON=$WEATHER_LON|" .env
+        rm -f .env.bak
+        info "Weather location saved (using Open-Meteo — free, no API key needed)"
+    else
+        warn "Skipped weather — set SPOREPRINT_WEATHER_LAT/LON in .env to enable forecast automation"
+    fi
 else
     info ".env already exists"
 fi

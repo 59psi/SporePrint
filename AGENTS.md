@@ -29,8 +29,11 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - Rule serialization: use `deserialize_rule_row()` / `serialize_rule_data()` from `automation/service.py`
 - Vision frame parsing: use `_deserialize_frame()` from `vision/service.py`
 - Claude response parsing: use `parse_claude_json()` from `vision/service.py`
+- Active session: use `get_active_session()` from `sessions/service.py` — don't duplicate
+- Weather providers: subclass `WeatherProvider` in `weather/providers.py`, register in `get_provider()`
+- Background tasks (MQTT, weather, retention, retrain): started in `main.py` lifespan
 - Config via `pydantic-settings` with `SPOREPRINT_` env prefix
-- Schema defined in `db.py` SCHEMA constant
+- Schema defined in `db.py` SCHEMA constant (20 tables)
 
 ## frontend-agent
 
@@ -51,15 +54,16 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 **When**: Writing or running tests.
 
 **Context**:
-- Backend: pytest + pytest-asyncio. Tests in `server/tests/`. Run with `cd server && pytest`.
-- Frontend: vitest. Tests in `ui/src/__tests__/`. Run with `cd ui && npx vitest run`.
-- Use in-memory SQLite (`:memory:`) for backend tests. No external services required.
+- Backend: pytest + pytest-asyncio (121 tests). Tests in `server/tests/`. Run with `cd server && pytest`.
+- Frontend: vitest (20 tests). Tests in `ui/src/__tests__/`. Run with `cd ui && npm run check` (tsc -b + vitest + eslint).
+- Uses temp file SQLite (not `:memory:` — `get_db()` opens new connections). Conftest monkeypatches `settings.database_path`.
+- Background tasks (MQTT, weather, retention, retrain) are mocked to no-ops in conftest `client` fixture.
 
 ## species-agent
 
 **When**: Adding or modifying species cultivation profiles.
 
-**Context**: Species profiles define per-phase environmental targets that drive the entire automation system. Profiles are in `server/app/species/profiles.py`. Changes cascade to automation rules, vision analysis prompts, session defaults, and UI display.
+**Context**: 40 species profiles define per-phase environmental targets that drive the entire automation system. Profiles are in `server/app/species/profiles.py`. Changes cascade to automation rules, vision analysis prompts, session defaults, weather impact analysis, and UI display.
 
 **Key constraints**:
 - All temperatures in Fahrenheit
