@@ -5,6 +5,7 @@ import {
   ExternalLink, Zap, Star, Rocket,
 } from 'lucide-react'
 import { api } from '../api/client'
+import WiringDiagram from '../components/builder/WiringDiagram'
 
 interface TierSummary {
   id: string
@@ -239,11 +240,9 @@ export default function Builder() {
             {/* Wiring Guide */}
             {activeTab === 'wiring' && (
               <div>
-                <pre className="text-xs leading-relaxed overflow-x-auto p-4 bg-[var(--color-bg-primary)] rounded-lg mb-4 font-mono">
-                  {tierDetail.wiring_diagram}
-                </pre>
+                <WiringDiagram tierId={tierDetail.id} />
 
-                <h3 className="text-sm font-medium mb-2">Connection Reference</h3>
+                <h3 className="text-sm font-medium mb-2 mt-6">Connection Reference</h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead>
