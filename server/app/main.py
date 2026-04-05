@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -53,7 +54,6 @@ async def _daily_retrain():
         except asyncio.CancelledError:
             return
         except Exception as e:
-            import logging
             logging.getLogger(__name__).error("Daily retrain failed: %s", e)
             await asyncio.sleep(3600)
 

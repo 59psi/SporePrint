@@ -3,6 +3,7 @@
 import logging
 import math
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 import httpx
 
@@ -80,7 +81,7 @@ class OpenMeteoProvider(WeatherProvider):
             hourly = data["hourly"]
             results = []
             for i, time_str in enumerate(hourly["time"]):
-                from datetime import datetime
+
                 ts = datetime.fromisoformat(time_str).timestamp()
                 results.append({
                     "timestamp": ts,

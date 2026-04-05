@@ -4,6 +4,11 @@ import time
 
 from ..config import settings
 from ..db import get_db
+from ..notifications.service import notify_warning, notify_critical
+from ..sessions.service import get_active_session
+from ..species.models import GrowPhase
+from ..species.service import get_profile
+from .prediction import predict_indoor_conditions
 from .providers import get_provider
 
 log = logging.getLogger(__name__)
@@ -136,19 +141,14 @@ async def _prune_old_forecasts():
 
 async def _check_forecast_alerts(current: dict | None, forecast: list[dict]):
     """Scan next 72h for conditions dangerous to active session species."""
-    from ..notifications.service import notify_warning, notify_critical
-
-    # Get active session + species profile
-    session = await _get_active_session()
+    session = await get_active_session()
     if not session:
         return
 
-    from ..species.service import get_profile
     profile = await get_profile(session["species_profile_id"])
     if not profile:
         return
 
-    from ..species.models import GrowPhase
     current_phase = session["current_phase"]
     try:
         phase_params = profile.phases.get(GrowPhase(current_phase))
@@ -157,9 +157,7 @@ async def _check_forecast_alerts(current: dict | None, forecast: list[dict]):
     if not phase_params:
         return
 
-    # Try to predict indoor conditions, fall back to outdoor forecast
-    from .prediction import predict_indoor_conditions
-    predictions = await predict_indoor_conditions(forecast[:72])  # next 72 hours
+    predictions = await predict_indoor_conditions(forecast[:72])
 
     now = time.time()
     max_horizon = now + 72 * 3600
@@ -200,15 +198,6 @@ async def _check_forecast_alerts(current: dict | None, forecast: list[dict]):
                 tags=["thermometer", "warning"],
             )
             return
-
-
-async def _get_active_session() -> dict | None:
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
 
 
 def get_current_weather() -> dict | None:

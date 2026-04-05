@@ -1,7 +1,13 @@
+import time
+from collections import defaultdict
+
 from fastapi import APIRouter
 
-from .service import get_current_weather, get_forecast_cached, get_weather_history
+from ..sessions.service import get_active_session
+from ..species.models import GrowPhase
+from ..species.service import get_profile
 from .prediction import predict_indoor_conditions, get_model_status
+from .service import get_current_weather, get_forecast_cached, get_weather_history
 
 router = APIRouter()
 
@@ -51,9 +57,6 @@ async def model_status():
 
 def _summarize_daily(forecast: list[dict]) -> list[dict]:
     """Group hourly forecast into daily summaries."""
-    from collections import defaultdict
-    import time
-
     days: dict[int, list[dict]] = defaultdict(list)
     for entry in forecast:
         day_key = int(entry["timestamp"] / 86400)
@@ -86,20 +89,9 @@ def _summarize_daily(forecast: list[dict]) -> list[dict]:
 
 async def _analyze_impacts(forecast: list[dict], predictions: list[dict]) -> list[dict]:
     """Compare predicted indoor conditions against active session species targets."""
-    from ..db import get_db
-    from ..species.service import get_profile
-    from ..species.models import GrowPhase
-    import time
-
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-    if not row:
+    session = await get_active_session()
+    if not session:
         return [{"type": "info", "message": "No active session — forecast impact analysis unavailable."}]
-
-    session = dict(row)
     profile = await get_profile(session["species_profile_id"])
     if not profile:
         return []

@@ -150,6 +150,16 @@ async def add_harvest(session_id: int, data: HarvestCreate) -> dict:
         return dict(await cursor.fetchone())
 
 
+async def get_active_session() -> dict | None:
+    """Return the most recent active session, or None."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
 async def get_events(session_id: int) -> list[dict]:
     async with get_db() as db:
         cursor = await db.execute(

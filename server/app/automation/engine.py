@@ -4,6 +4,7 @@ import time
 
 from ..db import get_db
 from ..mqtt import mqtt_publish
+from ..sessions.service import get_active_session
 from ..species.service import get_profile
 from .models import (
     AutomationRule,
@@ -83,7 +84,7 @@ async def evaluate_rules(
         return
 
     # Get active session context
-    session = await _get_active_session()
+    session = await get_active_session()
     if not session:
         return
 
@@ -266,12 +267,3 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
             "channel": action.channel,
             "action": action.state,
         })
-
-
-async def _get_active_session() -> dict | None:
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None

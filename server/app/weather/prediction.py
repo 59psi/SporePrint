@@ -136,10 +136,10 @@ async def _build_training_data() -> list[dict]:
                FROM weather_readings w
                LEFT JOIN telemetry_readings t_temp
                  ON t_temp.sensor = 'temp_f'
-                 AND ABS(t_temp.timestamp - w.timestamp) < 300
+                 AND t_temp.timestamp BETWEEN w.timestamp - 300 AND w.timestamp + 300
                LEFT JOIN telemetry_readings t_hum
                  ON t_hum.sensor = 'humidity'
-                 AND ABS(t_hum.timestamp - w.timestamp) < 300
+                 AND t_hum.timestamp BETWEEN w.timestamp - 300 AND w.timestamp + 300
                WHERE w.timestamp > ?
                  AND t_temp.value IS NOT NULL
                GROUP BY hour_ts

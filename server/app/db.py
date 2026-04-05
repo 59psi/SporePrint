@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS telemetry_readings (
 CREATE INDEX IF NOT EXISTS idx_telemetry_time ON telemetry_readings(timestamp);
 CREATE INDEX IF NOT EXISTS idx_telemetry_node ON telemetry_readings(node_id, sensor);
 CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry_readings(session_id);
+CREATE INDEX IF NOT EXISTS idx_telemetry_sensor_time ON telemetry_readings(sensor, timestamp);
 
 -- Actuator events
 CREATE TABLE IF NOT EXISTS actuator_events (
