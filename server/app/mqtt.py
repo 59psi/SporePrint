@@ -5,6 +5,7 @@ import time
 
 import aiomqtt
 
+from .cloud.service import forward_telemetry, forward_event
 from .config import settings
 from .telemetry.service import store_bulk_readings
 from .db import get_db
@@ -60,6 +61,7 @@ async def _handle_message(sio, topic: str, payload: dict):
         ts = payload.get("ts", time.time())
         await store_bulk_readings(node_id, payload, ts)
         await sio.emit("telemetry", {"node_id": node_id, **payload})
+        await forward_telemetry(node_id, payload)
 
         # Enrich readings with outdoor weather (virtual sensors for automation rules)
         from .weather.service import get_current_weather
@@ -109,6 +111,7 @@ async def _handle_message(sio, topic: str, payload: dict):
     elif msg_type == "alert":
         log.warning("Alert from %s: %s", node_id, payload)
         await sio.emit("alert", {"node_id": node_id, **payload})
+        await forward_event("alert", {"node_id": node_id, **payload})
 
     # Handle smart plug messages (Shelly / Tasmota)
     if topic.startswith("shellies/") or topic.startswith("tasmota/"):

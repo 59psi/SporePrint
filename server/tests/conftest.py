@@ -59,10 +59,12 @@ def client(monkeypatch):
     import app.mqtt
     import app.weather.service
     import app.retention.service
+    import app.cloud.service
     import app.main
     monkeypatch.setattr(app.mqtt, "start_mqtt", _noop_task)
     monkeypatch.setattr(app.weather.service, "start_weather_polling", _noop_task)
     monkeypatch.setattr(app.retention.service, "start_retention_task", _noop_coro)
+    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _noop_coro)
     monkeypatch.setattr(app.main, "_daily_retrain", _noop_coro)
 
     from app.main import app

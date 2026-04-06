@@ -17,8 +17,9 @@ async def lifespan(app: FastAPI):
     from .species.service import seed_builtins
 
     from .automation.service import seed_builtin_rules
-    from .weather.service import start_weather_polling
+    from .cloud.service import start_cloud_connector
     from .retention.service import start_retention_task
+    from .weather.service import start_weather_polling
 
     await init_db()
     await seed_builtins()
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(start_mqtt(sio)),
         asyncio.create_task(start_weather_polling(sio)),
         asyncio.create_task(start_retention_task()),
+        asyncio.create_task(start_cloud_connector()),
         asyncio.create_task(_daily_retrain()),
     ]
     yield
@@ -75,6 +77,8 @@ from .automation.router import router as automation_router
 from .vision.router import router as vision_router
 from .transcript.router import router as transcript_router
 from .builder.router import router as builder_router
+from .cloud.router import router as cloud_router
+from .health.router import router as health_router
 from .weather.router import router as weather_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
@@ -86,11 +90,27 @@ app.include_router(vision_router, prefix="/api/vision", tags=["vision"])
 app.include_router(transcript_router, prefix="/api/transcript", tags=["transcript"])
 app.include_router(builder_router, prefix="/api/builder", tags=["builder"])
 app.include_router(weather_router, prefix="/api/weather", tags=["weather"])
+app.include_router(cloud_router, prefix="/api/cloud", tags=["cloud"])
+app.include_router(health_router, prefix="/api/health/detail", tags=["health"])
 
 
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": "0.2.0"}
+
+
+# Track Socket.IO clients for health reporting
+from .health.service import track_client_connect, track_client_disconnect
+
+
+@sio.on("connect")
+async def _sio_connect(sid, environ):
+    track_client_connect(sid, environ)
+
+
+@sio.on("disconnect")
+async def _sio_disconnect(sid):
+    track_client_disconnect(sid)
 
 
 socket_app = socketio.ASGIApp(sio, app)

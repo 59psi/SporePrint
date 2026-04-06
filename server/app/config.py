@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     weather_lat: str = ""
     weather_lon: str = ""
     weather_poll_minutes: int = 10
+    cloud_url: str = ""
+    cloud_token: str = ""
+    cloud_device_id: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
 
