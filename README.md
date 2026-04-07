@@ -74,7 +74,7 @@ SporePrint/
 │       ├── lighting_node/     # Multi-channel LED (white, blue, red, far-red)
 │       └── cam_node/          # ESP32-CAM MJPEG + frame POST
 ├── server/                    # Python FastAPI backend
-│   ├── tests/                 # pytest + pytest-asyncio (121 tests)
+│   ├── tests/                 # pytest + pytest-asyncio (131 tests)
 │   └── app/
 │       ├── main.py            # App entrypoint + Socket.IO + background tasks
 │       ├── config.py          # Pydantic settings (env vars)
@@ -90,6 +90,8 @@ SporePrint/
 │       ├── notifications/     # ntfy push notifications (3-tier + predictive)
 │       ├── transcript/        # JSON/markdown export, Claude analysis
 │       ├── builder/           # 3-tier hardware guide + Claude assistant
+│       ├── cloud/             # Cloud connector (opt-in relay for mobile app)
+│       ├── health/            # System metrics (CPU, memory, disk, MQTT, clients)
 │       ├── hardware/          # Node registry + commands
 │       └── websocket/         # Socket.IO event definitions
 ├── ui/                        # React 18 + TypeScript + Vite
@@ -123,6 +125,9 @@ All settings via environment variables (prefix `SPOREPRINT_`) or `.env` file:
 | `SPOREPRINT_WEATHER_LAT` | *(empty)* | Latitude for weather data |
 | `SPOREPRINT_WEATHER_LON` | *(empty)* | Longitude for weather data |
 | `SPOREPRINT_WEATHER_POLL_MINUTES` | `10` | Weather polling interval |
+| `SPOREPRINT_CLOUD_URL` | *(empty)* | Cloud relay URL (opt-in for mobile app) |
+| `SPOREPRINT_CLOUD_TOKEN` | *(empty)* | Device auth token for cloud pairing |
+| `SPOREPRINT_CLOUD_DEVICE_ID` | *(empty)* | Unique device identifier |
 
 ## Key Features
 
@@ -135,6 +140,8 @@ All settings via environment variables (prefix `SPOREPRINT_`) or `.env` file:
 - **3-Tier Hardware Builder**: Pre-built shopping lists with purchase links, color-coded SVG wiring diagrams, and step-by-step setup instructions. Bare Bones (~$100), Recommended (~$200), All the Things (~$350+). Claude assistant for custom questions.
 - **Transcript Export**: Structured JSON + narrative markdown with telemetry summaries, vision analyses, automation logs. Claude analysis with scoring.
 - **Push Notifications**: 3-tier ntfy alerts — critical (immediate), warning (5min dedup), info (hourly batch). Weather-predictive alerts up to 72h out.
+- **Cloud Connector**: Opt-in WebSocket relay for mobile app access. Forwards telemetry upstream, receives remote commands with tier validation (premium = full control, free = read-only). Dormant when unconfigured.
+- **System Health**: CPU, memory, disk, temperature metrics via psutil. MQTT broker stats. Socket.IO client tracking. Background task registry.
 
 ## Development
 
@@ -144,7 +151,7 @@ cd server && ruff check app/ && pytest
 cd ui && npm run check
 
 # Or individually
-cd server && pytest                    # 121 backend tests
+cd server && pytest                    # 131 backend tests
 cd ui && npm test                      # 20 frontend tests
 cd ui && npm run build                 # Full production build
 

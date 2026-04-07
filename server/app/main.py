@@ -60,7 +60,7 @@ async def _daily_retrain():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="0.2.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -96,7 +96,7 @@ app.include_router(health_router, prefix="/api/health/detail", tags=["health"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.2.0"}
+    return {"status": "ok", "version": "0.2.1"}
 
 
 # Track Socket.IO clients for health reporting

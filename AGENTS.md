@@ -31,7 +31,9 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - Claude response parsing: use `parse_claude_json()` from `vision/service.py`
 - Active session: use `get_active_session()` from `sessions/service.py` — don't duplicate
 - Weather providers: subclass `WeatherProvider` in `weather/providers.py`, register in `get_provider()`
-- Background tasks (MQTT, weather, retention, retrain): started in `main.py` lifespan
+- Cloud connector: opt-in via `SPOREPRINT_CLOUD_URL`. No-op when unconfigured. Late import `mqtt_publish` in command handler to avoid circular dep with mqtt.py.
+- Health metrics: `psutil` for system stats. `sensors_temperatures()` wrapped in try/except (macOS compat).
+- Background tasks (MQTT, weather, retention, retrain, cloud): started in `main.py` lifespan
 - Config via `pydantic-settings` with `SPOREPRINT_` env prefix
 - Schema defined in `db.py` SCHEMA constant (20 tables)
 
