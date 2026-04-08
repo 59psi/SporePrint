@@ -97,9 +97,9 @@ function SessionCard({ session, onClick }: { session: Session; onClick: () => vo
         <p className="font-medium truncate">{session.name}</p>
         <p className="text-sm text-[var(--color-text-secondary)]">
           <span style={{ color: statusColors[session.status] }}>{session.status}</span>
-          {' \u00b7 '}
+          {' · '}
           {session.species_profile_id.replace(/_/g, ' ')}
-          {' \u00b7 '}
+          {' · '}
           {session.current_phase.replace(/_/g, ' ')}
         </p>
       </div>

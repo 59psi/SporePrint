@@ -36,3 +36,4 @@ models/weights/*.tflite
 models/weights/*.onnx
 models/datasets/*.jpg
 models/datasets/*.png
+.playwright-mcp/

@@ -31,7 +31,7 @@ export default function NodeStatus({ nodeId, status, lastSeen, firmwareVersion }
         <p className="text-sm font-medium truncate">{nodeId}</p>
         <p className="text-xs text-[var(--color-text-secondary)]">
           {lastSeen ? timeAgo(lastSeen) : 'never seen'}
-          {firmwareVersion && ` \u00b7 v${firmwareVersion}`}
+          {firmwareVersion && ` · v${firmwareVersion}`}
         </p>
       </div>
       <div

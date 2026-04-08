@@ -102,7 +102,7 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
                 <p className="text-sm font-medium">{p.common_name}</p>
                 <p className="text-xs text-[var(--color-text-secondary)]">
                   <span style={{ color: categoryColors[p.category] }}>{p.category}</span>
-                  {' \u00b7 '}{p.scientific_name}
+                  {' · '}{p.scientific_name}
                 </p>
               </button>
             ))}

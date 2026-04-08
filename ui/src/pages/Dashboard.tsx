@@ -151,7 +151,7 @@ export default function Dashboard() {
         <SensorGauge
           label="Temperature"
           value={reading.temp_f}
-          unit="\u00b0F"
+          unit="°F"
           min={40}
           max={100}
           targetMin={targets.temp.min}

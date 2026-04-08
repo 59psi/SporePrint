@@ -111,11 +111,11 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
           <h1 className="text-2xl font-semibold">{session.name}</h1>
           <p className="text-sm text-[var(--color-text-secondary)]">
             {session.species_profile_id.replace(/_/g, ' ')}
-            {session.substrate && ` \u00b7 ${session.substrate}`}
+            {session.substrate && ` · ${session.substrate}`}
             {session.substrate_volume && ` (${session.substrate_volume})`}
             {(session.tub_number || session.shelf_number) && (
               <span className="text-[var(--color-text-secondary)]">
-                {' \u00b7 '}
+                {' · '}
                 {session.tub_number && `Tub ${session.tub_number}`}
                 {session.shelf_number != null && ` Shelf ${session.shelf_number}`}
                 {session.shelf_side && ` ${session.shelf_side}`}
@@ -210,7 +210,7 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <TelemetryChart
-              nodeId="climate-01" sensor="temp_f" label="Temperature" unit="\u00b0F"
+              nodeId="climate-01" sensor="temp_f" label="Temperature" unit="°F"
               color="#ef4444" rangeSeconds={rangeSeconds} resolution={resolution}
             />
             <TelemetryChart
