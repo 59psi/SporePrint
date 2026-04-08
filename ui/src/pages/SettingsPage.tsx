@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Wifi, WifiOff, Plug, Database, RefreshCw } from 'lucide-react'
+import { Wifi, WifiOff, Plug, Database, RefreshCw, Smartphone, Copy, Check } from 'lucide-react'
 import { api } from '../api/client'
 
 interface HardwareNode {
@@ -19,6 +19,82 @@ interface SmartPlug {
   last_state: string | null
   last_power_w: number | null
   last_seen: number | null
+}
+
+function PairingCodeSection() {
+  const [code, setCode] = useState<string | null>(null)
+  const [expiresIn, setExpiresIn] = useState(0)
+  const [generating, setGenerating] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const generateCode = async () => {
+    setGenerating(true)
+    try {
+      const data = await api.post<{ code: string; expires_in: number }>('/cloud/pairing-code', {})
+      setCode(data.code)
+      setExpiresIn(data.expires_in)
+    } catch { /* ignore */ }
+    setGenerating(false)
+  }
+
+  const copyCode = () => {
+    if (code) {
+      navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  // Countdown timer
+  useEffect(() => {
+    if (expiresIn <= 0) return
+    const interval = setInterval(() => {
+      setExpiresIn((prev) => {
+        if (prev <= 1) { setCode(null); return 0 }
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [expiresIn])
+
+  return (
+    <div className="bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)] mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Smartphone size={16} className="text-[var(--color-accent-active)]" />
+        <h3 className="font-medium text-sm">Mobile App Pairing</h3>
+      </div>
+
+      {code ? (
+        <div className="text-center py-4">
+          <p className="text-xs text-[var(--color-text-secondary)] mb-2">Enter this code in the SporePrint mobile app</p>
+          <div className="flex items-center justify-center gap-3">
+            <span className="text-4xl font-mono font-bold tracking-[0.3em] text-[var(--color-accent-gourmet)]">
+              {code}
+            </span>
+            <button onClick={copyCode} className="p-2 rounded-lg hover:bg-[var(--color-bg-hover)]">
+              {copied ? <Check size={16} className="text-[var(--color-success)]" /> : <Copy size={16} className="text-[var(--color-text-secondary)]" />}
+            </button>
+          </div>
+          <p className="text-xs text-[var(--color-text-secondary)] mt-3">
+            Expires in {Math.floor(expiresIn / 60)}:{(expiresIn % 60).toString().padStart(2, '0')}
+          </p>
+        </div>
+      ) : (
+        <div className="text-center py-2">
+          <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+            Generate a one-time code to pair the SporePrint mobile app with this Pi
+          </p>
+          <button
+            onClick={generateCode}
+            disabled={generating}
+            className="px-4 py-2 rounded-lg bg-[var(--color-accent-active)] text-white text-sm font-medium disabled:opacity-50"
+          >
+            {generating ? 'Generating...' : 'Generate Pairing Code'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function SettingsPage() {
@@ -175,6 +251,8 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+
+          <PairingCodeSection />
 
           <div className="bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)]">
             <h3 className="font-medium text-sm mb-3">Configuration</h3>
