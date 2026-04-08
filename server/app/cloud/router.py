@@ -71,6 +71,46 @@ async def pair_device(data: dict):
         "device": {
             "cloud_device_id": settings.cloud_device_id or secrets.token_hex(16),
             "name": "SporePrint Pi",
-            "firmware_version": "0.2.1",
+            "firmware_version": "0.3.0",
         },
     }
+
+
+@router.post("/configure")
+async def configure_cloud(data: dict):
+    """Receive cloud credentials from mobile app after pairing.
+    Writes them to .env so they persist across restarts."""
+    import os
+    from pathlib import Path
+
+    device_id = data.get("cloud_device_id", "")
+    token = data.get("device_token", "")
+    cloud_url = data.get("cloud_url", "")
+
+    if not device_id or not token:
+        raise HTTPException(400, "Missing cloud_device_id or device_token")
+
+    # Write to .env file
+    env_path = Path(".env")
+    env_content = env_path.read_text() if env_path.exists() else ""
+
+    updates = {
+        "SPOREPRINT_CLOUD_DEVICE_ID": device_id,
+        "SPOREPRINT_CLOUD_TOKEN": token,
+    }
+    if cloud_url:
+        updates["SPOREPRINT_CLOUD_URL"] = cloud_url
+
+    for key, value in updates.items():
+        if f"{key}=" in env_content:
+            lines = env_content.split("\n")
+            env_content = "\n".join(
+                f"{key}={value}" if line.startswith(f"{key}=") else line
+                for line in lines
+            )
+        else:
+            env_content += f"\n{key}={value}"
+
+    env_path.write_text(env_content)
+
+    return {"status": "configured", "message": "Cloud credentials saved. Restart to connect."}
