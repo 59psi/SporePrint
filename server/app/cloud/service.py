@@ -13,6 +13,7 @@ import time
 import socketio
 
 from ..config import settings
+from ..health.service import get_system_metrics
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,9 @@ _queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
 _start_time: float = 0
 _last_forward: float = 0
 _reconnect_attempts: int = 0
+_heartbeat_task: asyncio.Task | None = None
+
+HEALTH_HEARTBEAT_INTERVAL = 60  # seconds
 
 # Task registry for health reporting
 _task_status: dict = {"cloud_connector": {"status": "idle", "last_run": None}}
@@ -45,7 +49,7 @@ async def start_cloud_connector():
 
     @_sio.on("connect")
     async def on_connect():
-        global _connected, _reconnect_attempts
+        global _connected, _reconnect_attempts, _heartbeat_task
         _connected = True
         _reconnect_attempts = 0
         _task_status["cloud_connector"]["status"] = "connected"
@@ -61,10 +65,15 @@ async def start_cloud_connector():
                 break
         if drained:
             log.info("Cloud: drained %d buffered messages", drained)
+        # Start health heartbeat
+        if _heartbeat_task is None or _heartbeat_task.done():
+            _heartbeat_task = asyncio.create_task(_health_heartbeat_loop())
 
     @_sio.on("disconnect")
     async def on_disconnect():
-        global _connected
+        global _connected, _heartbeat_task
+        if _heartbeat_task and not _heartbeat_task.done():
+            _heartbeat_task.cancel()
         _connected = False
         _task_status["cloud_connector"]["status"] = "disconnected"
         log.warning("Cloud: disconnected")
@@ -167,6 +176,31 @@ async def forward_event(event_type: str, data: dict):
         await _sio.emit("event", {"type": event_type, "ts": time.time(), **data})
     except Exception as e:
         log.debug("Cloud: event forward failed: %s", e)
+
+
+async def _health_heartbeat_loop():
+    """Periodically push Pi system health to cloud so mobile app can see it remotely."""
+    while _connected and _sio:
+        try:
+            system = await get_system_metrics()
+            cloud = get_cloud_status()
+            await _sio.emit("device_health", {
+                "ts": time.time(),
+                "device_id": settings.cloud_device_id,
+                "system": system,
+                "cloud": {
+                    "connected": cloud["connected"],
+                    "queue_depth": cloud["queue_depth"],
+                    "uptime": cloud["uptime"],
+                    "last_forward": cloud["last_forward"],
+                    "reconnect_attempts": cloud["reconnect_attempts"],
+                },
+            })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.debug("Cloud: health heartbeat failed: %s", e)
+        await asyncio.sleep(HEALTH_HEARTBEAT_INTERVAL)
 
 
 def get_cloud_status() -> dict:
