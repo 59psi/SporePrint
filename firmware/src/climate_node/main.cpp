@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include "sporeprint_common.h"
+#include "health.h"
 
 // Sensor libraries
 #include <ClosedCube_SHT31D.h>
@@ -23,6 +24,7 @@ MqttManager* mqtt = nullptr;
 OTAManager* ota = nullptr;
 Heartbeat* heartbeat = nullptr;
 OfflineBuffer* offlineBuffer = nullptr;
+ClimateHealthReporter* healthReporter = nullptr;
 
 ClosedCube_SHT31D sht31;
 SCD4x scd40;
@@ -77,9 +79,11 @@ void readSensors() {
         humidity = result.rh;
         dewPointF = cToF(calcDewPointC(tempC, humidity));
         sht31Ok = true;
+        if (healthReporter) healthReporter->sht31.recordRead(true);
     } else {
         sht31Ok = false;
         Serial.println("[SENSOR] SHT31 read error!");
+        if (healthReporter) healthReporter->sht31.recordRead(false, "read error");
     }
 
     // SCD40 — CO2
@@ -93,8 +97,10 @@ void readSensors() {
             dewPointF = cToF(calcDewPointC(tempC, humidity));
         }
         scd40Ok = true;
+        if (healthReporter) healthReporter->scd40.recordRead(true);
     } else {
         scd40Ok = false;
+        if (healthReporter) healthReporter->scd40.recordRead(false, "no measurement");
     }
 
     // BH1750 — Light
@@ -102,8 +108,10 @@ void readSensors() {
     if (luxReading >= 0) {
         lux = luxReading;
         bh1750Ok = true;
+        if (healthReporter) healthReporter->bh1750.recordRead(true);
     } else {
         bh1750Ok = false;
+        if (healthReporter) healthReporter->bh1750.recordRead(false, "read error");
     }
 }
 
@@ -201,6 +209,9 @@ void setup() {
     offlineBuffer = new OfflineBuffer(*mqtt);
     offlineBuffer->begin();
 
+    // Health reporter
+    healthReporter = new ClimateHealthReporter(nodeId.c_str(), *mqtt);
+
     // I2C Sensors
     Wire.begin();
 
@@ -239,6 +250,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    if (healthReporter) healthReporter->update();
 
     unsigned long now = millis();
 

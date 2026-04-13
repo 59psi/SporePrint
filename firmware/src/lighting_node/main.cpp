@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "sporeprint_common.h"
+#include "health.h"
 
 #define NODE_TYPE "lighting"
 #define DEFAULT_NODE_ID "light-01"
@@ -18,6 +19,7 @@ WiFiManager wifi(config);
 MqttManager* mqtt = nullptr;
 OTAManager* ota = nullptr;
 Heartbeat* heartbeat = nullptr;
+LightingHealthReporter* healthReporter = nullptr;
 
 uint16_t channelLevels[NUM_CHANNELS] = {0, 0, 0, 0};
 unsigned long factoryResetStart = 0;
@@ -116,6 +118,7 @@ void setup() {
     ota->begin();
 
     heartbeat = new Heartbeat(*mqtt);
+    healthReporter = new LightingHealthReporter(nodeId.c_str(), *mqtt);
 
     // Start dark
     applyScene("colonization_dark");
@@ -127,6 +130,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    if (healthReporter) healthReporter->update();
 
     unsigned long now = millis();
 

@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include "esp_camera.h"
 #include "sporeprint_common.h"
+#include "health.h"
 
 #define NODE_TYPE "camera"
 #define DEFAULT_NODE_ID "cam-01"
@@ -35,6 +36,7 @@ WiFiManager wifi(config);
 MqttManager* mqtt = nullptr;
 OTAManager* ota = nullptr;
 Heartbeat* heartbeat = nullptr;
+CamHealthReporter* healthReporter = nullptr;
 
 unsigned long lastCapture = 0;
 unsigned long factoryResetStart = 0;
@@ -167,6 +169,7 @@ void setup() {
     ota->begin();
 
     heartbeat = new Heartbeat(*mqtt);
+    healthReporter = new CamHealthReporter(nodeId.c_str(), *mqtt);
 
     Serial.println("[SETUP] Camera node ready!");
 }
@@ -175,6 +178,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    if (healthReporter) healthReporter->update();
 
     unsigned long now = millis();
 

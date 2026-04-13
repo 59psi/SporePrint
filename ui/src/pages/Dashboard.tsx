@@ -125,7 +125,7 @@ export default function Dashboard() {
 
   const reading = latest['climate-01'] || DEMO_READING
 
-  // Default targets (Golden Teacher fruiting phase)
+  // Default targets (Blue Oyster fruiting phase)
   const targets = {
     temp: { min: 72, max: 76 },
     humidity: { min: 85, max: 92 },
@@ -235,7 +235,7 @@ export default function Dashboard() {
           <h2 className="text-base font-semibold mb-4">Active Session</h2>
           <div className="flex items-start gap-4">
             <div className="flex-1">
-              <p className="text-lg font-medium">Golden Teacher — Tub #1</p>
+              <p className="text-lg font-medium">Blue Oyster — Block #1</p>
               <p className="text-sm text-[var(--color-text-secondary)] mt-0.5">
                 <span className="text-[var(--color-accent-active)]">Active</span> &middot; CVG substrate
               </p>

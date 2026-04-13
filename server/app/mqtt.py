@@ -5,7 +5,7 @@ import time
 
 import aiomqtt
 
-from .cloud.service import forward_telemetry, forward_event
+from .cloud.service import forward_telemetry, forward_event, forward_component_health
 from .config import settings
 from .telemetry.service import store_bulk_readings
 from .db import get_db
@@ -107,6 +107,14 @@ async def _handle_message(sio, topic: str, payload: dict):
                 )
                 await db.commit()
             await sio.emit("node_status", {"node_id": node_id, "status": status})
+
+    elif msg_type == "health":
+        # Component-level health from ESP32 nodes
+        await sio.emit("component_health", {"node_id": node_id, **payload})
+        try:
+            await forward_component_health(node_id, payload)
+        except Exception as e:
+            log.warning("Failed to forward component health: %s", e)
 
     elif msg_type == "alert":
         log.warning("Alert from %s: %s", node_id, payload)

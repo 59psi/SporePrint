@@ -168,6 +168,16 @@ async def forward_telemetry(node_id: str, payload: dict):
         log.debug("Cloud: forward failed: %s", e)
 
 
+async def forward_component_health(node_id: str, data: dict):
+    """Forward ESP32 component health data to cloud relay."""
+    if not settings.cloud_url or not _connected or not _sio:
+        return
+    try:
+        await _sio.emit("component_health", {"node_id": node_id, "ts": time.time(), **data})
+    except Exception as e:
+        log.debug("Cloud: component health forward failed: %s", e)
+
+
 async def forward_event(event_type: str, data: dict):
     """Forward session events, alerts, vision results to cloud."""
     if not settings.cloud_url or not _connected or not _sio:

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "sporeprint_common.h"
+#include "health.h"
 
 #define NODE_TYPE "relay"
 #define DEFAULT_NODE_ID "relay-01"
@@ -19,6 +20,7 @@ WiFiManager wifi(config);
 MqttManager* mqtt = nullptr;
 OTAManager* ota = nullptr;
 Heartbeat* heartbeat = nullptr;
+RelayHealthReporter* healthReporter = nullptr;
 
 // Channel state
 struct ChannelState {
@@ -33,16 +35,28 @@ unsigned long factoryResetStart = 0;
 unsigned long lastReport = 0;
 
 void setChannel(int ch, bool on, uint8_t pwm) {
+    bool wasOn = channels[ch].on;
     channels[ch].on = on;
     channels[ch].pwm = on ? pwm : 0;
     ledcWrite(ch, channels[ch].pwm);
 
     if (on && channels[ch].onSince == 0) {
         channels[ch].onSince = millis();
+        if (healthReporter) {
+            healthReporter->channels[ch].cycleCount++;
+        }
     }
     if (!on) {
+        if (wasOn && channels[ch].onSince > 0 && healthReporter) {
+            healthReporter->channels[ch].onTimeSec +=
+                (millis() - channels[ch].onSince) / 1000;
+        }
         channels[ch].onSince = 0;
         channels[ch].offAt = 0;
+    }
+    if (healthReporter) {
+        healthReporter->channels[ch].state = on;
+        healthReporter->channels[ch].pwm = channels[ch].pwm;
     }
 }
 

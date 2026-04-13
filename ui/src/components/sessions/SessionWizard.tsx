@@ -83,7 +83,7 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
           <input
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="e.g. Golden Teacher Tub #1"
+            placeholder="e.g. Blue Oyster Block #1"
             className="w-full p-3 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-sm mb-4 focus:outline-none focus:border-[var(--color-accent-gourmet)]"
           />
 
