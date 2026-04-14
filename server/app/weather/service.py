@@ -226,3 +226,13 @@ async def get_weather_history(hours: int = 24) -> list[dict]:
             (cutoff,),
         )
         return [dict(r) for r in await cursor.fetchall()]
+
+
+def get_cached_weather() -> dict | None:
+    """Return the latest cached weather reading."""
+    return _cache if _cache else None
+
+
+def get_cached_forecast() -> list[dict]:
+    """Return the latest cached forecast entries."""
+    return _forecast_cache

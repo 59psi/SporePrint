@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(start_retention_task()),
         asyncio.create_task(start_cloud_connector()),
         asyncio.create_task(_daily_retrain()),
+        asyncio.create_task(_nightly_weather_aggregate()),
     ]
     yield
     for task in tasks:
@@ -60,6 +61,24 @@ async def _daily_retrain():
             await asyncio.sleep(3600)
 
 
+async def _nightly_weather_aggregate():
+    """Aggregate yesterday's weather data at 2 AM for the seasonal planner."""
+    from .planner.service import aggregate_daily_weather
+    while True:
+        try:
+            now = time.time()
+            next_2am = now - (now % 86400) + 2 * 3600
+            if next_2am <= now:
+                next_2am += 86400
+            await asyncio.sleep(next_2am - now)
+            await aggregate_daily_weather()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logging.getLogger(__name__).error("Weather aggregate failed: %s", e)
+            await asyncio.sleep(3600)
+
+
 app = FastAPI(title="SporePrint", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
@@ -80,6 +99,7 @@ from .builder.router import router as builder_router
 from .cloud.router import router as cloud_router
 from .health.router import router as health_router
 from .weather.router import router as weather_router
+from .planner.router import router as planner_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -92,6 +112,7 @@ app.include_router(builder_router, prefix="/api/builder", tags=["builder"])
 app.include_router(weather_router, prefix="/api/weather", tags=["weather"])
 app.include_router(cloud_router, prefix="/api/cloud", tags=["cloud"])
 app.include_router(health_router, prefix="/api/health/detail", tags=["health"])
+app.include_router(planner_router, prefix="/api/planner", tags=["planner"])
 
 
 @app.get("/api/health")

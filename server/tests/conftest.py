@@ -66,6 +66,7 @@ def client(monkeypatch):
     monkeypatch.setattr(app.retention.service, "start_retention_task", _noop_coro)
     monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _noop_coro)
     monkeypatch.setattr(app.main, "_daily_retrain", _noop_coro)
+    monkeypatch.setattr(app.main, "_nightly_weather_aggregate", _noop_coro)
 
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
