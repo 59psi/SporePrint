@@ -100,6 +100,7 @@ from .cloud.router import router as cloud_router
 from .health.router import router as health_router
 from .weather.router import router as weather_router
 from .planner.router import router as planner_router
+from .contamination.router import router as contamination_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -113,6 +114,7 @@ app.include_router(weather_router, prefix="/api/weather", tags=["weather"])
 app.include_router(cloud_router, prefix="/api/cloud", tags=["cloud"])
 app.include_router(health_router, prefix="/api/health/detail", tags=["health"])
 app.include_router(planner_router, prefix="/api/planner", tags=["planner"])
+app.include_router(contamination_router, prefix="/api/contamination", tags=["contamination"])
 
 
 @app.get("/api/health")
