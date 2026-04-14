@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query as Q
 
 from .models import ChamberCreate, ChamberUpdate
 from . import service
@@ -14,6 +14,12 @@ async def create_chamber(data: ChamberCreate):
 @router.get("")
 async def list_chambers():
     return await service.list_chambers()
+
+
+@router.get("/compare")
+async def compare(ids: str = Q(..., description="Comma-separated chamber IDs")):
+    chamber_ids = [int(x) for x in ids.split(",")]
+    return await service.compare_chambers(chamber_ids)
 
 
 @router.get("/{chamber_id}")

@@ -67,3 +67,47 @@ async def delete_chamber(chamber_id: int) -> bool:
         cursor = await db.execute("DELETE FROM chambers WHERE id = ?", (chamber_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def compare_chambers(chamber_ids: list[int]) -> list[dict]:
+    """Side-by-side telemetry comparison between chambers."""
+    import time
+
+    results = []
+    since = time.time() - 86400  # last 24h
+
+    for cid in chamber_ids:
+        chamber = await get_chamber(cid)
+        if not chamber:
+            continue
+        node_ids = chamber.get("node_ids", [])
+        if isinstance(node_ids, str):
+            node_ids = json.loads(node_ids)
+
+        async with get_db() as db:
+            sensors = {}
+            for node_id in node_ids:
+                cursor = await db.execute(
+                    """SELECT sensor, AVG(value) as avg_val, MIN(value) as min_val,
+                       MAX(value) as max_val, COUNT(*) as readings
+                       FROM telemetry_readings
+                       WHERE node_id = ? AND timestamp >= ?
+                       GROUP BY sensor""",
+                    (node_id, since),
+                )
+                for row in await cursor.fetchall():
+                    r = dict(row)
+                    sensors[r["sensor"]] = {
+                        "avg": round(r["avg_val"], 1),
+                        "min": round(r["min_val"], 1),
+                        "max": round(r["max_val"], 1),
+                        "readings": r["readings"],
+                    }
+
+        results.append({
+            "chamber_id": cid,
+            "chamber_name": chamber["name"],
+            "node_ids": node_ids,
+            "telemetry": sensors,
+        })
+    return results

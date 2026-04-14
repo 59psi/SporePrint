@@ -1,3 +1,5 @@
+import time
+
 from app.chambers.models import ChamberCreate, ChamberUpdate
 from app.chambers.service import (
     create_chamber,
@@ -5,7 +7,9 @@ from app.chambers.service import (
     list_chambers,
     update_chamber,
     delete_chamber,
+    compare_chambers,
 )
+from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 
@@ -125,3 +129,78 @@ async def test_reassign_session():
     await update_chamber(c["id"], ChamberUpdate(active_session_id=s1["id"]))
     updated = await update_chamber(c["id"], ChamberUpdate(active_session_id=s2["id"]))
     assert updated["active_session_id"] == s2["id"]
+
+
+# ── Comparison ────────────────────────────────────────────────
+
+
+async def _insert_telemetry(node_id: str, sensor: str, value: float, ts: float | None = None):
+    ts = ts or time.time()
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO telemetry_readings (timestamp, node_id, sensor, value) VALUES (?, ?, ?, ?)",
+            (ts, node_id, sensor, value),
+        )
+        await db.commit()
+
+
+async def test_compare_chambers_basic():
+    """Compare two chambers with telemetry data."""
+    c1 = await create_chamber(_make_chamber(name="Chamber A", node_ids=["climate-01"]))
+    c2 = await create_chamber(_make_chamber(name="Chamber B", node_ids=["climate-02"]))
+
+    now = time.time()
+    await _insert_telemetry("climate-01", "temp_f", 72.0, now - 100)
+    await _insert_telemetry("climate-01", "temp_f", 78.0, now - 50)
+    await _insert_telemetry("climate-01", "humidity", 85.0, now - 100)
+
+    await _insert_telemetry("climate-02", "temp_f", 68.0, now - 100)
+    await _insert_telemetry("climate-02", "humidity", 92.0, now - 100)
+
+    results = await compare_chambers([c1["id"], c2["id"]])
+    assert len(results) == 2
+
+    # Chamber A
+    a = results[0]
+    assert a["chamber_id"] == c1["id"]
+    assert a["chamber_name"] == "Chamber A"
+    assert "temp_f" in a["telemetry"]
+    assert a["telemetry"]["temp_f"]["avg"] == 75.0
+    assert a["telemetry"]["temp_f"]["min"] == 72.0
+    assert a["telemetry"]["temp_f"]["max"] == 78.0
+    assert a["telemetry"]["temp_f"]["readings"] == 2
+    assert a["telemetry"]["humidity"]["readings"] == 1
+
+    # Chamber B
+    b = results[1]
+    assert b["chamber_id"] == c2["id"]
+    assert b["telemetry"]["temp_f"]["avg"] == 68.0
+    assert b["telemetry"]["humidity"]["avg"] == 92.0
+
+
+async def test_compare_chambers_skips_missing():
+    """Missing chamber IDs are silently skipped."""
+    c1 = await create_chamber(_make_chamber(name="Only One"))
+    results = await compare_chambers([c1["id"], 9999])
+    assert len(results) == 1
+    assert results[0]["chamber_name"] == "Only One"
+
+
+async def test_compare_chambers_no_telemetry():
+    """Chamber with nodes but no readings returns empty telemetry."""
+    c1 = await create_chamber(_make_chamber(name="Empty", node_ids=["climate-99"]))
+    results = await compare_chambers([c1["id"]])
+    assert len(results) == 1
+    assert results[0]["telemetry"] == {}
+
+
+async def test_compare_chambers_ignores_old_data():
+    """Telemetry older than 24h is not included."""
+    c1 = await create_chamber(_make_chamber(name="Old Data", node_ids=["climate-01"]))
+
+    old_ts = time.time() - 100000  # ~28 hours ago
+    await _insert_telemetry("climate-01", "temp_f", 99.0, old_ts)
+
+    results = await compare_chambers([c1["id"]])
+    assert len(results) == 1
+    assert results[0]["telemetry"] == {}

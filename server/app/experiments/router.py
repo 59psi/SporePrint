@@ -38,3 +38,11 @@ async def get_comparison(experiment_id: int):
     if not comparison:
         raise HTTPException(404, "Experiment not found")
     return comparison
+
+
+@router.get("/{experiment_id}/analyze")
+async def analyze_experiment(experiment_id: int):
+    result = await service.analyze_experiment(experiment_id)
+    if not result:
+        raise HTTPException(404, "Experiment not found")
+    return result

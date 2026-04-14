@@ -139,3 +139,57 @@ async def get_comparison(experiment_id: int) -> dict | None:
         "variant_session": variant_session,
         "metrics": metrics,
     }
+
+
+async def analyze_experiment(exp_id: int) -> dict | None:
+    """Use Claude AI to analyze experiment results."""
+    from ..config import settings
+
+    comparison = await get_comparison(exp_id)
+    if not comparison:
+        return None
+
+    exp = comparison["experiment"]
+
+    # Build analysis prompt
+    metrics_text = "\n".join(
+        f"- {c['metric']}: Control={c['control_value']}, Variant={c['variant_value']}, "
+        f"Diff={c['pct_difference']}%, Winner={c['winner']}"
+        for c in comparison["metrics"]
+    )
+
+    prompt = f"""Analyze this mushroom cultivation A/B experiment:
+
+Hypothesis: {exp['hypothesis']}
+Independent Variable: {exp['independent_variable']}
+Control: {exp['control_value']}
+Variant: {exp['variant_value']}
+
+Results:
+{metrics_text}
+
+Provide a brief analysis in JSON format:
+{{
+    "summary": "2-3 sentence summary of findings",
+    "hypothesis_supported": true/false,
+    "confidence": "high/medium/low",
+    "recommendations": ["actionable recommendation 1", "recommendation 2"]
+}}"""
+
+    if not settings.claude_api_key:
+        return {"error": "Claude API not configured", "comparison": comparison}
+
+    import anthropic
+
+    from ..vision.service import parse_claude_json
+
+    client = anthropic.Anthropic(api_key=settings.claude_api_key)
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.content[0].text
+    parsed = parse_claude_json(text)
+    return {"analysis": parsed or {"raw": text}, "comparison": comparison}

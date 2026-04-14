@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock, patch
+
 from app.experiments.models import ExperimentCreate, ExperimentUpdate
 from app.experiments.service import (
     create_experiment,
@@ -5,6 +7,7 @@ from app.experiments.service import (
     list_experiments,
     update_experiment,
     get_comparison,
+    analyze_experiment,
 )
 from app.sessions.models import SessionCreate, HarvestCreate
 from app.sessions.service import create_session, add_harvest, advance_phase
@@ -217,3 +220,57 @@ async def test_comparison_with_colonization_days():
     # Both should have a value since phase was advanced (exited_at set)
     assert col_metric["control_value"] is not None
     assert col_metric["variant_value"] is not None
+
+
+# ── AI Analysis ───────────────────────────────────────────────
+
+
+async def test_analyze_experiment_no_api_key(monkeypatch):
+    """Without Claude API key, returns error with comparison data."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_api_key", "")
+
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    await add_harvest(control["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
+    await add_harvest(variant["id"], HarvestCreate(flush_number=1, wet_weight_g=300.0))
+
+    exp = await _make_experiment(control["id"], variant["id"])
+    result = await analyze_experiment(exp["id"])
+    assert result is not None
+    assert result["error"] == "Claude API not configured"
+    assert "comparison" in result
+
+
+async def test_analyze_experiment_not_found():
+    result = await analyze_experiment(9999)
+    assert result is None
+
+
+async def test_analyze_experiment_with_mock_claude(monkeypatch):
+    """With API key set, calls Claude and returns parsed analysis."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_api_key", "test-key")
+
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    await add_harvest(control["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
+    await add_harvest(variant["id"], HarvestCreate(flush_number=1, wet_weight_g=300.0))
+
+    exp = await _make_experiment(control["id"], variant["id"])
+
+    fake_json = '{"summary": "Variant outperformed control.", "hypothesis_supported": true, "confidence": "high", "recommendations": ["Use variant substrate"]}'
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text=fake_json)]
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("anthropic.Anthropic", return_value=mock_client):
+        result = await analyze_experiment(exp["id"])
+
+    assert result is not None
+    assert "analysis" in result
+    assert result["analysis"]["hypothesis_supported"] is True
+    assert result["analysis"]["confidence"] == "high"
+    assert "comparison" in result
