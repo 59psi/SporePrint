@@ -35,6 +35,27 @@ class PhaseParams(BaseModel):
     notes: str = ""
 
 
+class TekStep(BaseModel):
+    step_number: int
+    title: str
+    description: str
+    duration: str
+    tips: list[str] = []
+    common_mistakes: list[str] = []
+
+
+class SubstrateRecipe(BaseModel):
+    name: str  # "CVG", "Masters Mix", "Supplemented Sawdust"
+    ingredients: dict[str, str]  # {"coco coir": "650g", "vermiculite": "2 quarts", ...}
+    water_liters_per_liter_substrate: float
+    spawn_rate_percent: int  # 5-20%
+    sterilization_method: str  # "pasteurize_hot_water" | "pasteurize_cold_lime" | "pressure_sterilize"
+    sterilization_time_min: int
+    sterilization_temp_f: int | None = None
+    suitability: str  # "optimal" | "good" | "acceptable"
+    notes: str = ""
+
+
 class SpeciesProfile(BaseModel):
     id: str
     common_name: str
@@ -49,3 +70,13 @@ class SpeciesProfile(BaseModel):
     flush_count_typical: int
     yield_notes: str
     tags: list[str] = []
+    tldr: str = ""  # One-paragraph summary of growing conditions + key tips
+    flavor_profile: str = ""  # Culinary description (or "Not edible" for non-food species)
+    edible: bool = True  # False = NOT safe for human consumption (display prominent warning)
+    safety_warning: str = ""  # Red warning text displayed prominently (e.g., "NOT EDIBLE" or legal disclaimer)
+    legal_disclaimer: str = ""  # Legal notice for active species (jurisdiction check)
+    tek_guide: list[TekStep] = []
+    substrate_recipes: list[SubstrateRecipe] = []
+    substrate_preference_ranking: list[str] = []  # ordered best→worst
+    contamination_risks: list[str] = []  # species-specific contamination vulnerabilities
+    regional_notes: str = ""  # sourcing / availability notes
