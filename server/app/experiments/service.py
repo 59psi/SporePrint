@@ -65,6 +65,17 @@ async def update_experiment(experiment_id: int, data: ExperimentUpdate) -> dict 
     if status == "completed" and existing["status"] != "completed":
         completed_at = time.time()
 
+        # Auto-generate comparison report on completion
+        if not conclusion:
+            comparison = await get_comparison(experiment_id)
+            if comparison:
+                metrics_summary = "; ".join(
+                    f"{m['metric']}: {'variant' if m.get('winner') == 'variant' else 'control' if m.get('winner') == 'control' else 'tie'}"
+                    + (f" ({m['pct_difference']:+.1f}%)" if m.get('pct_difference') is not None else "")
+                    for m in comparison.get("metrics", [])
+                )
+                conclusion = f"Auto-generated: {metrics_summary}"
+
     async with get_db() as db:
         await db.execute(
             "UPDATE experiments SET status = ?, conclusion = ?, completed_at = ? WHERE id = ?",

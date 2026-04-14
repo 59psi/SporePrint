@@ -22,22 +22,27 @@ _SUPPLIER_LINKS: dict[str, list[str]] = {
         "https://fungi.com",
     ],
     "straw": [
-        "Available at local feed stores or garden centers",
+        "Available at local feed stores",
+        "https://www.amazon.com/s?k=wheat+straw+bale",
     ],
     "sawdust": [
         "Available at local feed stores or garden centers",
+        "https://www.amazon.com/s?k=hardwood+sawdust+pellets",
     ],
     "hardwood": [
         "Available at local feed stores or garden centers",
+        "https://www.amazon.com/s?k=hardwood+fuel+pellets",
     ],
     "coco coir": [
-        "Available at local garden centers or home improvement stores",
+        "https://www.amazon.com/s?k=coco+coir+brick",
+        "Available at garden centers",
     ],
     "vermiculite": [
-        "Available at local garden centers or home improvement stores",
+        "https://www.amazon.com/s?k=vermiculite+gardening",
+        "Available at garden centers",
     ],
     "gypsum": [
-        "Available at local garden centers or home improvement stores",
+        "https://www.amazon.com/s?k=gypsum+powder+garden",
     ],
     "grow bag": [
         "https://unicornbags.com",
@@ -50,25 +55,29 @@ _SUPPLIER_LINKS: dict[str, list[str]] = {
         "Available at any grocery or home improvement store",
     ],
     "isopropyl alcohol": [
+        "https://www.amazon.com/s?k=isopropyl+alcohol+70",
         "Available at any pharmacy",
     ],
     "nitrile gloves": [
+        "https://www.amazon.com/s?k=nitrile+gloves+disposable",
         "Available at any pharmacy",
     ],
     "pressure cooker": [
-        "Available at kitchen supply stores",
+        "https://www.amazon.com/s?k=pressure+cooker+23+quart",
     ],
     "spray bottle": [
-        "Available at any home improvement or dollar store",
+        "https://www.amazon.com/s?k=fine+mist+spray+bottle",
     ],
     "soy hull": [
         "https://northspore.com",
         "https://shroomsupply.com",
     ],
     "wheat bran": [
+        "https://www.amazon.com/s?k=wheat+bran+bulk",
         "Available at local feed stores or bulk food suppliers",
     ],
     "brown rice": [
+        "https://www.amazon.com/s?k=brown+rice+flour",
         "Available at any grocery store",
     ],
     "manure": [

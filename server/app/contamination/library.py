@@ -20,6 +20,10 @@ CONTAMINANTS = [
         "action": "Discard once green sporulation is visible. Early white stage may be isolated if caught immediately, but success rate is low. Do not open contaminated containers indoors.",
         "prevention": "Maintain clean spawn, proper pasteurization/sterilization, work in front of flow hood or SAB, minimize grain-to-grain transfers, maintain proper humidity without pooling water.",
         "common_causes": "Insufficient sterilization, dirty spawn, opening containers in contaminated air, excessive moisture on substrate surface, warm stagnant conditions.",
+        "photo_references": [
+            "https://commons.wikimedia.org/wiki/File:Trichoderma_harzianum.jpg",
+            "Search: trichoderma green mold mushroom substrate",
+        ],
     },
     {
         "id": "cobweb",
@@ -42,6 +46,10 @@ CONTAMINANTS = [
         "action": "Treatable if caught early. Spray affected area directly with 3% hydrogen peroxide. Increase fresh air exchange. Monitor closely for 48 hours. Discard if it returns after treatment.",
         "prevention": "Adequate fresh air exchange, avoid stagnant humid air, proper surface conditions, clean casing material.",
         "common_causes": "Poor air circulation, excessive humidity with no FAE, contaminated casing layer, stagnant air in fruiting chamber.",
+        "photo_references": [
+            "Search: cobweb mold mushroom cultivation dactylium",
+            "Search: cobweb mold vs mycelium comparison",
+        ],
     },
     {
         "id": "black_mold",
@@ -64,6 +72,10 @@ CONTAMINANTS = [
         "action": "DISCARD IMMEDIATELY. Do not attempt to treat. Seal the container before moving it. Dispose of outdoors. Aspergillus spores are a serious respiratory hazard — wear N95 mask when handling.",
         "prevention": "Proper sterilization, HEPA filtration in grow space, control ambient humidity, clean spawn, avoid working with grain in dusty environments.",
         "common_causes": "Contaminated grain, insufficient sterilization pressure/time, exposure to outdoor air with high mold spore counts, immunocompromised grain from wet storage.",
+        "photo_references": [
+            "https://commons.wikimedia.org/wiki/File:Aspergillus_niger_01.jpg",
+            "Search: aspergillus niger black mold grain spawn",
+        ],
     },
     {
         "id": "bacterial",
@@ -86,6 +98,10 @@ CONTAMINANTS = [
         "action": "Discard if strong sour smell or large slimy areas are present. Minor bacterial spots on grain can sometimes be outrun by aggressive mycelium, but success rate is low.",
         "prevention": "Proper hydration levels (not too wet), adequate sterilization, clean water source, proper grain prep with correct moisture content, avoid standing water.",
         "common_causes": "Over-hydrated grain or substrate, insufficient sterilization, dirty water, contaminated syringes, too-wet substrate from excessive misting.",
+        "photo_references": [
+            "Search: bacterial contamination mushroom grain jar slimy",
+            "Search: bacillus wet spot grain spawn sour rot",
+        ],
     },
     {
         "id": "lipstick_mold",
@@ -108,6 +124,10 @@ CONTAMINANTS = [
         "action": "DISCARD IMMEDIATELY. Lipstick mold spores are extremely persistent in the environment. Deep clean and disinfect entire grow area. Consider replacing HEPA filters and any porous materials in the grow space.",
         "prevention": "Source clean grain, maintain sterile technique, HEPA filtration, regular deep cleaning of grow space, quarantine new materials.",
         "common_causes": "Contaminated grain from supplier, spores persisting in grow space from previous contamination, inadequate cleaning between grows.",
+        "photo_references": [
+            "Search: lipstick mold sporendonema purpurascens grain",
+            "Search: pink mold mushroom cultivation contamination",
+        ],
     },
     {
         "id": "penicillium",
@@ -130,6 +150,10 @@ CONTAMINANTS = [
         "action": "Small isolated spots may be carefully removed with surrounding substrate if caught early. Larger infections should be discarded. Less aggressive than Trichoderma, so isolation and increased FAE can sometimes save a grow.",
         "prevention": "Clean air, proper sterilization, avoid bruising grain during inoculation, maintain good FAE during fruiting.",
         "common_causes": "Airborne spores (extremely common in environments), bruised or damaged grain providing entry point, inadequate sterilization.",
+        "photo_references": [
+            "https://commons.wikimedia.org/wiki/File:Penicillium_expansum.jpg",
+            "Search: penicillium blue green mold mushroom substrate",
+        ],
     },
     {
         "id": "wet_spot",
@@ -152,6 +176,10 @@ CONTAMINANTS = [
         "action": "If less than 10-15% of grain is affected, the jar may still be usable — mycelium will grow around wet spots. If widespread or strongly sour, discard. Never spawn to bulk with heavily affected grain.",
         "prevention": "Proper grain hydration (not too wet), adequate sterilization time and pressure (Bacillus endospores are heat-resistant — need full 15 PSI for 90+ minutes), thorough draining after soak.",
         "common_causes": "Over-hydrated grain, insufficient sterilization time (Bacillus endospores survive short cycles), grain not dried adequately before loading jars.",
+        "photo_references": [
+            "Search: wet spot grain jar bacillus uncolonized grain",
+            "Search: sour rot mushroom grain spawn wet translucent",
+        ],
     },
 ]
 

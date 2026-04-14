@@ -16,6 +16,7 @@ class SessionCreate(BaseModel):
     shelf_side: str | None = None  # "left" | "right"
     growth_form: str | None = None
     pinning_tek: str | None = None
+    chamber_id: int | None = None
 
 
 class SessionUpdate(BaseModel):

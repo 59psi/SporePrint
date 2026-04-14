@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     completed_at REAL,
     total_wet_yield_g REAL DEFAULT 0,
     total_dry_yield_g REAL DEFAULT 0,
-    biological_efficiency REAL
+    biological_efficiency REAL,
+    chamber_id INTEGER REFERENCES chambers(id)
 );
 
 -- Phase history

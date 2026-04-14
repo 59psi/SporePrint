@@ -20,14 +20,21 @@ async def create_session(data: SessionCreate) -> dict:
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
                substrate_prep_notes, inoculation_date, inoculation_method, spawn_source,
-               current_phase, tub_number, shelf_number, shelf_side, growth_form, pinning_tek)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               current_phase, tub_number, shelf_number, shelf_side, growth_form, pinning_tek,
+               chamber_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data.name, data.species_profile_id, data.substrate, data.substrate_volume,
              data.substrate_prep_notes, data.inoculation_date, data.inoculation_method,
              data.spawn_source, data.current_phase, data.tub_number, data.shelf_number,
-             data.shelf_side, data.growth_form, data.pinning_tek),
+             data.shelf_side, data.growth_form, data.pinning_tek, data.chamber_id),
         )
         session_id = cursor.lastrowid
+
+        if data.chamber_id:
+            await db.execute(
+                "UPDATE chambers SET active_session_id = ? WHERE id = ?",
+                (session_id, data.chamber_id),
+            )
 
         await db.execute(
             "INSERT INTO phase_history (session_id, phase, entered_at, trigger) VALUES (?, ?, ?, ?)",
@@ -352,7 +359,17 @@ async def add_drying_log(session_id: int, harvest_id: int, weight_g: float) -> d
         )
         await db.commit()
 
-    return await get_drying_progress(session_id, harvest_id)
+    progress = await get_drying_progress(session_id, harvest_id)
+    if progress and progress.get("target_reached"):
+        from ..notifications.service import notify_info
+        session = await get_session(session_id)
+        name = session["name"] if session else f"Session {session_id}"
+        await notify_info(
+            f"Drying Complete — {name}",
+            f"Flush #{progress['flush_number']} has reached cracker-dry "
+            f"({progress['moisture_loss_pct']:.0f}% moisture loss, {progress['current_weight_g']}g final weight)",
+        )
+    return progress
 
 
 async def get_drying_progress(session_id: int, harvest_id: int) -> dict | None:
@@ -476,6 +493,62 @@ async def generate_ical() -> str:
                 ev.add("description", f"Flush #{h['flush_number']}: {weight}g wet")
                 ev["uid"] = f"session-{sid}-harvest-{h['id']}@sporeprint"
                 cal.add_component(ev)
+
+            # Expected future events for active sessions
+            if session["status"] == "active":
+                from ..species.service import get_profile as _get_species_profile
+
+                profile = await _get_species_profile(session["species_profile_id"])
+                if profile and profile.phases:
+                    current_phase = session.get("current_phase", "")
+                    last_phase_entry = session["created_at"]
+                    for p in phases:
+                        if p["phase"] == current_phase and p.get("entered_at"):
+                            last_phase_entry = p["entered_at"]
+
+                    PHASE_ORDER = [
+                        "agar", "liquid_culture", "grain_colonization",
+                        "substrate_colonization", "primordia_induction",
+                        "fruiting", "rest", "complete",
+                    ]
+
+                    try:
+                        current_idx = PHASE_ORDER.index(current_phase)
+                    except ValueError:
+                        current_idx = -1
+
+                    predicted_time = last_phase_entry
+
+                    for future_phase in PHASE_ORDER[current_idx + 1:]:
+                        if future_phase == "complete":
+                            break
+                        phase_params = profile.phases.get(future_phase)
+                        if not phase_params:
+                            continue
+                        dur = phase_params.expected_duration_days
+                        if dur and isinstance(dur, (list, tuple)) and len(dur) == 2:
+                            avg_days = (dur[0] + dur[1]) / 2
+                        else:
+                            avg_days = 7
+                        predicted_time += avg_days * 86400
+
+                        ev = Event()
+                        ev.add("summary", f"{name} — {future_phase.replace('_', ' ').title()} (Expected)")
+                        ev.add("dtstart", datetime.utcfromtimestamp(predicted_time).date())
+                        ev["uid"] = f"session-{sid}-expected-{future_phase}@sporeprint"
+                        cal.add_component(ev)
+
+                    # Expected harvest date (after fruiting phase)
+                    fruiting_params = profile.phases.get("fruiting")
+                    if fruiting_params:
+                        fruiting_dur = fruiting_params.expected_duration_days
+                        if fruiting_dur and isinstance(fruiting_dur, (list, tuple)) and len(fruiting_dur) == 2:
+                            harvest_time = predicted_time + ((fruiting_dur[0] + fruiting_dur[1]) / 2) * 86400
+                            ev = Event()
+                            ev.add("summary", f"{name} — Expected Harvest")
+                            ev.add("dtstart", datetime.utcfromtimestamp(harvest_time).date())
+                            ev["uid"] = f"session-{sid}-expected-harvest@sporeprint"
+                            cal.add_component(ev)
 
             # Session completion
             completed_dt = _ts_to_dt(session.get("completed_at"))
