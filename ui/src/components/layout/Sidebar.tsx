@@ -10,6 +10,13 @@ import {
   Settings,
   Menu,
   X,
+  Calendar,
+  Wand2,
+  Bug,
+  GitBranch,
+  Box,
+  FlaskConical,
+  ShoppingCart,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -19,6 +26,13 @@ const navItems = [
   { to: '/vision', icon: Camera, label: 'Vision' },
   { to: '/automation', icon: Cog, label: 'Automation' },
   { to: '/species', icon: BookOpen, label: 'Species' },
+  { to: '/planner', icon: Calendar, label: 'Planner' },
+  { to: '/wizard', icon: Wand2, label: 'Species Wizard' },
+  { to: '/contamination', icon: Bug, label: 'Contamination' },
+  { to: '/cultures', icon: GitBranch, label: 'Cultures' },
+  { to: '/chambers', icon: Box, label: 'Chambers' },
+  { to: '/experiments', icon: FlaskConical, label: 'Experiments' },
+  { to: '/shopping', icon: ShoppingCart, label: 'Shopping List' },
   { to: '/builder', icon: Wrench, label: 'Builder' },
   { to: '/transcripts', icon: FileText, label: 'Transcripts' },
   { to: '/settings', icon: Settings, label: 'Settings' },
