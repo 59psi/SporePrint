@@ -80,3 +80,4 @@ class SpeciesProfile(BaseModel):
     substrate_preference_ranking: list[str] = []  # ordered best→worst
     contamination_risks: list[str] = []  # species-specific contamination vulnerabilities
     regional_notes: str = ""  # sourcing / availability notes
+    photo_references: dict[str, str] = {}  # phase → reference URL, e.g., {"fruiting": "https://..."}

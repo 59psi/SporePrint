@@ -97,6 +97,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "https://commons.wikimedia.org/wiki/File:Psilocybe_cubensis_mycelium.jpg",
+            "fruiting": "https://en.wikipedia.org/wiki/Psilocybe_cubensis#/media/File:Psilocybe_cubensis_(Magic_Mushrooms).jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -724,6 +728,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["straw", "masters mix", "hardwood sawdust", "coffee grounds", "cardboard"],
         contamination_risks=["Trichoderma (green mold) on poorly pasteurized straw — the most common issue", "Bacterial blotch from over-wet substrate or poor drainage", "Spore load at maturity — heavy spore drop can trigger respiratory sensitivity", "Fruit fly infestation in warm conditions — use fine mesh over openings"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_ostreatus_JPG1.jpg",
+            "colonization": "Search: Pleurotus ostreatus mycelium colonization bag",
+        },
     ),
 
     SpeciesProfile(
@@ -841,6 +849,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["straw", "hardwood sawdust", "masters mix"],
         contamination_risks=["Etiolation from elevated CO2 (>700ppm) — appears as long stems and tiny caps, not a contamination but a critical environmental issue", "Trichoderma on poorly pasteurized straw", "Heavy spore load at maturity — respiratory irritant, must harvest promptly", "Bacterial blotch from waterlogged substrate"],
+        photo_references={
+            "colonization": "https://commons.wikimedia.org/wiki/File:Pleurotus_ostreatus_spawn_run.jpg",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_ostreatus_JPG7.jpg",
+            "primordia": "https://commons.wikimedia.org/wiki/File:Pleurotus_ostreatus_pins.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -892,6 +905,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["straw", "hardwood sawdust", "masters mix"],
         contamination_risks=["Bacterial contamination from warm, humid growing conditions", "CRITICAL: Pink oyster dies below 40°F — never refrigerate spawn, mycelium, or harvested fruits", "Fruit fly infestation — warm growing temps attract flies", "Short post-harvest shelf life (1-2 days) — process immediately or mushrooms rot"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_djamor_var._roseus.jpg",
+            "colonization": "Search: Pleurotus djamor pink oyster mycelium colonization",
+        },
     ),
 
     SpeciesProfile(
@@ -954,6 +971,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["masters mix", "supplemented hardwood"],
         contamination_risks=["Trichoderma — longer colonization (14-21 days) means more exposure than fast oysters", "Green mold from improperly sterilized supplemented substrate", "Bacterial contamination if substrate is too wet during restricted-FAE primordia phase", "Contamination during the elevated-CO2 pinning phase — reduced FAE means less drying action"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_eryngii.jpg",
+            "colonization": "Search: Pleurotus eryngii king trumpet mycelium colonization",
+        },
     ),
 
     SpeciesProfile(
@@ -1019,6 +1040,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "masters mix"],
         contamination_risks=["Coral/branching deformity from elevated CO2 — not a contamination but a critical environmental issue", "Trichoderma during the 14-21 day colonization period", "Premature pinning can weaken the block and reduce overall yield", "Fine mycelium is easily outcompeted by aggressive contaminants if sterile technique is poor"],
+        photo_references={
+            "colonization": "Search: Hericium erinaceus mycelium block colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Hericium_erinaceus_in_Shiga.jpg",
+            "coral_deformity": "Search: Hericium erinaceus coral morphology high CO2",
+        },
     ),
 
     SpeciesProfile(
@@ -1083,6 +1109,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood (oak)", "logs"],
         contamination_risks=["Trichoderma (green mold) — 30-60 day colonization is a long exposure window", "Green mold during the browning phase if blocks are kept too wet", "Bacterial contamination from improper cold-water soak — change water if reusing", "Competitor molds on outdoor logs — slugs and insects can introduce contamination"],
+        photo_references={
+            "colonization": "Search: Lentinula edodes mycelium block colonization",
+            "browning": "https://en.wikipedia.org/wiki/Shiitake#/media/File:Shiitake_block_browning.jpg",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Lentinula_edodes_20101113_a.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2232,6 +2263,12 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "grain"],
         contamination_risks=["Trichoderma during the 90+ day total growth cycle", "Bacterial contamination in conk form from high humidity FAE conditions", "Green mold on exposed surfaces during long fruiting", "Very long cycle means any contamination has maximum time to establish"],
+        photo_references={
+            "colonization": "Search: Ganoderma lucidum mycelium colonization bag",
+            "antler_form": "https://commons.wikimedia.org/wiki/File:Ganoderma_lucidum_antler.jpg",
+            "conk_form": "https://commons.wikimedia.org/wiki/File:Ganoderma_lucidum_01.jpg",
+            "fruiting": "https://en.wikipedia.org/wiki/Ganoderma_lucidum#/media/File:Ganoderma_lucidum_01.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2295,6 +2332,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["brown rice"],
         contamination_risks=["Green mold on nutrient-rich rice substrate — contamination risk is high", "Bacterial contamination from wet rice conditions", "Rice is more contamination-prone than wood-based substrates", "Long fruiting cycle (30-45 days) gives contaminants time to establish"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Cordyceps_militaris_2.jpg",
+            "colonization": "Search: Cordyceps militaris rice substrate colonization",
+        },
     ),
 
     SpeciesProfile(
@@ -2349,6 +2390,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "logs"],
         contamination_risks=["Trichoderma is the main threat — standard for wood-loving species", "Competitor fungi on outdoor logs", "Bacterial contamination from over-wet substrate", "Generally low risk — turkey tail is one of the more contamination-resistant species"],
+        photo_references={
+            "colonization": "Search: Trametes versicolor mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Trametes_versicolor_G4.jpg",
+            "color_banding": "https://en.wikipedia.org/wiki/Trametes_versicolor#/media/File:Trametes_versicolor_2.jpg",
+        },
     ),
 
     SpeciesProfile(

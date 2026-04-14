@@ -494,6 +494,86 @@ async def generate_ical() -> str:
 # ── PDF Session Report ──────────────────────────────────────────
 
 
+def _generate_recommendations(
+    session: dict,
+    harvests: list[dict],
+    phase_history: list[dict],
+    contam_events: list[dict],
+) -> list[str]:
+    """Generate rule-based recommendations from session data for the PDF report."""
+    recs = []
+
+    # Biological efficiency check
+    volume_liters = _parse_volume_to_liters(session.get("substrate_volume"))
+    total_wet = session.get("total_wet_yield_g") or 0.0
+    if volume_liters and volume_liters > 0:
+        dry_substrate_g = volume_liters * _DRY_SUBSTRATE_G_PER_LITER
+        be = (total_wet / dry_substrate_g) * 100 if dry_substrate_g > 0 else 0
+        if be < 50:
+            recs.append(
+                "Low biological efficiency — try supplementing substrate "
+                "or increasing spawn rate"
+            )
+
+    # Flush decline check
+    flush_map: dict[int, float] = {}
+    for h in harvests:
+        fn = h["flush_number"]
+        flush_map.setdefault(fn, 0.0)
+        flush_map[fn] += h["wet_weight_g"] or 0.0
+    flush_yields = [flush_map[fn] for fn in sorted(flush_map.keys())]
+    if len(flush_yields) >= 2:
+        first = flush_yields[0]
+        second = flush_yields[1]
+        if first > 0 and ((first - second) / first) * 100 > 50:
+            recs.append(
+                "Sharp yield decline after flush 1 — consider shorter rest "
+                "periods or substrate supplements between flushes"
+            )
+
+    # Flush count vs species expectation
+    species_flush_typical = None
+    from ..species.profiles import BUILTIN_PROFILES
+    species_id = session.get("species_profile_id")
+    for p in BUILTIN_PROFILES:
+        if p.id == species_id:
+            species_flush_typical = p.flush_count_typical
+            break
+    if species_flush_typical and len(flush_map) < species_flush_typical:
+        recs.append(
+            f"Fewer flushes ({len(flush_map)}) than typical for this species "
+            f"({species_flush_typical}) — check hydration and rest soak technique"
+        )
+
+    # Colonization duration check
+    for ph in phase_history:
+        if ph["phase"] in ("substrate_colonization", "grain_colonization"):
+            entered = ph.get("entered_at")
+            exited = ph.get("exited_at")
+            if entered and exited:
+                dur_days = (exited - entered) / 86400
+                if dur_days > 20:
+                    recs.append(
+                        f"Extended colonization ({dur_days:.0f} days) — higher "
+                        "spawn rate or warmer incubation may help"
+                    )
+                    break
+
+    # Contamination events
+    if contam_events:
+        recs.append(
+            f"Contamination detected ({len(contam_events)} event(s)) — review "
+            "sterile technique, air filtration, and substrate pasteurization"
+        )
+
+    # Always include
+    recs.append(
+        "Keep detailed notes for each phase to identify patterns across grows"
+    )
+
+    return recs
+
+
 async def generate_session_report(session_id: int) -> bytes | None:
     """Generate a multi-page PDF report for a session. Returns PDF bytes or None."""
     session = await get_session(session_id)
@@ -506,8 +586,9 @@ async def generate_session_report(session_id: int) -> bytes | None:
     status = session["status"]
     created = _ts_to_dt(session["created_at"])
     completed = _ts_to_dt(session.get("completed_at"))
+    phase_history = session.get("phase_history", [])
 
-    # Fetch harvests
+    # Fetch harvests, vision analyses, contamination events
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT * FROM harvests WHERE session_id = ? ORDER BY flush_number, timestamp",
@@ -523,10 +604,33 @@ async def generate_session_report(session_id: int) -> bytes | None:
         )
         telemetry = [dict(r) for r in await cursor.fetchall()]
 
+        # Fetch vision analysis summaries
+        cursor = await db.execute(
+            "SELECT analysis_claude FROM vision_frames "
+            "WHERE session_id = ? AND analysis_claude IS NOT NULL",
+            (session_id,),
+        )
+        vision_rows = [dict(r) for r in await cursor.fetchall()]
+        vision_summaries = [r["analysis_claude"] for r in vision_rows]
+
+        # Fetch contamination events
+        cursor = await db.execute(
+            "SELECT * FROM session_events "
+            "WHERE session_id = ? AND type LIKE '%contam%' ORDER BY timestamp",
+            (session_id,),
+        )
+        contam_events = [dict(r) for r in await cursor.fetchall()]
+
     bg_color = "#1a1a2e"
     axes_color = "#16213e"
     text_color = "#e0e0e0"
     accent_color = "#4ade80"
+    warn_color = "#f59e0b"
+
+    # ── Build recommendations ──────────────────────────────────
+    recommendations = _generate_recommendations(
+        session, harvests, phase_history, contam_events,
+    )
 
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
@@ -562,6 +666,24 @@ async def generate_session_report(session_id: int) -> bytes | None:
                 flush_map[fn] += h["wet_weight_g"] or 0.0
             for fn in sorted(flush_map.keys()):
                 lines.append(f"  Flush #{fn}: {flush_map[fn]:.1f}g wet")
+
+        # Phase timeline
+        if phase_history:
+            lines.append("")
+            lines.append("Phase Timeline:")
+            for ph in phase_history:
+                entered = _ts_to_dt(ph.get("entered_at"))
+                exited = _ts_to_dt(ph.get("exited_at"))
+                entered_str = entered.strftime("%Y-%m-%d %H:%M") if entered else "?"
+                if exited and entered:
+                    dur_sec = ph["exited_at"] - ph["entered_at"]
+                    dur_days = dur_sec / 86400
+                    dur_str = f"{dur_days:.1f}d"
+                elif entered and not exited:
+                    dur_str = "ongoing"
+                else:
+                    dur_str = "?"
+                lines.append(f"  {ph['phase']}: {entered_str} ({dur_str})")
 
         y = 0.92
         for i, line in enumerate(lines):
@@ -646,6 +768,72 @@ async def generate_session_report(session_id: int) -> bytes | None:
                 )
 
             fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # Page 4: Vision analysis summaries + contamination events
+        extra_lines = []
+        if vision_summaries:
+            extra_lines.append("Vision Analysis Summaries")
+            extra_lines.append("")
+            for idx, summary in enumerate(vision_summaries[:10], 1):
+                # Truncate long analyses to fit page
+                text = summary.strip().replace("\n", " ")
+                if len(text) > 200:
+                    text = text[:197] + "..."
+                extra_lines.append(f"  [{idx}] {text}")
+            extra_lines.append("")
+
+        if contam_events:
+            extra_lines.append("Contamination Events")
+            extra_lines.append("")
+            for ev in contam_events:
+                ev_dt = _ts_to_dt(ev.get("timestamp"))
+                ev_time = ev_dt.strftime("%Y-%m-%d %H:%M") if ev_dt else "?"
+                desc = ev.get("description", "")[:120] or ev.get("type", "")
+                extra_lines.append(f"  {ev_time}: {desc}")
+            extra_lines.append("")
+
+        if extra_lines:
+            fig, ax = plt.subplots(figsize=(8.5, 11))
+            fig.patch.set_facecolor(bg_color)
+            ax.set_facecolor(bg_color)
+            ax.axis("off")
+
+            y = 0.95
+            for line in extra_lines:
+                is_header = line and not line.startswith(" ") and line.strip()
+                fontsize = 14 if is_header else 9
+                weight = "bold" if is_header else "normal"
+                color = warn_color if is_header and "Contam" in line else text_color
+                ax.text(0.05, y, line, transform=ax.transAxes, fontsize=fontsize,
+                        color=color, fontweight=weight, verticalalignment="top",
+                        fontfamily="monospace", wrap=True)
+                y -= 0.04 if is_header else 0.025
+                if y < 0.03:
+                    break
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # Page 5: Recommendations for next grow
+        if recommendations:
+            fig, ax = plt.subplots(figsize=(8.5, 11))
+            fig.patch.set_facecolor(bg_color)
+            ax.set_facecolor(bg_color)
+            ax.axis("off")
+
+            ax.text(0.08, 0.95, "Recommendations for Next Grow",
+                    transform=ax.transAxes, fontsize=16, color=accent_color,
+                    fontweight="bold", verticalalignment="top", fontfamily="monospace")
+
+            y = 0.88
+            for idx, rec in enumerate(recommendations, 1):
+                ax.text(0.08, y, f"{idx}. {rec}",
+                        transform=ax.transAxes, fontsize=10, color=text_color,
+                        verticalalignment="top", fontfamily="monospace", wrap=True)
+                y -= 0.06
+
             pdf.savefig(fig)
             plt.close(fig)
 
