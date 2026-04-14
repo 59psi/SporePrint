@@ -1,4 +1,5 @@
 import json
+import re
 import time
 
 from ..db import get_db
@@ -204,3 +205,189 @@ async def complete_session(session_id: int) -> dict | None:
         )
         await db.commit()
     return await get_session(session_id)
+
+
+# ── Volume parsing helper ────────────────────────────────────────
+
+
+_VOLUME_PATTERN = re.compile(r"([\d.]+)\s*(quarts?|qt|liters?|litres?|l|gallons?|gal)\b", re.IGNORECASE)
+
+_TO_LITERS = {
+    "quart": 0.946353, "quarts": 0.946353, "qt": 0.946353,
+    "liter": 1.0, "liters": 1.0, "litre": 1.0, "litres": 1.0, "l": 1.0,
+    "gallon": 3.78541, "gallons": 3.78541, "gal": 3.78541,
+}
+
+# Approximate dry substrate weight: ~300g per liter
+_DRY_SUBSTRATE_G_PER_LITER = 300.0
+
+
+def _parse_volume_to_liters(volume_str: str | None) -> float | None:
+    """Parse a volume string like '5 quarts' or '10 liters' into liters."""
+    if not volume_str:
+        return None
+    m = _VOLUME_PATTERN.search(volume_str)
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = m.group(2).lower()
+    factor = _TO_LITERS.get(unit)
+    if factor is None:
+        return None
+    return value * factor
+
+
+# ── Yield Statistics + Biological Efficiency ─────────────────────
+
+
+async def get_session_stats(session_id: int) -> dict | None:
+    """Calculate yield statistics and biological efficiency for a session."""
+    async with get_db() as db:
+        # Verify session exists
+        cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        session = await cursor.fetchone()
+        if not session:
+            return None
+        session = dict(session)
+
+        # Get all harvests for this session, ordered by flush
+        cursor = await db.execute(
+            "SELECT * FROM harvests WHERE session_id = ? ORDER BY flush_number, timestamp",
+            (session_id,),
+        )
+        harvests = [dict(r) for r in await cursor.fetchall()]
+
+        # Per-flush yields: aggregate by flush_number
+        flush_map: dict[int, dict] = {}
+        for h in harvests:
+            fn = h["flush_number"]
+            if fn not in flush_map:
+                flush_map[fn] = {"flush_number": fn, "wet_weight_g": 0.0, "dry_weight_g": 0.0}
+            flush_map[fn]["wet_weight_g"] += h["wet_weight_g"] or 0.0
+            flush_map[fn]["dry_weight_g"] += h["dry_weight_g"] or 0.0
+
+        flush_yields = sorted(flush_map.values(), key=lambda f: f["flush_number"])
+
+        # Totals
+        total_wet = sum(f["wet_weight_g"] for f in flush_yields)
+        total_dry = sum(f["dry_weight_g"] for f in flush_yields)
+
+        # Flush-over-flush decline percentages
+        flush_decline_pct = []
+        for i in range(1, len(flush_yields)):
+            prev_wet = flush_yields[i - 1]["wet_weight_g"]
+            curr_wet = flush_yields[i]["wet_weight_g"]
+            if prev_wet > 0:
+                decline = ((prev_wet - curr_wet) / prev_wet) * 100
+                flush_decline_pct.append(round(decline, 1))
+            else:
+                flush_decline_pct.append(0.0)
+
+        # Biological Efficiency = (total fresh weight / dry substrate weight) * 100
+        volume_liters = _parse_volume_to_liters(session.get("substrate_volume"))
+        if volume_liters and volume_liters > 0:
+            dry_substrate_g = volume_liters * _DRY_SUBSTRATE_G_PER_LITER
+            biological_efficiency = round((total_wet / dry_substrate_g) * 100, 1) if dry_substrate_g > 0 else None
+        else:
+            biological_efficiency = None
+
+        # Species averages from all completed sessions with same species
+        species_id = session["species_profile_id"]
+        cursor = await db.execute(
+            "SELECT id, total_wet_yield_g FROM sessions WHERE species_profile_id = ? AND status = 'completed'",
+            (species_id,),
+        )
+        species_sessions = [dict(r) for r in await cursor.fetchall()]
+        species_session_count = len(species_sessions)
+
+        if species_session_count > 0:
+            yields = [s["total_wet_yield_g"] or 0.0 for s in species_sessions]
+            species_avg_yield_g = round(sum(yields) / len(yields), 1)
+            species_best_yield_g = round(max(yields), 1)
+        else:
+            species_avg_yield_g = None
+            species_best_yield_g = None
+
+        return {
+            "session_id": session_id,
+            "species_profile_id": species_id,
+            "flush_yields": flush_yields,
+            "flush_decline_pct": flush_decline_pct,
+            "total_wet_yield_g": round(total_wet, 1),
+            "total_dry_yield_g": round(total_dry, 1),
+            "biological_efficiency": biological_efficiency,
+            "flush_count": len(flush_yields),
+            "species_avg_yield_g": species_avg_yield_g,
+            "species_best_yield_g": species_best_yield_g,
+            "species_session_count": species_session_count,
+        }
+
+
+# ── Harvest Drying Tracker ───────────────────────────────────────
+
+
+async def add_drying_log(session_id: int, harvest_id: int, weight_g: float) -> dict | None:
+    """Add a drying log weight entry for a harvest. Returns drying progress."""
+    async with get_db() as db:
+        # Verify harvest exists and belongs to session
+        cursor = await db.execute(
+            "SELECT * FROM harvests WHERE id = ? AND session_id = ?",
+            (harvest_id, session_id),
+        )
+        harvest = await cursor.fetchone()
+        if not harvest:
+            return None
+
+        await db.execute(
+            "INSERT INTO drying_log (harvest_id, session_id, weight_g) VALUES (?, ?, ?)",
+            (harvest_id, session_id, weight_g),
+        )
+        await db.commit()
+
+    return await get_drying_progress(session_id, harvest_id)
+
+
+async def get_drying_progress(session_id: int, harvest_id: int) -> dict | None:
+    """Get drying progress for a harvest including moisture loss calculations."""
+    async with get_db() as db:
+        # Verify harvest exists and belongs to session
+        cursor = await db.execute(
+            "SELECT * FROM harvests WHERE id = ? AND session_id = ?",
+            (harvest_id, session_id),
+        )
+        harvest = await cursor.fetchone()
+        if not harvest:
+            return None
+        harvest = dict(harvest)
+
+        fresh_weight = harvest["wet_weight_g"] or 0.0
+
+        # Get all drying log entries
+        cursor = await db.execute(
+            "SELECT * FROM drying_log WHERE harvest_id = ? ORDER BY timestamp",
+            (harvest_id,),
+        )
+        entries = [dict(r) for r in await cursor.fetchall()]
+
+        current_weight = entries[-1]["weight_g"] if entries else fresh_weight
+
+        if fresh_weight > 0:
+            moisture_loss_pct = round((1 - current_weight / fresh_weight) * 100, 1)
+            dry_wet_ratio = round(current_weight / fresh_weight, 4)
+        else:
+            moisture_loss_pct = 0.0
+            dry_wet_ratio = 1.0
+
+        # Cracker dry target: >= 90% moisture loss
+        target_reached = moisture_loss_pct >= 90.0
+
+        return {
+            "harvest_id": harvest_id,
+            "flush_number": harvest["flush_number"],
+            "fresh_weight_g": fresh_weight,
+            "entries": entries,
+            "current_weight_g": current_weight,
+            "moisture_loss_pct": moisture_loss_pct,
+            "target_reached": target_reached,
+            "dry_wet_ratio": dry_wet_ratio,
+        }

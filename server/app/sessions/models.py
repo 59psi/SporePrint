@@ -51,3 +51,7 @@ class HarvestCreate(BaseModel):
     quality_rating: int | None = None
     notes: str | None = None
     image_ids: list[int] | None = None
+
+
+class DryingLogEntry(BaseModel):
+    weight_g: float

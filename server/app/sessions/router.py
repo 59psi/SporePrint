@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 
-from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
+from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate, DryingLogEntry
 from . import service
 
 router = APIRouter()
@@ -66,6 +66,30 @@ async def session_telemetry(
     from ..telemetry.service import get_history
     # For session telemetry, we query by session's node (for now, return all)
     return await get_history("climate-01", sensor, from_ts, to_ts, resolution)
+
+
+@router.get("/{session_id}/stats")
+async def get_session_stats(session_id: int):
+    stats = await service.get_session_stats(session_id)
+    if not stats:
+        raise HTTPException(404, "Session not found")
+    return stats
+
+
+@router.post("/{session_id}/harvest/{harvest_id}/drying-log")
+async def add_drying_log(session_id: int, harvest_id: int, data: DryingLogEntry):
+    progress = await service.add_drying_log(session_id, harvest_id, data.weight_g)
+    if not progress:
+        raise HTTPException(404, "Harvest not found")
+    return progress
+
+
+@router.get("/{session_id}/harvest/{harvest_id}/drying")
+async def get_drying_progress(session_id: int, harvest_id: int):
+    progress = await service.get_drying_progress(session_id, harvest_id)
+    if not progress:
+        raise HTTPException(404, "Harvest not found")
+    return progress
 
 
 @router.post("/{session_id}/abort")
