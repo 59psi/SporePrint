@@ -102,6 +102,8 @@ from .weather.router import router as weather_router
 from .planner.router import router as planner_router
 from .contamination.router import router as contamination_router
 from .cultures.router import router as cultures_router
+from .chambers.router import router as chambers_router
+from .experiments.router import router as experiments_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -117,6 +119,8 @@ app.include_router(health_router, prefix="/api/health/detail", tags=["health"])
 app.include_router(planner_router, prefix="/api/planner", tags=["planner"])
 app.include_router(contamination_router, prefix="/api/contamination", tags=["contamination"])
 app.include_router(cultures_router, prefix="/api/cultures", tags=["cultures"])
+app.include_router(chambers_router, prefix="/api/chambers", tags=["chambers"])
+app.include_router(experiments_router, prefix="/api/experiments", tags=["experiments"])
 
 
 @app.get("/api/health")
