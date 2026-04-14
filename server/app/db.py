@@ -265,6 +265,80 @@ CREATE TABLE IF NOT EXISTS prediction_models (
     training_days INTEGER,
     training_samples INTEGER
 );
+
+-- Weather history (daily aggregates for planner)
+CREATE TABLE IF NOT EXISTS weather_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    outdoor_temp_avg_f REAL,
+    outdoor_temp_min_f REAL,
+    outdoor_temp_max_f REAL,
+    outdoor_humidity_avg REAL,
+    chamber_temp_avg_f REAL,
+    chamber_temp_min_f REAL,
+    chamber_temp_max_f REAL,
+    chamber_humidity_avg REAL
+);
+CREATE INDEX IF NOT EXISTS idx_weather_history_date ON weather_history(date);
+
+-- Cultures (spawn/genetics tracking)
+CREATE TABLE IF NOT EXISTS cultures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    parent_id INTEGER REFERENCES cultures(id),
+    species_profile_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    vendor_name TEXT,
+    lot_number TEXT,
+    generation INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    notes TEXT,
+    spore_print_quality TEXT,
+    tissue_source_location TEXT,
+    clone_success_rate REAL,
+    storage_location TEXT,
+    created_at REAL DEFAULT (unixepoch('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cultures_species ON cultures(species_profile_id);
+CREATE INDEX IF NOT EXISTS idx_cultures_parent ON cultures(parent_id);
+
+-- Chambers (multi-chamber management)
+CREATE TABLE IF NOT EXISTS chambers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    node_ids TEXT NOT NULL DEFAULT '[]',
+    active_session_id INTEGER REFERENCES sessions(id),
+    automation_rule_ids TEXT NOT NULL DEFAULT '[]',
+    created_at REAL DEFAULT (unixepoch('now'))
+);
+
+-- Experiments (A/B testing for grows)
+CREATE TABLE IF NOT EXISTS experiments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    hypothesis TEXT NOT NULL,
+    control_session_id INTEGER NOT NULL REFERENCES sessions(id),
+    variant_session_id INTEGER NOT NULL REFERENCES sessions(id),
+    independent_variable TEXT NOT NULL,
+    control_value TEXT NOT NULL,
+    variant_value TEXT NOT NULL,
+    dependent_variables TEXT NOT NULL DEFAULT '["total_wet_yield_g","colonization_days","contamination_count"]',
+    status TEXT NOT NULL DEFAULT 'active',
+    conclusion TEXT,
+    created_at REAL DEFAULT (unixepoch('now')),
+    completed_at REAL
+);
+
+-- Drying log entries (extends harvests)
+CREATE TABLE IF NOT EXISTS drying_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    harvest_id INTEGER NOT NULL REFERENCES harvests(id),
+    session_id INTEGER NOT NULL REFERENCES sessions(id),
+    timestamp REAL DEFAULT (unixepoch('now')),
+    weight_g REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drying_harvest ON drying_log(harvest_id);
 """
 
 
