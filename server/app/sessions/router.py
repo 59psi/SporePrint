@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate, DryingLogEntry
 from . import service
@@ -14,6 +15,16 @@ async def create_session(data: SessionCreate):
 @router.get("")
 async def list_sessions(status: str | None = None, species: str | None = None):
     return await service.list_sessions(status, species)
+
+
+@router.get("/calendar.ics")
+async def session_calendar():
+    ical_data = await service.generate_ical()
+    return Response(
+        content=ical_data,
+        media_type="text/calendar",
+        headers={"Content-Disposition": "attachment; filename=sporeprint.ics"},
+    )
 
 
 @router.get("/{session_id}")
@@ -66,6 +77,18 @@ async def session_telemetry(
     from ..telemetry.service import get_history
     # For session telemetry, we query by session's node (for now, return all)
     return await get_history("climate-01", sensor, from_ts, to_ts, resolution)
+
+
+@router.get("/{session_id}/report.pdf")
+async def session_report_pdf(session_id: int):
+    pdf_bytes = await service.generate_session_report(session_id)
+    if not pdf_bytes:
+        raise HTTPException(404, "Session not found")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=sporeprint-session-{session_id}.pdf"},
+    )
 
 
 @router.get("/{session_id}/stats")

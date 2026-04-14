@@ -4,6 +4,7 @@ from .models import SpeciesProfile
 from . import service
 from .wizard import recommend
 from .substrate import calculate_all_recipes
+from .shopping import generate_shopping_list
 
 router = APIRouter()
 
@@ -63,6 +64,21 @@ async def delete_profile(profile_id: str):
     if not deleted:
         raise HTTPException(400, "Cannot delete built-in profile or profile not found")
     return {"status": "deleted"}
+
+
+@router.get("/{species_id}/shopping-list")
+async def shopping_list(
+    species_id: str,
+    grows: int = Query(1, ge=1, description="Number of grows"),
+    container_liters: float = Query(5.0, gt=0, description="Container volume in liters"),
+):
+    profile = await service.get_profile(species_id)
+    if not profile:
+        raise HTTPException(404, "Species profile not found")
+    result = generate_shopping_list(profile, grows=grows, container_liters=container_liters)
+    if not result:
+        raise HTTPException(404, "No substrate recipes available for this species")
+    return result
 
 
 @router.get("/{species_id}/substrate")

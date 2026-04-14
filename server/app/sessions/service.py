@@ -1,6 +1,14 @@
+import io
 import json
 import re
 import time
+from datetime import datetime, timezone
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from icalendar import Calendar, Event
 
 from ..db import get_db
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
@@ -391,3 +399,254 @@ async def get_drying_progress(session_id: int, harvest_id: int) -> dict | None:
             "target_reached": target_reached,
             "dry_wet_ratio": dry_wet_ratio,
         }
+
+
+# ── iCal Calendar Feed ─────────────────────────────────────────
+
+
+def _ts_to_dt(ts: float | None) -> datetime | None:
+    """Convert a Unix timestamp to a timezone-aware datetime, or None."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+async def generate_ical() -> str:
+    """Generate an iCal calendar with events for all sessions."""
+    cal = Calendar()
+    cal.add("prodid", "-//SporePrint//Grow Calendar//EN")
+    cal.add("version", "2.0")
+    cal.add("x-wr-calname", "SporePrint Grows")
+
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM sessions ORDER BY created_at")
+        sessions = [dict(r) for r in await cursor.fetchall()]
+
+        for session in sessions:
+            sid = session["id"]
+            name = session["name"] or f"Session {sid}"
+            species = session["species_profile_id"] or "unknown"
+            substrate = session["substrate"] or ""
+            created_dt = _ts_to_dt(session["created_at"])
+            if not created_dt:
+                continue
+
+            # Session start event
+            ev = Event()
+            ev.add("summary", f"{name} — Session Started")
+            ev.add("dtstart", created_dt)
+            ev.add("dtend", created_dt)
+            ev.add("description", f"Species: {species}\nSubstrate: {substrate}")
+            ev["uid"] = f"session-{sid}-start@sporeprint"
+            cal.add_component(ev)
+
+            # Phase transitions
+            cursor = await db.execute(
+                "SELECT * FROM phase_history WHERE session_id = ? ORDER BY entered_at",
+                (sid,),
+            )
+            phases = [dict(r) for r in await cursor.fetchall()]
+            for ph in phases:
+                ph_dt = _ts_to_dt(ph["entered_at"])
+                if not ph_dt:
+                    continue
+                ev = Event()
+                ev.add("summary", f"{name} — Phase: {ph['phase']}")
+                ev.add("dtstart", ph_dt)
+                ev.add("dtend", ph_dt)
+                ev.add("description", f"Trigger: {ph.get('trigger', 'manual')}")
+                ev["uid"] = f"session-{sid}-phase-{ph['id']}@sporeprint"
+                cal.add_component(ev)
+
+            # Harvests
+            cursor = await db.execute(
+                "SELECT * FROM harvests WHERE session_id = ? ORDER BY timestamp",
+                (sid,),
+            )
+            harvests = [dict(r) for r in await cursor.fetchall()]
+            for h in harvests:
+                h_dt = _ts_to_dt(h["timestamp"])
+                if not h_dt:
+                    continue
+                weight = h.get("wet_weight_g") or 0
+                ev = Event()
+                ev.add("summary", f"{name} — Flush #{h['flush_number']} Harvest")
+                ev.add("dtstart", h_dt)
+                ev.add("dtend", h_dt)
+                ev.add("description", f"Flush #{h['flush_number']}: {weight}g wet")
+                ev["uid"] = f"session-{sid}-harvest-{h['id']}@sporeprint"
+                cal.add_component(ev)
+
+            # Session completion
+            completed_dt = _ts_to_dt(session.get("completed_at"))
+            if completed_dt:
+                ev = Event()
+                ev.add("summary", f"{name} — Session {session['status'].title()}")
+                ev.add("dtstart", completed_dt)
+                ev.add("dtend", completed_dt)
+                ev.add("description", f"Final status: {session['status']}")
+                ev["uid"] = f"session-{sid}-end@sporeprint"
+                cal.add_component(ev)
+
+    return cal.to_ical().decode()
+
+
+# ── PDF Session Report ──────────────────────────────────────────
+
+
+async def generate_session_report(session_id: int) -> bytes | None:
+    """Generate a multi-page PDF report for a session. Returns PDF bytes or None."""
+    session = await get_session(session_id)
+    if not session:
+        return None
+
+    name = session["name"] or f"Session {session_id}"
+    species = session["species_profile_id"] or "unknown"
+    substrate = session["substrate"] or "N/A"
+    status = session["status"]
+    created = _ts_to_dt(session["created_at"])
+    completed = _ts_to_dt(session.get("completed_at"))
+
+    # Fetch harvests
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM harvests WHERE session_id = ? ORDER BY flush_number, timestamp",
+            (session_id,),
+        )
+        harvests = [dict(r) for r in await cursor.fetchall()]
+
+        # Fetch telemetry (last 7 days or all if shorter)
+        cursor = await db.execute(
+            "SELECT sensor, timestamp, value FROM telemetry_readings "
+            "WHERE session_id = ? ORDER BY timestamp",
+            (session_id,),
+        )
+        telemetry = [dict(r) for r in await cursor.fetchall()]
+
+    bg_color = "#1a1a2e"
+    axes_color = "#16213e"
+    text_color = "#e0e0e0"
+    accent_color = "#4ade80"
+
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf:
+        # Page 1: Text summary
+        fig, ax = plt.subplots(figsize=(8.5, 11))
+        fig.patch.set_facecolor(bg_color)
+        ax.set_facecolor(bg_color)
+        ax.axis("off")
+
+        lines = [
+            f"SporePrint Grow Report",
+            f"",
+            f"Session: {name}",
+            f"Species: {species}",
+            f"Substrate: {substrate}",
+            f"Status: {status}",
+            f"Started: {created.strftime('%Y-%m-%d %H:%M UTC') if created else 'N/A'}",
+            f"Completed: {completed.strftime('%Y-%m-%d %H:%M UTC') if completed else 'In progress'}",
+            f"",
+            f"Total Wet Yield: {session.get('total_wet_yield_g', 0) or 0}g",
+            f"Total Dry Yield: {session.get('total_dry_yield_g', 0) or 0}g",
+            f"Flushes Harvested: {len(set(h['flush_number'] for h in harvests))}",
+        ]
+
+        if harvests:
+            lines.append("")
+            lines.append("Yield Breakdown:")
+            flush_map = {}
+            for h in harvests:
+                fn = h["flush_number"]
+                if fn not in flush_map:
+                    flush_map[fn] = 0.0
+                flush_map[fn] += h["wet_weight_g"] or 0.0
+            for fn in sorted(flush_map.keys()):
+                lines.append(f"  Flush #{fn}: {flush_map[fn]:.1f}g wet")
+
+        y = 0.92
+        for i, line in enumerate(lines):
+            fontsize = 18 if i == 0 else 11
+            weight = "bold" if i == 0 else "normal"
+            ax.text(0.08, y, line, transform=ax.transAxes, fontsize=fontsize,
+                    color=text_color, fontweight=weight, verticalalignment="top",
+                    fontfamily="monospace")
+            y -= 0.045 if i == 0 else 0.035
+
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # Page 2: Telemetry charts (if data exists)
+        if telemetry:
+            sensors = {}
+            for row in telemetry:
+                sensors.setdefault(row["sensor"], []).append(
+                    (row["timestamp"], row["value"])
+                )
+
+            sensor_names = list(sensors.keys())[:3]  # max 3 charts
+            n_charts = len(sensor_names)
+            if n_charts > 0:
+                fig, axes = plt.subplots(n_charts, 1, figsize=(8.5, 11))
+                fig.patch.set_facecolor(bg_color)
+                if n_charts == 1:
+                    axes = [axes]
+
+                for ax, sensor_name in zip(axes, sensor_names):
+                    data = sensors[sensor_name]
+                    ts = [d[0] for d in data]
+                    vals = [d[1] for d in data]
+                    ax.set_facecolor(axes_color)
+                    ax.plot(ts, vals, color=accent_color, linewidth=1)
+                    ax.set_title(sensor_name, color=text_color, fontsize=12)
+                    ax.tick_params(colors=text_color, labelsize=8)
+                    for spine in ax.spines.values():
+                        spine.set_color("#333")
+
+                fig.tight_layout(pad=2.0)
+                pdf.savefig(fig)
+                plt.close(fig)
+
+        # Page 3: Yield per flush bar chart (if harvests exist)
+        if harvests:
+            flush_map = {}
+            for h in harvests:
+                fn = h["flush_number"]
+                if fn not in flush_map:
+                    flush_map[fn] = 0.0
+                flush_map[fn] += h["wet_weight_g"] or 0.0
+
+            flushes = sorted(flush_map.keys())
+            weights = [flush_map[f] for f in flushes]
+
+            fig, ax = plt.subplots(figsize=(8.5, 6))
+            fig.patch.set_facecolor(bg_color)
+            ax.set_facecolor(axes_color)
+
+            bars = ax.bar(
+                [f"Flush {f}" for f in flushes],
+                weights,
+                color=accent_color,
+                edgecolor="#333",
+            )
+            ax.set_title("Yield Per Flush (Wet Weight)", color=text_color, fontsize=14)
+            ax.set_ylabel("Weight (g)", color=text_color)
+            ax.tick_params(colors=text_color)
+            for spine in ax.spines.values():
+                spine.set_color("#333")
+
+            # Add value labels on bars
+            for bar, w in zip(bars, weights):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + max(weights) * 0.02,
+                    f"{w:.0f}g",
+                    ha="center",
+                    color=text_color,
+                    fontsize=10,
+                )
+
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    return buf.getvalue()

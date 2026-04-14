@@ -104,6 +104,7 @@ from .contamination.router import router as contamination_router
 from .cultures.router import router as cultures_router
 from .chambers.router import router as chambers_router
 from .experiments.router import router as experiments_router
+from .labels.router import router as labels_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -121,6 +122,7 @@ app.include_router(contamination_router, prefix="/api/contamination", tags=["con
 app.include_router(cultures_router, prefix="/api/cultures", tags=["cultures"])
 app.include_router(chambers_router, prefix="/api/chambers", tags=["chambers"])
 app.include_router(experiments_router, prefix="/api/experiments", tags=["experiments"])
+app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
 
 
 @app.get("/api/health")
