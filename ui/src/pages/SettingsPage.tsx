@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Wifi, WifiOff, Plug, Database, RefreshCw, Smartphone, Copy, Check } from 'lucide-react'
+import { Wifi, WifiOff, Plug, Database, RefreshCw, Smartphone, Copy, Check, Thermometer, Scale } from 'lucide-react'
 import { api } from '../api/client'
+import { getTempUnit, getWeightUnit } from '../lib/units'
 
 interface HardwareNode {
   node_id: string
@@ -103,6 +104,19 @@ export default function SettingsPage() {
   const [health, setHealth] = useState<{ status: string; version: string } | null>(null)
   const [tab, setTab] = useState<'hardware' | 'plugs' | 'system'>('hardware')
 
+  // Unit preferences
+  const [tempUnit, setTempUnit] = useState(getTempUnit())
+  const [weightUnit, setWeightUnit] = useState(getWeightUnit())
+
+  const updateTempUnit = (unit: 'f' | 'c') => {
+    setTempUnit(unit)
+    localStorage.setItem('sporeprint_temp_unit', unit)
+  }
+  const updateWeightUnit = (unit: 'g' | 'oz') => {
+    setWeightUnit(unit)
+    localStorage.setItem('sporeprint_weight_unit', unit)
+  }
+
   const refresh = () => {
     api.get<HardwareNode[]>('/hardware/nodes').then(setNodes).catch(() => {})
     api.get<SmartPlug[]>('/automation/plugs').then(setPlugs).catch(() => {})
@@ -125,6 +139,55 @@ export default function SettingsPage() {
           <RefreshCw size={14} />
           Refresh
         </button>
+      </div>
+
+      {/* Unit Preferences */}
+      <div className="bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)] mb-6">
+        <h3 className="font-medium text-sm mb-4">Units</h3>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm">
+              <Thermometer size={14} className="text-[var(--color-text-secondary)]" />
+              <span>Temperature</span>
+            </div>
+            <div className="flex gap-1 p-0.5 bg-[var(--color-bg-secondary)] rounded-lg">
+              {(['f', 'c'] as const).map((u) => (
+                <button
+                  key={u}
+                  onClick={() => updateTempUnit(u)}
+                  className={`px-3 py-1 rounded-md text-sm ${
+                    tempUnit === u
+                      ? 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)] font-medium'
+                      : 'text-[var(--color-text-secondary)]'
+                  }`}
+                >
+                  {u === 'f' ? '\u00B0F' : '\u00B0C'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm">
+              <Scale size={14} className="text-[var(--color-text-secondary)]" />
+              <span>Weight</span>
+            </div>
+            <div className="flex gap-1 p-0.5 bg-[var(--color-bg-secondary)] rounded-lg">
+              {(['g', 'oz'] as const).map((u) => (
+                <button
+                  key={u}
+                  onClick={() => updateWeightUnit(u)}
+                  className={`px-3 py-1 rounded-md text-sm ${
+                    weightUnit === u
+                      ? 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)] font-medium'
+                      : 'text-[var(--color-text-secondary)]'
+                  }`}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Tabs */}

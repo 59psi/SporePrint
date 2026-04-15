@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ShoppingCart, Check, Circle } from 'lucide-react'
 import { api } from '../api/client'
+import { displayWeight } from '../lib/units'
 
 interface ShoppingItem {
   name: string
@@ -132,7 +133,7 @@ export default function ShoppingList() {
                         )}
                       </div>
                       <span className={`text-xs shrink-0 ${isChecked ? 'opacity-50' : 'text-[var(--color-text-secondary)]'}`}>
-                        {item.quantity} {item.unit}
+                        {item.unit === 'g' ? displayWeight(parseFloat(item.quantity)) : `${item.quantity} ${item.unit}`}
                       </span>
                     </button>
                   )

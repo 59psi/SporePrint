@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Calendar, Star, AlertTriangle, Thermometer, Droplets } from 'lucide-react'
 import { api } from '../api/client'
+import { displayTemp } from '../lib/units'
 
 interface RecommendedSpecies {
   species_id: string
@@ -150,7 +151,7 @@ export default function Planner() {
                   </div>
                   <p className="text-sm text-[var(--color-text-secondary)] mb-3">{sp.tldr}</p>
                   <div className="flex flex-wrap gap-3 text-xs text-[var(--color-text-secondary)] mb-2">
-                    <span>Temp: {sp.optimal_temp_min_f}-{sp.optimal_temp_max_f}F</span>
+                    <span>Temp: {displayTemp(sp.optimal_temp_min_f)}-{displayTemp(sp.optimal_temp_max_f)}</span>
                     <span>RH: {sp.optimal_humidity_min}-{sp.optimal_humidity_max}%</span>
                   </div>
                   {sp.warnings.length > 0 && (
@@ -190,7 +191,7 @@ export default function Planner() {
                 >
                   <h3 className="font-medium text-sm mb-2">{m.month}</h3>
                   <div className="text-xs text-[var(--color-text-secondary)] mb-3 space-y-0.5">
-                    <p>Avg temp: {m.avg_temp_f}F</p>
+                    <p>Avg temp: {displayTemp(m.avg_temp_f)}</p>
                     <p>Avg RH: {m.avg_humidity}%</p>
                   </div>
                   <div className="space-y-1">

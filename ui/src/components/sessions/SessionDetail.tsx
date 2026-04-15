@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../api/client'
 import { PHASE_ORDER } from '../../constants/phases'
+import { displayWeight, tempLabel } from '../../lib/units'
 import PhaseTimeline from './PhaseTimeline'
 import TelemetryChart from './TelemetryChart'
 
@@ -162,8 +163,8 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
         {[
           { label: 'Status', value: session.status },
           { label: 'Phase', value: session.current_phase.replace(/_/g, ' ') },
-          { label: 'Wet Yield', value: `${session.total_wet_yield_g}g` },
-          { label: 'Dry Yield', value: `${session.total_dry_yield_g}g` },
+          { label: 'Wet Yield', value: displayWeight(session.total_wet_yield_g) },
+          { label: 'Dry Yield', value: displayWeight(session.total_dry_yield_g) },
         ].map((s) => (
           <div key={s.label} className="bg-[var(--color-bg-card)] rounded-lg p-3 border border-[var(--color-border)]">
             <p className="text-xs text-[var(--color-text-secondary)]">{s.label}</p>
@@ -210,7 +211,7 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <TelemetryChart
-              nodeId="climate-01" sensor="temp_f" label="Temperature" unit="°F"
+              nodeId="climate-01" sensor="temp_f" label="Temperature" unit={tempLabel()}
               color="#ef4444" rangeSeconds={rangeSeconds} resolution={resolution}
             />
             <TelemetryChart

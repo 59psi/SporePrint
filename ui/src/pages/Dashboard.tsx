@@ -7,6 +7,7 @@ import WeatherForecast from '../components/dashboard/WeatherForecast'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { socket } from '../api/socket'
 import { api } from '../api/client'
+import { displayTemp, convertTemp, tempLabel } from '../lib/units'
 
 // Demo data for when no real telemetry is connected
 const DEMO_READING = {
@@ -150,12 +151,12 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
         <SensorGauge
           label="Temperature"
-          value={reading.temp_f}
-          unit="°F"
-          min={40}
-          max={100}
-          targetMin={targets.temp.min}
-          targetMax={targets.temp.max}
+          value={convertTemp(reading.temp_f)}
+          unit={tempLabel()}
+          min={convertTemp(40)}
+          max={convertTemp(100)}
+          targetMin={convertTemp(targets.temp.min)}
+          targetMax={convertTemp(targets.temp.max)}
           icon={<Thermometer size={14} />}
         />
         <SensorGauge
@@ -206,21 +207,21 @@ export default function Dashboard() {
             <div className="flex gap-6 text-sm">
               <div>
                 <span className="text-[var(--color-text-secondary)]">Now </span>
-                <span className="font-medium">{weather.outdoor_temp_f}°F</span>
+                <span className="font-medium">{displayTemp(weather.outdoor_temp_f)}</span>
                 <span className="text-[var(--color-text-secondary)] ml-1">{weather.outdoor_humidity}% RH</span>
               </div>
               {weather.forecast_high_f != null && (
                 <div>
                   <span className="text-[var(--color-text-secondary)]">High </span>
                   <span className={`font-medium ${weather.forecast_high_f > 90 ? 'text-[var(--color-warning)]' : weather.forecast_high_f > 95 ? 'text-[var(--color-danger)]' : ''}`}>
-                    {weather.forecast_high_f}°F
+                    {displayTemp(weather.forecast_high_f)}
                   </span>
                 </div>
               )}
               {weather.forecast_low_f != null && (
                 <div>
                   <span className="text-[var(--color-text-secondary)]">Low </span>
-                  <span className="font-medium">{weather.forecast_low_f}°F</span>
+                  <span className="font-medium">{displayTemp(weather.forecast_low_f)}</span>
                 </div>
               )}
               <div className="text-[var(--color-text-secondary)]">{weather.outdoor_condition}</div>

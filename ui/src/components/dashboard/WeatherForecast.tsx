@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { CloudSun, AlertTriangle, CheckCircle, Loader2, Brain } from 'lucide-react'
 import { api } from '../../api/client'
+import { convertTemp } from '../../lib/units'
 
 interface DaySummary {
   date: string
@@ -94,8 +95,8 @@ export default function WeatherForecast() {
               <p className="font-medium mb-1">{i === 0 ? 'Today' : day.day_name}</p>
               <p className="text-lg mb-1">{conditionIcon(day.condition)}</p>
               <p>
-                <span className="font-medium">{Math.round(day.high_f)}°</span>
-                <span className="text-[var(--color-text-secondary)]"> / {Math.round(day.low_f)}°</span>
+                <span className="font-medium">{Math.round(convertTemp(day.high_f))}°</span>
+                <span className="text-[var(--color-text-secondary)]"> / {Math.round(convertTemp(day.low_f))}°</span>
               </p>
               <p className="text-[var(--color-text-secondary)]">{Math.round(day.avg_humidity)}% RH</p>
             </div>
