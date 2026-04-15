@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { ArrowLeft, ArrowRight, Box, Sprout } from 'lucide-react'
 import { api } from '../../api/client'
 import { CATEGORY_COLORS } from '../../constants/colors'
+import { haptic } from '../../lib/haptics'
 import type { Session } from '../../stores/sessionStore'
 
 interface SpeciesProfile {
@@ -331,7 +332,7 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
       {/* Navigation */}
       <div className="flex justify-between mt-8">
         <button
-          onClick={() => step > 0 ? setStep(step - 1) : onCancel()}
+          onClick={() => { haptic('light'); step > 0 ? setStep(step - 1) : onCancel() }}
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
         >
           <ArrowLeft size={14} />
@@ -340,7 +341,7 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
 
         {step < steps.length - 1 ? (
           <button
-            onClick={() => setStep(step + 1)}
+            onClick={() => { haptic('light'); setStep(step + 1) }}
             disabled={step === 0 && (!form.name || !form.species_profile_id)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--color-accent-gourmet)] text-white text-sm font-medium disabled:opacity-40"
           >

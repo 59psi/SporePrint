@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Wifi, WifiOff, Plug, Database, RefreshCw, Smartphone, Copy, Check, Thermometer, Scale } from 'lucide-react'
 import { api } from '../api/client'
 import { getTempUnit, getWeightUnit } from '../lib/units'
+import { haptic } from '../lib/haptics'
 
 interface HardwareNode {
   node_id: string
@@ -109,10 +110,12 @@ export default function SettingsPage() {
   const [weightUnit, setWeightUnit] = useState(getWeightUnit())
 
   const updateTempUnit = (unit: 'f' | 'c') => {
+    haptic('light')
     setTempUnit(unit)
     localStorage.setItem('sporeprint_temp_unit', unit)
   }
   const updateWeightUnit = (unit: 'g' | 'oz') => {
+    haptic('light')
     setWeightUnit(unit)
     localStorage.setItem('sporeprint_weight_unit', unit)
   }
