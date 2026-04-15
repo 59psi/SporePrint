@@ -12,7 +12,7 @@ from app.cultures.service import (
 def _make_culture(**overrides):
     defaults = dict(
         type="spore_syringe",
-        species_profile_id="cubensis_golden_teacher",
+        species_profile_id="blue_oyster",
         source="vendor",
     )
     defaults.update(overrides)
@@ -59,10 +59,10 @@ async def test_list_cultures():
 
 async def test_list_cultures_filter_species():
     await create_culture(_make_culture())
-    await create_culture(_make_culture(species_profile_id="blue_oyster"))
-    result = await list_cultures(species_id="blue_oyster")
+    await create_culture(_make_culture(species_profile_id="lion_s_mane"))
+    result = await list_cultures(species_id="lion_s_mane")
     assert len(result) == 1
-    assert result[0]["species_profile_id"] == "blue_oyster"
+    assert result[0]["species_profile_id"] == "lion_s_mane"
 
 
 async def test_list_cultures_filter_status():

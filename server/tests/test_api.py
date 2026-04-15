@@ -29,7 +29,7 @@ def test_list_sessions_empty(client):
 def test_create_and_get_session(client):
     r = client.post("/api/sessions", json={
         "name": "API Test Grow",
-        "species_profile_id": "cubensis_golden_teacher",
+        "species_profile_id": "blue_oyster",
     })
     assert r.status_code == 200
     session = r.json()
@@ -51,7 +51,7 @@ def test_session_lifecycle_via_api(client):
     # Create
     r = client.post("/api/sessions", json={
         "name": "Lifecycle Test",
-        "species_profile_id": "cubensis_golden_teacher",
+        "species_profile_id": "blue_oyster",
     })
     sid = r.json()["id"]
 
@@ -93,14 +93,14 @@ def test_list_species_after_seed(client):
     profiles = r.json()
     assert len(profiles) >= 10
     names = [p["common_name"] for p in profiles]
-    assert "Golden Teacher / B+" in names
+    assert "Blue Oyster" in names
 
 
 def test_get_species_profile(client):
-    r = client.get("/api/species/cubensis_golden_teacher")
+    r = client.get("/api/species/blue_oyster")
     assert r.status_code == 200
     profile = r.json()
-    assert profile["category"] == "active"
+    assert profile["category"] == "gourmet"
     assert "phases" in profile
     assert "fruiting" in profile["phases"]
 
@@ -202,7 +202,7 @@ def test_transcript_export(client):
     # Create a session first
     r = client.post("/api/sessions", json={
         "name": "Transcript API Test",
-        "species_profile_id": "cubensis_golden_teacher",
+        "species_profile_id": "blue_oyster",
     })
     sid = r.json()["id"]
 

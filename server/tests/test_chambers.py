@@ -23,7 +23,7 @@ def _make_chamber(**overrides):
 async def _make_session(name="Test Grow"):
     return await create_session(SessionCreate(
         name=name,
-        species_profile_id="cubensis_golden_teacher",
+        species_profile_id="blue_oyster",
     ))
 
 

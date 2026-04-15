@@ -56,10 +56,10 @@ async def test_seed_builtins_idempotent():
 
 async def test_get_profile():
     await seed_builtins()
-    profile = await get_profile("cubensis_golden_teacher")
+    profile = await get_profile("blue_oyster")
     assert profile is not None
-    assert profile.common_name == "Golden Teacher / B+"
-    assert profile.category == "active"
+    assert profile.common_name == "Blue Oyster"
+    assert profile.category == "gourmet"
     assert GrowPhase.FRUITING in profile.phases
 
 
@@ -97,6 +97,6 @@ async def test_delete_custom_profile():
 
 async def test_delete_builtin_prevented():
     await seed_builtins()
-    result = await delete_profile("cubensis_golden_teacher")
+    result = await delete_profile("blue_oyster")
     assert result is False
-    assert await get_profile("cubensis_golden_teacher") is not None
+    assert await get_profile("blue_oyster") is not None

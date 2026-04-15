@@ -10,7 +10,7 @@ from app.sessions.service import (
 
 
 def _make_session(**overrides):
-    defaults = dict(name="Drying Test", species_profile_id="cubensis_golden_teacher")
+    defaults = dict(name="Drying Test", species_profile_id="blue_oyster")
     defaults.update(overrides)
     return SessionCreate(**defaults)
 
@@ -103,7 +103,7 @@ def test_drying_log_endpoint(client):
     # Create session + harvest
     r = client.post("/api/sessions", json={
         "name": "Drying API Test",
-        "species_profile_id": "cubensis_golden_teacher",
+        "species_profile_id": "blue_oyster",
     })
     session_id = r.json()["id"]
 

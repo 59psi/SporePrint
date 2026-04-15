@@ -3,7 +3,7 @@ from app.sessions.service import create_session, add_harvest, generate_session_r
 
 
 def _make_session_data(**overrides):
-    defaults = dict(name="Test Grow", species_profile_id="cubensis_golden_teacher")
+    defaults = dict(name="Test Grow", species_profile_id="blue_oyster")
     defaults.update(overrides)
     return SessionCreate(**defaults)
 

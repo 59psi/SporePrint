@@ -14,7 +14,7 @@ from app.sessions.service import create_session, add_harvest, advance_phase
 from app.sessions.models import PhaseAdvance
 
 
-async def _make_session(name, species="cubensis_golden_teacher"):
+async def _make_session(name, species="blue_oyster"):
     return await create_session(SessionCreate(
         name=name,
         species_profile_id=species,

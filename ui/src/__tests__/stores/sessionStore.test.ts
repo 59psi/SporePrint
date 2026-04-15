@@ -4,7 +4,7 @@ import { useSessionStore, type Session } from '../../stores/sessionStore'
 const mockSession: Session = {
   id: 1,
   name: 'Test Grow',
-  species_profile_id: 'cubensis_golden_teacher',
+  species_profile_id: 'blue_oyster',
   current_phase: 'fruiting',
   status: 'active',
   created_at: 1000,

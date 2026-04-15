@@ -201,7 +201,7 @@ async def test_warnings_with_session(monkeypatch):
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, current_phase, status)
                VALUES (?, ?, ?, ?)""",
-            ("Test Grow", "cubensis_golden_teacher", "fruiting", "active"),
+            ("Test Grow", "blue_oyster", "fruiting", "active"),
         )
         session_id = cursor.lastrowid
         await db.commit()

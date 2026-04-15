@@ -6,7 +6,7 @@ from app.transcript.service import export_json, export_markdown
 
 async def test_export_json_structure():
     await seed_builtins()
-    s = await create_session(SessionCreate(name="Transcript Test", species_profile_id="cubensis_golden_teacher"))
+    s = await create_session(SessionCreate(name="Transcript Test", species_profile_id="blue_oyster"))
     await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
     await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
 
@@ -27,7 +27,7 @@ async def test_export_json_structure():
 
 async def test_export_json_has_harvest():
     await seed_builtins()
-    s = await create_session(SessionCreate(name="Harvest Test", species_profile_id="cubensis_golden_teacher"))
+    s = await create_session(SessionCreate(name="Harvest Test", species_profile_id="blue_oyster"))
     await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=150.0, dry_weight_g=15.0))
     data = await export_json(s["id"])
     assert len(data["harvests"]) == 1
@@ -36,7 +36,7 @@ async def test_export_json_has_harvest():
 
 async def test_export_markdown_format():
     await seed_builtins()
-    s = await create_session(SessionCreate(name="MD Test", species_profile_id="cubensis_golden_teacher"))
+    s = await create_session(SessionCreate(name="MD Test", species_profile_id="blue_oyster"))
     md = await export_markdown(s["id"])
     assert md.startswith("# Session: MD Test")
     assert "## Yield" in md
@@ -45,7 +45,7 @@ async def test_export_markdown_format():
 
 async def test_export_markdown_includes_harvest():
     await seed_builtins()
-    s = await create_session(SessionCreate(name="Harvest MD", species_profile_id="cubensis_golden_teacher"))
+    s = await create_session(SessionCreate(name="Harvest MD", species_profile_id="blue_oyster"))
     await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
     md = await export_markdown(s["id"])
     assert "## Harvests" in md

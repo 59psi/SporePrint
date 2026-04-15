@@ -11,7 +11,7 @@ from app.sessions.service import (
 
 
 def _make_session(**overrides):
-    defaults = dict(name="Test Grow", species_profile_id="cubensis_golden_teacher")
+    defaults = dict(name="Test Grow", species_profile_id="blue_oyster")
     defaults.update(overrides)
     return SessionCreate(**defaults)
 
@@ -124,7 +124,7 @@ async def test_stats_nonexistent_session():
 def test_stats_endpoint(client):
     r = client.post("/api/sessions", json={
         "name": "Stats Grow",
-        "species_profile_id": "cubensis_golden_teacher",
+        "species_profile_id": "blue_oyster",
         "substrate_volume": "10 liters",
     })
     session_id = r.json()["id"]

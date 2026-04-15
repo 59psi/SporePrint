@@ -72,7 +72,7 @@ async def test_recipe_output_shape():
 async def test_different_species_substrate():
     """Test substrate calculation for a species with different recipes."""
     await seed_builtins()
-    profile = await get_profile("cubensis_golden_teacher")
+    profile = await get_profile("blue_oyster")
     assert profile is not None
     assert len(profile.substrate_recipes) > 0
 
