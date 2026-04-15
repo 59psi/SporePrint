@@ -10,8 +10,16 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from icalendar import Calendar, Event
 
+from collections import defaultdict
+
 from ..db import get_db
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
+
+_PHASE_ORDER = [
+    "agar", "liquid_culture", "grain_colonization",
+    "substrate_colonization", "primordia_induction",
+    "fruiting", "rest", "complete",
+]
 
 
 async def create_session(data: SessionCreate) -> dict:
@@ -321,22 +329,19 @@ async def get_session_stats(session_id: int) -> dict | None:
         else:
             biological_efficiency = None
 
-        # Species averages from all completed sessions with same species
+        # Species averages via SQL aggregate (instead of loading all rows)
         species_id = session["species_profile_id"]
         cursor = await db.execute(
-            "SELECT id, total_wet_yield_g FROM sessions WHERE species_profile_id = ? AND status = 'completed'",
+            """SELECT COUNT(*) as cnt, AVG(total_wet_yield_g) as avg_yield,
+               MAX(total_wet_yield_g) as best_yield
+               FROM sessions WHERE species_profile_id = ? AND status = 'completed'
+               AND total_wet_yield_g > 0""",
             (species_id,),
         )
-        species_sessions = [dict(r) for r in await cursor.fetchall()]
-        species_session_count = len(species_sessions)
-
-        if species_session_count > 0:
-            yields = [s["total_wet_yield_g"] or 0.0 for s in species_sessions]
-            species_avg_yield_g = round(sum(yields) / len(yields), 1)
-            species_best_yield_g = round(max(yields), 1)
-        else:
-            species_avg_yield_g = None
-            species_best_yield_g = None
+        agg = dict(await cursor.fetchone())
+        species_session_count = agg["cnt"]
+        species_avg_yield_g = round(agg["avg_yield"], 1) if agg["avg_yield"] else None
+        species_best_yield_g = round(agg["best_yield"], 1) if agg["best_yield"] else None
 
         return {
             "session_id": session_id,
@@ -454,6 +459,25 @@ async def generate_ical() -> str:
         cursor = await db.execute("SELECT * FROM sessions ORDER BY created_at")
         sessions = [dict(r) for r in await cursor.fetchall()]
 
+        # Batch load all phases and harvests (instead of N+1 per session)
+        cursor = await db.execute(
+            "SELECT * FROM phase_history ORDER BY entered_at"
+        )
+        all_phases = [dict(r) for r in await cursor.fetchall()]
+
+        cursor = await db.execute(
+            "SELECT * FROM harvests ORDER BY timestamp"
+        )
+        all_harvests = [dict(r) for r in await cursor.fetchall()]
+
+        # Group by session_id
+        phases_by_session = defaultdict(list)
+        for p in all_phases:
+            phases_by_session[p["session_id"]].append(p)
+        harvests_by_session = defaultdict(list)
+        for h in all_harvests:
+            harvests_by_session[h["session_id"]].append(h)
+
         for session in sessions:
             sid = session["id"]
             name = session["name"] or f"Session {sid}"
@@ -472,12 +496,8 @@ async def generate_ical() -> str:
             ev["uid"] = f"session-{sid}-start@sporeprint"
             cal.add_component(ev)
 
-            # Phase transitions
-            cursor = await db.execute(
-                "SELECT * FROM phase_history WHERE session_id = ? ORDER BY entered_at",
-                (sid,),
-            )
-            phases = [dict(r) for r in await cursor.fetchall()]
+            # Phase transitions (from batch-loaded data)
+            phases = phases_by_session[sid]
             for ph in phases:
                 ph_dt = _ts_to_dt(ph["entered_at"])
                 if not ph_dt:
@@ -490,12 +510,8 @@ async def generate_ical() -> str:
                 ev["uid"] = f"session-{sid}-phase-{ph['id']}@sporeprint"
                 cal.add_component(ev)
 
-            # Harvests
-            cursor = await db.execute(
-                "SELECT * FROM harvests WHERE session_id = ? ORDER BY timestamp",
-                (sid,),
-            )
-            harvests = [dict(r) for r in await cursor.fetchall()]
+            # Harvests (from batch-loaded data)
+            harvests = harvests_by_session[sid]
             for h in harvests:
                 h_dt = _ts_to_dt(h["timestamp"])
                 if not h_dt:
@@ -521,20 +537,14 @@ async def generate_ical() -> str:
                         if p["phase"] == current_phase and p.get("entered_at"):
                             last_phase_entry = p["entered_at"]
 
-                    PHASE_ORDER = [
-                        "agar", "liquid_culture", "grain_colonization",
-                        "substrate_colonization", "primordia_induction",
-                        "fruiting", "rest", "complete",
-                    ]
-
                     try:
-                        current_idx = PHASE_ORDER.index(current_phase)
+                        current_idx = _PHASE_ORDER.index(current_phase)
                     except ValueError:
                         current_idx = -1
 
                     predicted_time = last_phase_entry
 
-                    for future_phase in PHASE_ORDER[current_idx + 1:]:
+                    for future_phase in _PHASE_ORDER[current_idx + 1:]:
                         if future_phase == "complete":
                             break
                         phase_params = profile.phases.get(future_phase)

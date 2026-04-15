@@ -1,15 +1,22 @@
 import json
 import time
 
+import anthropic
+
+from ..config import settings
 from ..db import get_db
 from ..sessions.service import get_session, get_session_stats
+from ..vision.service import parse_claude_json
 from .models import ExperimentCreate, ExperimentUpdate
 
 
 def _parse_experiment(row: dict) -> dict:
     """Parse JSON text fields from an experiment DB row."""
     experiment = dict(row)
-    experiment["dependent_variables"] = json.loads(experiment.get("dependent_variables") or "[]")
+    try:
+        experiment["dependent_variables"] = json.loads(experiment.get("dependent_variables") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        experiment["dependent_variables"] = ["total_wet_yield_g", "colonization_days", "contamination_count"]
     return experiment
 
 
@@ -154,8 +161,6 @@ async def get_comparison(experiment_id: int) -> dict | None:
 
 async def analyze_experiment(exp_id: int) -> dict | None:
     """Use Claude AI to analyze experiment results."""
-    from ..config import settings
-
     comparison = await get_comparison(exp_id)
     if not comparison:
         return None
@@ -189,10 +194,6 @@ Provide a brief analysis in JSON format:
 
     if not settings.claude_api_key:
         return {"error": "Claude API not configured", "comparison": comparison}
-
-    import anthropic
-
-    from ..vision.service import parse_claude_json
 
     client = anthropic.Anthropic(api_key=settings.claude_api_key)
     response = client.messages.create(

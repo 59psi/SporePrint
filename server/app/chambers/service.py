@@ -1,4 +1,5 @@
 import json
+import time
 
 from ..db import get_db
 from .models import ChamberCreate, ChamberUpdate
@@ -7,8 +8,12 @@ from .models import ChamberCreate, ChamberUpdate
 def _parse_chamber(row: dict) -> dict:
     """Parse JSON text fields from a chamber DB row."""
     chamber = dict(row)
-    chamber["node_ids"] = json.loads(chamber.get("node_ids") or "[]")
-    chamber["automation_rule_ids"] = json.loads(chamber.get("automation_rule_ids") or "[]")
+    try:
+        chamber["node_ids"] = json.loads(chamber.get("node_ids") or "[]")
+        chamber["automation_rule_ids"] = json.loads(chamber.get("automation_rule_ids") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        chamber["node_ids"] = []
+        chamber["automation_rule_ids"] = []
     return chamber
 
 
@@ -71,8 +76,6 @@ async def delete_chamber(chamber_id: int) -> bool:
 
 async def compare_chambers(chamber_ids: list[int]) -> list[dict]:
     """Side-by-side telemetry comparison between chambers."""
-    import time
-
     results = []
     since = time.time() - 86400  # last 24h
 

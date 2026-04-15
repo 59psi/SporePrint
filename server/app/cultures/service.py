@@ -93,20 +93,29 @@ async def get_lineage_tree(culture_id: int) -> dict | None:
         return None
 
     async with get_db() as db:
-        # Walk up to root via parent_id chain
-        ancestors = []
-        current = root_culture
-        while current["parent_id"] is not None:
-            cursor = await db.execute("SELECT * FROM cultures WHERE id = ?", (current["parent_id"],))
-            row = await cursor.fetchone()
-            if not row:
-                break
-            parent = dict(row)
-            ancestors.insert(0, parent)
-            current = parent
+        # Get all ancestors via recursive CTE
+        cursor = await db.execute("""
+            WITH RECURSIVE ancestors AS (
+                SELECT * FROM cultures WHERE id = ?
+                UNION ALL
+                SELECT c.* FROM cultures c
+                JOIN ancestors a ON c.id = a.parent_id
+            )
+            SELECT * FROM ancestors WHERE id != ? ORDER BY generation
+        """, (culture_id, culture_id))
+        ancestors = [dict(r) for r in await cursor.fetchall()]
 
-        # Walk down: get all descendants recursively via iterative BFS
-        descendants = await _get_descendants(db, culture_id)
+        # Get all descendants via recursive CTE
+        cursor = await db.execute("""
+            WITH RECURSIVE descendants AS (
+                SELECT * FROM cultures WHERE parent_id = ?
+                UNION ALL
+                SELECT c.* FROM cultures c
+                JOIN descendants d ON c.parent_id = d.id
+            )
+            SELECT * FROM descendants ORDER BY generation, created_at
+        """, (culture_id,))
+        descendants = [dict(r) for r in await cursor.fetchall()]
 
         # Calculate contamination rate for immediate children
         cursor = await db.execute(
@@ -129,19 +138,3 @@ async def get_lineage_tree(culture_id: int) -> dict | None:
     }
 
 
-async def _get_descendants(db, parent_id: int) -> list[dict]:
-    """Iterative BFS to collect all descendants of a culture."""
-    descendants = []
-    queue = [parent_id]
-
-    while queue:
-        current_id = queue.pop(0)
-        cursor = await db.execute(
-            "SELECT * FROM cultures WHERE parent_id = ?", (current_id,)
-        )
-        children = [dict(r) for r in await cursor.fetchall()]
-        for child in children:
-            descendants.append(child)
-            queue.append(child["id"])
-
-    return descendants
