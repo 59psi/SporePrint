@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+  <defs>
+    <marker id="arrowRight" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#34d399" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowRightBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#60a5fa" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowRightAmber" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#fbbf24" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowDown2" viewBox="0 0 10 10" refX="5" refY="10" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L5,10 L10,0" fill="none" stroke="#34d399" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowDown2Blue" viewBox="0 0 10 10" refX="5" refY="10" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L5,10 L10,0" fill="none" stroke="#60a5fa" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="600" fill="#0a0a0f"/>
+
+  <!-- Title -->
+  <text x="400" y="34" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="700">Data Flow</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">How data moves through the SporePrint system</text>
+
+  <!-- ═══════════ FLOW 1: Sensor Telemetry (top band) ═══════════ -->
+  <text x="30" y="88" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" opacity="0.6">TELEMETRY FLOW</text>
+
+  <!-- ESP32 Sensors -->
+  <rect x="30" y="98" width="120" height="52" rx="6" fill="#1a1a2e" stroke="#fbbf24" stroke-width="1"/>
+  <text x="90" y="120" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32 Sensors</text>
+  <text x="90" y="138" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">SHT31 / SCD40 / BH1750</text>
+
+  <!-- Arrow -->
+  <line x1="150" y1="124" x2="186" y2="124" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  <text x="168" y="118" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">MQTT</text>
+
+  <!-- Pi Server (center hub) -->
+  <rect x="192" y="86" width="200" height="76" rx="6" fill="#1a1a2e" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="292" y="110" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Pi Server</text>
+  <text x="292" y="126" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">FastAPI  |  Telemetry Ingest</text>
+  <text x="292" y="150" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Retention  |  Aggregation  |  Alerts</text>
+
+  <!-- Arrow to SQLite -->
+  <line x1="392" y1="108" x2="438" y2="108" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+  <!-- SQLite -->
+  <rect x="444" y="92" width="110" height="40" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="499" y="112" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">SQLite</text>
+  <text x="499" y="126" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">25 tables</text>
+
+  <!-- Arrow to Socket.IO -->
+  <line x1="392" y1="134" x2="438" y2="134" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+  <!-- Socket.IO → Web UI -->
+  <rect x="444" y="138" width="110" height="30" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="499" y="158" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Socket.IO</text>
+
+  <line x1="554" y1="153" x2="590" y2="153" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+  <rect x="596" y="138" width="110" height="30" rx="6" fill="#1a1a2e" stroke="#34d399" stroke-width="1"/>
+  <text x="651" y="158" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Web UI</text>
+
+  <!-- Arrow to ntfy -->
+  <line x1="392" y1="150" x2="414" y2="150" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,2"/>
+  <path d="M414,150 Q428,150 428,168 L428,180" stroke="#fbbf24" stroke-width="1" fill="none" stroke-dasharray="3,2"/>
+
+  <!-- ntfy -->
+  <rect x="596" y="92" width="110" height="40" rx="6" fill="#1a1a2e" stroke="#fbbf24" stroke-width="1"/>
+  <text x="651" y="108" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">ntfy</text>
+  <text x="651" y="124" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Push Notifications</text>
+
+  <!-- Arrow from Pi server to ntfy -->
+  <path d="M392,100 L560,100 Q580,100 580,100 L590,100" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arrowRightAmber)"/>
+
+  <!-- ═══════════ FLOW 2: Weather + Predictions (middle band) ═══════════ -->
+  <text x="30" y="210" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" opacity="0.6">WEATHER + INTELLIGENCE</text>
+
+  <!-- Weather API -->
+  <rect x="30" y="220" width="120" height="52" rx="6" fill="#1a1a2e" stroke="#60a5fa" stroke-width="1"/>
+  <text x="90" y="242" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Weather API</text>
+  <text x="90" y="260" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Open-Meteo  |  Hourly</text>
+
+  <!-- Arrow -->
+  <line x1="150" y1="246" x2="186" y2="246" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#arrowRightBlue)"/>
+
+  <!-- Pi Server (weather) -->
+  <rect x="192" y="220" width="200" height="52" rx="6" fill="#1a1a2e" stroke="#60a5fa" stroke-width="1"/>
+  <text x="292" y="242" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Forecast Engine</text>
+  <text x="292" y="260" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Pressure correlation  |  Risk scoring</text>
+
+  <!-- Arrow to Prediction -->
+  <line x1="392" y1="236" x2="438" y2="236" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#arrowRightBlue)"/>
+  <!-- Arrow to Planner -->
+  <line x1="392" y1="256" x2="438" y2="256" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#arrowRightBlue)"/>
+
+  <!-- Prediction Model -->
+  <rect x="444" y="220" width="130" height="30" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="509" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Prediction Model</text>
+
+  <!-- Planner -->
+  <rect x="444" y="254" width="130" height="30" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="509" y="274" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Planner / Wizard</text>
+
+  <!-- Outputs -->
+  <line x1="574" y1="235" x2="616" y2="235" stroke="#60a5fa" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arrowRightBlue)"/>
+  <rect x="622" y="220" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#60a5fa" stroke-width="0.8"/>
+  <text x="692" y="240" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="10">Recommendations</text>
+
+  <line x1="574" y1="269" x2="616" y2="269" stroke="#60a5fa" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arrowRightBlue)"/>
+  <rect x="622" y="254" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#60a5fa" stroke-width="0.8"/>
+  <text x="692" y="274" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="10">Automation Hints</text>
+
+  <!-- ═══════════ FLOW 3: User Actions (bottom band) ═══════════ -->
+  <text x="30" y="318" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" opacity="0.6">USER ACTION FLOW</text>
+
+  <!-- User -->
+  <rect x="30" y="328" width="120" height="52" rx="6" fill="#1a1a2e" stroke="#34d399" stroke-width="1"/>
+  <text x="90" y="350" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">User Actions</text>
+  <text x="90" y="368" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Configure  |  Control  |  View</text>
+
+  <!-- Arrow -->
+  <line x1="150" y1="354" x2="186" y2="354" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  <text x="168" y="348" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">REST</text>
+
+  <!-- REST API -->
+  <rect x="192" y="328" width="200" height="52" rx="6" fill="#1a1a2e" stroke="#34d399" stroke-width="1"/>
+  <text x="292" y="350" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">REST API</text>
+  <text x="292" y="368" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">80+ endpoints  |  17 routers</text>
+
+  <!-- Arrow to Session Manager -->
+  <line x1="392" y1="340" x2="438" y2="340" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  <line x1="392" y1="354" x2="438" y2="354" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  <line x1="392" y1="368" x2="438" y2="368" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+  <!-- Session Manager -->
+  <rect x="444" y="324" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="514" y="344" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Session Manager</text>
+
+  <!-- Automation Engine -->
+  <rect x="444" y="358" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="514" y="378" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Automation Engine</text>
+
+  <!-- Vision Pipeline -->
+  <rect x="444" y="392" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="514" y="412" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Vision Pipeline</text>
+
+  <!-- Third arrow down to vision -->
+  <path d="M392,368 Q418,368 418,396 L438,396" stroke="#34d399" stroke-width="1" fill="none" stroke-dasharray="3,2"/>
+
+  <!-- Arrow from Automation to Hardware -->
+  <line x1="584" y1="373" x2="620" y2="373" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowRightAmber)"/>
+  <rect x="626" y="358" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#fbbf24" stroke-width="1"/>
+  <text x="696" y="374" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">MQTT Commands</text>
+  <text x="696" y="385" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">to ESP32 nodes</text>
+
+  <!-- Arrow from Vision to Claude -->
+  <line x1="584" y1="407" x2="620" y2="407" stroke="#60a5fa" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arrowRightBlue)"/>
+  <rect x="626" y="392" width="140" height="30" rx="6" fill="#1a1a2e" stroke="#60a5fa" stroke-width="1"/>
+  <text x="696" y="412" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Claude AI</text>
+
+  <!-- ═══════════ FLOW 4: Hardware control loop ═══════════ -->
+  <text x="30" y="450" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" opacity="0.6">HARDWARE CONTROL LOOP</text>
+
+  <!-- Control loop visualization -->
+  <rect x="30" y="460" width="736" height="100" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="0.8" opacity="0.5"/>
+
+  <!-- Sensor Read -->
+  <rect x="50" y="476" width="110" height="44" rx="6" fill="#0a0a0f" stroke="#fbbf24" stroke-width="0.8"/>
+  <text x="105" y="496" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Sensor Read</text>
+  <text x="105" y="510" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Every 10s</text>
+
+  <line x1="160" y1="498" x2="188" y2="498" stroke="#34d399" stroke-width="1" marker-end="url(#arrowRight)"/>
+
+  <!-- Evaluate Rules -->
+  <rect x="194" y="476" width="110" height="44" rx="6" fill="#0a0a0f" stroke="#334155" stroke-width="0.8"/>
+  <text x="249" y="496" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Evaluate Rules</text>
+  <text x="249" y="510" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Triggers + Thresholds</text>
+
+  <line x1="304" y1="498" x2="332" y2="498" stroke="#34d399" stroke-width="1" marker-end="url(#arrowRight)"/>
+
+  <!-- Compute Action -->
+  <rect x="338" y="476" width="110" height="44" rx="6" fill="#0a0a0f" stroke="#334155" stroke-width="0.8"/>
+  <text x="393" y="496" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Compute Action</text>
+  <text x="393" y="510" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">PID + Schedule</text>
+
+  <line x1="448" y1="498" x2="476" y2="498" stroke="#34d399" stroke-width="1" marker-end="url(#arrowRight)"/>
+
+  <!-- MQTT Publish -->
+  <rect x="482" y="476" width="110" height="44" rx="6" fill="#0a0a0f" stroke="#fbbf24" stroke-width="0.8"/>
+  <text x="537" y="496" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">MQTT Publish</text>
+  <text x="537" y="510" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Command to node</text>
+
+  <line x1="592" y1="498" x2="620" y2="498" stroke="#34d399" stroke-width="1" marker-end="url(#arrowRight)"/>
+
+  <!-- Actuate -->
+  <rect x="626" y="476" width="120" height="44" rx="6" fill="#0a0a0f" stroke="#fbbf24" stroke-width="0.8"/>
+  <text x="686" y="496" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Actuate</text>
+  <text x="686" y="510" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Fan / Heat / Mist / Light</text>
+
+  <!-- Feedback arrow -->
+  <path d="M686,520 L686,542 L105,542 L105,520" stroke="#34d399" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#arrowDown2)"/>
+  <text x="395" y="554" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" opacity="0.7">Feedback loop  (closed-loop control)</text>
+
+  <!-- Footer -->
+  <text x="400" y="588" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Open Source  |  github.com/sporeprintai/sporeprint</text>
+</svg>
