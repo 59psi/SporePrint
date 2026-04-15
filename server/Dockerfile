@@ -1,13 +1,15 @@
-FROM python:3.12-slim
+FROM python:3.12.12-slim
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    adduser --disabled-password --no-create-home appuser
 
 WORKDIR /app
 
 COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --root-user-action=ignore .
 
 COPY . .
 
-RUN adduser --disabled-password --no-create-home appuser
 USER appuser
 
 EXPOSE 8000
