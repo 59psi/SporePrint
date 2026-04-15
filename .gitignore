@@ -37,3 +37,4 @@ models/weights/*.onnx
 models/datasets/*.jpg
 models/datasets/*.png
 .playwright-mcp/
+CLAUDE.md
