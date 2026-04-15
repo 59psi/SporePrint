@@ -166,6 +166,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "enriched manure"],
         contamination_risks=["Trichoderma — extended 14-21 day colonization gives trich a much larger window to establish", "Overlay stalling — thick mycelial mat prevents pinning and traps moisture, creating bacterial pockets", "Bacterial blotch — PE's dense, slow-growing mycelium is more susceptible to wet bacterial spots", "Metabolite confusion — yellow exudate is normal for PE but can mask early contamination signs"],
+        photo_references={
+            "colonization": "Search: Penis Envy cubensis mycelium colonization overlay",
+            "fruiting": "Search: Penis Envy mushroom fruiting dense",
+        },
     ),
 
     SpeciesProfile(
@@ -231,6 +235,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "enriched manure"],
         contamination_risks=["Trichoderma — 21-30 day colonization is the highest contamination exposure of any cubensis", "Severe overlay — even more prone than PE; multiple tek strategies often needed", "Bacterial contamination from extended wet conditions during month-long colonization", "Stalling confusion — APE naturally stalls and restarts; distinguishing from contamination stall is difficult"],
+        photo_references={
+            "colonization": "Search: Albino Penis Envy mycelium colonization white",
+            "fruiting": "Search: APE albino penis envy mushroom fruiting",
+        },
     ),
 
     SpeciesProfile(
@@ -297,6 +305,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based"],
         contamination_risks=["Standard cubensis contamination profile — Trichoderma, cobweb, bacterial", "Enigma mutation form takes longer to mature, increasing contamination window", "Blob/brain structures can trap moisture and harbor bacterial pockets", "Bubble wrap tek for enigma form creates humid microclimate that can encourage bacteria"],
+        photo_references={
+            "colonization": "Search: Tidal Wave cubensis mycelium colonization",
+            "fruiting": "Search: Tidal Wave mushroom fruiting cluster",
+        },
     ),
 
     SpeciesProfile(
@@ -362,6 +374,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["pasteurized manure", "CVG with manure", "horse dung"],
         contamination_risks=["Bacterial contamination from manure substrate — proper pasteurization is critical", "Longer colonization (10-18 days) at warm temps creates favorable conditions for bacteria", "Pin aborts from humidity fluctuations — Pan cyans are very sensitive to drying", "Competitor molds on improperly pasteurized manure substrate"],
+        photo_references={
+            "colonization": "Search: Panaeolus cyanescens mycelium colonization casing",
+            "fruiting": "Search: Panaeolus cyanescens blue meanie fruiting",
+        },
     ),
 
     SpeciesProfile(
@@ -428,6 +444,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "pasteurized straw"],
         contamination_risks=["Standard cubensis contamination profile — Trichoderma, cobweb, bacterial", "Fast colonizer helps compete, making contamination risk lower than most cubensis", "Warmer colonization temps can encourage bacterial growth if substrate is too wet", "Standard sterile technique sufficient — lower risk than PE/APE varieties"],
+        photo_references={
+            "colonization": "Search: Psilocybe natalensis mycelium colonization",
+            "fruiting": "Search: Psilocybe natalensis fruiting body",
+        },
     ),
 
     SpeciesProfile(
@@ -477,6 +497,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["rye grain", "brown rice flour", "wild bird seed"],
         contamination_risks=["Green mold (Trichoderma) — long 2-4 month sealed cycle means any initial contamination has time to take over", "Bacterial contamination from improperly sterilized grain", "Wet rot if grain is over-hydrated before sterilization", "Cannot be inspected during growth — contamination discovered only at harvest"],
+        photo_references={
+            "colonization": "Search: Psilocybe tampanensis mycelium sclerotia formation",
+            "fruiting": "Search: Psilocybe tampanensis philosopher stone truffle",
+        },
     ),
 
     SpeciesProfile(
@@ -533,6 +557,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["rye grain", "brown rice flour", "wild bird seed"],
         contamination_risks=["Green mold during long sealed incubation — same risk profile as tampanensis", "Bacterial contamination from improperly sterilized grain", "Cannot inspect during growth — contamination only visible at harvest", "Wet rot from over-hydrated grain"],
+        photo_references={
+            "colonization": "Search: Psilocybe mexicana mycelium sclerotia",
+            "fruiting": "Search: Psilocybe mexicana fruiting body",
+        },
     ),
 
     SpeciesProfile(
@@ -598,6 +626,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["hardwood chips (alder)", "hardwood sawdust", "cardboard"],
         contamination_risks=["Competitor molds on outdoor beds — green mold, black mold from neighboring decomposers", "Slugs and insects consuming fruits — common pest issue in outdoor beds", "Drying out during summer months — kills mycelium if bed goes fully dry", "Indoor attempts have high failure rate — azurescens strongly prefers outdoor ecology"],
+        photo_references={
+            "colonization": "Search: Psilocybe azurescens mycelium wood chip colonization",
+            "fruiting": "Search: Psilocybe azurescens fruiting body caramel cap",
+        },
     ),
 
     SpeciesProfile(
@@ -664,6 +696,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "enriched hardwood"],
         contamination_risks=["Standard cubensis contamination profile — Trichoderma, cobweb, bacterial", "Warmer colonization temps (75-82°F) can encourage bacterial growth on wet substrate", "Less documented cultivation than cubensis — fewer troubleshooting resources available", "Subtropical species may struggle in cold/dry climates"],
+        photo_references={
+            "colonization": "Search: Psilocybe zapotecorum mycelium colonization",
+            "fruiting": "Search: Psilocybe zapotecorum fruiting body",
+        },
     ),
 
     # ─── GOURMET SPECIES ────────────────────────────────────────────────
@@ -786,6 +822,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["straw", "hardwood sawdust", "masters mix"],
         contamination_risks=["Bacterial contamination favored by warm, humid conditions this species prefers", "Trichoderma on under-pasteurized straw", "Fruit fly attraction in warm growing environments", "Spore load at maturity — similar to other oysters"],
+        photo_references={
+            "colonization": "Search: Pleurotus pulmonarius mycelium colonization bag",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_pulmonarius_LC0228.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1169,6 +1209,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["straw", "hardwood sawdust", "masters mix"],
         contamination_risks=["Bacterial contamination from warm, humid tropical conditions", "Trichoderma on poorly pasteurized substrate", "Fruit fly infestation in warm growing environment", "Short shelf life — does not dry well, must be used fresh or quickly"],
+        photo_references={
+            "colonization": "Search: Pleurotus citrinopileatus mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_citrinopileatus_01.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1232,6 +1276,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "masters mix"],
         contamination_risks=["Trichoderma from slow colonization on supplemented substrate", "Bacterial contamination at high humidity levels", "Green mold if sterilization is insufficient", "Competitor molds on damaged or cracked substrate blocks"],
+        photo_references={
+            "colonization": "Search: Pholiota adiposa mycelium colonization sawdust",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pholiota_adiposa_2012_G1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1295,6 +1343,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "masters mix", "straw with supplements"],
         contamination_risks=["Trichoderma from the 21-35 day colonization window", "Bacterial contamination on exposed top-fruiting surfaces", "Green mold if sterilization of supplemented substrate is inadequate", "Competitor molds during the long colonization phase"],
+        photo_references={
+            "colonization": "Search: Cyclocybe aegerita mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Agrocybe_aegerita_2010_G1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1359,6 +1411,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "hardwood sawdust", "logs"],
         contamination_risks=["Bacterial contamination from extreme humidity levels (95-100%)", "Green mold if humidity masks early contamination signs", "Trichoderma during colonization phase", "Bacterial blotch from standing water on substrate surface"],
+        photo_references={
+            "colonization": "Search: Pholiota nameko mycelium colonization sawdust block",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Nameko_Pholiota_nameko.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1422,6 +1478,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "hardwood sawdust"],
         contamination_risks=["Cold-loving contaminants (Penicillium) — enoki fruiting temps favor cold-adapted molds", "Bacterial contamination from high humidity in cold conditions", "Trichoderma during warm colonization phase", "Competitor molds take advantage when enoki is moved to cold and grows slowly"],
+        photo_references={
+            "colonization": "Search: Flammulina velutipes mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Flammulina_velutipes_cultivation.jpg",
+            "harvest": "https://commons.wikimedia.org/wiki/File:Enoki_(Flammulina_velutipes).jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1476,6 +1537,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "hardwood sawdust", "logs"],
         contamination_risks=["Bacterial contamination from warm, humid growing conditions", "Trichoderma during colonization", "Warm conditions favor bacterial and mold growth", "Insect attraction in warm environments"],
+        photo_references={
+            "colonization": "Search: Auricularia auricula-judae mycelium colonization sawdust",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Auricularia_auricula-judae_(xndr).jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1539,6 +1604,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["composted manure", "pasteurized straw", "garden soil mix"],
         contamination_risks=["Bacterial contamination from manure-based substrate", "Auto-digestion (deliquescence) if harvest timing is missed — not contamination but total crop loss", "Competitor molds on improperly composted substrate", "Short fruiting window makes daily monitoring essential"],
+        photo_references={
+            "colonization": "Search: Coprinus comatus mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Coprinus_comatus_2009_G1.jpg",
+            "harvest": "Search: Coprinus comatus shaggy mane fresh harvest before deliquescence",
+        },
     ),
 
     SpeciesProfile(
@@ -1602,6 +1672,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "masters mix", "elm/beech sawdust"],
         contamination_risks=["Trichoderma during slower colonization (14-28 days)", "Bacterial contamination at high humidity", "Slower than Pleurotus oysters — more vulnerable to contamination", "Green mold on insufficient sterilized supplemented substrate"],
+        photo_references={
+            "colonization": "Search: Hypsizygus ulmarius mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Hypsizygus_ulmarius.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1665,6 +1739,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["composted leaf litter", "composted straw", "garden compost"],
         contamination_risks=["Competitor molds on compost substrate — outdoor beds have more exposure", "Slow colonization (21-42 days) creates a long contamination window", "Bacterial contamination in wet, cool conditions", "MUST be cooked — raw blewit causes gastrointestinal issues (not a contamination issue but a safety concern)"],
+        photo_references={
+            "colonization": "Search: Lepista nuda wood blewit mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Lepista_nuda_2011_G1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1721,6 +1799,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood sawdust"],
         contamination_risks=["Co-culture complexity — failure of host fungus means no Tremella fruiting", "Bacterial contamination from extreme humidity levels", "Warm tropical conditions favor bacterial growth", "Competitor molds can outcompete the slower Tremella"],
+        photo_references={
+            "colonization": "Search: Tremella fuciformis mycelium colonization with companion",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Tremella_fuciformis_2008_G1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1776,6 +1858,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["rice straw", "cotton waste", "oil palm waste"],
         contamination_risks=["Bacterial contamination from extremely warm, humid conditions", "Fast growing molds that also thrive at 86-95°F", "Very short shelf life post-harvest — process immediately", "Non-sterile substrate at high temperatures creates ideal conditions for competitors"],
+        photo_references={
+            "colonization": "Search: Volvariella volvacea mycelium colonization rice straw",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Volvariella_volvacea.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1831,6 +1917,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["conifer wood", "pine/fir sawdust", "supplemented softwood"],
         contamination_risks=["Trichoderma during 30-60 day colonization — very high exposure window", "Competitor molds on softwood substrate", "Bacterial contamination during extended fruiting period", "Very slow at every stage — contaminants have maximum opportunity"],
+        photo_references={
+            "colonization": "Search: Sparassis crispa mycelium colonization wood substrate",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Sparassis_crispa_JPG1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -1887,6 +1977,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["hardwood logs (oak)", "hardwood sawdust blocks", "buried wood"],
         contamination_risks=["Competitor fungi colonizing the same logs — common in outdoor cultivation", "Insect and slug damage to emerging fruit bodies", "Very slow colonization gives maximum exposure to outdoor contaminants", "CRITICAL: Never harvest from eucalyptus, cedar, or conifer hosts — can concentrate toxic compounds"],
+        photo_references={
+            "colonization": "Search: Laetiporus sulphureus mycelium colonization log",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Laetiporus_sulphureus_JPG01.jpg",
+            "harvest": "Search: chicken of the woods harvest fresh young tender",
+        },
     ),
 
     # ─── MEDICINAL SPECIES ──────────────────────────────────────────────
@@ -1950,6 +2045,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood", "masters mix"],
         contamination_risks=["Trichoderma during slow 21-35 day colonization", "Green mold from insufficiently sterilized substrate", "Bacterial contamination at high humidity during fruiting", "Slow colonization gives contaminants more time to establish"],
+        photo_references={
+            "colonization": "Search: Hypsizygus tessellatus bunashimeji mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Hypsizygus_tessellatus.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2022,6 +2121,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["composted manure", "commercial mushroom compost"],
         contamination_risks=["Green mold (Trichoderma) on improperly composted substrate", "Cobweb mold on wet casing layers", "Bacterial blotch from over-watering the casing", "Competitor molds from inadequate Phase II pasteurization"],
+        photo_references={
+            "colonization": "Search: Agaricus bisporus mycelium colonization compost casing",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Agaricus_bisporus_2009_G1.jpg",
+            "harvest": "https://commons.wikimedia.org/wiki/File:Champignons_Agaricus.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2077,6 +2181,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["hardwood chips", "straw", "cardboard", "garden beds"],
         contamination_risks=["Slug and insect damage in outdoor beds", "Competitor fungi in outdoor environment — wine cap is aggressive and usually wins", "Drying out during summer months — needs regular watering", "Minimal contamination concerns — wine cap is one of the most forgiving species"],
+        photo_references={
+            "colonization": "Search: Stropharia rugosoannulata mycelium colonization wood chips",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Stropharia_rugosoannulata_2008_G1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2140,6 +2248,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["composted manure", "pasteurized straw with supplements"],
         contamination_risks=["Bacterial contamination from warm, humid composted substrate", "Green mold during colonization phase", "Competitor molds on improperly composted substrate", "Warm growing conditions favor both beneficial growth and contaminants"],
+        photo_references={
+            "colonization": "Search: Agaricus subrufescens mycelium colonization compost",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Agaricus_subrufescens.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2201,6 +2313,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood (oak)", "masters mix"],
         contamination_risks=["Trichoderma during 30-60 day colonization — very high exposure window", "Green mold on improperly sterilized supplemented substrate", "Bacterial contamination during long fruiting period", "Outdoor log cultivation exposed to competitor fungi and insects"],
+        photo_references={
+            "colonization": "Search: Grifola frondosa mycelium colonization sawdust block",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Grifola_frondosa.jpg",
+            "harvest": "https://commons.wikimedia.org/wiki/File:Grifola_frondosa_in_the_wild.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2443,6 +2560,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented birch hardwood", "birch sawdust"],
         contamination_risks=["Extremely high contamination risk due to 60-120 day colonization", "Green mold can take over during the months-long colonization", "Bacterial contamination from moisture accumulation over months", "Laboratory-grade sterile technique is not optional for chaga cultivation"],
+        photo_references={
+            "colonization": "Search: Inonotus obliquus mycelium colonization grain",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Inonotus_obliquus.jpg",
+            "conk": "Search: chaga conk sclerotium birch tree wild",
+        },
     ),
 
     SpeciesProfile(
@@ -2498,6 +2620,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["supplemented hardwood (mulberry)", "hardwood sawdust"],
         contamination_risks=["Very high contamination risk from 30-90+ day colonization", "Green mold during extended growth periods", "Bacterial contamination from moisture over months", "Laboratory sterile technique required"],
+        photo_references={
+            "colonization": "Search: Phellinus linteus mycelium colonization sawdust",
+            "fruiting": "Search: Phellinus linteus meshima bracket fungus fruiting",
+        },
     ),
 
     # ─── NEW SPECIES (MEDICINAL / NOVELTY) ─────────────────────────────
@@ -2536,6 +2662,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["old-growth conifer sawdust", "supplemented sawdust"],
         contamination_risks=["Extremely high contamination risk — 90-365+ day colonization", "Any contamination during the months/years of growth is catastrophic", "Laboratory-grade sterile technique is mandatory", "Not practical outside research laboratory settings"],
+        photo_references={
+            "colonization": "Search: Laricifomes officinalis mycelium colonization",
+            "fruiting": "Search: Laricifomes officinalis agarikon conk old-growth tree",
+        },
     ),
 
     SpeciesProfile(
@@ -2585,6 +2715,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["hardwood chips", "hardwood sawdust", "hardwood logs", "oat flakes"],
         contamination_risks=["Green mold during slow 28-42 day colonization", "Bacterial contamination in humid terrarium conditions", "Slow colonization gives contaminants time to establish", "NOT EDIBLE — do not consume even if fruiting succeeds"],
+        photo_references={
+            "colonization": "Search: Panellus stipticus mycelium colonization hardwood",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Panellus_stipticus_Oct_09.jpg",
+            "bioluminescence": "Search: Panellus stipticus bioluminescent glow dark",
+        },
     ),
 
     SpeciesProfile(
@@ -2633,6 +2768,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["hardwood chips", "oat flakes"],
         contamination_risks=["High risk from slow colonization in warm conditions", "Bacterial contamination from warm, humid environment", "Temperature sensitivity — fluctuations cause culture failure", "NOT EDIBLE — do not consume"],
+        photo_references={
+            "colonization": "Search: Neonothopanus nambi tropical mycelium colonization",
+            "fruiting": "Search: Neonothopanus nambi glowing mushroom bioluminescent",
+        },
     ),
 
     SpeciesProfile(
@@ -2672,6 +2811,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["grain", "agar", "polyurethane plastic"],
         contamination_risks=["Standard grain contamination risks", "Warm conditions favor bacterial competitors", "NOT EDIBLE — safety concern if confused with food production", "Research organism — handle with appropriate caution"],
+        photo_references={
+            "colonization": "Search: Pestalotiopsis microspora mycelium colonization agar plate",
+            "fruiting": "Search: Pestalotiopsis microspora fungal culture polyurethane degradation",
+        },
     ),
 
     SpeciesProfile(
@@ -2720,6 +2863,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["hardwood sawdust", "hardwood chips", "dead wood"],
         contamination_risks=["Minimal contamination risk — one of the most aggressive colonizers on Earth", "May actually contaminate OTHER cultures if not properly contained", "Low culinary value — primarily research interest", "Some individuals have sensitivity — cook thoroughly if consuming"],
+        photo_references={
+            "colonization": "Search: Schizophyllum commune mycelium colonization",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Schizophyllum_commune_2006_G1.jpg",
+        },
     ),
 
     SpeciesProfile(
@@ -2766,6 +2913,11 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["grass/garden soil", "compost"],
         contamination_risks=["Outdoor environment — no control over competing organisms", "Underground growth is invisible — no way to monitor", "Completely unpredictable results — may never fruit", "CRITICAL: Only eat when interior is pure white — yellow/green interior is not edible"],
+        photo_references={
+            "colonization": "Search: Calvatia gigantea mycelium colonization substrate",
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Calvatia_gigantea_2009_G2.jpg",
+            "harvest": "Search: giant puffball harvest fresh white interior",
+        },
     ),
 
     # ─── CUBENSIS STRAIN VARIANTS ───────────────────────────────────────
@@ -2819,6 +2971,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Z-Strain cubensis mycelium rhizomorphic colonization",
+            "fruiting": "Search: Z-Strain cubensis mushroom fruiting dense cluster",
+        },
     ),
 
     SpeciesProfile(
@@ -2871,6 +3027,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Mazatapec cubensis mycelium colonization",
+            "fruiting": "Search: Mazatapec cubensis mushroom fruiting",
+        },
     ),
 
     SpeciesProfile(
@@ -2923,6 +3083,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Ecuadorian cubensis mycelium colonization",
+            "fruiting": "Search: Ecuadorian cubensis mushroom fruiting tall stems",
+        },
     ),
 
     SpeciesProfile(
@@ -2975,6 +3139,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Cambodian cubensis mycelium fast colonization",
+            "fruiting": "Search: Cambodian cubensis mushroom fruiting cluster",
+        },
     ),
 
     SpeciesProfile(
@@ -3027,6 +3195,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Jack Frost cubensis mycelium colonization white",
+            "fruiting": "Search: Jack Frost cubensis mushroom fruiting white caps",
+        },
     ),
 
     SpeciesProfile(
@@ -3077,6 +3249,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based"],
         contamination_risks=["Trichoderma — 21-35 day colonization creates a wide contamination window", "Clone-only propagation means culture degradation is a risk over time", "Blob structures can trap moisture and harbor bacteria", "Extended fruiting period increases contamination exposure"],
+        photo_references={
+            "colonization": "Search: Enigma cubensis mycelium colonization blob",
+            "fruiting": "Search: Enigma cubensis mutation brain-like fruiting body",
+        },
     ),
 
     SpeciesProfile(
@@ -3129,6 +3305,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Amazonian cubensis mycelium colonization",
+            "fruiting": "Search: Amazonian cubensis mushroom fruiting tall",
+        },
     ),
 
     SpeciesProfile(
@@ -3181,6 +3361,10 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Thai cubensis mycelium colonization",
+            "fruiting": "Search: Thai cubensis mushroom fruiting cluster",
+        },
     ),
 
     SpeciesProfile(
@@ -3233,5 +3417,9 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         ],
         substrate_preference_ranking=["CVG", "manure-based", "BRF"],
         contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "Search: Albino A+ cubensis mycelium colonization",
+            "fruiting": "Search: Albino A+ cubensis mushroom fruiting white leucistic",
+        },
     ),
 ]
