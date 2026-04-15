@@ -20,7 +20,7 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 
 **When**: Working on the Python FastAPI backend under `server/app/`.
 
-**Context**: Python 3.11+, FastAPI, aiosqlite (raw SQL, no ORM), aiomqtt, python-socketio, Pydantic v2. No auth — single operator, local network.
+**Context**: Python 3.11+, FastAPI, aiosqlite (raw SQL, no ORM), aiomqtt, python-socketio, Pydantic v2. No auth — single operator, local network. 17 server modules, 25 SQLite tables, 80+ endpoints across 16 router groups.
 
 **Key constraints**:
 - All imports at module top (no inline imports)
@@ -33,9 +33,11 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - Weather providers: subclass `WeatherProvider` in `weather/providers.py`, register in `get_provider()`
 - Cloud connector: opt-in via `SPOREPRINT_CLOUD_URL`. No-op when unconfigured. Late import `mqtt_publish` in command handler to avoid circular dep with mqtt.py.
 - Health metrics: `psutil` for system stats. `sensors_temperatures()` wrapped in try/except (macOS compat).
-- Background tasks (MQTT, weather, retention, retrain, cloud): started in `main.py` lifespan
+- Background tasks (MQTT, weather, retention, retrain, cloud, weather_history aggregation): started in `main.py` lifespan
 - Config via `pydantic-settings` with `SPOREPRINT_` env prefix
-- Schema defined in `db.py` SCHEMA constant (20 tables)
+- Schema defined in `db.py` SCHEMA constant (25 tables)
+- New v3.0 modules (planner/, contamination/, cultures/, chambers/, experiments/, labels/) follow same patterns: models.py, service.py, router.py
+- Additional dependencies: qrcode[pil], icalendar, matplotlib
 
 ## frontend-agent
 
@@ -65,7 +67,7 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 
 **When**: Adding or modifying species cultivation profiles.
 
-**Context**: 40 species profiles define per-phase environmental targets that drive the entire automation system. Profiles are in `server/app/species/profiles.py`. Changes cascade to automation rules, vision analysis prompts, session defaults, weather impact analysis, and UI display.
+**Context**: 55 species profiles define per-phase environmental targets that drive the entire automation system. Profiles are in `server/app/species/profiles.py`. Changes cascade to automation rules, vision analysis prompts, session defaults, weather impact analysis, and UI display. Each profile now includes TEK guides, substrate recipes, contamination risks, photo references, and regional notes.
 
 **Key constraints**:
 - All temperatures in Fahrenheit
