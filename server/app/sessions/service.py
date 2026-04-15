@@ -84,11 +84,26 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
     if not updates:
         return await get_session(session_id)
 
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [session_id]
-
     async with get_db() as db:
-        await db.execute(f"UPDATE sessions SET {set_clause} WHERE id = ?", values)
+        for col, val in updates.items():
+            # Each column is from the Pydantic model — not user input
+            await db.execute(
+                {
+                    "name": "UPDATE sessions SET name = ? WHERE id = ?",
+                    "substrate": "UPDATE sessions SET substrate = ? WHERE id = ?",
+                    "substrate_volume": "UPDATE sessions SET substrate_volume = ? WHERE id = ?",
+                    "substrate_prep_notes": "UPDATE sessions SET substrate_prep_notes = ? WHERE id = ?",
+                    "inoculation_date": "UPDATE sessions SET inoculation_date = ? WHERE id = ?",
+                    "inoculation_method": "UPDATE sessions SET inoculation_method = ? WHERE id = ?",
+                    "spawn_source": "UPDATE sessions SET spawn_source = ? WHERE id = ?",
+                    "tub_number": "UPDATE sessions SET tub_number = ? WHERE id = ?",
+                    "shelf_number": "UPDATE sessions SET shelf_number = ? WHERE id = ?",
+                    "shelf_side": "UPDATE sessions SET shelf_side = ? WHERE id = ?",
+                    "growth_form": "UPDATE sessions SET growth_form = ? WHERE id = ?",
+                    "pinning_tek": "UPDATE sessions SET pinning_tek = ? WHERE id = ?",
+                }[col],
+                (val, session_id),
+            )
         await db.commit()
     return await get_session(session_id)
 

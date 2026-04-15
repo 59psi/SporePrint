@@ -83,11 +83,17 @@ async def get_system_metrics() -> dict:
     table_counts = {}
     try:
         async with get_db() as db:
-            for table in ["telemetry_readings", "sessions", "weather_readings",
-                          "vision_frames", "automation_firings", "telemetry_rollups"]:
-                cursor = await db.execute(f"SELECT COUNT(*) as cnt FROM {table}")
+            for name, query in [
+                ("telemetry_readings", "SELECT COUNT(*) as cnt FROM telemetry_readings"),
+                ("sessions", "SELECT COUNT(*) as cnt FROM sessions"),
+                ("weather_readings", "SELECT COUNT(*) as cnt FROM weather_readings"),
+                ("vision_frames", "SELECT COUNT(*) as cnt FROM vision_frames"),
+                ("automation_firings", "SELECT COUNT(*) as cnt FROM automation_firings"),
+                ("telemetry_rollups", "SELECT COUNT(*) as cnt FROM telemetry_rollups"),
+            ]:
+                cursor = await db.execute(query)
                 row = await cursor.fetchone()
-                table_counts[table] = row["cnt"]
+                table_counts[name] = row["cnt"]
     except Exception:
         pass
 
