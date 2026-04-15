@@ -74,16 +74,16 @@ SporePrint/
 │       ├── lighting_node/     # Multi-channel LED (white, blue, red, far-red)
 │       └── cam_node/          # ESP32-CAM MJPEG + frame POST
 ├── server/                    # Python FastAPI backend
-│   ├── tests/                 # pytest + pytest-asyncio (131 tests)
+│   ├── tests/                 # pytest + pytest-asyncio
 │   └── app/
 │       ├── main.py            # App entrypoint + Socket.IO + background tasks
 │       ├── config.py          # Pydantic settings (env vars)
-│       ├── db.py              # SQLite schema (20 tables) + connection manager
+│       ├── db.py              # SQLite schema (25 tables) + connection manager
 │       ├── mqtt.py            # MQTT subscriber + weather enrichment
 │       ├── telemetry/         # Sensor data ingest + rollup-aware history
 │       ├── sessions/          # Grow session lifecycle + location tracking
 │       ├── automation/        # Rules engine, smart plugs, overrides
-│       ├── species/           # 40 species profiles
+│       ├── species/           # 40 species profiles + wizard, substrate calc, shopping list
 │       ├── vision/            # Frame ingest, local CNN, Claude Vision
 │       ├── weather/           # Multi-provider weather, prediction, forecasts
 │       ├── retention/         # Tiered data compression (raw → 5min → hourly → daily)
@@ -93,15 +93,22 @@ SporePrint/
 │       ├── cloud/             # Cloud connector (opt-in relay for mobile app)
 │       ├── health/            # System metrics (CPU, memory, disk, MQTT, clients)
 │       ├── hardware/          # Node registry + commands
-│       └── websocket/         # Socket.IO event definitions
+│       ├── websocket/         # Socket.IO event definitions
+│       ├── planner/           # Seasonal grow planner (recommend, calendar, warnings)
+│       ├── contamination/     # Contaminant library + Claude Vision ID
+│       ├── cultures/          # Genetics pipeline with lineage trees
+│       ├── chambers/          # Multi-chamber management + comparison
+│       ├── experiments/       # A/B experiment mode
+│       └── labels/            # QR code generation
 ├── ui/                        # React 18 + TypeScript + Vite
 │   └── src/
-│       ├── pages/             # Dashboard, Sessions, Vision, Automation, etc.
+│       ├── pages/             # 15 pages: Dashboard, Sessions, Vision, Automation, Species, Builder, Transcripts, Settings, Planner, Wizard, ContaminationGuide, Cultures, Chambers, Experiments, ShoppingList
 │       ├── components/        # Gauges, charts, timelines, wiring diagrams
 │       ├── stores/            # Zustand stores (telemetry, sessions)
 │       ├── api/               # HTTP client + Socket.IO
+│       ├── lib/               # units.ts (displayTemp, displayWeight)
 │       ├── constants/         # Shared phases, colors
-│       └── __tests__/         # vitest (20 tests)
+│       └── __tests__/
 ├── config/                    # Mosquitto config
 ├── docker-compose.yml
 └── CLAUDE.md                  # Full system specification
@@ -142,6 +149,16 @@ All settings via environment variables (prefix `SPOREPRINT_`) or `.env` file:
 - **Push Notifications**: 3-tier ntfy alerts — critical (immediate), warning (5min dedup), info (hourly batch). Weather-predictive alerts up to 72h out.
 - **Cloud Connector**: Opt-in WebSocket relay for mobile app access. Forwards telemetry upstream, receives remote commands with tier validation (premium = full control, free = read-only). Dormant when unconfigured.
 - **System Health**: CPU, memory, disk, temperature metrics via psutil. MQTT broker stats. Socket.IO client tracking. Background task registry.
+- **Seasonal Grow Planner**: Species recommendations based on local climate history, iCal calendar export, weather-based warnings for active sessions.
+- **Species Selector Wizard**: Guided questionnaire with weighted scoring to recommend the best species for your setup and experience level.
+- **Contamination Library**: 7 contaminant profiles with symptoms, treatment protocols, and Claude Vision identification from photos.
+- **Culture Tracking**: Genetics pipeline with lineage tree visualization, transfer logs, generation tracking, and source/parent relationships.
+- **Multi-Chamber Management**: Named chamber profiles with independent environment targets and side-by-side comparison views.
+- **A/B Experiment Mode**: Controlled experiments comparing conditions, substrates, or species across sessions with statistical analysis.
+- **QR Code Labels**: Generate printable QR codes for cultures, chambers, and sessions with embedded metadata.
+- **Unit Preferences**: User-selectable temperature (F/C) and weight (g/oz) units throughout the UI.
+- **Drying Tracker**: Per-harvest drying log with weight tracking over time.
+- **Substrate Calculator**: Per-species substrate amount calculator with custom container dimensions.
 
 ## Development
 
@@ -151,8 +168,8 @@ cd server && ruff check app/ && pytest
 cd ui && npm run check
 
 # Or individually
-cd server && pytest                    # 131 backend tests
-cd ui && npm test                      # 20 frontend tests
+cd server && pytest                    # backend tests
+cd ui && npm test                      # frontend tests
 cd ui && npm run build                 # Full production build
 
 # Validate Docker Compose
