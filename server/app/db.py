@@ -343,10 +343,30 @@ CREATE INDEX IF NOT EXISTS idx_drying_harvest ON drying_log(harvest_id);
 """
 
 
+async def _add_column_if_missing(db, pragma_sql: str, column: str, alter_sql: str):
+    """Add a column to an existing table if it doesn't exist yet."""
+    try:
+        cursor = await db.execute(pragma_sql)
+        columns = {row[1] for row in await cursor.fetchall()}
+        if column not in columns:
+            await db.execute(alter_sql)
+    except Exception:
+        pass  # Table doesn't exist yet (will be created by SCHEMA)
+
+
 async def init_db():
     Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(settings.database_path) as db:
         await db.executescript(SCHEMA)
+        # Migrations for databases created before v3.0
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(weather_readings)", "provider",
+            "ALTER TABLE weather_readings ADD COLUMN provider TEXT",
+        )
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(sessions)", "chamber_id",
+            "ALTER TABLE sessions ADD COLUMN chamber_id INTEGER REFERENCES chambers(id)",
+        )
         await db.commit()
 
 
