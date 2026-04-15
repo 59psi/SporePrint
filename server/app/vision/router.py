@@ -19,6 +19,10 @@ async def ingest_frame(
     x_resolution: str = Header(default=""),
     x_flash_used: str = Header(default="1"),
 ):
+    # Validate content type before reading file body
+    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(415, "Only JPEG, PNG, and WebP images are accepted")
+
     ts = float(x_timestamp) if x_timestamp else time.time()
     storage = Path(settings.vision_storage)
     storage.mkdir(parents=True, exist_ok=True)
@@ -27,6 +31,8 @@ async def ingest_frame(
     file_path = storage / filename
 
     content = await file.read()
+    if len(content) > 20 * 1024 * 1024:  # 20MB limit
+        raise HTTPException(413, "File too large (max 20MB)")
     file_path.write_bytes(content)
 
     # Get active session
