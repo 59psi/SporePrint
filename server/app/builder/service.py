@@ -39,10 +39,10 @@ async def _build_system_context() -> str:
 
     # GPIO allocation reference (known assignments)
     context_parts.append("""## Known GPIO Allocations
-- Climate Node: I2C (SDA=21, SCL=22), SHT31 0x44, SCD40 0x62, BH1750 0x23
+- Climate Node: I2C (SDA=21, SCL=22), SHT31 0x44, SCD41 0x62, BH1750 0x23
 - Relay Node: GPIO 25 (fae), 26 (exhaust), 27 (circulation), 14 (aux) — all IRLZ44N
 - Lighting Node: GPIO 25 (white), 26 (blue), 27 (red), 14 (far_red) — all IRLZ44N
-- Camera Node: AI-Thinker pinout, flash GPIO 4
+- Camera Node: ESP32-S3 CAM (USB-C, OV5640) or classic AI-Thinker (OV2640)
 
 ## MQTT Topic Convention
 - sporeprint/{node_id}/telemetry — sensor data

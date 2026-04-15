@@ -5,46 +5,49 @@ from .models import Component, WiringConnection, HardwareTier
 # ── Shared components ───────────────────────────────────────────
 
 _RPI = Component(
-    name="Raspberry Pi 4 (4GB)",
+    name="Raspberry Pi 5 (4GB)",
     role="Server — runs SporePrint backend, MQTT broker, and web UI",
-    price_approx="$55",
-    url="https://www.amazon.com/dp/B07TC2BK1X",
+    price_approx="$60",
+    url="https://www.amazon.com/s?k=raspberry+pi+5+4gb",
     category="controller",
-    notes="2GB model works but 4GB recommended. Needs microSD card (32GB+), USB-C power supply (5V 3A).",
+    notes="2GB model works but 4GB recommended. Needs microSD card (32GB+), USB-C power supply (5V 5A). "
+          "Alternative: Raspberry Pi 4 (4GB) ~$55 — still available, cheaper.",
 )
 
 _RPI_SD = Component(
     name="microSD Card (32GB+)",
     role="Raspberry Pi boot + data storage",
     price_approx="$8",
-    url="https://www.amazon.com/dp/B09X7BK27V",
+    url="https://www.amazon.com/s?k=microsd+card+32gb+a1",
     category="misc",
     notes="Class 10 / A1 rated minimum. 64GB recommended for vision frame storage.",
 )
 
 _RPI_PSU = Component(
-    name="USB-C Power Supply (5V 3A)",
+    name="USB-C Power Supply (5V 5A)",
     role="Raspberry Pi power",
-    price_approx="$8",
-    url="https://www.amazon.com/dp/B07TYQRXTK",
+    price_approx="$12",
+    url="https://www.amazon.com/s?k=raspberry+pi+5+power+supply+27w",
     category="power",
-    notes="Official Raspberry Pi PSU recommended for stability.",
+    notes="Official Raspberry Pi 27W PSU recommended for Pi 5 stability. "
+          "Alternative: any USB-C PD supply (5V 5A). Pi 4 users can use 5V 3A.",
 )
 
 _ESP32 = Component(
-    name="ESP32-WROOM-32 DevKit",
+    name="ESP32-S3 DevKit",
     role="Microcontroller for sensor/actuator nodes",
-    price_approx="$6",
-    url="https://www.amazon.com/dp/B08D5ZD528",
+    price_approx="$8",
+    url="https://www.amazon.com/s?k=esp32-s3+devkit",
     category="controller",
-    notes="Any ESP32 devkit with USB works. CP2102 or CH340 USB chip.",
+    notes="USB-C, more GPIO, better WiFi. Runs the same firmware as classic ESP32. "
+          "Alternative: ESP32-WROOM-32 DevKit (~$6) — classic, widely available, works identically.",
 )
 
 _SHT31 = Component(
     name="SHT31-D Sensor Breakout",
     role="Temperature + humidity sensor (I2C, 0x44)",
     price_approx="$7",
-    url="https://www.amazon.com/dp/B07ZSZW92P",
+    url="https://www.amazon.com/s?k=sht31+sensor+breakout",
     category="sensor",
     notes="Accuracy: +/-0.3C, +/-2% RH. I2C address 0x44.",
 )
@@ -53,26 +56,27 @@ _BH1750 = Component(
     name="BH1750 Light Sensor Breakout",
     role="Ambient light level sensor (I2C, 0x23)",
     price_approx="$4",
-    url="https://www.amazon.com/dp/B07RKTQLGF",
+    url="https://www.amazon.com/s?k=bh1750+light+sensor",
     category="sensor",
     notes="Measures 1-65535 lux. I2C address 0x23.",
 )
 
-_SCD40 = Component(
-    name="SCD40 CO2 Sensor Breakout",
+_SCD41 = Component(
+    name="SCD41 CO2 Sensor Breakout",
     role="CO2, temperature, humidity sensor (I2C, 0x62)",
-    price_approx="$40",
-    url="https://www.adafruit.com/product/5187",
+    price_approx="$45",
+    url="https://www.adafruit.com/product/5190",
     category="sensor",
-    notes="True NDIR CO2 sensor. 400-2000ppm range. Needs 5min warm-up. I2C 0x62. "
-          "This is the most expensive sensor but critical for FAE automation.",
+    notes="True NDIR CO2 sensor. 400-5000ppm range. Needs 5min warm-up. I2C 0x62. "
+          "Same pinout as SCD40 — drop-in replacement with better accuracy. "
+          "Alternative: SCD40 also works if you can find one, same I2C address (0x62).",
 )
 
 _IRLZ44N = Component(
     name="IRLZ44N N-Channel MOSFET",
     role="Logic-level power switching for fans/LEDs",
     price_approx="$1",
-    url="https://www.amazon.com/dp/B01IDDOVS6",
+    url="https://www.amazon.com/s?k=IRLZ44N+mosfet",
     category="actuator",
     notes="Logic-level gate (3.3V compatible). 55V, 47A max. Rds(on) ~22mOhm.",
 )
@@ -81,7 +85,7 @@ _1N4007 = Component(
     name="1N4007 Diode",
     role="Flyback protection for inductive loads (fans, solenoids)",
     price_approx="$0.10",
-    url="https://www.amazon.com/dp/B079KDQQPD",
+    url="https://www.amazon.com/s?k=1N4007+diode",
     category="misc",
     notes="Place reverse-biased across each fan/motor. Protects MOSFET from voltage spikes.",
 )
@@ -90,40 +94,42 @@ _10K_RESISTOR = Component(
     name="10K Ohm Resistor",
     role="Gate pull-down — keeps MOSFET off when ESP32 boots",
     price_approx="$0.05",
-    url="https://www.amazon.com/dp/B07QJB3LGN",
+    url="https://www.amazon.com/s?k=10k+ohm+resistor",
     category="misc",
     notes="One per MOSFET channel. Gate-to-GND pull-down.",
 )
 
 _ESP32_CAM = Component(
-    name="ESP32-CAM (AI-Thinker) with OV2640",
+    name="ESP32-S3 CAM (OV5640)",
     role="Camera node — captures images for contamination detection + growth tracking",
-    price_approx="$8",
-    url="https://www.amazon.com/dp/B0948ZFTQZ",
+    price_approx="$12",
+    url="https://www.amazon.com/s?k=esp32-s3+cam+ov5640",
     category="controller",
-    notes="Includes OV2640 camera. Needs separate USB-to-UART programmer for flashing. "
-          "Has built-in flash LED on GPIO 4.",
+    notes="USB-C, no programmer needed, 5MP OV5640 camera. "
+          "Alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer, 2MP.",
 )
 
 _FTDI = Component(
     name="USB-to-UART Programmer (CP2102/CH340)",
     role="Flash firmware to ESP32-CAM (no built-in USB)",
     price_approx="$4",
-    url="https://www.amazon.com/dp/B00LODGRV8",
+    url="https://www.amazon.com/s?k=cp2102+usb+uart+programmer",
     category="misc",
-    notes="Only needed for initial ESP32-CAM flashing. Connect TX→RX, RX→TX, GND→GND.",
+    notes="Only needed if using classic ESP32-CAM AI-Thinker. "
+          "ESP32-S3 CAM has built-in USB — no programmer needed.",
 )
 
 
 def _shelly_plug(role: str) -> Component:
     return Component(
-        name="Shelly Plug S",
+        name="Shelly Plus Plug S",
         role=f"Smart plug — {role}",
-        price_approx="$20",
-        url="https://www.amazon.com/dp/B0BKR3C6YB",
+        price_approx="$22",
+        url="https://www.amazon.com/s?k=shelly+plus+plug+s",
         category="plug",
-        notes="WiFi smart plug with MQTT support, power monitoring. 12A max. "
-              "Enable MQTT in Shelly web UI after WiFi setup.",
+        notes="Gen2 firmware, WiFi smart plug with MQTT support, power monitoring. 12A max. "
+              "Same MQTT topics as original Shelly Plug S. "
+              "Alternative: Shelly Plug S (original) or any Tasmota-compatible plug.",
     )
 
 
@@ -133,7 +139,7 @@ TIER_BARE_BONES = HardwareTier(
     id="bare_bones",
     name="Bare Bones",
     tagline="Monitor your grow. Smart plug for humidifier.",
-    estimated_cost="~$100",
+    estimated_cost="~$115",
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
@@ -150,22 +156,23 @@ TIER_BARE_BONES = HardwareTier(
             name="Jumper Wires (M-F, 20cm)",
             role="Connect sensors to ESP32",
             price_approx="$4",
-            url="https://www.amazon.com/dp/B07GD2BWPY",
+            url="https://www.amazon.com/s?k=jumper+wires+male+female+20cm",
             category="misc",
             notes="Need at least 8 wires: 2x VCC, 2x GND, 2x SDA, 2x SCL.",
         ),
         Component(
-            name="USB-A to Micro-USB Cable",
-            role="Power + programming for ESP32",
+            name="USB-C Cable",
+            role="Power + programming for ESP32-S3",
             price_approx="$3",
-            url="https://www.amazon.com/dp/B07232M876",
+            url="https://www.amazon.com/s?k=usb-c+cable+short",
             category="power",
+            notes="ESP32-S3 uses USB-C. If using classic ESP32, use micro-USB instead.",
         ),
         Component(
             name="USB Power Supply (5V 2A)",
             role="ESP32 power",
             price_approx="$5",
-            url="https://www.amazon.com/dp/B07HRHFQK4",
+            url="https://www.amazon.com/s?k=usb+power+supply+5v+2a",
             category="power",
         ),
         _shelly_plug("Humidifier on/off"),
@@ -181,7 +188,7 @@ TIER_BARE_BONES = HardwareTier(
         WiringConnection(from_device="ESP32", from_pin="GPIO 22 (SCL)", to_device="BH1750", to_pin="SCL", note="shared I2C bus"),
     ],
     wiring_diagram="""\
-  ESP32-WROOM-32 DevKit          SHT31-D          BH1750
+  ESP32-S3 DevKit                SHT31-D          BH1750
  ┌──────────────────┐       ┌──────────┐     ┌──────────┐
  │              3.3V ├───┬───┤ VIN      │  ┌──┤ VCC      │
  │               GND ├───┼───┤ GND      │  │  ├──────────┤
@@ -215,7 +222,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$200",
+    estimated_cost="~$230",
     what_you_get=[
         "Everything in Bare Bones, plus:",
         "CO2 monitoring — critical for oyster and lion's mane species",
@@ -231,24 +238,25 @@ TIER_RECOMMENDED = HardwareTier(
         Component(**{**_ESP32.model_dump(), "quantity": 3, "notes": "3 ESP32s: climate, relay, lighting nodes"}),
         _SHT31,
         _BH1750,
-        _SCD40,
+        _SCD41,
         Component(**{**_IRLZ44N.model_dump(), "quantity": 4, "notes": "4 MOSFETs for relay node (FAE, exhaust, circulation, aux)"}),
         Component(**{**_1N4007.model_dump(), "quantity": 8, "notes": "4 for relay node + 4 for lighting node flyback protection"}),
         Component(**{**_10K_RESISTOR.model_dump(), "quantity": 8, "notes": "4 for relay + 4 for lighting gate pull-downs"}),
         Component(
-            name="Noctua NF-A8 5V Fan (80mm)",
+            name="Noctua NF-A8 5V PWM Fan (80mm)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
             price_approx="$14",
-            url="https://www.amazon.com/dp/B00NEMG62M",
+            url="https://www.amazon.com/s?k=noctua+nf-a8+5v+pwm",
             category="actuator",
-            notes="Quiet, PWM controllable, 5V version. Use 12V fans with 12V supply for stronger airflow.",
+            notes="Quiet, PWM controllable, 5V version. Use 12V fans with 12V supply for stronger airflow. "
+                  "Alternative: Arctic P8 PWM (~$8) — cheaper, noisier.",
         ),
         Component(
             name="12V LED Strip - Cool White (6500K), 1m",
             role="General fruiting/pinning light",
             price_approx="$8",
-            url="https://www.amazon.com/dp/B09FHBYQSB",
+            url="https://www.amazon.com/s?k=12v+led+strip+6500k+1m",
             category="actuator",
             notes="Cut to length. Connect to lighting node white channel.",
         ),
@@ -256,7 +264,7 @@ TIER_RECOMMENDED = HardwareTier(
             name="12V LED Strip - Blue (450nm), 1m",
             role="Cordyceps fruiting + pinning trigger",
             price_approx="$8",
-            url="https://www.amazon.com/dp/B09FH86BY8",
+            url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m",
             category="actuator",
             notes="Critical for Cordyceps militaris. Also benefits pinning in other species.",
         ),
@@ -264,7 +272,7 @@ TIER_RECOMMENDED = HardwareTier(
             name="12V Power Supply (5A, 60W)",
             role="Power for LED strips and 12V fans",
             price_approx="$12",
-            url="https://www.amazon.com/dp/B01GEA8PQA",
+            url="https://www.amazon.com/s?k=12v+5a+power+supply+60w",
             category="power",
             notes="Barrel jack or screw terminal. 5A supports ~4 LED strips + fans.",
         ),
@@ -276,16 +284,16 @@ TIER_RECOMMENDED = HardwareTier(
             name="Breadboard + Jumper Wire Kit",
             role="Prototyping connections",
             price_approx="$8",
-            url="https://www.amazon.com/dp/B07DL13RZH",
+            url="https://www.amazon.com/s?k=breadboard+jumper+wire+kit",
             category="misc",
         ),
     ],
     wiring=[
-        # Climate node (same as Tier 1 + SCD40)
+        # Climate node (same as Tier 1 + SCD41)
         WiringConnection(from_device="ESP32 (Climate)", from_pin="3.3V", to_device="SHT31-D", to_pin="VIN"),
         WiringConnection(from_device="ESP32 (Climate)", from_pin="GND", to_device="SHT31-D", to_pin="GND"),
-        WiringConnection(from_device="ESP32 (Climate)", from_pin="GPIO 21 (SDA)", to_device="SHT31-D / SCD40 / BH1750", to_pin="SDA (shared I2C)"),
-        WiringConnection(from_device="ESP32 (Climate)", from_pin="GPIO 22 (SCL)", to_device="SHT31-D / SCD40 / BH1750", to_pin="SCL (shared I2C)"),
+        WiringConnection(from_device="ESP32 (Climate)", from_pin="GPIO 21 (SDA)", to_device="SHT31-D / SCD41 / BH1750", to_pin="SDA (shared I2C)"),
+        WiringConnection(from_device="ESP32 (Climate)", from_pin="GPIO 22 (SCL)", to_device="SHT31-D / SCD41 / BH1750", to_pin="SCL (shared I2C)"),
         # Relay node
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 25", to_device="IRLZ44N #1 Gate", to_pin="via 100R resistor", note="FAE fan"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 26", to_device="IRLZ44N #2 Gate", to_pin="via 100R resistor", note="Exhaust fan"),
@@ -298,14 +306,14 @@ TIER_RECOMMENDED = HardwareTier(
     wiring_diagram="""\
  === CLIMATE NODE (I2C sensor hub) ===
 
-  ESP32 (Climate)           SHT31-D    SCD40     BH1750
+  ESP32 (Climate)           SHT31-D    SCD41     BH1750
  ┌───────────────┐       ┌────────┐ ┌────────┐ ┌────────┐
  │          3.3V ├───┬───┤ VIN    │ │ VIN ───┼─┤ VCC    │
  │           GND ├───┼───┤ GND    │ │ GND ───┼─┤ GND    │
  │  GPIO 21 SDA ─├───┼───┤ SDA    │ │ SDA ───┼─┤ SDA    │
  │  GPIO 22 SCL ─├───┼───┤ SCL    │ │ SCL ───┼─┤ SCL    │
  └───────────────┘   │   └────────┘ └────────┘ └────────┘
- Addresses: SHT31=0x44, SCD40=0x62, BH1750=0x23
+ Addresses: SHT31=0x44, SCD41=0x62, BH1750=0x23
 
  === RELAY NODE (MOSFET fan control, 1 of 4 channels shown) ===
 
@@ -333,26 +341,27 @@ TIER_RECOMMENDED = HardwareTier(
 
  Repeat for GPIO 26 (blue 450nm), 27 (red 660nm), 14 (far-red 730nm)
 
- === CAMERA NODE (ESP32-CAM AI-Thinker) ===
+ === CAMERA NODE (ESP32-S3 CAM — USB-C, no programmer needed) ===
 
-  ESP32-CAM                 USB-UART Programmer
- ┌──────────────┐          ┌────────────────┐
- │           5V ├──────────┤ 5V             │
- │          GND ├──────────┤ GND            │
- │           U0R├──────────┤ TX             │
- │           U0T├──────────┤ RX             │
- │  GPIO 0 ─── GND (hold during flash)     │
- └──────────────┘          └────────────────┘
- After flashing, remove GPIO 0 jumper and power via 5V USB.
- Camera auto-captures every 15min and POSTs to SporePrint server.""",
+  ESP32-S3 CAM
+ ┌──────────────┐
+ │  USB-C ──────├── computer (flash) or 5V power
+ │  OV5640 cam  │
+ └──────────────┘
+ Flash via USB-C: pio run -t upload -e cam_node
+ No GPIO 0 jumper or UART programmer required.
+ Camera auto-captures every 15min and POSTs to SporePrint server.
+
+ (If using classic ESP32-CAM AI-Thinker: needs USB-UART programmer,
+  connect TX→RX, RX→TX, GND→GND, hold GPIO 0 to GND during flash)""",
     firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
     setup_steps=[
         "Set up Raspberry Pi with SporePrint (same as Bare Bones steps 1)",
-        "Wire climate node: SHT31-D + SCD40 + BH1750 on shared I2C bus per diagram",
+        "Wire climate node: SHT31-D + SCD41 + BH1750 on shared I2C bus per diagram",
         "Wire relay node: 4x IRLZ44N MOSFETs with pull-down resistors and flyback diodes per diagram",
         "Wire lighting node: same MOSFET pattern for LED strip channels",
         "Flash all 4 firmwares: pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
-        "Flash ESP32-CAM: connect via USB-UART programmer, hold GPIO 0 to GND, flash cam_node firmware",
+        "Flash ESP32-S3 CAM: connect via USB-C, flash cam_node firmware (no programmer needed)",
         "Connect fans to relay node: FAE fan → channel 0 (GPIO 25), exhaust → channel 1 (GPIO 26), circulation → channel 2 (GPIO 27)",
         "Connect LED strips to lighting node: white → channel 0, blue → channel 1",
         "Power 12V devices from the 12V PSU. ESP32s powered via USB.",
@@ -368,7 +377,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$350+",
+    estimated_cost="~$400+",
     what_you_get=[
         "Everything in Recommended, plus:",
         "Redundant climate monitoring (2 nodes — different shelves or backup)",
@@ -385,23 +394,24 @@ TIER_ALL = HardwareTier(
         Component(**{**_ESP32.model_dump(), "quantity": 5, "notes": "2 climate + 1 relay + 1 lighting + 1 spare"}),
         Component(**{**_SHT31.model_dump(), "quantity": 2}),
         Component(**{**_BH1750.model_dump(), "quantity": 2}),
-        Component(**{**_SCD40.model_dump(), "quantity": 2, "notes": "One per climate node for per-shelf CO2 monitoring"}),
+        Component(**{**_SCD41.model_dump(), "quantity": 2, "notes": "One per climate node for per-shelf CO2 monitoring"}),
         Component(**{**_IRLZ44N.model_dump(), "quantity": 8, "notes": "4 relay + 4 lighting channels"}),
         Component(**{**_1N4007.model_dump(), "quantity": 8}),
         Component(**{**_10K_RESISTOR.model_dump(), "quantity": 8}),
         Component(
-            name="Noctua NF-A8 5V Fan (80mm)",
+            name="Noctua NF-A8 5V PWM Fan (80mm)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
             price_approx="$14",
-            url="https://www.amazon.com/dp/B00NEMG62M",
+            url="https://www.amazon.com/s?k=noctua+nf-a8+5v+pwm",
             category="actuator",
+            notes="Alternative: Arctic P8 PWM (~$8) — cheaper, noisier.",
         ),
-        Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/dp/B09FHBYQSB", category="actuator"),
-        Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/dp/B09FH86BY8", category="actuator"),
-        Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/dp/B09FH7YDTN", category="actuator"),
-        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$12", url="https://www.amazon.com/dp/B0BN7TF8Y7", category="actuator"),
-        Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/dp/B01GEA8PQA", category="power"),
+        Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator"),
+        Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator"),
+        Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/s?k=12v+red+led+strip+660nm+1m", category="actuator"),
+        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$12", url="https://www.amazon.com/s?k=12v+far+red+led+strip+730nm", category="actuator"),
+        Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power"),
         Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view"}),
         _FTDI,
         _shelly_plug("Humidifier"),
@@ -412,7 +422,7 @@ TIER_ALL = HardwareTier(
             name="HX711 Load Cell Amplifier + 5kg Load Cell",
             role="Automated harvest weight tracking",
             price_approx="$8",
-            url="https://www.amazon.com/dp/B07MTYT95R",
+            url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
             notes="Wire to relay node aux channel (GPIO 14). HX711 uses 2 GPIO pins (DOUT + SCK). "
                   "Place under grow block to track water loss and harvest weight.",
@@ -421,7 +431,7 @@ TIER_ALL = HardwareTier(
             name="Reed Switch (magnetic, normally open)",
             role="Door sensor — pauses humidity when closet opens",
             price_approx="$3",
-            url="https://www.amazon.com/dp/B0154PTDFI",
+            url="https://www.amazon.com/s?k=magnetic+reed+switch+normally+open",
             category="sensor",
             notes="Mount on closet door frame. Wire to any ESP32 GPIO with internal pull-up. "
                   "Magnet on door, switch on frame.",
@@ -430,7 +440,7 @@ TIER_ALL = HardwareTier(
             name="12V Peristaltic Pump (dosing pump)",
             role="Automated misting / substrate hydration between flushes",
             price_approx="$12",
-            url="https://www.amazon.com/dp/B07R5VTY6Z",
+            url="https://www.amazon.com/s?k=12v+peristaltic+pump+dosing",
             category="actuator",
             notes="12V DC, ~100mL/min flow rate. Connect to relay node aux channel. "
                   "Use food-safe silicone tubing.",
@@ -439,13 +449,13 @@ TIER_ALL = HardwareTier(
             name="Breadboard + Jumper Wire Kit",
             role="Prototyping connections (or solder to perfboard)",
             price_approx="$8",
-            url="https://www.amazon.com/dp/B07DL13RZH",
+            url="https://www.amazon.com/s?k=breadboard+jumper+wire+kit",
             category="misc",
         ),
     ],
     wiring=[
         *TIER_RECOMMENDED.wiring,
-        WiringConnection(from_device="ESP32 (Climate #2)", from_pin="GPIO 21/22", to_device="SHT31-D #2 / SCD40 #2 / BH1750 #2", to_pin="Shared I2C", note="Second shelf"),
+        WiringConnection(from_device="ESP32 (Climate #2)", from_pin="GPIO 21/22", to_device="SHT31-D #2 / SCD41 #2 / BH1750 #2", to_pin="Shared I2C", note="Second shelf"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 14 (aux)", to_device="Peristaltic Pump", to_pin="Via IRLZ44N + flyback diode"),
         WiringConnection(from_device="Any ESP32 GPIO", from_pin="GPIO (INPUT_PULLUP)", to_device="Reed Switch", to_pin="One leg to GPIO, other to GND"),
     ],
