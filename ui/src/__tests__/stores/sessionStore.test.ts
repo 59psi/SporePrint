@@ -13,6 +13,7 @@ const mockSession: Session = {
   tub_number: '1',
   shelf_number: 2,
   shelf_side: 'left',
+  chamber_id: null,
 }
 
 beforeEach(() => {

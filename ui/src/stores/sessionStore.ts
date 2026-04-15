@@ -12,6 +12,7 @@ export interface Session {
   tub_number: string | null
   shelf_number: number | null
   shelf_side: string | null
+  chamber_id: number | null
 }
 
 interface SessionState {

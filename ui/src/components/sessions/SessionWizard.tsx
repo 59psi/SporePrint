@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, ArrowRight, Sprout } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Box, Sprout } from 'lucide-react'
 import { api } from '../../api/client'
 import { CATEGORY_COLORS } from '../../constants/colors'
 import type { Session } from '../../stores/sessionStore'
@@ -12,6 +12,14 @@ interface SpeciesProfile {
   substrate_types: string[]
 }
 
+interface Chamber {
+  id: number
+  name: string
+  description: string | null
+  node_count: number
+  active_session_id: number | null
+}
+
 interface Props {
   onCreated: (session: Session) => void
   onCancel: () => void
@@ -20,6 +28,7 @@ interface Props {
 export default function SessionWizard({ onCreated, onCancel }: Props) {
   const [step, setStep] = useState(0)
   const [profiles, setProfiles] = useState<SpeciesProfile[]>([])
+  const [chambers, setChambers] = useState<Chamber[]>([])
   const [form, setForm] = useState({
     name: '',
     species_profile_id: '',
@@ -35,10 +44,12 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
     shelf_side: '',
     growth_form: '',
     pinning_tek: '',
+    chamber_id: null as number | null,
   })
 
   useEffect(() => {
     api.get<SpeciesProfile[]>('/species').then(setProfiles).catch(() => {})
+    api.get<Chamber[]>('/chambers').then(setChambers).catch(() => {})
   }, [])
 
   const selectedProfile = profiles.find((p) => p.id === form.species_profile_id)
@@ -53,7 +64,7 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
     }
   }
 
-  const steps = ['Species', 'Substrate', 'Details']
+  const steps = ['Species', 'Substrate', 'Chamber', 'Details']
 
   return (
     <div>
@@ -190,6 +201,56 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
       )}
 
       {step === 2 && (
+        <div>
+          <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Assign to Chamber</label>
+          <p className="text-xs text-[var(--color-text-secondary)] mb-4">
+            Optionally assign this session to a chamber for automated environment control.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              onClick={() => setForm({ ...form, chamber_id: null })}
+              className={`text-left p-3 rounded-lg border transition-all ${
+                form.chamber_id === null
+                  ? 'border-[var(--color-accent-gourmet)] bg-[var(--color-accent-gourmet)]/5'
+                  : 'border-[var(--color-border)] hover:border-[var(--color-bg-hover)]'
+              }`}
+            >
+              <p className="text-sm font-medium">No Chamber</p>
+              <p className="text-xs text-[var(--color-text-secondary)]">Skip chamber assignment</p>
+            </button>
+            {chambers.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setForm({ ...form, chamber_id: c.id })}
+                className={`text-left p-3 rounded-lg border transition-all ${
+                  form.chamber_id === c.id
+                    ? 'border-[var(--color-accent-gourmet)] bg-[var(--color-accent-gourmet)]/5'
+                    : 'border-[var(--color-border)] hover:border-[var(--color-bg-hover)]'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Box size={14} className="text-[var(--color-text-secondary)]" />
+                  <p className="text-sm font-medium">{c.name}</p>
+                </div>
+                <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                  {c.node_count} node{c.node_count !== 1 ? 's' : ''}
+                  {c.description ? ` · ${c.description}` : ''}
+                </p>
+                {c.active_session_id && (
+                  <p className="text-xs text-amber-400 mt-1">Active session #{c.active_session_id}</p>
+                )}
+              </button>
+            ))}
+          </div>
+          {chambers.length === 0 && (
+            <p className="text-xs text-[var(--color-text-secondary)] mt-3">
+              No chambers configured yet. You can create chambers from the Chambers page.
+            </p>
+          )}
+        </div>
+      )}
+
+      {step === 3 && (
         <div className="space-y-4">
           <div>
             <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Inoculation Date</label>
