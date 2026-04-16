@@ -79,15 +79,27 @@ async def session_telemetry(
     return await get_history("climate-01", sensor, from_ts, to_ts, resolution)
 
 
-@router.get("/{session_id}/report.pdf")
-async def session_report_pdf(session_id: int):
-    pdf_bytes = await service.generate_session_report(session_id)
-    if not pdf_bytes:
+@router.get("/{session_id}/report.md")
+async def session_report_md(session_id: int):
+    md = await service.generate_session_report_md(session_id)
+    if not md:
         raise HTTPException(404, "Session not found")
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=sporeprint-session-{session_id}.pdf"},
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename=sporeprint-session-{session_id}.md"},
+    )
+
+
+@router.get("/{session_id}/report.csv")
+async def session_report_csv(session_id: int):
+    csv_data = await service.generate_session_report_csv(session_id)
+    if not csv_data:
+        raise HTTPException(404, "Session not found")
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sporeprint-session-{session_id}.csv"},
     )
 
 

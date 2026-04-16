@@ -1,16 +1,12 @@
+import csv
 import io
 import json
 import re
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 from icalendar import Calendar, Event
-
-from collections import defaultdict
 
 from ..db import get_db
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
@@ -672,8 +668,8 @@ def _generate_recommendations(
     return recs
 
 
-async def generate_session_report(session_id: int) -> bytes | None:
-    """Generate a multi-page PDF report for a session. Returns PDF bytes or None."""
+async def generate_session_report_md(session_id: int) -> str | None:
+    """Generate a Markdown grow report for a session."""
     session = await get_session(session_id)
     if not session:
         return None
@@ -686,7 +682,6 @@ async def generate_session_report(session_id: int) -> bytes | None:
     completed = _ts_to_dt(session.get("completed_at"))
     phase_history = session.get("phase_history", [])
 
-    # Fetch harvests, vision analyses, contamination events
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT * FROM harvests WHERE session_id = ? ORDER BY flush_number, timestamp",
@@ -694,24 +689,13 @@ async def generate_session_report(session_id: int) -> bytes | None:
         )
         harvests = [dict(r) for r in await cursor.fetchall()]
 
-        # Fetch telemetry (last 7 days or all if shorter)
-        cursor = await db.execute(
-            "SELECT sensor, timestamp, value FROM telemetry_readings "
-            "WHERE session_id = ? ORDER BY timestamp",
-            (session_id,),
-        )
-        telemetry = [dict(r) for r in await cursor.fetchall()]
-
-        # Fetch vision analysis summaries
         cursor = await db.execute(
             "SELECT analysis_claude FROM vision_frames "
             "WHERE session_id = ? AND analysis_claude IS NOT NULL",
             (session_id,),
         )
-        vision_rows = [dict(r) for r in await cursor.fetchall()]
-        vision_summaries = [r["analysis_claude"] for r in vision_rows]
+        vision_summaries = [dict(r)["analysis_claude"] for r in await cursor.fetchall()]
 
-        # Fetch contamination events
         cursor = await db.execute(
             "SELECT * FROM session_events "
             "WHERE session_id = ? AND type LIKE '%contam%' ORDER BY timestamp",
@@ -719,220 +703,113 @@ async def generate_session_report(session_id: int) -> bytes | None:
         )
         contam_events = [dict(r) for r in await cursor.fetchall()]
 
-    bg_color = "#1a1a2e"
-    axes_color = "#16213e"
-    text_color = "#e0e0e0"
-    accent_color = "#4ade80"
-    warn_color = "#f59e0b"
-
-    # ── Build recommendations ──────────────────────────────────
     recommendations = _generate_recommendations(
         session, harvests, phase_history, contam_events,
     )
 
-    buf = io.BytesIO()
-    with PdfPages(buf) as pdf:
-        # Page 1: Text summary
-        fig, ax = plt.subplots(figsize=(8.5, 11))
-        fig.patch.set_facecolor(bg_color)
-        ax.set_facecolor(bg_color)
-        ax.axis("off")
+    # Build Markdown report
+    md = []
+    md.append(f"# SporePrint Grow Report\n")
+    md.append(f"| Field | Value |")
+    md.append(f"|-------|-------|")
+    md.append(f"| Session | {name} |")
+    md.append(f"| Species | {species} |")
+    md.append(f"| Substrate | {substrate} |")
+    md.append(f"| Status | {status} |")
+    md.append(f"| Started | {created.strftime('%Y-%m-%d %H:%M UTC') if created else 'N/A'} |")
+    md.append(f"| Completed | {completed.strftime('%Y-%m-%d %H:%M UTC') if completed else 'In progress'} |")
+    md.append(f"| Total Wet Yield | {session.get('total_wet_yield_g', 0) or 0}g |")
+    md.append(f"| Total Dry Yield | {session.get('total_dry_yield_g', 0) or 0}g |")
+    md.append(f"| Flushes | {len(set(h['flush_number'] for h in harvests))} |")
+    md.append("")
 
-        lines = [
-            f"SporePrint Grow Report",
-            f"",
-            f"Session: {name}",
-            f"Species: {species}",
-            f"Substrate: {substrate}",
-            f"Status: {status}",
-            f"Started: {created.strftime('%Y-%m-%d %H:%M UTC') if created else 'N/A'}",
-            f"Completed: {completed.strftime('%Y-%m-%d %H:%M UTC') if completed else 'In progress'}",
-            f"",
-            f"Total Wet Yield: {session.get('total_wet_yield_g', 0) or 0}g",
-            f"Total Dry Yield: {session.get('total_dry_yield_g', 0) or 0}g",
-            f"Flushes Harvested: {len(set(h['flush_number'] for h in harvests))}",
-        ]
+    # Yield breakdown
+    if harvests:
+        md.append("## Yield Per Flush\n")
+        md.append("| Flush | Wet Weight (g) | Dry Weight (g) | Quality |")
+        md.append("|-------|----------------|----------------|---------|")
+        for h in harvests:
+            md.append(f"| #{h['flush_number']} | {h.get('wet_weight_g') or 0:.1f} | {h.get('dry_weight_g') or '—'} | {h.get('quality_rating') or '—'} |")
+        md.append("")
 
-        if harvests:
-            lines.append("")
-            lines.append("Yield Breakdown:")
-            flush_map = {}
-            for h in harvests:
-                fn = h["flush_number"]
-                if fn not in flush_map:
-                    flush_map[fn] = 0.0
-                flush_map[fn] += h["wet_weight_g"] or 0.0
-            for fn in sorted(flush_map.keys()):
-                lines.append(f"  Flush #{fn}: {flush_map[fn]:.1f}g wet")
+    # Phase timeline
+    if phase_history:
+        md.append("## Phase Timeline\n")
+        md.append("| Phase | Entered | Duration |")
+        md.append("|-------|---------|----------|")
+        for ph in phase_history:
+            entered = _ts_to_dt(ph.get("entered_at"))
+            exited = _ts_to_dt(ph.get("exited_at"))
+            entered_str = entered.strftime("%Y-%m-%d %H:%M") if entered else "?"
+            if exited and entered:
+                dur_days = (ph["exited_at"] - ph["entered_at"]) / 86400
+                dur_str = f"{dur_days:.1f} days"
+            elif entered and not exited:
+                dur_str = "ongoing"
+            else:
+                dur_str = "?"
+            md.append(f"| {ph['phase'].replace('_', ' ').title()} | {entered_str} | {dur_str} |")
+        md.append("")
 
-        # Phase timeline
-        if phase_history:
-            lines.append("")
-            lines.append("Phase Timeline:")
-            for ph in phase_history:
-                entered = _ts_to_dt(ph.get("entered_at"))
-                exited = _ts_to_dt(ph.get("exited_at"))
-                entered_str = entered.strftime("%Y-%m-%d %H:%M") if entered else "?"
-                if exited and entered:
-                    dur_sec = ph["exited_at"] - ph["entered_at"]
-                    dur_days = dur_sec / 86400
-                    dur_str = f"{dur_days:.1f}d"
-                elif entered and not exited:
-                    dur_str = "ongoing"
-                else:
-                    dur_str = "?"
-                lines.append(f"  {ph['phase']}: {entered_str} ({dur_str})")
+    # Vision summaries
+    if vision_summaries:
+        md.append("## Vision Analysis Summaries\n")
+        for idx, summary in enumerate(vision_summaries[:10], 1):
+            text = summary.strip().replace("\n", " ")
+            if len(text) > 300:
+                text = text[:297] + "..."
+            md.append(f"{idx}. {text}")
+        md.append("")
 
-        y = 0.92
-        for i, line in enumerate(lines):
-            fontsize = 18 if i == 0 else 11
-            weight = "bold" if i == 0 else "normal"
-            ax.text(0.08, y, line, transform=ax.transAxes, fontsize=fontsize,
-                    color=text_color, fontweight=weight, verticalalignment="top",
-                    fontfamily="monospace")
-            y -= 0.045 if i == 0 else 0.035
+    # Contamination events
+    if contam_events:
+        md.append("## Contamination Events\n")
+        md.append("| Time | Description |")
+        md.append("|------|-------------|")
+        for ev in contam_events:
+            ev_dt = _ts_to_dt(ev.get("timestamp"))
+            ev_time = ev_dt.strftime("%Y-%m-%d %H:%M") if ev_dt else "?"
+            desc = ev.get("description", "")[:150] or ev.get("type", "")
+            md.append(f"| {ev_time} | {desc} |")
+        md.append("")
 
-        pdf.savefig(fig)
-        plt.close(fig)
+    # Recommendations
+    if recommendations:
+        md.append("## Recommendations for Next Grow\n")
+        for idx, rec in enumerate(recommendations, 1):
+            md.append(f"{idx}. {rec}")
+        md.append("")
 
-        # Page 2: Telemetry charts (if data exists)
-        if telemetry:
-            sensors = {}
-            for row in telemetry:
-                sensors.setdefault(row["sensor"], []).append(
-                    (row["timestamp"], row["value"])
-                )
+    return "\n".join(md)
 
-            sensor_names = list(sensors.keys())[:3]  # max 3 charts
-            n_charts = len(sensor_names)
-            if n_charts > 0:
-                fig, axes = plt.subplots(n_charts, 1, figsize=(8.5, 11))
-                fig.patch.set_facecolor(bg_color)
-                if n_charts == 1:
-                    axes = [axes]
 
-                for ax, sensor_name in zip(axes, sensor_names):
-                    data = sensors[sensor_name]
-                    ts = [d[0] for d in data]
-                    vals = [d[1] for d in data]
-                    ax.set_facecolor(axes_color)
-                    ax.plot(ts, vals, color=accent_color, linewidth=1)
-                    ax.set_title(sensor_name, color=text_color, fontsize=12)
-                    ax.tick_params(colors=text_color, labelsize=8)
-                    for spine in ax.spines.values():
-                        spine.set_color("#333")
+async def generate_session_report_csv(session_id: int) -> str | None:
+    """Generate a CSV export of session harvest data."""
+    session = await get_session(session_id)
+    if not session:
+        return None
 
-                fig.tight_layout(pad=2.0)
-                pdf.savefig(fig)
-                plt.close(fig)
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM harvests WHERE session_id = ? ORDER BY flush_number, timestamp",
+            (session_id,),
+        )
+        harvests = [dict(r) for r in await cursor.fetchall()]
 
-        # Page 3: Yield per flush bar chart (if harvests exist)
-        if harvests:
-            flush_map = {}
-            for h in harvests:
-                fn = h["flush_number"]
-                if fn not in flush_map:
-                    flush_map[fn] = 0.0
-                flush_map[fn] += h["wet_weight_g"] or 0.0
-
-            flushes = sorted(flush_map.keys())
-            weights = [flush_map[f] for f in flushes]
-
-            fig, ax = plt.subplots(figsize=(8.5, 6))
-            fig.patch.set_facecolor(bg_color)
-            ax.set_facecolor(axes_color)
-
-            bars = ax.bar(
-                [f"Flush {f}" for f in flushes],
-                weights,
-                color=accent_color,
-                edgecolor="#333",
-            )
-            ax.set_title("Yield Per Flush (Wet Weight)", color=text_color, fontsize=14)
-            ax.set_ylabel("Weight (g)", color=text_color)
-            ax.tick_params(colors=text_color)
-            for spine in ax.spines.values():
-                spine.set_color("#333")
-
-            # Add value labels on bars
-            for bar, w in zip(bars, weights):
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + max(weights) * 0.02,
-                    f"{w:.0f}g",
-                    ha="center",
-                    color=text_color,
-                    fontsize=10,
-                )
-
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-
-        # Page 4: Vision analysis summaries + contamination events
-        extra_lines = []
-        if vision_summaries:
-            extra_lines.append("Vision Analysis Summaries")
-            extra_lines.append("")
-            for idx, summary in enumerate(vision_summaries[:10], 1):
-                # Truncate long analyses to fit page
-                text = summary.strip().replace("\n", " ")
-                if len(text) > 200:
-                    text = text[:197] + "..."
-                extra_lines.append(f"  [{idx}] {text}")
-            extra_lines.append("")
-
-        if contam_events:
-            extra_lines.append("Contamination Events")
-            extra_lines.append("")
-            for ev in contam_events:
-                ev_dt = _ts_to_dt(ev.get("timestamp"))
-                ev_time = ev_dt.strftime("%Y-%m-%d %H:%M") if ev_dt else "?"
-                desc = ev.get("description", "")[:120] or ev.get("type", "")
-                extra_lines.append(f"  {ev_time}: {desc}")
-            extra_lines.append("")
-
-        if extra_lines:
-            fig, ax = plt.subplots(figsize=(8.5, 11))
-            fig.patch.set_facecolor(bg_color)
-            ax.set_facecolor(bg_color)
-            ax.axis("off")
-
-            y = 0.95
-            for line in extra_lines:
-                is_header = line and not line.startswith(" ") and line.strip()
-                fontsize = 14 if is_header else 9
-                weight = "bold" if is_header else "normal"
-                color = warn_color if is_header and "Contam" in line else text_color
-                ax.text(0.05, y, line, transform=ax.transAxes, fontsize=fontsize,
-                        color=color, fontweight=weight, verticalalignment="top",
-                        fontfamily="monospace", wrap=True)
-                y -= 0.04 if is_header else 0.025
-                if y < 0.03:
-                    break
-
-            pdf.savefig(fig)
-            plt.close(fig)
-
-        # Page 5: Recommendations for next grow
-        if recommendations:
-            fig, ax = plt.subplots(figsize=(8.5, 11))
-            fig.patch.set_facecolor(bg_color)
-            ax.set_facecolor(bg_color)
-            ax.axis("off")
-
-            ax.text(0.08, 0.95, "Recommendations for Next Grow",
-                    transform=ax.transAxes, fontsize=16, color=accent_color,
-                    fontweight="bold", verticalalignment="top", fontfamily="monospace")
-
-            y = 0.88
-            for idx, rec in enumerate(recommendations, 1):
-                ax.text(0.08, y, f"{idx}. {rec}",
-                        transform=ax.transAxes, fontsize=10, color=text_color,
-                        verticalalignment="top", fontfamily="monospace", wrap=True)
-                y -= 0.06
-
-            pdf.savefig(fig)
-            plt.close(fig)
-
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["session_id", "session_name", "species", "flush_number",
+                      "wet_weight_g", "dry_weight_g", "quality_rating", "timestamp", "notes"])
+    for h in harvests:
+        writer.writerow([
+            session_id,
+            session.get("name", ""),
+            session.get("species_profile_id", ""),
+            h["flush_number"],
+            h.get("wet_weight_g", ""),
+            h.get("dry_weight_g", ""),
+            h.get("quality_rating", ""),
+            datetime.utcfromtimestamp(h["timestamp"]).isoformat() if h.get("timestamp") else "",
+            h.get("notes", ""),
+        ])
     return buf.getvalue()

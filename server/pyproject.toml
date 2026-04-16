@@ -17,7 +17,6 @@ dependencies = [
     "psutil>=5.9",
     "qrcode[pil]>=7.4",
     "icalendar>=5.0",
-    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]
