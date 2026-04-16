@@ -11,7 +11,8 @@ _RPI = Component(
     url="https://www.amazon.com/s?k=raspberry+pi+5+4gb",
     category="controller",
     notes="2GB model works but 4GB recommended. Needs microSD card (32GB+), USB-C power supply (5V 5A). "
-          "Alternative: Raspberry Pi 4 (4GB) ~$55 — still available, cheaper.",
+          "Alternative: Raspberry Pi 4 (4GB) ~$55 — still available, cheaper. "
+          "Also: canakit.com, thepihut.com, pishop.us. Check rpilocator.com for real-time stock.",
 )
 
 _RPI_SD = Component(
@@ -20,7 +21,8 @@ _RPI_SD = Component(
     price_approx="$8",
     url="https://www.amazon.com/s?k=microsd+card+32gb+a1",
     category="misc",
-    notes="Class 10 / A1 rated minimum. 64GB recommended for vision frame storage.",
+    notes="Class 10 / A1 rated minimum. 64GB recommended for vision frame storage. "
+          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 _RPI_PSU = Component(
@@ -30,7 +32,8 @@ _RPI_PSU = Component(
     url="https://www.amazon.com/s?k=raspberry+pi+5+power+supply+27w",
     category="power",
     notes="Official Raspberry Pi 27W PSU recommended for Pi 5 stability. "
-          "Alternative: any USB-C PD supply (5V 5A). Pi 4 users can use 5V 3A.",
+          "Alternative: any USB-C PD supply (5V 5A). Pi 4 users can use 5V 3A. "
+          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 _ESP32 = Component(
@@ -40,7 +43,8 @@ _ESP32 = Component(
     url="https://www.amazon.com/s?k=esp32-s3+devkit",
     category="controller",
     notes="USB-C, more GPIO, better WiFi. Runs the same firmware as classic ESP32. "
-          "Alternative: ESP32-WROOM-32 DevKit (~$6) — classic, widely available, works identically.",
+          "Alternative: ESP32-WROOM-32 DevKit (~$6) — classic, widely available, works identically. "
+          "Also: digikey.com, aliexpress.com (search ESP32-S3-DevKitC-1). Official: espressif.com/devkits",
 )
 
 _SHT31 = Component(
@@ -49,7 +53,8 @@ _SHT31 = Component(
     price_approx="$7",
     url="https://www.amazon.com/s?k=sht31+sensor+breakout",
     category="sensor",
-    notes="Accuracy: +/-0.3C, +/-2% RH. I2C address 0x44.",
+    notes="Accuracy: +/-0.3C, +/-2% RH. I2C address 0x44. "
+          "Also: adafruit.com/product/2857, dfrobot.com. Multiple Amazon sellers (HiLetgo, Adafruit).",
 )
 
 _BH1750 = Component(
@@ -58,7 +63,8 @@ _BH1750 = Component(
     price_approx="$4",
     url="https://www.amazon.com/s?k=bh1750+light+sensor",
     category="sensor",
-    notes="Measures 1-65535 lux. I2C address 0x23.",
+    notes="Measures 1-65535 lux. I2C address 0x23. "
+          "Also: adafruit.com/product/4681, dfrobot.com/product-531.html, thepihut.com",
 )
 
 _SCD41 = Component(
@@ -69,9 +75,8 @@ _SCD41 = Component(
     category="sensor",
     notes="True NDIR CO2 sensor. 400-5000ppm range. Needs 5min warm-up. I2C 0x62. "
           "Same pinout as SCD40 — drop-in replacement with better accuracy. "
-          "Also available at Pimoroni (pimoroni.com, ships from UK) and Newark Electronics. "
-          "Adafruit (product 5190) has 24-week backorder — avoid. "
-          "Budget alternative: MH-Z19B (~$15, UART interface, different wiring).",
+          "Budget alternative: MH-Z19B (~$15, UART interface, different wiring). "
+          "Also: shop.pimoroni.com (in stock), newark.com, sparkfun.com. Avoid Adafruit (24-week backorder).",
 )
 
 _IRLZ44N = Component(
@@ -80,7 +85,8 @@ _IRLZ44N = Component(
     price_approx="$1",
     url="https://www.amazon.com/s?k=IRLZ44N+mosfet",
     category="actuator",
-    notes="Logic-level gate (3.3V compatible). 55V, 47A max. Rds(on) ~22mOhm.",
+    notes="Logic-level gate (3.3V compatible). 55V, 47A max. Rds(on) ~22mOhm. "
+          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 _1N4007 = Component(
@@ -89,7 +95,8 @@ _1N4007 = Component(
     price_approx="$0.10",
     url="https://www.amazon.com/s?k=1N4007+diode",
     category="misc",
-    notes="Place reverse-biased across each fan/motor. Protects MOSFET from voltage spikes.",
+    notes="Place reverse-biased across each fan/motor. Protects MOSFET from voltage spikes. "
+          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 _10K_RESISTOR = Component(
@@ -98,7 +105,8 @@ _10K_RESISTOR = Component(
     price_approx="$0.05",
     url="https://www.amazon.com/s?k=10k+ohm+resistor",
     category="misc",
-    notes="One per MOSFET channel. Gate-to-GND pull-down.",
+    notes="One per MOSFET channel. Gate-to-GND pull-down. "
+          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 _ESP32_CAM = Component(
@@ -108,8 +116,8 @@ _ESP32_CAM = Component(
     url="https://www.amazon.com/s?k=ESP32-S3+CAM+OV5640",
     category="controller",
     notes="USB-C, no separate programmer needed. 5MP OV5640 camera. "
-          "Also available at Seeed Studio (XIAO ESP32S3 Sense) and Walmart. "
-          "Alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer, 2MP.",
+          "Alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer, 2MP. "
+          "Also: seeedstudio.com (XIAO ESP32S3 Sense with OV5640), walmart.com, ebay.com",
 )
 
 _FTDI = Component(
@@ -119,7 +127,8 @@ _FTDI = Component(
     url="https://www.amazon.com/s?k=cp2102+usb+uart+programmer",
     category="misc",
     notes="Only needed if using classic ESP32-CAM AI-Thinker. "
-          "ESP32-S3 CAM has built-in USB — no programmer needed.",
+          "ESP32-S3 CAM has built-in USB — no programmer needed. "
+          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 
@@ -133,7 +142,7 @@ def _tasmota_plug(role: str) -> Component:
         notes="Pre-flashed with Tasmota firmware. MQTT ready out of the box. "
               "Power monitoring via HLW8032. No cloud required. "
               "Available in US/EU/UK/AU variants from athom.tech. "
-              "Also available on AliExpress and Tindie.",
+              "Also: tindie.com/products/athom/pre-flashed-tasmota-us-plug/, aliexpress.com (search 'athom tasmota plug'). US/EU/UK/AU variants available.",
     )
 
 
@@ -162,7 +171,8 @@ TIER_BARE_BONES = HardwareTier(
             price_approx="$4",
             url="https://www.amazon.com/s?k=jumper+wires+male+female+20cm",
             category="misc",
-            notes="Need at least 8 wires: 2x VCC, 2x GND, 2x SDA, 2x SCL.",
+            notes="Need at least 8 wires: 2x VCC, 2x GND, 2x SDA, 2x SCL. "
+                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
             name="USB-C Cable",
@@ -170,7 +180,8 @@ TIER_BARE_BONES = HardwareTier(
             price_approx="$3",
             url="https://www.amazon.com/s?k=usb-c+cable+short",
             category="power",
-            notes="ESP32-S3 uses USB-C. If using classic ESP32, use micro-USB instead.",
+            notes="ESP32-S3 uses USB-C. If using classic ESP32, use micro-USB instead. "
+                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
             name="USB Power Supply (5V 2A)",
@@ -178,6 +189,7 @@ TIER_BARE_BONES = HardwareTier(
             price_approx="$5",
             url="https://www.amazon.com/s?k=usb+power+supply+5v+2a",
             category="power",
+            notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         _tasmota_plug("Humidifier on/off"),
     ],
@@ -260,7 +272,8 @@ TIER_RECOMMENDED = HardwareTier(
             url="https://www.amazon.com/s?k=noctua+nf-a8+5v+pwm",
             category="actuator",
             notes="Quiet, PWM controllable, 5V version. Use 12V fans with 12V supply for stronger airflow. "
-                  "Alternative: Arctic P8 PWM (~$8) — cheaper, noisier.",
+                  "Alternative: Arctic P8 PWM (~$8). "
+                  "Also: newegg.com, walmart.com, noctua.at/buy. Alternative: Arctic P8 PWM (~$8).",
         ),
         Component(
             name="12V LED Strip - Cool White (6500K), 1m",
@@ -268,7 +281,8 @@ TIER_RECOMMENDED = HardwareTier(
             price_approx="$8",
             url="https://www.amazon.com/s?k=12v+led+strip+6500k+1m",
             category="actuator",
-            notes="Cut to length. Connect to lighting node white channel.",
+            notes="Cut to length. Connect to lighting node white channel. "
+                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
             name="12V LED Strip - Blue (450nm), 1m",
@@ -276,7 +290,8 @@ TIER_RECOMMENDED = HardwareTier(
             price_approx="$8",
             url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m",
             category="actuator",
-            notes="Critical for Cordyceps militaris. Also benefits pinning in other species.",
+            notes="Critical for Cordyceps militaris. Also benefits pinning in other species. "
+                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
             name="12V Power Supply (5A, 60W)",
@@ -284,7 +299,8 @@ TIER_RECOMMENDED = HardwareTier(
             price_approx="$12",
             url="https://www.amazon.com/s?k=12v+5a+power+supply+60w",
             category="power",
-            notes="Barrel jack or screw terminal. 5A supports ~4 LED strips + fans.",
+            notes="Barrel jack or screw terminal. 5A supports ~4 LED strips + fans. "
+                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         _ESP32_CAM,
         _FTDI,
@@ -296,6 +312,7 @@ TIER_RECOMMENDED = HardwareTier(
             price_approx="$8",
             url="https://www.amazon.com/s?k=breadboard+jumper+wire+kit",
             category="misc",
+            notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
     ],
     wiring=[
@@ -430,14 +447,15 @@ TIER_ALL = HardwareTier(
             price_approx="$14",
             url="https://www.amazon.com/s?k=noctua+nf-a8+5v+pwm",
             category="actuator",
-            notes="Alternative: Arctic P8 PWM (~$8) — cheaper, noisier.",
+            notes="Alternative: Arctic P8 PWM (~$8). "
+                  "Also: newegg.com, walmart.com, noctua.at/buy. Alternative: Arctic P8 PWM (~$8).",
         ),
-        Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator"),
-        Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator"),
-        Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/s?k=12v+red+led+strip+660nm+1m", category="actuator"),
-        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$12", url="https://www.amazon.com/s?k=12v+far+red+led+strip+730nm", category="actuator"),
-        Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power"),
-        Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view"}),
+        Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
+        Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
+        Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/s?k=12v+red+led+strip+660nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
+        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$12", url="https://www.amazon.com/s?k=730nm+far+red+led+strip+12v", category="actuator", notes="Specialty item. Also: superlightingled.com, ledlightsworld.com. May need to order from grow light suppliers."),
+        Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
+        Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view. Also: seeedstudio.com (XIAO ESP32S3 Sense with OV5640), walmart.com, ebay.com"}),
         _FTDI,
         _tasmota_plug("Humidifier"),
         _tasmota_plug("Dehumidifier"),
@@ -450,7 +468,8 @@ TIER_ALL = HardwareTier(
             url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
             notes="Wire to relay node aux channel (GPIO 14). HX711 uses 2 GPIO pins (DOUT + SCK). "
-                  "Place under grow block to track water loss and harvest weight.",
+                  "Place under grow block to track water loss and harvest weight. "
+                  "Widely available. Also: sparkfun.com, adafruit.com. Multiple Amazon sellers.",
         ),
         Component(
             name="Reed Switch (magnetic, normally open)",
@@ -459,7 +478,8 @@ TIER_ALL = HardwareTier(
             url="https://www.amazon.com/s?k=magnetic+reed+switch+normally+open",
             category="sensor",
             notes="Mount on closet door frame. Wire to any ESP32 GPIO with internal pull-up. "
-                  "Magnet on door, switch on frame.",
+                  "Magnet on door, switch on frame. "
+                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
             name="12V Peristaltic Pump (dosing pump)",
@@ -468,7 +488,8 @@ TIER_ALL = HardwareTier(
             url="https://www.amazon.com/s?k=12v+peristaltic+pump+dosing",
             category="actuator",
             notes="12V DC, ~100mL/min flow rate. Connect to relay node aux channel. "
-                  "Use food-safe silicone tubing.",
+                  "Use food-safe silicone tubing. "
+                  "Also: adafruit.com/product/1150, ebay.com. Kamoer brand recommended for reliability.",
         ),
         Component(
             name="Breadboard + Jumper Wire Kit",
@@ -476,6 +497,7 @@ TIER_ALL = HardwareTier(
             price_approx="$8",
             url="https://www.amazon.com/s?k=breadboard+jumper+wire+kit",
             category="misc",
+            notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
     ],
     wiring=[
