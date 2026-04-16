@@ -1,40 +1,52 @@
 import { Routes, Route } from 'react-router-dom'
+import { Suspense, lazy } from 'react'
 import Layout from './components/layout/Layout'
 import Dashboard from './pages/Dashboard'
-import Sessions from './pages/Sessions'
-import Vision from './pages/Vision'
-import Automation from './pages/Automation'
-import Species from './pages/Species'
-import Builder from './pages/Builder'
-import Transcripts from './pages/Transcripts'
-import SettingsPage from './pages/SettingsPage'
-import Planner from './pages/Planner'
-import Wizard from './pages/Wizard'
-import ContaminationGuide from './pages/ContaminationGuide'
-import Cultures from './pages/Cultures'
-import Chambers from './pages/Chambers'
-import Experiments from './pages/Experiments'
-import ShoppingList from './pages/ShoppingList'
+import { Loader2 } from 'lucide-react'
+
+// Lazy-load all pages except Dashboard (initial landing page)
+const Sessions = lazy(() => import('./pages/Sessions'))
+const Vision = lazy(() => import('./pages/Vision'))
+const Automation = lazy(() => import('./pages/Automation'))
+const Species = lazy(() => import('./pages/Species'))
+const Builder = lazy(() => import('./pages/Builder'))
+const Transcripts = lazy(() => import('./pages/Transcripts'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const Planner = lazy(() => import('./pages/Planner'))
+const Wizard = lazy(() => import('./pages/Wizard'))
+const ContaminationGuide = lazy(() => import('./pages/ContaminationGuide'))
+const Cultures = lazy(() => import('./pages/Cultures'))
+const Chambers = lazy(() => import('./pages/Chambers'))
+const Experiments = lazy(() => import('./pages/Experiments'))
+const ShoppingList = lazy(() => import('./pages/ShoppingList'))
+
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center h-64">
+      <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+    </div>
+  )
+}
 
 export default function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/sessions" element={<Sessions />} />
-        <Route path="/vision" element={<Vision />} />
-        <Route path="/automation" element={<Automation />} />
-        <Route path="/species" element={<Species />} />
-        <Route path="/planner" element={<Planner />} />
-        <Route path="/wizard" element={<Wizard />} />
-        <Route path="/contamination" element={<ContaminationGuide />} />
-        <Route path="/cultures" element={<Cultures />} />
-        <Route path="/chambers" element={<Chambers />} />
-        <Route path="/experiments" element={<Experiments />} />
-        <Route path="/shopping" element={<ShoppingList />} />
-        <Route path="/builder" element={<Builder />} />
-        <Route path="/transcripts" element={<Transcripts />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/sessions" element={<Suspense fallback={<PageLoader />}><Sessions /></Suspense>} />
+        <Route path="/vision" element={<Suspense fallback={<PageLoader />}><Vision /></Suspense>} />
+        <Route path="/automation" element={<Suspense fallback={<PageLoader />}><Automation /></Suspense>} />
+        <Route path="/species" element={<Suspense fallback={<PageLoader />}><Species /></Suspense>} />
+        <Route path="/planner" element={<Suspense fallback={<PageLoader />}><Planner /></Suspense>} />
+        <Route path="/wizard" element={<Suspense fallback={<PageLoader />}><Wizard /></Suspense>} />
+        <Route path="/contamination" element={<Suspense fallback={<PageLoader />}><ContaminationGuide /></Suspense>} />
+        <Route path="/cultures" element={<Suspense fallback={<PageLoader />}><Cultures /></Suspense>} />
+        <Route path="/chambers" element={<Suspense fallback={<PageLoader />}><Chambers /></Suspense>} />
+        <Route path="/experiments" element={<Suspense fallback={<PageLoader />}><Experiments /></Suspense>} />
+        <Route path="/shopping" element={<Suspense fallback={<PageLoader />}><ShoppingList /></Suspense>} />
+        <Route path="/builder" element={<Suspense fallback={<PageLoader />}><Builder /></Suspense>} />
+        <Route path="/transcripts" element={<Suspense fallback={<PageLoader />}><Transcripts /></Suspense>} />
+        <Route path="/settings" element={<Suspense fallback={<PageLoader />}><SettingsPage /></Suspense>} />
       </Route>
     </Routes>
   )
