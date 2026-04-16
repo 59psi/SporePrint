@@ -7,7 +7,7 @@ from .models import Component, WiringConnection, HardwareTier
 _RPI = Component(
     name="Raspberry Pi 5 (4GB)",
     role="Server — runs SporePrint backend, MQTT broker, and web UI",
-    price_approx="$60",
+    price_approx="$75",
     url="https://www.amazon.com/s?k=raspberry+pi+5+4gb",
     category="controller",
     notes="2GB model works but 4GB recommended. Needs microSD card (32GB+), USB-C power supply (5V 5A). "
@@ -65,13 +65,13 @@ _SCD41 = Component(
     name="SCD41 CO2 Sensor Breakout",
     role="CO2, temperature, humidity sensor (I2C, 0x62)",
     price_approx="$45",
-    url="https://www.amazon.com/s?k=SCD41+CO2+sensor+breakout",
+    url="https://www.amazon.com/s?k=SCD41+CO2+sensor+module",
     category="sensor",
     notes="True NDIR CO2 sensor. 400-5000ppm range. Needs 5min warm-up. I2C 0x62. "
           "Same pinout as SCD40 — drop-in replacement with better accuracy. "
-          "Also available from Adafruit (product 5190) and SparkFun (SEN-22395) when in stock. "
-          "Budget alternative: MH-Z19B (~$15) — UART not I2C (different wiring), 0-5000ppm range, "
-          "needs UART pins instead of I2C bus (TX/RX, not SDA/SCL).",
+          "Also available at Pimoroni (pimoroni.com, ships from UK) and Newark Electronics. "
+          "Adafruit (product 5190) has 24-week backorder — avoid. "
+          "Budget alternative: MH-Z19B (~$15, UART interface, different wiring).",
 )
 
 _IRLZ44N = Component(
@@ -105,9 +105,10 @@ _ESP32_CAM = Component(
     name="ESP32-S3 CAM (OV5640)",
     role="Camera node — captures images for contamination detection + growth tracking",
     price_approx="$12",
-    url="https://www.amazon.com/s?k=esp32-s3+cam+ov5640",
+    url="https://www.amazon.com/s?k=ESP32-S3+CAM+OV5640",
     category="controller",
-    notes="USB-C, no programmer needed, 5MP OV5640 camera. "
+    notes="USB-C, no separate programmer needed. 5MP OV5640 camera. "
+          "Also available at Seeed Studio (XIAO ESP32S3 Sense) and Walmart. "
           "Alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer, 2MP.",
 )
 
@@ -122,16 +123,17 @@ _FTDI = Component(
 )
 
 
-def _shelly_plug(role: str) -> Component:
+def _tasmota_plug(role: str) -> Component:
     return Component(
-        name="Shelly Plus Plug S",
+        name="Athom Tasmota Smart Plug (US/EU)",
         role=f"Smart plug — {role}",
-        price_approx="$22",
-        url="https://www.amazon.com/s?k=shelly+plus+plug+s",
+        price_approx="$10",
+        url="https://www.athom.tech/blank-1/tasmota-us-plug-v2",
         category="plug",
-        notes="Gen2 firmware, WiFi smart plug with MQTT support, power monitoring. 12A max. "
-              "Same MQTT topics as original Shelly Plug S. "
-              "Alternative: Shelly Plug S (original) or any Tasmota-compatible plug.",
+        notes="Pre-flashed with Tasmota firmware. MQTT ready out of the box. "
+              "Power monitoring via HLW8032. No cloud required. "
+              "Available in US/EU/UK/AU variants from athom.tech. "
+              "Also available on AliExpress and Tindie.",
     )
 
 
@@ -177,7 +179,7 @@ TIER_BARE_BONES = HardwareTier(
             url="https://www.amazon.com/s?k=usb+power+supply+5v+2a",
             category="power",
         ),
-        _shelly_plug("Humidifier on/off"),
+        _tasmota_plug("Humidifier on/off"),
     ],
     wiring=[
         WiringConnection(from_device="ESP32", from_pin="3.3V", to_device="SHT31-D", to_pin="VIN"),
@@ -212,7 +214,9 @@ TIER_BARE_BONES = HardwareTier(
         "Install PlatformIO: pip install platformio",
         "Flash climate_node firmware: cd firmware && pio run -t upload -e climate_node",
         "ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
-        "Set up Shelly Plug: connect to WiFi, enable MQTT in Shelly web UI, point to Pi's IP:1883",
+        "Set up Athom Tasmota Plug: power on — it creates a WiFi AP named 'tasmota-XXXX'. "
+        "Connect to the AP, open 192.168.4.1, enter your WiFi credentials. "
+        "In Tasmota web UI: Configuration → MQTT → set Host to your Pi's IP, Port 1883",
         "Start SporePrint: docker compose up -d (or run dev servers manually)",
         "Open http://<pi-ip>:3001 — you should see live sensor data on the dashboard",
     ],
@@ -224,7 +228,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$230",
+    estimated_cost="~$220",
     what_you_get=[
         "Everything in Bare Bones, plus:",
         "CO2 monitoring — critical for oyster and lion's mane species",
@@ -280,8 +284,8 @@ TIER_RECOMMENDED = HardwareTier(
         ),
         _ESP32_CAM,
         _FTDI,
-        _shelly_plug("Humidifier on/off"),
-        _shelly_plug("Heater or cooler on/off"),
+        _tasmota_plug("Humidifier on/off"),
+        _tasmota_plug("Heater or cooler on/off"),
         Component(
             name="Breadboard + Jumper Wire Kit",
             role="Prototyping connections",
@@ -367,7 +371,9 @@ TIER_RECOMMENDED = HardwareTier(
         "Connect fans to relay node: FAE fan → channel 0 (GPIO 25), exhaust → channel 1 (GPIO 26), circulation → channel 2 (GPIO 27)",
         "Connect LED strips to lighting node: white → channel 0, blue → channel 1",
         "Power 12V devices from the 12V PSU. ESP32s powered via USB.",
-        "Set up Shelly Plugs: connect to WiFi, enable MQTT, point to Pi IP:1883, assign roles in SporePrint settings",
+        "Set up Athom Tasmota Plugs: power on each plug — connect to 'tasmota-XXXX' AP, "
+        "open 192.168.4.1, enter WiFi credentials. In Tasmota web UI: Configuration → MQTT → "
+        "set Host to Pi's IP, Port 1883. Assign roles in SporePrint settings",
         "Start SporePrint: docker compose up -d",
         "Verify all nodes appear on Dashboard hardware panel. Camera frames should appear in Vision page within 15 min.",
     ],
@@ -379,7 +385,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$400+",
+    estimated_cost="~$370+",
     what_you_get=[
         "Everything in Recommended, plus:",
         "Redundant climate monitoring (2 nodes — different shelves or backup)",
@@ -416,10 +422,10 @@ TIER_ALL = HardwareTier(
         Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power"),
         Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view"}),
         _FTDI,
-        _shelly_plug("Humidifier"),
-        _shelly_plug("Dehumidifier"),
-        _shelly_plug("Space heater"),
-        _shelly_plug("Peltier cooler"),
+        _tasmota_plug("Humidifier"),
+        _tasmota_plug("Dehumidifier"),
+        _tasmota_plug("Space heater"),
+        _tasmota_plug("Peltier cooler"),
         Component(
             name="HX711 Load Cell Amplifier + 5kg Load Cell",
             role="Automated harvest weight tracking",
@@ -495,7 +501,9 @@ TIER_ALL = HardwareTier(
         "Complete all Recommended tier setup steps first",
         "Wire second climate node identically — flash with different node_id (climate-02)",
         "Add red (660nm) and far-red (730nm) LED strips to lighting node channels 2 and 3",
-        "Set up all 4 Shelly Plugs with MQTT — assign roles: humidifier, dehumidifier, heater, cooler",
+        "Set up all 4 Athom Tasmota Plugs with MQTT — for each plug: connect to 'tasmota-XXXX' AP, "
+        "open 192.168.4.1, enter WiFi, then Configuration → MQTT → Host = Pi IP, Port 1883. "
+        "Assign roles: humidifier, dehumidifier, heater, cooler",
         "Mount second ESP32-CAM for top-down view — configure with node_id cam-02",
         "Wire HX711 load cell to relay node spare GPIOs (32, 33) — place cell under grow block",
         "Mount reed switch on closet door frame — wire to any ESP32 GPIO with INPUT_PULLUP",
