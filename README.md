@@ -38,13 +38,16 @@ Whether you are growing oyster mushrooms in a closet or managing multiple fruiti
 
 ### Key Highlights
 
-- **55 built-in species profiles** with per-phase environmental targets, TEK guides, substrate recipes, and photo references
-- **17 server modules** with 80+ API endpoints across 16 router groups
-- **15 UI pages** -- real-time dashboard, session manager, species library, grow planner, contamination guide, culture tracker, experiment mode, and more
-- **25 SQLite tables** with tiered data retention (~120 MB/year)
+- **55 built-in species profiles** (19 active, 24 gourmet, 7 medicinal, 5 novelty) with per-phase environmental targets, TEK guides, substrate recipes, and photo references
+- **17 server modules** with 80+ API endpoints across 17 router groups
+- **15 UI pages** -- real-time dashboard, session manager, species library, grow planner, contamination guide, culture tracker, experiment mode, settings, and more
+- **26 SQLite tables** with tiered data retention (~120 MB/year)
 - **Dual vision pipeline** -- local CNN for fast contamination detection, Claude API for deep morphology analysis
+- **Weather multi-provider failover** -- automatic fallback across Open-Meteo, OpenWeatherMap, and NWS; configurable from Settings UI
 - **Weather-predictive alerts** up to 72 hours in advance
 - **Unit preferences** -- Fahrenheit/Celsius, grams/ounces throughout the UI
+- **8 OpenSCAD 3D-printable enclosure models** -- parametric designs for sensor mounts, ESP32 cases, Pi case, and more
+- **8 SVG diagrams** -- color-coded wiring diagrams per hardware tier plus architecture overviews
 
 ---
 
@@ -105,6 +108,7 @@ docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 - **Real-time telemetry** -- temperature, humidity, CO2, and light from ESP32 sensor nodes via MQTT
 - **Declarative rules engine** -- threshold, schedule, and compound conditions with species-aware targets and per-chamber scoping
 - **Weather-aware virtual sensors** -- the system learns the correlation between outdoor weather and indoor conditions over time
+- **Multi-provider weather failover** -- automatic fallback chain (Open-Meteo, OpenWeatherMap, NWS) when primary provider fails; configurable from the Settings UI
 - **Predictive alerts** -- warns up to 72 hours ahead when species targets will be violated based on weather forecasts
 - **Smart plug integration** -- Shelly and Tasmota device control via MQTT
 - **Tiered data retention** -- raw (7 days), 5-min averages (30 days), hourly (1 year), daily (forever); ~120 MB/year on Pi
@@ -214,8 +218,8 @@ docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST/WS──> React UI
   (sensors,            (FastAPI, SQLite,                  (dashboard,
    relays,              17 modules, 80+ endpoints,         15 pages,
-   lighting,            automation engine,                  real-time
-   camera)              weather prediction,                 WebSocket)
+   lighting,            26 tables, automation engine,       real-time
+   camera)              weather failover,                   WebSocket)
                         ntfy notifications)
 ```
 
@@ -241,7 +245,7 @@ SporePrint/
 │   └── app/
 │       ├── main.py            # App entrypoint + Socket.IO + background tasks
 │       ├── config.py          # Pydantic settings (env vars)
-│       ├── db.py              # SQLite schema (25 tables) + connection manager
+│       ├── db.py              # SQLite schema (26 tables) + connection manager
 │       ├── mqtt.py            # MQTT subscriber + weather enrichment
 │       ├── telemetry/         # Sensor data ingest + rollup-aware history
 │       ├── sessions/          # Grow session lifecycle, yield stats, drying tracker, PDF reports, iCal feed
@@ -261,7 +265,10 @@ SporePrint/
 │       ├── cultures/          # Genetics pipeline with lineage trees
 │       ├── chambers/          # Multi-chamber management + comparison
 │       ├── experiments/       # A/B experiment mode
-│       └── labels/            # QR code generation for thermal printers
+│       ├── labels/            # QR code generation for thermal printers
+│       ├── settings_router.py # User settings API (weather provider, display prefs)
+│       └── settings_service.py # Settings persistence service
+├── models/                    # OpenSCAD 3D-printable enclosure models (8 files)
 ├── ui/                        # React 18 + TypeScript + Vite
 │   └── src/
 │       ├── pages/             # 15 pages (see below)
@@ -304,7 +311,7 @@ SporePrint/
 | `sessions` | 10+ | Grow session CRUD, phase management, yield stats, drying tracker, PDF reports, iCal feed |
 | `species` | 8+ | Species profiles, wizard scoring, substrate calculator, shopping list generator |
 | `automation` | 6+ | Declarative rules engine, smart plug control, per-chamber overrides |
-| `weather` | 5+ | Multi-provider weather API, 7-day forecast, prediction model, history aggregation |
+| `weather` | 5+ | Multi-provider weather API with failover (Open-Meteo, OpenWeatherMap, NWS), 7-day forecast, prediction model, history aggregation |
 | `vision` | 4+ | Camera frame ingest, local CNN detection, Claude Vision analysis |
 | `builder` | 3+ | 3-tier hardware guide, wiring diagrams, Claude assistant |
 | `hardware` | 3+ | Node registry, command dispatch, component health |
@@ -317,10 +324,11 @@ SporePrint/
 | `chambers` | 4+ | Multi-chamber CRUD, node assignment, comparison queries |
 | `experiments` | 4+ | A/B experiments, session pairing, comparison reports |
 | `labels` | 2+ | QR code generation (PNG) for sessions, cultures, containers |
+| `settings` | 2+ | User settings persistence (weather provider, display preferences, unit preferences) |
 
-### Database Schema (25 SQLite tables)
+### Database Schema (26 SQLite tables)
 
-20 original tables (telemetry, sessions, harvests, species profiles, automation rules, hardware nodes, weather, vision frames, etc.) plus 5 tables added in v3.0:
+20 original tables (telemetry, sessions, harvests, species profiles, automation rules, hardware nodes, weather, vision frames, etc.) plus 6 tables added in v3.0:
 
 | Table | Purpose |
 |-------|---------|
@@ -329,16 +337,18 @@ SporePrint/
 | `chambers` | Multi-chamber definitions with node assignments and active sessions |
 | `experiments` | A/B grow experiments with control/variant session links |
 | `drying_log` | Per-harvest drying tracker entries with weight and moisture |
+| `user_settings` | Per-user persistent settings (weather provider, display preferences, units) |
 
 ---
 
 ## Species Library
 
-SporePrint ships with **55 built-in species profiles** across three categories:
+SporePrint ships with **55 built-in species profiles** across four categories:
 
-- **Gourmet** -- oyster varieties, shiitake, lion's mane, king trumpet, maitake, nameko, pioppino, enoki, and more
-- **Medicinal** -- reishi, turkey tail, chaga, cordyceps, lion's mane (also gourmet), maitake
-- **Active** -- various Psilocybe and related species
+- **Gourmet** (24) -- oyster varieties, shiitake, lion's mane, king trumpet, maitake, nameko, pioppino, enoki, and more
+- **Medicinal** (7) -- reishi, turkey tail, chaga, cordyceps, lion's mane (also gourmet), maitake
+- **Active** (19) -- various Psilocybe and related species
+- **Novelty** (5) -- bioluminescent and ornamental species
 
 Each profile includes:
 
@@ -378,7 +388,7 @@ Species can also be imported as custom JSON profiles for varieties not in the bu
 | **Recommended** | ~$200 | + CO2 sensor + lighting node + camera |
 | **All the Things** | ~$350+ | + multiple chambers + redundant sensors + full lighting |
 
-The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams, and step-by-step assembly instructions for each tier.
+The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams (4 wiring diagrams + system overview), step-by-step assembly instructions for each tier, and 8 parametric OpenSCAD 3D-printable enclosure models (sensor mounts, ESP32 cases, Pi case, fan duct, power supply mount).
 
 ### Firmware
 
@@ -412,6 +422,7 @@ The backend exposes a REST API and Socket.IO WebSocket for real-time updates.
 | Chambers | `/api/chambers` | Chamber CRUD, node assignment, comparison |
 | Experiments | `/api/experiments` | Experiment CRUD, comparison reports |
 | Labels | `/api/labels` | QR code generation (PNG) |
+| Settings | `/api/settings` | User settings (weather provider, display preferences) |
 
 ### WebSocket Events (Socket.IO)
 
