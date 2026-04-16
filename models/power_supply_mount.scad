@@ -1,8 +1,16 @@
 // SporePrint 12V Power Supply Mounting Bracket
 // Wall-mountable bracket for a standard barrel-jack 12V DC power supply
 // Fits common "brick" style adapters (adjustable width via parameters)
-// Print: PLA or PETG, 0.2mm layer height, no supports needed
-// Mount to wall with M3 or M4 screws
+//
+// Mounting options:
+//   - M4 screw holes (for permanent wall mounting)
+//   - Keyhole slots (for tool-free hanging on pre-installed screws)
+//   - Zip tie slots (for shelf/wire/rail mounting and PSU retention)
+//
+// Print settings: PLA or PETG, 0.2mm layer height, no supports needed
+// Designed for: 50x110x30mm PSU bricks (adjustable via parameters)
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -22,10 +30,24 @@ screw_d       = 4;     // mm — M4 wall mount screws (use M3 for lighter loads)
 base_thick    = 3;     // mm — base plate thickness
 corner_r      = 3;     // mm — corner radius for aesthetics
 
+// Zip tie parameters
+zt_width   = 3;    // mm — zip tie slot width
+zt_depth   = 1.5;  // mm — zip tie slot depth
+zt_spacing = 15;   // mm — distance between parallel zip tie slots
+
 // ── Derived ───────────────────────────────────────────────────
 cradle_w = psu_w + tolerance * 2 + wall * 2;
 cradle_l = psu_l + tolerance * 2 + wall * 2;
 cradle_h = base_thick + lip_h;
+
+// ── Reusable mounting modules ──────────────────────────────────
+
+module zip_tie_slot(width=3, depth=1.5, spacing=15) {
+    // Two parallel slots for zip tie pass-through
+    for (x = [-spacing/2, spacing/2])
+        translate([x, 0, 0])
+            cube([width, 20, depth], center=true);
+}
 
 // ── Rounded rectangle helper ──────────────────────────────────
 module rounded_rect(w, l, h, r) {
@@ -80,7 +102,7 @@ module psu_cradle() {
         translate([cradle_w / 2 - cable_slot_w / 2, cradle_l - wall - 1, base_thick])
             cube([cable_slot_w, wall + 2, cable_slot_h]);
 
-        // Strap slots (for Velcro or zip-tie securing)
+        // Strap slots (for Velcro or zip-tie securing of PSU)
         for (y_pos = [cradle_l * 0.3, cradle_l * 0.7]) {
             // Left side strap slot
             translate([-1, y_pos - strap_w / 2, base_thick + lip_h / 2])
@@ -89,6 +111,12 @@ module psu_cradle() {
             translate([cradle_w - wall - 1, y_pos - strap_w / 2, base_thick + lip_h / 2])
                 cube([wall + 2, strap_w, strap_h]);
         }
+
+        // Zip tie slots on bottom (for strapping to shelf wire/rail)
+        translate([cradle_w / 2, cradle_l * 0.3, 0])
+            zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+        translate([cradle_w / 2, cradle_l * 0.7, 0])
+            zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
 
         // Bottom ventilation holes (PSU heat dissipation)
         for (x = [wall + 5 : 8 : cradle_w - wall - 5])

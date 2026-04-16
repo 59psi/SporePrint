@@ -1,8 +1,16 @@
 // SporePrint 80mm Fan Duct Adapter
 // Adapts an 80mm PC fan to a 4-inch (102mm) flexible duct
 // for directing FAE into or out of a grow chamber
-// Print: PETG or PLA, 0.2mm layer height, no supports needed
-// Attach fan with M4 screws, duct with hose clamp
+//
+// Mounting options:
+//   - M4 screw holes (for permanent fan attachment)
+//   - Zip tie retention tabs (for securing duct hose)
+//   - Bracket holes (for optional external bracket)
+//
+// Print settings: PETG or PLA, 0.2mm layer height, no supports needed
+// Designed for: 80mm PC fan to 4-inch (102mm) flexible duct
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -19,6 +27,12 @@ wall           = 2;     // mm — wall thickness
 flange_depth   = 3;     // mm — fan mounting flange thickness
 barb_height    = 2;     // mm — duct retention barb height
 barb_width     = 1;     // mm — duct retention barb thickness
+
+// Zip tie parameters
+zt_width     = 3;    // mm — zip tie slot width
+zt_height    = 1.5;  // mm — zip tie slot height (radial depth)
+zt_tab_width = 8;    // mm — zip tie retention tab width
+zt_tab_depth = 3;    // mm — zip tie retention tab protrusion
 
 // ── Derived ───────────────────────────────────────────────────
 fan_r          = fan_opening / 2;
@@ -116,6 +130,26 @@ module duct_collar() {
     }
 }
 
+// ── Zip tie retention tabs (around duct collar) ───────────────
+module zt_retention_tabs() {
+    z_start = flange_depth + transition_h;
+    tab_z = z_start + duct_insert * 0.4;  // position tabs partway up collar
+
+    // Four retention tabs evenly spaced around the collar
+    for (a = [0, 90, 180, 270]) {
+        rotate([0, 0, a])
+            translate([duct_r + wall, -zt_tab_width / 2, tab_z]) {
+                difference() {
+                    // Tab body
+                    cube([zt_tab_depth, zt_tab_width, zt_tab_width]);
+                    // Zip tie channel through tab
+                    translate([-0.5, zt_tab_width / 2 - zt_width / 2, -1])
+                        cube([zt_tab_depth + 1, zt_width, zt_height + 1]);
+                }
+            }
+    }
+}
+
 // ── Mounting holes for optional bracket attachment ─────────────
 module bracket_holes() {
     z = flange_depth + transition_h / 2;
@@ -131,6 +165,7 @@ module fan_duct() {
     fan_flange();
     transition();
     duct_collar();
+    zt_retention_tabs();
 }
 
 // ── Render ─────────────────────────────────────────────────────

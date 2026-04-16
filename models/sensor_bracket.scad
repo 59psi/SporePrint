@@ -1,8 +1,16 @@
 // SporePrint Universal Sensor Mounting Bracket
 // Adjustable bracket that clips to a wire shelf, with a platform
 // for the sensor mount enclosure
-// Print: PLA or PETG, 0.2mm layer height, no supports needed
-// Clips onto standard wire shelving (adjustable wire diameter)
+//
+// Mounting options:
+//   - Wire shelf clips (snap onto standard wire shelving)
+//   - M3 screw holes (for permanent sensor enclosure attachment)
+//   - Suction cup mount (for glass/smooth surface attachment)
+//
+// Print settings: PLA or PETG, 0.2mm layer height, no supports needed
+// Designed for: Standard wire shelving (adjustable wire diameter)
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -24,10 +32,25 @@ num_clips       = 2;     // number of wire clips (straddle 2 wires)
 cable_slot_w    = 8;     // mm — cable routing slot width
 gusset_size     = 10;    // mm — reinforcement gusset size
 
+// Suction cup parameters
+sc_diameter = 30;  // mm — standard suction cup diameter
+sc_depth    = 2;   // mm — concave ring depth
+
 // ── Derived ───────────────────────────────────────────────────
 clip_inner_d = wire_d + clip_gap * 2;
 clip_outer_d = clip_inner_d + wall * 2;
 total_clip_w = (num_clips - 1) * wire_spacing + clip_outer_d;
+
+// ── Reusable mounting modules ──────────────────────────────────
+
+module suction_cup_mount(diameter=30, depth=2) {
+    // Concave ring for standard suction cup press-fit
+    difference() {
+        cylinder(h=depth, d=diameter+4, $fn=32);
+        translate([0, 0, -0.1])
+            cylinder(h=depth+0.2, d=diameter, $fn=32);
+    }
+}
 
 // ── Wire clip (C-shaped, snaps onto round wire) ───────────────
 module wire_clip() {
@@ -111,6 +134,10 @@ module sensor_platform() {
                     cube([2, platform_l, platform_thick + 3]);
                     translate([platform_w - 2, 0, 0])
                         cube([2, platform_l, platform_thick + 3]);
+
+                    // Suction cup mount on bottom (alternative to shelf clip)
+                    translate([platform_w / 2, platform_l / 2, -sc_depth + 0.1])
+                        suction_cup_mount(diameter=sc_diameter, depth=sc_depth);
                 }
 
                 // Mounting screw holes (four positions)

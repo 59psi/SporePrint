@@ -1,7 +1,15 @@
 // SporePrint Climate Sensor Mount
-// For SHT31-D + BH1750 breakout boards (dual I2C sensor enclosure)
-// Print: PLA, 0.2mm layer height, no supports needed
-// Mount to wall or shelf with M3 screws
+// For SHT31-D + SCD41 + BH1750 breakout boards (dual I2C sensor enclosure)
+//
+// Mounting options:
+//   - M3 screw holes (for permanent mounting)
+//   - Zip tie slots (for shelf/wire/rail mounting)
+//   - Suction cup mount (for glass/smooth surfaces)
+//
+// Print settings: PLA, 0.2mm layer height, no supports needed
+// Designed for: 25x15mm breakout boards (SHT31-D, BH1750, SCD41)
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -16,6 +24,15 @@ cable_slot   = 5;    // mm — cable routing channel width
 lid_tolerance = 0.3; // mm — snap-fit clearance
 lid_lip      = 1.5;  // mm — snap-fit lip depth
 
+// Zip tie parameters
+zt_width   = 3;    // mm — zip tie slot width
+zt_depth   = 1.5;  // mm — zip tie slot depth
+zt_spacing = 15;   // mm — distance between parallel zip tie slots
+
+// Suction cup parameters
+sc_diameter = 30;  // mm — standard suction cup diameter
+sc_depth    = 2;   // mm — concave ring depth
+
 // ── Derived dimensions ─────────────────────────────────────────
 inner_w = board_width;
 inner_l = board_length * 2 + wall;  // two boards + divider
@@ -23,6 +40,24 @@ outer_w = inner_w + wall * 2;
 outer_l = inner_l + wall * 2;
 cavity_h = board_height + 8;        // room for components + wires
 outer_h  = cavity_h + wall;
+
+// ── Reusable mounting modules ──────────────────────────────────
+
+module zip_tie_slot(width=3, depth=1.5, spacing=15) {
+    // Two parallel slots for zip tie pass-through
+    for (x = [-spacing/2, spacing/2])
+        translate([x, 0, 0])
+            cube([width, 20, depth], center=true);
+}
+
+module suction_cup_mount(diameter=30, depth=2) {
+    // Concave ring for standard suction cup press-fit
+    difference() {
+        cylinder(h=depth, d=diameter+4, $fn=32);
+        translate([0, 0, -0.1])
+            cylinder(h=depth+0.2, d=diameter, $fn=32);
+    }
+}
 
 // ── Main enclosure ─────────────────────────────────────────────
 module sensor_mount() {
@@ -56,6 +91,16 @@ module sensor_mount() {
             translate([pos[0], pos[1], -1])
                 cylinder(h = outer_h + 2, d = screw_diameter, $fn = 16);
 
+        // Zip tie slots — left side (for strapping to shelf wire)
+        translate([0, outer_l / 2, outer_h / 2])
+            rotate([0, 90, 0])
+                zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+
+        // Zip tie slots — right side
+        translate([outer_w, outer_l / 2, outer_h / 2])
+            rotate([0, 90, 0])
+                zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+
         // Snap-fit lid groove (inner lip around top edge)
         translate([wall - lid_tolerance, wall - lid_tolerance, outer_h - lid_lip])
             cube([inner_w + lid_tolerance * 2, inner_l + lid_tolerance * 2, lid_lip + 1]);
@@ -70,6 +115,11 @@ module sensor_mount() {
         translate([wall + inner_w - 1, y_offset, wall])
             cube([1, board_length, 1.5]);
     }
+
+    // Suction cup mount on back face (for sticking to glass/smooth surfaces)
+    translate([outer_w / 2, outer_l + sc_depth - 0.1, outer_h / 2])
+        rotate([90, 0, 0])
+            suction_cup_mount(diameter=sc_diameter, depth=sc_depth);
 }
 
 // ── Snap-fit lid ───────────────────────────────────────────────

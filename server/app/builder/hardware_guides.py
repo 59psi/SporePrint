@@ -226,7 +226,17 @@ TIER_BARE_BONES = HardwareTier(
         "Install PlatformIO: pip install platformio",
         "Flash climate_node firmware: cd firmware && pio run -t upload -e climate_node",
         "ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
-        "Set up Athom Tasmota Plug: power on — it creates a WiFi AP named 'tasmota-XXXX'. "
+        "SENSOR PLACEMENT — Climate node (SHT31 + BH1750): Mount the sensor board inside the "
+        "ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
+        "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
+        "substrate level are what matter for mushroom growth, not ambient room temp. Attach to shelf "
+        "with zip ties (thread through the side slots) or use the suction cup mount on back for glass "
+        "walls. AVOID placing near heat sources (heaters, lights), direct airflow (fan output), or "
+        "dead air zones (corners). BH1750 light sensor should face the light source — mount with the "
+        "sensor chip facing the LED strips, not the floor",
+        "SMART PLUG PLACEMENT — Athom Tasmota plug: plug into an accessible outlet OUTSIDE the chamber. "
+        "Connect your humidifier (ultrasonic, placed inside chamber or piped in via tubing). "
+        "Set up plug: power on — it creates a WiFi AP named 'tasmota-XXXX'. "
         "Connect to the AP, open 192.168.4.1, enter your WiFi credentials. "
         "In Tasmota web UI: Configuration → MQTT → set Host to your Pi's IP, Port 1883",
         "Start SporePrint: docker compose up -d (or run dev servers manually)",
@@ -393,10 +403,35 @@ TIER_RECOMMENDED = HardwareTier(
         "Flash all 4 firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
         "Flash ESP32-S3 CAM: connect via USB-C, flash cam_node firmware (no programmer needed)",
         "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
+        "SENSOR PLACEMENT — Climate node (SHT31 + SCD41 + BH1750): Mount the sensor board inside the "
+        "ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
+        "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
+        "substrate level are what matter for mushroom growth, not ambient room temp. Attach to shelf "
+        "with zip ties (thread through the side slots) or use the suction cup mount on back for glass "
+        "walls. AVOID placing near heat sources (heaters, lights), direct airflow (fan output), or "
+        "dead air zones (corners). CO2 SPECIFIC: SCD41 needs good air circulation around it — don't "
+        "enclose it too tightly. The vent holes in the sensor mount are critical for accurate CO2 "
+        "readings. LIGHT SPECIFIC: BH1750 should face the light source — mount with the sensor chip "
+        "facing the LED strips, not the floor",
+        "RELAY NODE PLACEMENT: Mount the relay board (relay_board_mount.scad) OUTSIDE the grow chamber — "
+        "electronics should not be in a high-humidity environment. Mount on the outside wall or a nearby "
+        "shelf using M3 screws or zip ties through the edge channels. Route wires through a small hole or "
+        "gap in the chamber — use grommets if drilling through plastic. Keep MOSFETs accessible for "
+        "inspection and ensure good ventilation — MOSFETs generate heat under load",
         "Connect fans to relay node: FAE fan to channel 0 (GPIO 25), exhaust to channel 1 (GPIO 26), circulation to channel 2 (GPIO 27)",
         "Connect LED strips to lighting node: white to channel 0 (GPIO 25), blue to channel 1 (GPIO 26)",
         "Power 12V devices (fans, LED strips) from the 12V PSU. ESP32s powered via USB",
-        "Set up Athom Tasmota Plugs: power on each plug — connect to 'tasmota-XXXX' AP, "
+        "CAMERA PLACEMENT: Two recommended positions — (1) FRONT-FACING at substrate level, angled "
+        "slightly upward to capture pin formation and fruiting body development, or (2) TOP-DOWN above "
+        "the substrate looking straight down for overall colonization progress. Use cam_mount.scad — "
+        "suction cup on glass door or zip tie to shelf rail. Distance: 15-30cm from substrate for good "
+        "detail without fish-eye distortion. The camera has a built-in flash LED (GPIO 4) — use it for "
+        "consistent photos since ambient light varies",
+        "SMART PLUG PLACEMENT — Athom Tasmota plugs: plug into accessible outlets OUTSIDE the chamber. "
+        "Humidifier plug: connect an ultrasonic humidifier (placed inside or piped in). "
+        "Heater/cooler plug: connect a space heater (placed outside, directed at chamber intake) or "
+        "Peltier cooler (placed at chamber wall). "
+        "Set up each plug: power on — connect to 'tasmota-XXXX' AP, "
         "open 192.168.4.1, enter WiFi credentials. In Tasmota web UI: Configuration → MQTT → "
         "set Host to Pi's IP, Port 1883. Assign roles: humidifier, heater/cooler",
         "Start SporePrint: docker compose up -d",
@@ -549,13 +584,40 @@ TIER_ALL = HardwareTier(
         "Flash climate node #2 with different node_id: set MQTT node_id to 'climate-02' before flashing",
         "Flash both ESP32-S3 CAMs via USB-C: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
         "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
+        "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each sensor board inside "
+        "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
+        "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
+        "substrate level are what matter for mushroom growth, not ambient room temp. For the second "
+        "climate node, place on a different shelf at the same height relative to that shelf's substrate. "
+        "Attach to shelf with zip ties (thread through the side slots) or use the suction cup mount on "
+        "back for glass walls. AVOID placing near heat sources (heaters, lights), direct airflow (fan "
+        "output), or dead air zones (corners). CO2 SPECIFIC: SCD41 needs good air circulation — don't "
+        "enclose it too tightly. The vent holes in the sensor mount are critical. LIGHT SPECIFIC: "
+        "BH1750 should face the light source — mount with the sensor chip facing the LED strips, not the floor",
+        "RELAY NODE PLACEMENT: Mount the relay board (relay_board_mount.scad) OUTSIDE the grow chamber — "
+        "electronics should not be in a high-humidity environment. Mount on the outside wall or a nearby "
+        "shelf using M3 screws or zip ties through the edge channels. Route wires through a small hole or "
+        "gap in the chamber — use grommets if drilling through plastic. Keep MOSFETs accessible for "
+        "inspection and ensure good ventilation — MOSFETs generate heat under load. Use the zip tie "
+        "channels on the relay board for cable management — bundle the 12V wires neatly",
         "Connect fans to relay node: FAE fan to channel 0 (GPIO 25), exhaust to channel 1 (GPIO 26), circulation to channel 2 (GPIO 27)",
         "Connect LED strips to lighting node: white to ch 0, blue to ch 1, red (660nm) to ch 2 (GPIO 27), far-red (730nm) to ch 3 (GPIO 14)",
+        "CAMERA PLACEMENT: Use BOTH recommended positions for full coverage — (1) FRONT-FACING camera "
+        "(default node_id) at substrate level, angled slightly upward to capture pin formation and "
+        "fruiting body development. (2) TOP-DOWN camera (cam-02) above the substrate looking straight "
+        "down for overall colonization progress. Use cam_mount.scad — suction cup on glass door or zip "
+        "tie to shelf rail. Distance: 15-30cm from substrate for good detail without fish-eye distortion. "
+        "The camera has a built-in flash LED (GPIO 4) — use it for consistent photos since ambient light varies",
         "Wire HX711 load cell to relay node spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33) — place cell under grow block for harvest weight tracking",
         "Mount reed switch on closet door frame — wire one leg to any ESP32 GPIO (set INPUT_PULLUP), other leg to GND",
         "Connect peristaltic pump to relay node aux channel (GPIO 14) via IRLZ44N + flyback diode — run food-safe silicone tubing to misting nozzle",
         "Power all 12V devices (fans, LED strips, pump) from the 12V 10A PSU. ESP32s powered via USB",
-        "Set up all 4 Athom Tasmota Plugs: power on each plug — connect to 'tasmota-XXXX' AP, "
+        "SMART PLUG PLACEMENT — All 4 Athom Tasmota plugs go into accessible outlets OUTSIDE the chamber. "
+        "Humidifier plug: connect an ultrasonic humidifier (placed inside or piped in via tubing). "
+        "Dehumidifier plug: connect a dehumidifier (placed outside chamber, intake facing chamber). "
+        "Heater plug: connect a space heater (placed outside, directed at chamber intake). "
+        "Peltier cooler plug: connect a Peltier cooler (placed at chamber wall). "
+        "Set up each plug: power on — connect to 'tasmota-XXXX' AP, "
         "open 192.168.4.1, enter WiFi credentials. In Tasmota web UI: Configuration → MQTT → "
         "set Host to Pi's IP, Port 1883. Assign roles: humidifier, dehumidifier, heater, cooler",
         "Start SporePrint: docker compose up -d",

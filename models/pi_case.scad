@@ -1,8 +1,15 @@
 // SporePrint Raspberry Pi 5 Case
 // Snap-fit case with ventilation, GPIO access, SD card slot,
 // USB/Ethernet/power port cutouts
-// Print: PLA or PETG, 0.2mm layer height, no supports needed
-// Mount to wall or shelf with M3 screws via integrated standoffs
+//
+// Mounting options:
+//   - M3 screw holes (for permanent wall/shelf mounting via standoffs)
+//   - Zip tie slots (for shelf/wire/rail mounting)
+//
+// Print settings: PLA or PETG, 0.2mm layer height, no supports needed
+// Designed for: Raspberry Pi 5 (85x56mm PCB)
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -44,6 +51,11 @@ hole_dx      = 58;   // mm — horizontal spacing
 hole_dy      = 49;   // mm — vertical spacing
 hole_d       = 2.7;  // mm — M2.5 mounting holes
 
+// Zip tie parameters
+zt_width   = 3;    // mm — zip tie slot width
+zt_depth   = 1.5;  // mm — zip tie slot depth
+zt_spacing = 15;   // mm — distance between parallel zip tie slots
+
 // ── Derived dimensions ────────────────────────────────────────
 inner_w = board_w + tolerance * 2;
 inner_l = board_l + tolerance * 2;
@@ -51,6 +63,15 @@ outer_w = inner_w + wall * 2;
 outer_l = inner_l + wall * 2;
 base_h  = wall + pcb_thick + 3;  // base holds PCB + small clearance below
 lid_h   = board_h - 3 + wall;    // lid covers components above PCB
+
+// ── Reusable mounting modules ──────────────────────────────────
+
+module zip_tie_slot(width=3, depth=1.5, spacing=15) {
+    // Two parallel slots for zip tie pass-through
+    for (x = [-spacing/2, spacing/2])
+        translate([x, 0, 0])
+            cube([width, 20, depth], center=true);
+}
 
 // ── Base (bottom half) ────────────────────────────────────────
 module pi_case_base() {
@@ -107,6 +128,16 @@ module pi_case_base() {
                      [outer_w - wall / 2, outer_l - wall / 2]])
             translate([pos[0], pos[1], -1])
                 cylinder(h = base_h + 2, d = screw_d, $fn = 16);
+
+        // Zip tie slots on left side (for shelf/wire mounting)
+        translate([0, outer_l / 2, base_h / 2])
+            rotate([0, 90, 0])
+                zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+
+        // Zip tie slots on right side
+        translate([outer_w, outer_l / 2, base_h / 2])
+            rotate([0, 90, 0])
+                zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
     }
 
     // Pi mounting posts (M2.5 standoffs)

@@ -1,7 +1,15 @@
 // SporePrint Camera Mount (ESP32-CAM / ESP32-S3 CAM)
 // Adjustable-angle mount, wall or shelf mountable
-// Print: PLA, 0.2mm layer height, supports needed for pivot cylinders
-// Use M5 bolt + nut for pivot, M3 screws for wall mount
+//
+// Mounting options:
+//   - M3 screw holes (for permanent wall mounting via arm)
+//   - Zip tie slots (for shelf/wire/rail mounting)
+//   - Suction cup mount (for glass door/smooth surfaces)
+//
+// Print settings: PLA, 0.2mm layer height, supports needed for pivot cylinders
+// Designed for: 27x40mm ESP32-CAM / ESP32-S3 CAM boards
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -18,10 +26,37 @@ tolerance  = 0.3;  // mm — fit clearance
 lens_size  = 10;   // mm — camera lens cutout (square)
 screw_d    = 3;    // mm — M3 wall mount screws
 
+// Zip tie parameters
+zt_width   = 3;    // mm — zip tie slot width
+zt_depth   = 1.5;  // mm — zip tie slot depth
+zt_spacing = 15;   // mm — distance between parallel zip tie slots
+
+// Suction cup parameters
+sc_diameter = 30;  // mm — standard suction cup diameter
+sc_depth    = 2;   // mm — concave ring depth
+
 // ── Derived ────────────────────────────────────────────────────
 cradle_outer_w = cam_w + wall * 2 + tolerance * 2;
 cradle_outer_l = cam_l + wall * 2 + tolerance * 2;
 pivot_boss_d   = pivot_d + wall * 2 + 2;
+
+// ── Reusable mounting modules ──────────────────────────────────
+
+module zip_tie_slot(width=3, depth=1.5, spacing=15) {
+    // Two parallel slots for zip tie pass-through
+    for (x = [-spacing/2, spacing/2])
+        translate([x, 0, 0])
+            cube([width, 20, depth], center=true);
+}
+
+module suction_cup_mount(diameter=30, depth=2) {
+    // Concave ring for standard suction cup press-fit
+    difference() {
+        cylinder(h=depth, d=diameter+4, $fn=32);
+        translate([0, 0, -0.1])
+            cylinder(h=depth+0.2, d=diameter, $fn=32);
+    }
+}
 
 // ── Camera cradle ──────────────────────────────────────────────
 module cam_cradle() {
@@ -87,16 +122,24 @@ module mount_arm() {
             // Mount end (circular boss)
             translate([0, arm_length, 0])
                 cylinder(h = wall, d = arm_width, $fn = 24);
+
+            // Suction cup mount at the arm base (for sticking to glass door)
+            translate([0, arm_length, wall])
+                suction_cup_mount(diameter=sc_diameter, depth=sc_depth);
         }
 
         // Pivot hole (M5)
         translate([0, 0, -1])
-            cylinder(h = wall + 2, d = pivot_d + tolerance, $fn = 24);
+            cylinder(h = wall + sc_depth + 4, d = pivot_d + tolerance, $fn = 24);
 
         // Wall mount holes (two at mount end)
         for (dx = [-5, 5])
             translate([dx, arm_length, -1])
-                cylinder(h = wall + 2, d = screw_d, $fn = 16);
+                cylinder(h = wall + sc_depth + 4, d = screw_d, $fn = 16);
+
+        // Zip tie slots at mount end (for shelf rail attachment)
+        translate([0, arm_length - 5, wall / 2])
+            zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
 
         // Angle index marks (small notches every 15 degrees)
         for (a = [0 : 15 : 90])

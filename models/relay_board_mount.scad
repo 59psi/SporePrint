@@ -1,7 +1,14 @@
 // SporePrint Relay Board Mount
 // Mounting plate for 4x IRLZ44N MOSFETs with screw terminal blocks
-// Print: PLA, 0.2mm layer height, no supports needed
-// Mount to wall/shelf/DIN rail with M3 screws
+//
+// Mounting options:
+//   - M3 screw holes (for permanent wall/shelf/DIN rail mounting)
+//   - Zip tie channels (for cable management and shelf rail mounting)
+//
+// Print settings: PLA, 0.2mm layer height, no supports needed
+// Designed for: 4x IRLZ44N TO-220 MOSFETs with screw terminal blocks
+//
+// Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
@@ -20,10 +27,24 @@ wire_slot        = 3;     // mm — wire routing channel width
 standoff_h       = 4;     // mm — standoff height (airflow underneath)
 standoff_d       = 6;     // mm — standoff outer diameter
 
+// Zip tie parameters
+zt_width   = 3;    // mm — zip tie slot width
+zt_depth   = 1.5;  // mm — zip tie slot depth
+zt_spacing = 15;   // mm — distance between parallel zip tie slots
+
 // ── Derived ────────────────────────────────────────────────────
 plate_width  = num_channels * channel_spacing + wall * 2 + 10;
 plate_depth  = mosfet_depth + terminal_depth + 30;  // room for resistors + diodes
 plate_height = wall;
+
+// ── Reusable mounting modules ──────────────────────────────────
+
+module zip_tie_slot(width=3, depth=1.5, spacing=15) {
+    // Two parallel slots for zip tie pass-through
+    for (x = [-spacing/2, spacing/2])
+        translate([x, 0, 0])
+            cube([width, 20, depth], center=true);
+}
 
 // ── Base plate ─────────────────────────────────────────────────
 module base_plate() {
@@ -48,6 +69,26 @@ module base_plate() {
                      [plate_width - screw_d, plate_depth - screw_d]])
             translate([pos[0], pos[1], -1])
                 cylinder(h = plate_height + 2, d = screw_d, $fn = 16);
+
+        // Zip tie channels along both long edges (for cable management)
+        for (y_pos = [plate_depth * 0.25, plate_depth * 0.5, plate_depth * 0.75]) {
+            // Left edge zip tie slots
+            translate([0, y_pos, plate_height / 2])
+                rotate([0, 90, 0])
+                    zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+            // Right edge zip tie slots
+            translate([plate_width, y_pos, plate_height / 2])
+                rotate([0, 90, 0])
+                    zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+        }
+
+        // Zip tie slots along front and back edges (for shelf rail mounting)
+        translate([plate_width / 2, 0, plate_height / 2])
+            rotate([90, 0, 0])
+                zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
+        translate([plate_width / 2, plate_depth, plate_height / 2])
+            rotate([90, 0, 0])
+                zip_tie_slot(width=zt_width, depth=zt_depth, spacing=zt_spacing);
 
         // Label text area (engraved, front edge)
         translate([plate_width / 2 - 15, 1, plate_height - 0.4])
