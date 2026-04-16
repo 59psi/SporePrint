@@ -203,22 +203,7 @@ TIER_BARE_BONES = HardwareTier(
         WiringConnection(from_device="ESP32", from_pin="GPIO 21 (SDA)", to_device="BH1750", to_pin="SDA", note="shared I2C bus"),
         WiringConnection(from_device="ESP32", from_pin="GPIO 22 (SCL)", to_device="BH1750", to_pin="SCL", note="shared I2C bus"),
     ],
-    wiring_diagram="""\
-  ESP32-S3 DevKit                SHT31-D          BH1750
- ┌──────────────────┐       ┌──────────┐     ┌──────────┐
- │              3.3V ├───┬───┤ VIN      │  ┌──┤ VCC      │
- │               GND ├───┼───┤ GND      │  │  ├──────────┤
- │                   │   │   ├──────────┤  │  │ GND ─────┼── GND (shared)
- │  GPIO 21 (SDA) ──├───┼───┤ SDA      │──┼──┤ SDA      │
- │  GPIO 22 (SCL) ──├───┼───┤ SCL      │──┼──┤ SCL      │
- │                   │   │   └──────────┘  │  └──────────┘
- │                   │   └─────────────────┘
- └──────────────────┘
-
- I2C Bus: Both sensors share SDA (GPIO 21) and SCL (GPIO 22)
- SHT31-D address: 0x44  |  BH1750 address: 0x23
-
- Power: ESP32 via USB (5V), sensors from 3.3V pin""",
+    wiring_diagram="See docs/wiring-tier1-bare-bones.svg for full wiring diagram with color-coded signal, I2C, power, and ground lines.",
     firmware_targets=["climate_node"],
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS, run setup.sh",
@@ -340,57 +325,7 @@ TIER_RECOMMENDED = HardwareTier(
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 25", to_device="IRLZ44N Gate", to_pin="via 100R", note="White 6500K strip"),
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 26", to_device="IRLZ44N Gate", to_pin="via 100R", note="Blue 450nm strip"),
     ],
-    wiring_diagram="""\
- === CLIMATE NODE (I2C sensor hub) ===
-
-  ESP32 (Climate)           SHT31-D    SCD41     BH1750
- ┌───────────────┐       ┌────────┐ ┌────────┐ ┌────────┐
- │          3.3V ├───┬───┤ VIN    │ │ VIN ───┼─┤ VCC    │
- │           GND ├───┼───┤ GND    │ │ GND ───┼─┤ GND    │
- │  GPIO 21 SDA ─├───┼───┤ SDA    │ │ SDA ───┼─┤ SDA    │
- │  GPIO 22 SCL ─├───┼───┤ SCL    │ │ SCL ───┼─┤ SCL    │
- └───────────────┘   │   └────────┘ └────────┘ └────────┘
- Addresses: SHT31=0x44, SCD41=0x62, BH1750=0x23
-
- === RELAY NODE (MOSFET fan control, 1 of 4 channels shown) ===
-
-                    10K pull-down
-  ESP32 (Relay)        │
- ┌───────────────┐     │     IRLZ44N         12V Fan
- │  GPIO 25 ─────├──100R──┤ Gate              ┌─────────┐
- │               │         │ Drain ────────────┤ -       │
- │           GND ├─────────┤ Source ──── GND   │ +  ─────┼── +12V
- └───────────────┘         └───────┘           └─────────┘
-                                          ┌──── 1N4007 ────┐
-                                          │ (flyback diode) │
-                                       Fan -             Fan +
-
- Repeat for GPIO 26 (exhaust), 27 (circulation), 14 (aux)
-
- === LIGHTING NODE (MOSFET LED dimming, 10-bit PWM) ===
-
-  ESP32 (Lighting)   10K     IRLZ44N         12V LED Strip
- ┌───────────────┐    │
- │  GPIO 25 ─────├─100R──┤ Gate              ┌─────────────┐
- │               │        │ Drain ────────────┤ - (white)   │
- │           GND ├────────┤ Source ─── GND    │ +  ─────────┼── +12V
- └───────────────┘        └───────┘           └─────────────┘
-
- Repeat for GPIO 26 (blue 450nm), 27 (red 660nm), 14 (far-red 730nm)
-
- === CAMERA NODE (ESP32-S3 CAM — USB-C, no programmer needed) ===
-
-  ESP32-S3 CAM
- ┌──────────────┐
- │  USB-C ──────├── computer (flash) or 5V power
- │  OV5640 cam  │
- └──────────────┘
- Flash via USB-C: pio run -t upload -e cam_node
- No GPIO 0 jumper or UART programmer required.
- Camera auto-captures every 15min and POSTs to SporePrint server.
-
- (If using classic ESP32-CAM AI-Thinker: needs USB-UART programmer,
-  connect TX→RX, RX→TX, GND→GND, hold GPIO 0 to GND during flash)""",
+    wiring_diagram="See docs/wiring-tier2-recommended.svg for full wiring diagram with all 4 ESP32 nodes, MOSFET circuits, and I2C bus layout.",
     firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS (64-bit), enable SSH, connect to WiFi",
@@ -541,35 +476,7 @@ TIER_ALL = HardwareTier(
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 14 (aux)", to_device="Peristaltic Pump", to_pin="Via IRLZ44N + flyback diode"),
         WiringConnection(from_device="Any ESP32 GPIO", from_pin="GPIO (INPUT_PULLUP)", to_device="Reed Switch", to_pin="One leg to GPIO, other to GND"),
     ],
-    wiring_diagram="""\
- Same as Recommended tier wiring, plus:
-
- === SECOND CLIMATE NODE (clone of first, different shelf) ===
- Wire identically to first climate node. Set different node_id via MQTT config.
-
- === LOAD CELL (HX711) ===
-
-  ESP32 (Relay)            HX711 Board         Load Cell
- ┌───────────────┐       ┌───────────┐       ┌──────────┐
- │  GPIO 32 ─────├───────┤ DOUT      │       │  Red ────┼─┤ E+
- │  GPIO 33 ─────├───────┤ SCK       │       │  Black ──┼─┤ E-
- │          3.3V ├───────┤ VCC       │       │  White ──┼─┤ A-
- │           GND ├───────┤ GND       │       │  Green ──┼─┤ A+
- └───────────────┘       └───────────┘       └──────────┘
-
- === DOOR REED SWITCH ===
-
-  Any ESP32 GPIO (INPUT_PULLUP)
- ┌──────────┐
- │  GPIO XX ├──────┤ Reed Switch ├────── GND
- └──────────┘
- (Magnet on door, switch on frame. GPIO reads LOW when door closed, HIGH when open)
-
- === PERISTALTIC PUMP (via relay node aux channel) ===
-
-  Same MOSFET circuit as fans (GPIO 14, aux channel).
-  Connect pump +12V and GND through IRLZ44N drain/source.
-  Add flyback diode across pump terminals.""",
+    wiring_diagram="See docs/wiring-tier3-all-the-things.svg for full wiring diagram with all 5 ESP32 nodes, load cell, reed switch, pump, and 4-channel lighting.",
     firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS (64-bit), enable SSH, connect to WiFi",

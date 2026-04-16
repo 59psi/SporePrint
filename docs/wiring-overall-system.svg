@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600">
+  <defs>
+    <marker id="arrowRSys" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#34d399" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowLSys" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M10,0 L0,5 L10,10" fill="none" stroke="#34d399" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowRBlueSys" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#60a5fa" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowLBlueSys" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M10,0 L0,5 L10,10" fill="none" stroke="#60a5fa" stroke-width="1.5"/>
+    </marker>
+    <linearGradient id="emeraldFadeSys" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0.02"/>
+    </linearGradient>
+    <linearGradient id="amberFadeSys" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="600" fill="#0a0a0f"/>
+
+  <!-- Title -->
+  <text x="500" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="700">SporePrint System Overview</text>
+  <text x="500" y="48" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">How all components interconnect: Pi server, ESP32 nodes, smart plugs, user access, cloud relay</text>
+
+  <!-- Legend -->
+  <rect x="790" y="62" width="190" height="106" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="885" y="78" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Connection Legend</text>
+  <line x1="804" y1="90" x2="834" y2="90" stroke="#34d399" stroke-width="2"/>
+  <text x="840" y="94" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">WiFi / MQTT</text>
+  <line x1="804" y1="106" x2="834" y2="106" stroke="#60a5fa" stroke-width="2"/>
+  <text x="840" y="110" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">HTTP / WebSocket</text>
+  <line x1="804" y1="122" x2="834" y2="122" stroke="#fbbf24" stroke-width="2"/>
+  <text x="840" y="126" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Cloud Relay (optional)</text>
+  <line x1="804" y1="138" x2="834" y2="138" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="840" y="142" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Wireless link</text>
+  <line x1="804" y1="154" x2="834" y2="154" stroke="#a78bfa" stroke-width="2"/>
+  <text x="840" y="158" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Tailscale VPN</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- RASPBERRY PI (center) -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="340" y="200" width="320" height="160" rx="10" fill="#1a1a2e" stroke="#34d399" stroke-width="2"/>
+  <rect x="340" y="200" width="320" height="4" rx="2" fill="#34d399" opacity="0.6"/>
+
+  <text x="500" y="226" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700">Raspberry Pi 5</text>
+  <text x="500" y="244" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Central Hub — Local Network</text>
+
+  <!-- Services inside Pi -->
+  <rect x="356" y="258" width="130" height="28" rx="4" fill="#0a0a0f" stroke="#34d399" stroke-width="0.5"/>
+  <text x="421" y="276" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">SporePrint Server</text>
+
+  <rect x="496" y="258" width="150" height="28" rx="4" fill="#0a0a0f" stroke="#34d399" stroke-width="0.5"/>
+  <text x="571" y="276" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Mosquitto MQTT :1883</text>
+
+  <rect x="356" y="294" width="130" height="28" rx="4" fill="#0a0a0f" stroke="#60a5fa" stroke-width="0.5"/>
+  <text x="421" y="312" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Web UI :3001</text>
+
+  <rect x="496" y="294" width="150" height="28" rx="4" fill="#0a0a0f" stroke="#60a5fa" stroke-width="0.5"/>
+  <text x="571" y="312" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">REST API + Socket.IO</text>
+
+  <rect x="356" y="330" width="290" height="22" rx="4" fill="#0a0a0f" stroke="#94a3b8" stroke-width="0.5"/>
+  <text x="500" y="345" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">SQLite (25 tables)  |  Automation Rules  |  Vision Pipeline  |  Cloud Connector</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- ESP32 NODES (left side) -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="130" width="260" height="310" rx="8" fill="url(#amberFadeSys)" stroke="#334155" stroke-width="1"/>
+  <rect x="20" y="130" width="260" height="3" rx="1.5" fill="#fbbf24" opacity="0.6"/>
+  <text x="150" y="152" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">ESP32 Sensor/Actuator Nodes</text>
+  <text x="150" y="168" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">WiFi connected to Pi via MQTT</text>
+
+  <!-- Climate Node -->
+  <rect x="36" y="180" width="228" height="42" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="150" y="200" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Climate Node(s)</text>
+  <text x="150" y="214" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">SHT31 + SCD41 + BH1750 (I2C)  |  Temp, RH, CO2, Light</text>
+
+  <!-- Relay Node -->
+  <rect x="36" y="232" width="228" height="42" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="150" y="252" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Relay Node</text>
+  <text x="150" y="266" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">4x IRLZ44N MOSFET  |  Fans, pump, aux  |  12V PWM</text>
+
+  <!-- Lighting Node -->
+  <rect x="36" y="284" width="228" height="42" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="150" y="304" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Lighting Node</text>
+  <text x="150" y="318" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">2-4x IRLZ44N  |  White, Blue, Red, Far-Red  |  10-bit PWM</text>
+
+  <!-- Camera Node -->
+  <rect x="36" y="336" width="228" height="42" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="150" y="356" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Camera Node(s)</text>
+  <text x="150" y="370" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">ESP32-S3 CAM (OV5640)  |  Auto-capture + POST to Pi</text>
+
+  <!-- Optional extras -->
+  <rect x="36" y="388" width="228" height="36" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="0.5"/>
+  <text x="150" y="406" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Optional: Load cell (HX711) | Reed switch (door)</text>
+  <text x="150" y="418" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Peristaltic pump (relay CH3)</text>
+
+  <!-- WiFi/MQTT connection from nodes to Pi -->
+  <line x1="280" y1="265" x2="340" y2="265" stroke="#34d399" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arrowRSys)"/>
+  <rect x="291" y="255" width="36" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="309" y="266" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">MQTT</text>
+
+  <!-- Bidirectional label -->
+  <line x1="340" y1="290" x2="280" y2="290" stroke="#34d399" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arrowLSys)"/>
+  <rect x="287" y="280" width="50" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="312" y="291" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">commands</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- SMART PLUGS (bottom left) -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="460" width="260" height="90" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="150" y="484" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Tasmota Smart Plugs</text>
+  <text x="150" y="500" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Pre-flashed MQTT  |  AC power control  |  WiFi</text>
+
+  <text x="40" y="520" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Humidifier  |  Dehumidifier  |  Heater  |  Cooler</text>
+  <text x="40" y="536" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">1-4 plugs depending on tier. Power monitoring via HLW8032.</text>
+
+  <!-- WiFi/MQTT from plugs to Pi -->
+  <line x1="200" y1="460" x2="390" y2="360" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowRSys)"/>
+  <rect x="265" y="398" width="56" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="293" y="409" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">WiFi/MQTT</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- USER ACCESS (bottom right) -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="380" y="440" width="260" height="110" rx="8" fill="url(#emeraldFadeSys)" stroke="#334155" stroke-width="1"/>
+  <rect x="380" y="440" width="260" height="3" rx="1.5" fill="#60a5fa" opacity="0.6"/>
+  <text x="510" y="462" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Local Access (Browser)</text>
+
+  <rect x="396" y="476" width="228" height="28" rx="4" fill="#1a1a2e" stroke="#60a5fa" stroke-width="0.5"/>
+  <text x="510" y="494" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">http://sporeprint.local:3001</text>
+
+  <rect x="396" y="512" width="228" height="28" rx="4" fill="#1a1a2e" stroke="#60a5fa" stroke-width="0.5"/>
+  <text x="510" y="530" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9">Desktop / Tablet / Phone  |  Full dashboard</text>
+
+  <!-- Browser to Pi -->
+  <line x1="500" y1="440" x2="500" y2="365" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrowRBlueSys)"/>
+  <rect x="505" y="395" width="70" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="540" y="406" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">HTTP + WS</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- CLOUD RELAY (top right) -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="720" y="200" width="260" height="160" rx="10" fill="#1a1a2e" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="850" y="222" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Cloud Relay (Optional)</text>
+  <text x="850" y="238" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">sporeprint.ai  |  Premium feature</text>
+
+  <rect x="736" y="250" width="228" height="28" rx="4" fill="#0a0a0f" stroke="#fbbf24" stroke-width="0.5"/>
+  <text x="850" y="268" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WebSocket Relay Server</text>
+
+  <rect x="736" y="286" width="228" height="28" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="850" y="304" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Push Notifications (FCM)</text>
+
+  <rect x="736" y="322" width="228" height="28" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="850" y="340" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Claude AI Vision  |  Metrics  |  Auth</text>
+
+  <!-- Pi to Cloud connection -->
+  <line x1="660" y1="260" x2="720" y2="260" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrowRSys)"/>
+  <rect x="664" y="248" width="48" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="688" y="259" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">WS relay</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- MOBILE APP (far right) -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="720" y="420" width="260" height="130" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="850" y="442" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Mobile App (Remote)</text>
+  <text x="850" y="458" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">iOS / Android  |  SporePrint Cloud</text>
+
+  <rect x="736" y="470" width="228" height="28" rx="4" fill="#0a0a0f" stroke="#fbbf24" stroke-width="0.5"/>
+  <text x="850" y="488" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="9">Premium: Cloud relay (zero-config)</text>
+
+  <rect x="736" y="506" width="228" height="28" rx="4" fill="#0a0a0f" stroke="#a78bfa" stroke-width="0.5"/>
+  <text x="850" y="524" text-anchor="middle" fill="#a78bfa" font-family="system-ui, -apple-system, sans-serif" font-size="9">Free: Tailscale VPN (self-setup)</text>
+
+  <!-- Mobile to Cloud -->
+  <line x1="850" y1="420" x2="850" y2="365" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <rect x="856" y="382" width="70" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="891" y="393" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">Cloud relay</text>
+
+  <!-- Mobile to Pi via Tailscale -->
+  <path d="M 736 520 Q 660 520 660 360" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="6,3" fill="none"/>
+  <rect x="664" y="442" width="56" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="692" y="453" text-anchor="middle" fill="#a78bfa" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">Tailscale</text>
+
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <!-- DATA FLOW LABELS -->
+  <!-- ══════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="62" width="740" height="48" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="0.5" opacity="0.8"/>
+  <text x="35" y="80" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Data Flow:</text>
+  <text x="35" y="96" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Sensors -> MQTT -> Pi (ingest, store, alert, automate) -> Web UI (live dashboard via Socket.IO)</text>
+  <text x="35" y="106" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Commands: UI -> Pi -> MQTT -> ESP32 relay/lighting/plug (fan speed, light level, plug on/off)</text>
+
+  <!-- Footer -->
+  <text x="500" y="592" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="8">SporePrint  |  System Overview  |  github.com/sporeprintai/sporeprint</text>
+</svg>

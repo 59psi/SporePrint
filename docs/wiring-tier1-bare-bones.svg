@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <defs>
+    <marker id="arrowR" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#34d399" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowRBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#60a5fa" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="500" fill="#0a0a0f"/>
+
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="700">Tier 1: Bare Bones Wiring Diagram</text>
+  <text x="400" y="48" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">Raspberry Pi + ESP32 + SHT31 + BH1750 + Tasmota Smart Plug  |  ~$115</text>
+
+  <!-- Legend -->
+  <rect x="590" y="62" width="190" height="90" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
+  <text x="685" y="78" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Wire Legend</text>
+  <line x1="604" y1="90" x2="634" y2="90" stroke="#34d399" stroke-width="2"/>
+  <text x="640" y="94" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Signal / Data</text>
+  <line x1="604" y1="106" x2="634" y2="106" stroke="#60a5fa" stroke-width="2"/>
+  <text x="640" y="110" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">I2C Bus (SDA/SCL)</text>
+  <line x1="604" y1="122" x2="634" y2="122" stroke="#fbbf24" stroke-width="2"/>
+  <text x="640" y="126" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Power (3.3V / 5V)</text>
+  <line x1="604" y1="138" x2="634" y2="138" stroke="#f87171" stroke-width="2"/>
+  <text x="640" y="142" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Ground (GND)</text>
+
+  <!-- ══════════ RASPBERRY PI ══════════ -->
+  <rect x="30" y="80" width="200" height="120" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="130" y="102" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Raspberry Pi 5</text>
+  <text x="130" y="118" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint Server + MQTT Broker</text>
+
+  <!-- Pi ports -->
+  <rect x="44" y="130" width="72" height="20" rx="3" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="80" y="144" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="8">USB-C Power</text>
+  <rect x="124" y="130" width="52" height="20" rx="3" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="150" y="144" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">Ethernet</text>
+  <rect x="184" y="130" width="36" height="20" rx="3" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="202" y="144" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">SD</text>
+
+  <!-- Pi WiFi antenna indicator -->
+  <rect x="44" y="160" width="176" height="18" rx="3" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="132" y="173" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">WiFi: Mosquitto MQTT :1883</text>
+
+  <!-- WiFi connection Pi to ESP32 (dashed) -->
+  <line x1="230" y1="169" x2="290" y2="169" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowR)"/>
+  <rect x="237" y="159" width="42" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="258" y="170" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">WiFi</text>
+
+  <!-- ══════════ ESP32-S3 DEVKIT ══════════ -->
+  <rect x="290" y="80" width="200" height="190" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="390" y="102" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">ESP32-S3 DevKit</text>
+  <text x="390" y="118" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate Node</text>
+
+  <!-- ESP32 USB-C power -->
+  <rect x="304" y="130" width="72" height="20" rx="3" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="340" y="144" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="8">USB-C 5V</text>
+
+  <!-- ESP32 pins -->
+  <circle cx="490" cy="160" r="3" fill="#fbbf24"/>
+  <text x="470" y="164" text-anchor="end" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="9">3.3V</text>
+
+  <circle cx="490" cy="180" r="3" fill="#f87171"/>
+  <text x="470" y="184" text-anchor="end" fill="#f87171" font-family="system-ui, -apple-system, sans-serif" font-size="9">GND</text>
+
+  <circle cx="490" cy="210" r="3" fill="#60a5fa"/>
+  <text x="470" y="214" text-anchor="end" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9">GPIO21</text>
+  <text x="470" y="224" text-anchor="end" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7">(SDA)</text>
+
+  <circle cx="490" cy="248" r="3" fill="#60a5fa"/>
+  <text x="470" y="252" text-anchor="end" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9">GPIO22</text>
+  <text x="470" y="262" text-anchor="end" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7">(SCL)</text>
+
+  <!-- ══════════ I2C BUS (vertical trunk) ══════════ -->
+  <!-- 3.3V power rail -->
+  <line x1="493" y1="160" x2="540" y2="160" stroke="#fbbf24" stroke-width="2"/>
+  <line x1="540" y1="160" x2="540" y2="300" stroke="#fbbf24" stroke-width="2"/>
+
+  <!-- GND rail -->
+  <line x1="493" y1="180" x2="555" y2="180" stroke="#f87171" stroke-width="2"/>
+  <line x1="555" y1="180" x2="555" y2="300" stroke="#f87171" stroke-width="2"/>
+
+  <!-- SDA bus -->
+  <line x1="493" y1="210" x2="570" y2="210" stroke="#60a5fa" stroke-width="2"/>
+  <line x1="570" y1="210" x2="570" y2="300" stroke="#60a5fa" stroke-width="2"/>
+
+  <!-- SCL bus -->
+  <line x1="493" y1="248" x2="585" y2="248" stroke="#60a5fa" stroke-width="2"/>
+  <line x1="585" y1="248" x2="585" y2="300" stroke="#60a5fa" stroke-width="2"/>
+
+  <!-- Bus labels -->
+  <rect x="523" y="280" width="28" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="537" y="291" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">3.3V</text>
+  <rect x="543" y="280" width="22" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="554" y="291" text-anchor="middle" fill="#f87171" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">GND</text>
+  <rect x="558" y="280" width="22" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="569" y="291" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">SDA</text>
+  <rect x="577" y="280" width="22" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="588" y="291" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">SCL</text>
+
+  <!-- ══════════ SHT31-D SENSOR ══════════ -->
+  <rect x="510" y="310" width="150" height="80" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="585" y="332" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">SHT31-D</text>
+  <text x="585" y="348" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Temp + Humidity</text>
+  <text x="585" y="362" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">I2C addr: 0x44</text>
+
+  <!-- SHT31 pin connections -->
+  <circle cx="540" cy="310" r="3" fill="#fbbf24"/>
+  <text x="540" y="306" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="7">VIN</text>
+  <circle cx="555" cy="310" r="3" fill="#f87171"/>
+  <text x="555" y="306" text-anchor="middle" fill="#f87171" font-family="system-ui, -apple-system, sans-serif" font-size="7">GND</text>
+  <circle cx="570" cy="310" r="3" fill="#60a5fa"/>
+  <text x="570" y="306" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="7">SDA</text>
+  <circle cx="585" cy="310" r="3" fill="#60a5fa"/>
+  <text x="585" y="306" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="7">SCL</text>
+
+  <!-- Wires from bus to SHT31 pins -->
+  <line x1="540" y1="300" x2="540" y2="307" stroke="#fbbf24" stroke-width="2"/>
+  <line x1="555" y1="300" x2="555" y2="307" stroke="#f87171" stroke-width="2"/>
+  <line x1="570" y1="300" x2="570" y2="307" stroke="#60a5fa" stroke-width="2"/>
+  <line x1="585" y1="300" x2="585" y2="307" stroke="#60a5fa" stroke-width="2"/>
+
+  <!-- ══════════ BH1750 SENSOR ══════════ -->
+  <rect x="510" y="410" width="150" height="70" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="585" y="432" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">BH1750</text>
+  <text x="585" y="448" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Light Level (lux)</text>
+  <text x="585" y="462" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">I2C addr: 0x23</text>
+
+  <!-- BH1750 pin connections -->
+  <circle cx="540" cy="410" r="3" fill="#fbbf24"/>
+  <text x="540" y="406" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="7">VCC</text>
+  <circle cx="555" cy="410" r="3" fill="#f87171"/>
+  <text x="555" y="406" text-anchor="middle" fill="#f87171" font-family="system-ui, -apple-system, sans-serif" font-size="7">GND</text>
+  <circle cx="570" cy="410" r="3" fill="#60a5fa"/>
+  <text x="570" y="406" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="7">SDA</text>
+  <circle cx="585" cy="410" r="3" fill="#60a5fa"/>
+  <text x="585" y="406" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="7">SCL</text>
+
+  <!-- Wires from SHT31 bottom to BH1750 top (bus continues) -->
+  <line x1="540" y1="390" x2="540" y2="407" stroke="#fbbf24" stroke-width="2"/>
+  <line x1="555" y1="390" x2="555" y2="407" stroke="#f87171" stroke-width="2"/>
+  <line x1="570" y1="390" x2="570" y2="407" stroke="#60a5fa" stroke-width="2"/>
+  <line x1="585" y1="390" x2="585" y2="407" stroke="#60a5fa" stroke-width="2"/>
+
+  <!-- I2C Bus label -->
+  <rect x="380" y="345" width="120" height="30" rx="4" fill="#0a0a0f" stroke="#60a5fa" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <text x="440" y="359" text-anchor="middle" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Shared I2C Bus</text>
+  <text x="440" y="371" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">SDA=GPIO21, SCL=GPIO22</text>
+
+  <!-- ══════════ TASMOTA SMART PLUG ══════════ -->
+  <rect x="30" y="310" width="200" height="100" rx="8" fill="#1a1a2e" stroke="#334155" stroke-width="1.5"/>
+  <text x="130" y="335" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Athom Tasmota Plug</text>
+  <text x="130" y="352" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Pre-flashed MQTT smart plug</text>
+
+  <!-- Plug output -->
+  <rect x="50" y="366" width="160" height="22" rx="3" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
+  <text x="130" y="381" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="9">Output: Humidifier</text>
+  <text x="130" y="400" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">AC power control via MQTT on/off</text>
+
+  <!-- WiFi connection Plug to Pi -->
+  <line x1="130" y1="310" x2="130" y2="216" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <line x1="130" y1="216" x2="130" y2="200" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <rect x="99" y="230" width="62" height="14" rx="2" fill="#0a0a0f"/>
+  <text x="130" y="241" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">WiFi/MQTT</text>
+
+  <!-- ══════════ NOTES ══════════ -->
+  <rect x="30" y="430" width="460" height="55" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="0.5" opacity="0.8"/>
+  <text x="45" y="448" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Notes:</text>
+  <text x="45" y="462" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Both sensors share the same I2C bus (GPIO21/SDA + GPIO22/SCL). No conflicts — different addresses.</text>
+  <text x="45" y="474" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">ESP32 powered via USB-C (5V). Sensors run from 3.3V pin. Tasmota plug connects via WiFi only.</text>
+
+  <!-- Footer -->
+  <text x="400" y="494" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="8">SporePrint  |  Tier 1: Bare Bones  |  github.com/sporeprintai/sporeprint</text>
+</svg>
