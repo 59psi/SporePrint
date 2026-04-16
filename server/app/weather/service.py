@@ -20,6 +20,10 @@ _forecast_cache: list[dict] = []
 _forecast_cache_ts: float = 0
 
 
+_providers = None
+_providers_key = None
+
+
 def _build_provider_cascade() -> list:
     """Build ordered list of weather providers for failover."""
     providers = [OpenMeteoProvider()]  # Always available (free, no key)
@@ -27,6 +31,16 @@ def _build_provider_cascade() -> list:
     if settings.weather_api_key:
         providers.append(OpenWeatherMapProvider(settings.weather_api_key))
     return providers
+
+
+def _get_providers() -> list:
+    """Return cached providers list, rebuilding only when the API key changes."""
+    global _providers, _providers_key
+    key = settings.weather_api_key
+    if _providers is None or _providers_key != key:
+        _providers = _build_provider_cascade()
+        _providers_key = key
+    return _providers
 
 
 async def start_weather_polling(sio):
@@ -42,24 +56,24 @@ async def start_weather_polling(sio):
                 await asyncio.sleep(30)  # Check again in 30s
                 continue
 
-            # Rebuild providers each cycle (picks up API key changes from Settings UI)
-            providers = _build_provider_cascade()
+            providers = _get_providers()
             interval = settings.weather_poll_minutes * 60
 
-            # Try each provider until one succeeds for current conditions
             current = None
             current_provider = None
             for provider in providers:
                 try:
-                    current = await provider.fetch_current(
-                        settings.weather_lat, settings.weather_lon,
+                    current = await asyncio.wait_for(
+                        provider.fetch_current(settings.weather_lat, settings.weather_lon),
+                        timeout=15,
                     )
                     if current:
                         current_provider = provider.name
                         break
+                except asyncio.TimeoutError:
+                    log.warning("Weather provider %s timed out (current)", provider.name)
                 except Exception as e:
                     log.warning("Weather provider %s failed (current): %s", provider.name, e)
-                    continue
 
             if current:
                 log.debug(
@@ -74,20 +88,21 @@ async def start_weather_polling(sio):
             else:
                 log.warning("All weather providers failed for current conditions")
 
-            # Try each provider for forecast
             forecast = None
             forecast_provider = None
             for provider in providers:
                 try:
-                    forecast = await provider.fetch_forecast(
-                        settings.weather_lat, settings.weather_lon,
+                    forecast = await asyncio.wait_for(
+                        provider.fetch_forecast(settings.weather_lat, settings.weather_lon),
+                        timeout=15,
                     )
                     if forecast:
                         forecast_provider = provider.name
                         break
+                except asyncio.TimeoutError:
+                    log.warning("Weather provider %s timed out (forecast)", provider.name)
                 except Exception as e:
                     log.warning("Weather provider %s failed (forecast): %s", provider.name, e)
-                    continue
 
             if forecast:
                 await _update_forecast_cache(forecast, forecast_provider)

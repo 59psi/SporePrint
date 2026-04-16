@@ -101,7 +101,6 @@ export default function Species() {
         </div>
       </div>
 
-      {/* Category filter */}
       <div className="flex gap-2 mb-4">
         {['all', 'gourmet', 'medicinal', 'active', 'novelty'].map((cat) => (
           <button
@@ -193,13 +192,11 @@ export default function Species() {
                     ))}
                   </div>
 
-                  {/* Substrates */}
                   <div className="mb-3">
                     <p className="text-xs text-[var(--color-text-secondary)] mb-1">Substrates</p>
                     <p className="text-sm">{profile.substrate_types.join(', ')}</p>
                   </div>
 
-                  {/* Key info */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
                     <div className="p-3 bg-[var(--color-bg-primary)] rounded-lg">
                       <p className="text-xs text-[var(--color-text-secondary)] mb-1">Colonization</p>
@@ -215,7 +212,6 @@ export default function Species() {
                     </div>
                   </div>
 
-                  {/* Phase table */}
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
@@ -254,7 +250,6 @@ export default function Species() {
 
                   <p className="text-xs text-[var(--color-text-secondary)] mt-3">{profile.yield_notes}</p>
 
-                  {/* TEK Guide */}
                   {profile.tek_guide?.length > 0 && (
                     <details className="mt-4">
                       <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
@@ -288,7 +283,6 @@ export default function Species() {
                     </details>
                   )}
 
-                  {/* Substrate Recipes */}
                   {profile.substrate_recipes?.length > 0 && (
                     <details className="mt-3">
                       <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
@@ -321,7 +315,6 @@ export default function Species() {
                     </details>
                   )}
 
-                  {/* Photo References */}
                   {profile.photo_references && Object.keys(profile.photo_references).length > 0 && (
                     <details className="mt-3">
                       <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
@@ -362,7 +355,6 @@ export default function Species() {
                     </details>
                   )}
 
-                  {/* Contamination Risks */}
                   {profile.contamination_risks?.length > 0 && (
                     <div className="mt-3">
                       <p className="text-xs text-[var(--color-text-secondary)] mb-1">Species-Specific Risks</p>

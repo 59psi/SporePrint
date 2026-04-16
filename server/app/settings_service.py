@@ -63,7 +63,6 @@ async def get_all_settings() -> dict:
             "value": value,
             "source": source,
             "description": description,
-            # Mask API keys — show only last 4 chars
             "display_value": _mask(key, value),
         }
 
