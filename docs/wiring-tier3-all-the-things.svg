@@ -51,7 +51,7 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- CLIMATE NODE 1 (top-left) -- from Tier 2 -->
+  <!-- CLIMATE NODE 1 (top-left) — from Tier 2 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="20" y="166" width="570" height="320" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="44" y="192" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Climate Node 1 (Shelf A)</text>
@@ -117,7 +117,7 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- CLIMATE NODE 2 (below node 1) -- NEW IN TIER 3 -->
+  <!-- CLIMATE NODE 2 (below node 1) — NEW IN TIER 3 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="20" y="508" width="570" height="116" rx="6" fill="#111827" stroke="#a78bfa" stroke-width="1.5"/>
   <rect x="20" y="508" width="570" height="4" rx="2" fill="#a78bfa" opacity="0.6"/>
@@ -135,7 +135,7 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- RELAY NODE (top-right) -- from Tier 2 + additions -->
+  <!-- RELAY NODE (top-right) — from Tier 2 + additions -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="620" y="166" width="960" height="400" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="644" y="192" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Relay Node</text>
@@ -169,7 +169,7 @@
   <text x="660" y="374" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700">MOSFET Channels (see Tier 2 for circuit detail)</text>
   <text x="660" y="396" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">CH0: FAE, CH1: Exhaust, CH2: Circulation</text>
 
-  <!-- CH3: Peristaltic Pump -- NEW -->
+  <!-- CH3: Peristaltic Pump — NEW -->
   <rect x="644" y="420" width="340" height="40" rx="6" fill="#0a0a0f" stroke="#a78bfa" stroke-width="1"/>
   <text x="660" y="440" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">CH3: Peristaltic Pump (GPIO 14)</text>
   <text x="660" y="456" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">Same MOSFET circuit. Was Aux in Tier 2.</text>
@@ -178,7 +178,7 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- HX711 LOAD CELL -- NEW IN TIER 3 -->
+  <!-- HX711 LOAD CELL — NEW IN TIER 3 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="1020" y="228" width="340" height="116" rx="6" fill="#0a0a0f" stroke="#a78bfa" stroke-width="1.5"/>
   <rect x="1020" y="228" width="340" height="4" rx="2" fill="#a78bfa" opacity="0.6"/>
@@ -200,7 +200,7 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- REED SWITCH -- NEW IN TIER 3 -->
+  <!-- REED SWITCH — NEW IN TIER 3 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="1020" y="360" width="340" height="64" rx="6" fill="#0a0a0f" stroke="#a78bfa" stroke-width="1.5"/>
   <rect x="1020" y="360" width="340" height="4" rx="2" fill="#a78bfa" opacity="0.6"/>
@@ -211,7 +211,7 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- LIGHTING NODE (bottom-left) -- Extended from Tier 2 -->
+  <!-- LIGHTING NODE (bottom-left) — Extended from Tier 2 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="20" y="648" width="570" height="260" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="44" y="674" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Lighting Node (4 channels)</text>
@@ -281,7 +281,7 @@
   <g><rect x="1224" y="512" width="100" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="1274" y="525" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to Pi</text></g>
 
-  <!-- Camera 2 -- NEW -->
+  <!-- Camera 2 — NEW -->
   <rect x="1200" y="544" width="370" height="88" rx="6" fill="#111827" stroke="#a78bfa" stroke-width="1.5"/>
   <rect x="1200" y="544" width="370" height="4" rx="2" fill="#a78bfa" opacity="0.6"/>
   <text x="1224" y="572" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Camera Node 2</text>
