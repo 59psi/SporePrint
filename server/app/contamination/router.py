@@ -1,7 +1,6 @@
 import base64
 import logging
 
-import anthropic
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from ..config import settings
@@ -47,6 +46,7 @@ async def identify_contamination(file: UploadFile = File(...)):
     image_data = base64.standard_b64encode(content).decode("utf-8")
 
     try:
+        import anthropic
         client = anthropic.Anthropic(api_key=settings.claude_api_key)
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -81,9 +81,7 @@ async def identify_contamination(file: UploadFile = File(...)):
 
         return result
 
-    except anthropic.APIError as e:
-        log.error("Claude API error during contamination identification: %s", e)
-        raise HTTPException(502, f"Claude API error: {e.message}")
     except Exception as e:
         log.error("Contamination identification failed: %s", e)
-        raise HTTPException(500, "Internal error during contamination identification")
+        status = 502 if "API" in type(e).__name__ else 500
+        raise HTTPException(status, f"Contamination identification failed: {e}")

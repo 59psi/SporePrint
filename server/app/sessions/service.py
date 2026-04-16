@@ -6,7 +6,6 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from icalendar import Calendar, Event
 
 from ..db import get_db
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
@@ -446,6 +445,8 @@ def _ts_to_dt(ts: float | None) -> datetime | None:
 
 async def generate_ical() -> str:
     """Generate an iCal calendar with events for all sessions."""
+    from icalendar import Calendar, Event  # lazy — only loaded when calendar is requested
+
     cal = Calendar()
     cal.add("prodid", "-//SporePrint//Grow Calendar//EN")
     cal.add("version", "2.0")
