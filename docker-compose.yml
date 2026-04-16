@@ -6,6 +6,7 @@ services:
     volumes:
       - ./server:/app
       - ./models:/models
+      - ./docs:/docs
       - ./data/db:/data/db
       - ./data/vision:/data/vision
     environment:

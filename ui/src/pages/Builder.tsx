@@ -65,8 +65,9 @@ export default function Builder() {
   const [tierDetail, setTierDetail] = useState<TierDetail | null>(null)
   const [activeTab, setActiveTab] = useState<'shopping' | 'wiring' | 'steps'>('shopping')
 
-  // 3D print models
+  // 3D print models + diagrams
   const [models, setModels] = useState<{filename: string, size_bytes: number, url: string}[]>([])
+  const [diagrams, setDiagrams] = useState<{filename: string, size_bytes: number, url: string}[]>([])
 
   // Claude assistant (kept)
   const [showAssistant, setShowAssistant] = useState(false)
@@ -80,6 +81,8 @@ export default function Builder() {
     api.get<TierSummary[]>('/builder/tiers').then(setTiers).catch(() => {})
     api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/models')
       .then(setModels).catch(() => {})
+    api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/diagrams')
+      .then(setDiagrams).catch(() => {})
   }, [])
 
   const selectTier = async (tierId: string) => {
@@ -315,6 +318,27 @@ export default function Builder() {
                 <Box size={20} className="mx-auto mb-1 text-emerald-400" />
                 <p className="text-xs font-medium">{m.filename.replace('.scad', '').replace(/_/g, ' ')}</p>
                 <p className="text-[10px] text-[var(--color-text-secondary)]">{(m.size_bytes / 1024).toFixed(1)} KB</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Wiring Diagrams */}
+      {diagrams.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold mb-3">Wiring Diagrams</h2>
+          <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+            Color-coded SVG wiring diagrams. Click to view full size.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {diagrams.filter(d => d.filename.startsWith('wiring-')).map((d) => (
+              <a key={d.filename} href={d.url} target="_blank" rel="noopener noreferrer"
+                 className="rounded-lg overflow-hidden bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors">
+                <img src={d.url} alt={d.filename} className="w-full h-auto" loading="lazy" />
+                <p className="text-xs text-center py-2 font-medium capitalize">
+                  {d.filename.replace('.svg', '').replace(/wiring-/g, '').replace(/-/g, ' ')}
+                </p>
               </a>
             ))}
           </div>
