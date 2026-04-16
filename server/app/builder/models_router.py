@@ -5,7 +5,8 @@ from fastapi.responses import FileResponse
 
 router = APIRouter()
 
-_MODELS_DIR = Path(__file__).parent.parent.parent.parent / "models"
+# Check multiple paths: Docker mount (/models) or local dev (relative to repo root)
+_MODELS_DIR = Path("/models") if Path("/models").exists() else Path(__file__).parent.parent.parent.parent / "models"
 
 
 @router.get("/models")

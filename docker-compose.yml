@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     volumes:
       - ./server:/app
+      - ./models:/models
       - ./data/db:/data/db
       - ./data/vision:/data/vision
     environment:
