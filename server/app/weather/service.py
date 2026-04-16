@@ -9,7 +9,7 @@ from ..sessions.service import get_active_session
 from ..species.models import GrowPhase
 from ..species.service import get_profile
 from .prediction import predict_indoor_conditions
-from .providers import get_provider
+from .providers import OpenMeteoProvider, NWSProvider, OpenWeatherMapProvider
 
 log = logging.getLogger(__name__)
 
@@ -20,34 +20,83 @@ _forecast_cache: list[dict] = []
 _forecast_cache_ts: float = 0
 
 
+def _build_provider_cascade() -> list:
+    """Build ordered list of weather providers for failover."""
+    providers = [OpenMeteoProvider()]  # Always available (free, no key)
+    providers.append(NWSProvider())     # Free, US-only
+    if settings.weather_api_key:
+        providers.append(OpenWeatherMapProvider(settings.weather_api_key))
+    return providers
+
+
 async def start_weather_polling(sio):
-    """Background task: poll weather provider and cache + store results."""
+    """Background task: poll weather providers with cascading failover."""
     if not settings.weather_lat or not settings.weather_lon:
         log.info("Weather disabled — set SPOREPRINT_WEATHER_LAT and _LON to enable")
         return
 
-    provider = get_provider(settings.weather_provider, settings.weather_api_key)
+    providers = _build_provider_cascade()
     interval = settings.weather_poll_minutes * 60
     log.info(
-        "Weather polling started: %s provider, every %dm, lat=%s lon=%s",
-        provider.name, settings.weather_poll_minutes, settings.weather_lat, settings.weather_lon,
+        "Weather polling started: %d providers available (%s), every %dm, lat=%s lon=%s",
+        len(providers),
+        ", ".join(p.name for p in providers),
+        settings.weather_poll_minutes,
+        settings.weather_lat,
+        settings.weather_lon,
     )
 
     while True:
         try:
-            # Fetch current conditions
-            current = await provider.fetch_current(settings.weather_lat, settings.weather_lon)
+            # Try each provider until one succeeds for current conditions
+            current = None
+            current_provider = None
+            for provider in providers:
+                try:
+                    current = await provider.fetch_current(
+                        settings.weather_lat, settings.weather_lon,
+                    )
+                    if current:
+                        current_provider = provider.name
+                        break
+                except Exception as e:
+                    log.warning("Weather provider %s failed (current): %s", provider.name, e)
+                    continue
+
             if current:
-                await _update_current_cache(current, provider.name)
+                log.debug(
+                    "Weather from %s: %.1f°F, %d%% RH",
+                    current_provider,
+                    current.get("outdoor_temp_f", 0),
+                    current.get("outdoor_humidity", 0),
+                )
+                await _update_current_cache(current, current_provider)
                 if sio:
                     await sio.emit("weather", current)
+            else:
+                log.warning("All weather providers failed for current conditions")
 
-            # Fetch 7-day forecast
-            forecast = await provider.fetch_forecast(settings.weather_lat, settings.weather_lon)
+            # Try each provider for forecast
+            forecast = None
+            forecast_provider = None
+            for provider in providers:
+                try:
+                    forecast = await provider.fetch_forecast(
+                        settings.weather_lat, settings.weather_lon,
+                    )
+                    if forecast:
+                        forecast_provider = provider.name
+                        break
+                except Exception as e:
+                    log.warning("Weather provider %s failed (forecast): %s", provider.name, e)
+                    continue
+
             if forecast:
-                await _update_forecast_cache(forecast, provider.name)
-                await _store_forecast(forecast, provider.name)
+                await _update_forecast_cache(forecast, forecast_provider)
+                await _store_forecast(forecast, forecast_provider)
                 await _prune_old_forecasts()
+            else:
+                log.warning("All weather providers failed for forecast")
 
             # Check for dangerous conditions and notify
             if forecast:
