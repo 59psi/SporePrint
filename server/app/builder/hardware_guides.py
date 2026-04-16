@@ -65,11 +65,13 @@ _SCD41 = Component(
     name="SCD41 CO2 Sensor Breakout",
     role="CO2, temperature, humidity sensor (I2C, 0x62)",
     price_approx="$45",
-    url="https://www.adafruit.com/product/5190",
+    url="https://www.amazon.com/s?k=SCD41+CO2+sensor+breakout",
     category="sensor",
     notes="True NDIR CO2 sensor. 400-5000ppm range. Needs 5min warm-up. I2C 0x62. "
           "Same pinout as SCD40 — drop-in replacement with better accuracy. "
-          "Alternative: SCD40 also works if you can find one, same I2C address (0x62).",
+          "Also available from Adafruit (product 5190) and SparkFun (SEN-22395) when in stock. "
+          "Budget alternative: MH-Z19B (~$15) — UART not I2C (different wiring), 0-5000ppm range, "
+          "needs UART pins instead of I2C bus (TX/RX, not SDA/SCL).",
 )
 
 _IRLZ44N = Component(
