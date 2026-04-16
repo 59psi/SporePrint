@@ -340,6 +340,13 @@ CREATE TABLE IF NOT EXISTS drying_log (
     weight_g REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_drying_harvest ON drying_log(harvest_id);
+
+-- User settings (key-value store for UI-configurable settings)
+CREATE TABLE IF NOT EXISTS user_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL DEFAULT (unixepoch('now'))
+);
 """
 
 

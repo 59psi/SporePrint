@@ -106,6 +106,7 @@ from .cultures.router import router as cultures_router
 from .chambers.router import router as chambers_router
 from .experiments.router import router as experiments_router
 from .labels.router import router as labels_router
+from .settings_router import router as settings_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -125,6 +126,7 @@ app.include_router(cultures_router, prefix="/api/cultures", tags=["cultures"])
 app.include_router(chambers_router, prefix="/api/chambers", tags=["chambers"])
 app.include_router(experiments_router, prefix="/api/experiments", tags=["experiments"])
 app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
+app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 
 @app.get("/api/health")
