@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import {
   Wrench, Send, Loader2, ShoppingCart,
   Cpu, Cable, ListChecks, ChevronDown, ChevronUp,
-  ExternalLink, Zap, Star, Rocket,
+  ExternalLink, Zap, Star, Rocket, Box,
 } from 'lucide-react'
 import { api } from '../api/client'
 import WiringDiagram from '../components/builder/WiringDiagram'
@@ -65,6 +65,9 @@ export default function Builder() {
   const [tierDetail, setTierDetail] = useState<TierDetail | null>(null)
   const [activeTab, setActiveTab] = useState<'shopping' | 'wiring' | 'steps'>('shopping')
 
+  // 3D print models
+  const [models, setModels] = useState<{filename: string, size_bytes: number, url: string}[]>([])
+
   // Claude assistant (kept)
   const [showAssistant, setShowAssistant] = useState(false)
   const [request, setRequest] = useState('')
@@ -75,6 +78,8 @@ export default function Builder() {
 
   useEffect(() => {
     api.get<TierSummary[]>('/builder/tiers').then(setTiers).catch(() => {})
+    api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/models')
+      .then(setModels).catch(() => {})
   }, [])
 
   const selectTier = async (tierId: string) => {
@@ -292,6 +297,26 @@ export default function Builder() {
                 </ol>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 3D Print Models */}
+      {models.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold mb-3">3D Print Models (OpenSCAD)</h2>
+          <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+            Parametric enclosures for SporePrint hardware. Download .scad files and open in OpenSCAD or import into your slicer.
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {models.map((m) => (
+              <a key={m.filename} href={m.url} download
+                 className="p-3 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
+                <Box size={20} className="mx-auto mb-1 text-emerald-400" />
+                <p className="text-xs font-medium">{m.filename.replace('.scad', '').replace(/_/g, ' ')}</p>
+                <p className="text-[10px] text-[var(--color-text-secondary)]">{(m.size_bytes / 1024).toFixed(1)} KB</p>
+              </a>
+            ))}
           </div>
         </div>
       )}

@@ -325,18 +325,39 @@ export default function Species() {
                   {profile.photo_references && Object.keys(profile.photo_references).length > 0 && (
                     <details className="mt-3">
                       <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
-                        Photo References
+                        Reference Photos
                       </summary>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {Object.entries(profile.photo_references).map(([phase, ref]) => (
-                          <a key={phase} href={ref.startsWith('http') ? ref : undefined}
-                             target="_blank" rel="noopener noreferrer"
-                             className={`text-xs px-2 py-1 rounded bg-[var(--color-bg-primary)] ${
-                               ref.startsWith('http') ? 'text-blue-400 hover:text-blue-300 underline' : 'text-[var(--color-text-secondary)]'
-                             }`}>
-                            {phase}: {ref.startsWith('http') ? 'View' : ref}
-                          </a>
-                        ))}
+                      <div className="mt-2 grid grid-cols-2 md:grid-cols-3 gap-3">
+                        {Object.entries(profile.photo_references).map(([phase, ref]) => {
+                          // Convert Wikimedia wiki page URL to thumbnail
+                          let imgUrl: string | null = null
+                          if (ref.includes('commons.wikimedia.org/wiki/File:')) {
+                            const filename = ref.split('File:')[1]
+                            if (filename) {
+                              imgUrl = `https://commons.wikimedia.org/w/thumb.php?f=${encodeURIComponent(filename)}&w=300`
+                            }
+                          } else if (ref.startsWith('http') && /\.(jpg|jpeg|png|webp)$/i.test(ref)) {
+                            imgUrl = ref
+                          }
+
+                          return (
+                            <div key={phase} className="rounded-lg overflow-hidden bg-[var(--color-bg-primary)]">
+                              {imgUrl ? (
+                                <a href={ref} target="_blank" rel="noopener noreferrer">
+                                  <img src={imgUrl} alt={`${phase} phase`}
+                                       className="w-full h-32 object-cover"
+                                       loading="lazy"
+                                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                </a>
+                              ) : (
+                                <div className="h-32 flex items-center justify-center text-xs text-[var(--color-text-secondary)] p-2 text-center">
+                                  {ref}
+                                </div>
+                              )}
+                              <p className="text-xs text-center py-1 text-[var(--color-text-secondary)] capitalize">{phase.replace(/_/g, ' ')}</p>
+                            </div>
+                          )
+                        })}
                       </div>
                     </details>
                   )}
