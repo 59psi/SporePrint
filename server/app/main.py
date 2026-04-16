@@ -79,7 +79,7 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="3.0.19", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.0.20", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -131,7 +131,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.0.19"}
+    return {"status": "ok", "version": "3.0.20"}
 
 
 # Track Socket.IO clients for health reporting
