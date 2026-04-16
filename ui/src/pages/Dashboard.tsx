@@ -96,7 +96,7 @@ interface WeatherData {
 }
 
 export default function Dashboard() {
-  const { latest, setReading, addHistory } = useTelemetryStore()
+  const { latest, history, setReading, addHistory } = useTelemetryStore()
   const [weather, setWeather] = useState<WeatherData | null>(null)
 
   useEffect(() => {
@@ -125,6 +125,8 @@ export default function Dashboard() {
   }, [setReading, addHistory])
 
   const reading = latest['climate-01'] || DEMO_READING
+  // Real data arrives via socket — history is only populated by live telemetry events
+  const hasRealData = history.length > 0
 
   // Default targets (Blue Oyster fruiting phase)
   const targets = {
@@ -146,6 +148,30 @@ export default function Dashboard() {
           Live
         </div>
       </div>
+
+      {/* Getting Started — shown when no real telemetry has arrived */}
+      {!hasRealData && (
+        <div className="p-6 rounded-xl bg-gradient-to-br from-emerald-500/10 to-transparent border border-emerald-500/20 mb-6">
+          <h2 className="text-lg font-semibold mb-2">Welcome to SporePrint</h2>
+          <p className="text-sm text-[var(--color-text-secondary)] mb-4">
+            Get your automated mushroom grow set up in 3 steps:
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <a href="/builder" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
+              <p className="text-sm font-medium">1. Get Hardware</p>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-1">3 tiers from $115 — see build guides</p>
+            </a>
+            <a href="/settings" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
+              <p className="text-sm font-medium">2. Set Up Pi</p>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-1">docker compose up -d</p>
+            </a>
+            <a href="/species" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
+              <p className="text-sm font-medium">3. Choose Species</p>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-1">55 profiles with TEK guides</p>
+            </a>
+          </div>
+        </div>
+      )}
 
       {/* Sensor Gauges */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
