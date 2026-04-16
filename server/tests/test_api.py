@@ -14,7 +14,7 @@ def _seed(client):
 def test_health_endpoint(client):
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok", "version": "3.0.5"}
+    assert r.json() == {"status": "ok", "version": "3.0.6"}
 
 
 # ── Sessions ────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ def test_telemetry_history_with_resolution(client):
     })
     assert r.status_code == 200
     data = r.json()
-    # 300s buckets: 1000,1100→900; 1200,13.0.5400→1200; 1500→1500
+    # 300s buckets: 1000,1100→900; 1200,13.0.6400→1200; 1500→1500
     assert len(data) == 3
 
 
