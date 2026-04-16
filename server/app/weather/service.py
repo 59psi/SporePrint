@@ -30,24 +30,22 @@ def _build_provider_cascade() -> list:
 
 
 async def start_weather_polling(sio):
-    """Background task: poll weather providers with cascading failover."""
-    if not settings.weather_lat or not settings.weather_lon:
-        log.info("Weather disabled — set SPOREPRINT_WEATHER_LAT and _LON to enable")
-        return
+    """Background task: poll weather providers with cascading failover.
 
-    providers = _build_provider_cascade()
-    interval = settings.weather_poll_minutes * 60
-    log.info(
-        "Weather polling started: %d providers available (%s), every %dm, lat=%s lon=%s",
-        len(providers),
-        ", ".join(p.name for p in providers),
-        settings.weather_poll_minutes,
-        settings.weather_lat,
-        settings.weather_lon,
-    )
-
+    Waits for lat/lon to be configured (via .env or Settings UI), then polls.
+    Re-reads settings each cycle so UI changes take effect without restart.
+    """
     while True:
         try:
+            # Wait for lat/lon to be configured (via .env or Settings UI)
+            if not settings.weather_lat or not settings.weather_lon:
+                await asyncio.sleep(30)  # Check again in 30s
+                continue
+
+            # Rebuild providers each cycle (picks up API key changes from Settings UI)
+            providers = _build_provider_cascade()
+            interval = settings.weather_poll_minutes * 60
+
             # Try each provider until one succeeds for current conditions
             current = None
             current_provider = None
