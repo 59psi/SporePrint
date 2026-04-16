@@ -1,298 +1,290 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" width="900" height="700">
 
   <!-- Background -->
-  <rect width="800" height="600" fill="#0a0a0f"/>
+  <rect width="900" height="700" fill="#0a0a0f"/>
 
   <!-- ═══════════════════════ TITLE ═══════════════════════ -->
-  <text x="400" y="28" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700">Tier 1: Bare Bones Wiring Diagram</text>
-  <text x="400" y="44" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">ESP32 + two I2C sensors. Only 8 jumper wires total. Pi and smart plug are WiFi only.</text>
+  <text x="450" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700">Tier 1: Bare Bones Wiring Diagram</text>
+  <text x="450" y="50" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">ESP32 + two I2C sensors. Only 8 jumper wires total. Pi and smart plug connect via WiFi only.</text>
 
   <!-- ═══════════════════════ WIRE LEGEND ═══════════════════════ -->
-  <rect x="612" y="12" width="178" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-  <text x="701" y="28" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Wire Color Legend</text>
+  <rect x="680" y="12" width="206" height="98" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="783" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Wire Color Legend</text>
 
-  <line x1="624" y1="42" x2="654" y2="42" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
-  <text x="660" y="46" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9">RED = 3.3V Power</text>
+  <line x1="694" y1="48" x2="724" y2="48" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
+  <text x="732" y="52" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9">RED = 3.3V Power</text>
 
-  <line x1="624" y1="56" x2="654" y2="56" stroke="#1e1e1e" stroke-width="3" stroke-linecap="round"/>
-  <rect x="624" y="54" width="30" height="4" rx="1" fill="none" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="660" y="60" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">BLACK = Ground</text>
+  <line x1="694" y1="66" x2="724" y2="66" stroke="#1e1e1e" stroke-width="3" stroke-linecap="round"/>
+  <rect x="694" y="64" width="30" height="4" rx="1" fill="none" stroke="#6b7280" stroke-width="0.5"/>
+  <text x="732" y="70" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">BLACK = Ground</text>
 
-  <line x1="624" y1="70" x2="654" y2="70" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
-  <text x="660" y="74" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9">BLUE = SDA (I2C data)</text>
+  <line x1="694" y1="84" x2="724" y2="84" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <text x="732" y="88" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9">BLUE = SDA (I2C data)</text>
 
-  <line x1="624" y1="84" x2="654" y2="84" stroke="#eab308" stroke-width="3" stroke-linecap="round"/>
-  <text x="660" y="88" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9">YELLOW = SCL (I2C clock)</text>
+  <line x1="694" y1="102" x2="724" y2="102" stroke="#eab308" stroke-width="3" stroke-linecap="round"/>
+  <text x="732" y="106" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9">YELLOW = SCL (I2C clock)</text>
 
 
-  <!-- ═══════════════════════ RASPBERRY PI 5 (top-left, no wires) ═══════════════════════ -->
-  <rect x="20" y="66" width="180" height="90" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="110" y="88" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Raspberry Pi 5</text>
-  <text x="110" y="104" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Runs SporePrint server</text>
-  <text x="110" y="116" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">+ MQTT broker</text>
+  <!-- ═══════════════════════ RASPBERRY PI 5 (top-left callout) ═══════════════════════ -->
+  <rect x="24" y="80" width="220" height="106" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="134" y="104" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Raspberry Pi 5</text>
+  <text x="134" y="122" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Runs SporePrint server</text>
+  <text x="134" y="138" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">+ MQTT broker</text>
 
-  <!-- WiFi icon (simple antenna lines) -->
-  <path d="M 95 134 Q 95 128 101 128" fill="none" stroke="#34d399" stroke-width="1.2"/>
-  <path d="M 90 138 Q 90 126 101 126" fill="none" stroke="#34d399" stroke-width="1.2"/>
-  <path d="M 85 142 Q 85 124 101 124" fill="none" stroke="#34d399" stroke-width="1.2"/>
-  <circle cx="101" cy="136" r="2" fill="#34d399"/>
+  <!-- WiFi icon -->
+  <path d="M 112 160 Q 112 152 120 152" fill="none" stroke="#34d399" stroke-width="1.2"/>
+  <path d="M 106 164 Q 106 148 120 148" fill="none" stroke="#34d399" stroke-width="1.2"/>
+  <circle cx="120" cy="160" r="2" fill="#34d399"/>
 
-  <!-- WiFi note for Pi -->
-  <rect x="108" y="128" width="86" height="16" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="151" y="140" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">WiFi to ESP32</text>
+  <rect x="130" y="152" width="100" height="20" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
+  <text x="180" y="166" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to ESP32</text>
 
   <!-- Pi note -->
-  <rect x="10" y="164" width="200" height="24" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
-  <text x="110" y="180" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">No wires to ESP32 -- they talk over WiFi</text>
+  <rect x="14" y="198" width="240" height="28" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <text x="134" y="216" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">No wires to ESP32 -- they talk over WiFi</text>
 
 
-  <!-- ═══════════════════════ TASMOTA PLUG (bottom-left, no wires) ═══════════════════════ -->
-  <rect x="20" y="200" width="180" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="110" y="222" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Athom Tasmota Plug</text>
-  <text x="110" y="238" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">WiFi smart plug (pre-flashed)</text>
-  <text x="110" y="254" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Controls humidifier via MQTT</text>
+  <!-- ═══════════════════════ TASMOTA PLUG (bottom-left callout) ═══════════════════════ -->
+  <rect x="24" y="248" width="220" height="106" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="134" y="272" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Athom Tasmota Plug</text>
+  <text x="134" y="292" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">WiFi smart plug (pre-flashed)</text>
+  <text x="134" y="310" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Controls humidifier via MQTT</text>
 
-  <!-- WiFi icon for plug -->
-  <path d="M 95 268 Q 95 262 101 262" fill="none" stroke="#34d399" stroke-width="1.2"/>
-  <path d="M 90 272 Q 90 260 101 260" fill="none" stroke="#34d399" stroke-width="1.2"/>
-  <circle cx="101" cy="270" r="2" fill="#34d399"/>
+  <!-- WiFi icon -->
+  <path d="M 112 328 Q 112 320 120 320" fill="none" stroke="#34d399" stroke-width="1.2"/>
+  <path d="M 106 332 Q 106 316 120 316" fill="none" stroke="#34d399" stroke-width="1.2"/>
+  <circle cx="120" cy="328" r="2" fill="#34d399"/>
 
-  <rect x="108" y="262" width="86" height="16" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="151" y="274" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">WiFi to Pi</text>
+  <rect x="130" y="322" width="100" height="20" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
+  <text x="180" y="336" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to Pi</text>
 
   <!-- Plug note -->
-  <rect x="10" y="290" width="200" height="24" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
-  <text x="110" y="306" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Just plug humidifier in -- no wiring needed</text>
+  <rect x="14" y="370" width="240" height="28" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <text x="134" y="388" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Just plug humidifier in -- no wiring needed</text>
 
 
   <!-- ═══════════════════════ ESP32-S3 DEVKIT (center) ═══════════════════════ -->
-  <rect x="240" y="66" width="200" height="264" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <rect x="290" y="80" width="200" height="310" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
 
-  <!-- ESP32 Title -->
-  <text x="340" y="90" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">ESP32-S3 DevKit</text>
-  <text x="340" y="106" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate sensor hub</text>
+  <text x="390" y="106" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">ESP32-S3 DevKit</text>
+  <text x="390" y="124" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Climate sensor hub</text>
 
   <!-- USB-C power indicator -->
-  <rect x="300" y="116" width="80" height="20" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="340" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">USB-C (5V power)</text>
+  <rect x="346" y="140" width="88" height="24" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
+  <text x="390" y="156" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-C (5V power)</text>
 
   <!-- Pin header visual (right side) -->
-  <rect x="420" y="150" width="12" height="168" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
+  <rect x="472" y="182" width="14" height="190" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
 
   <!-- Pin 1: 3.3V -->
-  <circle cx="426" cy="168" r="5" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
-  <text x="414" y="172" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">3.3V</text>
-  <text x="414" y="183" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">pin 1</text>
+  <circle cx="479" cy="204" r="6" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
+  <text x="464" y="198" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">3.3V</text>
+  <text x="464" y="214" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">pin 1</text>
 
   <!-- Pin 2: GND -->
-  <circle cx="426" cy="212" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="414" y="216" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GND</text>
-  <text x="414" y="227" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">pin 2</text>
+  <circle cx="479" cy="252" r="6" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
+  <text x="464" y="246" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">GND</text>
+  <text x="464" y="262" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">pin 2</text>
 
   <!-- Pin 3: GPIO21 (SDA) -->
-  <circle cx="426" cy="258" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
-  <text x="414" y="255" text-anchor="end" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GPIO 21</text>
-  <text x="414" y="268" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">SDA</text>
+  <circle cx="479" cy="304" r="6" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
+  <text x="464" y="298" text-anchor="end" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">GPIO 21</text>
+  <text x="464" y="314" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">SDA</text>
 
   <!-- Pin 4: GPIO22 (SCL) -->
-  <circle cx="426" cy="302" r="5" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
-  <text x="414" y="299" text-anchor="end" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GPIO 22</text>
-  <text x="414" y="312" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">SCL</text>
+  <circle cx="479" cy="354" r="6" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
+  <text x="464" y="348" text-anchor="end" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">GPIO 22</text>
+  <text x="464" y="364" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">SCL</text>
 
 
-  <!-- ═══════════════════════ SHT31-D SENSOR (top-right) ═══════════════════════ -->
-  <rect x="580" y="66" width="190" height="140" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <!-- ═══════════════════════ SHT31-D SENSOR (upper-right) ═══════════════════════ -->
+  <rect x="630" y="120" width="220" height="140" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
 
-  <text x="675" y="90" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">SHT31-D</text>
-  <text x="675" y="106" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Temperature + Humidity</text>
-  <text x="675" y="120" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">I2C address: 0x44</text>
-
-  <!-- Pin header visual (left side) -->
-  <rect x="576" y="132" width="12" height="68" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
-
-  <!-- SHT31 Pin: VIN -->
-  <circle cx="582" cy="144" r="5" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
-  <text x="596" y="148" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">VIN</text>
-
-  <!-- SHT31 Pin: GND -->
-  <circle cx="582" cy="160" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="596" y="164" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GND</text>
-
-  <!-- SHT31 Pin: SDA -->
-  <circle cx="582" cy="176" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
-  <text x="596" y="180" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SDA</text>
-
-  <!-- SHT31 Pin: SCL -->
-  <circle cx="582" cy="192" r="5" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
-  <text x="596" y="196" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SCL</text>
-
-
-  <!-- ═══════════════════════ BH1750 SENSOR (bottom-right) ═══════════════════════ -->
-  <rect x="580" y="230" width="190" height="140" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-
-  <text x="675" y="254" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">BH1750</text>
-  <text x="675" y="270" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Ambient Light (lux)</text>
-  <text x="675" y="284" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8">I2C address: 0x23</text>
+  <text x="740" y="148" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">SHT31-D</text>
+  <text x="740" y="168" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Temperature + Humidity</text>
+  <text x="740" y="188" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9">I2C address: 0x44</text>
 
   <!-- Pin header visual (left side) -->
-  <rect x="576" y="296" width="12" height="68" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
+  <rect x="624" y="200" width="14" height="52" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
 
-  <!-- BH1750 Pin: VCC -->
-  <circle cx="582" cy="308" r="5" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
-  <text x="596" y="312" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">VCC</text>
-
-  <!-- BH1750 Pin: GND -->
-  <circle cx="582" cy="324" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="596" y="328" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GND</text>
-
-  <!-- BH1750 Pin: SDA -->
-  <circle cx="582" cy="340" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
-  <text x="596" y="344" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SDA</text>
-
-  <!-- BH1750 Pin: SCL -->
-  <circle cx="582" cy="356" r="5" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
-  <text x="596" y="360" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SCL</text>
+  <circle cx="631" cy="212" r="5" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
+  <text x="646" y="216" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">VIN</text>
+  <circle cx="631" cy="228" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
+  <text x="646" y="232" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GND</text>
+  <circle cx="631" cy="244" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
+  <text x="646" y="248" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SDA</text>
 
 
-  <!-- ═══════════════════════ WIRES ═══════════════════════ -->
+  <!-- ═══════════════════════ BH1750 SENSOR (lower-right) ═══════════════════════ -->
+  <rect x="630" y="290" width="220" height="140" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
 
-  <!-- WIRE 1: ESP32 3.3V → SHT31 VIN (RED) -->
-  <path d="M 431 168 L 480 168 Q 490 168 490 158 L 490 144 Q 490 134 500 134 L 530 134 Q 540 134 540 144 L 540 144 L 577 144"
-        fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
-  <!-- Wire 1 label -->
-  <rect x="482" y="124" width="54" height="16" rx="8" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="509" y="135" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">3.3V (red)</text>
+  <text x="740" y="318" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">BH1750</text>
+  <text x="740" y="338" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Ambient Light (lux)</text>
+  <text x="740" y="358" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9">I2C address: 0x23</text>
 
-  <!-- WIRE 2: ESP32 GND → SHT31 GND (BLACK) -->
-  <path d="M 431 212 L 468 212 Q 478 212 478 202 L 478 170 Q 478 160 488 160 L 550 160 Q 560 160 560 160 L 577 160"
-        fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round"/>
-  <!-- Wire 2 label -->
-  <rect x="498" y="150" width="56" height="16" rx="8" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="526" y="161" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND (blk)</text>
+  <!-- Pin header visual (left side) -->
+  <rect x="624" y="370" width="14" height="52" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
 
-  <!-- WIRE 3: ESP32 GPIO21 → SHT31 SDA (BLUE) -->
-  <path d="M 431 258 L 456 258 Q 466 258 466 248 L 466 186 Q 466 176 476 176 L 577 176"
-        fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
-  <!-- Wire 3 label -->
-  <rect x="486" y="170" width="58" height="16" rx="8" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
-  <text x="515" y="181" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">SDA (blue)</text>
-
-  <!-- WIRE 4: ESP32 GPIO22 → SHT31 SCL (YELLOW) -->
-  <path d="M 431 302 L 444 302 Q 454 302 454 292 L 454 202 Q 454 192 464 192 L 577 192"
-        fill="none" stroke="#eab308" stroke-width="3" stroke-linecap="round"/>
-  <!-- Wire 4 label -->
-  <rect x="486" y="186" width="58" height="16" rx="8" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
-  <text x="515" y="197" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">SCL (yel)</text>
+  <circle cx="631" cy="382" r="5" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
+  <text x="646" y="386" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">VCC</text>
+  <circle cx="631" cy="398" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
+  <text x="646" y="402" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GND</text>
+  <circle cx="631" cy="414" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
+  <text x="646" y="418" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SDA</text>
 
 
-  <!-- WIRE 5: ESP32 3.3V → BH1750 VCC (RED) -->
-  <path d="M 431 168 L 480 168 Q 490 168 490 178 L 490 298 Q 490 308 500 308 L 577 308"
-        fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <!-- Wire 5 label -->
-  <rect x="498" y="298" width="54" height="16" rx="8" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="525" y="309" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">3.3V (red)</text>
+  <!-- SCL pin for SHT31 (separate to avoid crowding) -->
+  <circle cx="696" y="244" r="5" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
+  <text x="710" y="248" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SCL</text>
 
-  <!-- WIRE 6: ESP32 GND → BH1750 GND (BLACK) -->
-  <path d="M 431 212 L 468 212 Q 478 212 478 222 L 478 314 Q 478 324 488 324 L 577 324"
-        fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <!-- Wire 6 label -->
-  <rect x="498" y="314" width="56" height="16" rx="8" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="526" y="325" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND (blk)</text>
+  <!-- SCL pin for BH1750 -->
+  <circle cx="696" y="414" r="5" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
+  <text x="710" y="418" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SCL</text>
 
-  <!-- WIRE 7: ESP32 GPIO21 → BH1750 SDA (BLUE) -->
-  <path d="M 431 258 L 456 258 Q 466 258 466 268 L 466 330 Q 466 340 476 340 L 577 340"
-        fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <!-- Wire 7 label -->
-  <rect x="498" y="330" width="58" height="16" rx="8" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
-  <text x="527" y="341" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">SDA (blue)</text>
 
-  <!-- WIRE 8: ESP32 GPIO22 → BH1750 SCL (YELLOW) -->
-  <path d="M 431 302 L 444 302 Q 454 302 454 312 L 454 346 Q 454 356 464 356 L 577 356"
-        fill="none" stroke="#eab308" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <!-- Wire 8 label -->
-  <rect x="498" y="346" width="58" height="16" rx="8" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
-  <text x="527" y="357" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">SCL (yel)</text>
+  <!-- ═══════════════════════ WIRES: ESP32 to SHT31 ═══════════════════════ -->
+
+  <!-- WIRE 1: 3.3V (RED) -->
+  <path d="M 485 204 L 520 204 L 520 212 L 626 212" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
+  <g>
+    <rect x="524" y="197" width="60" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
+    <text x="554" y="210" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">3.3V</text>
+  </g>
+
+  <!-- WIRE 2: GND (BLACK) -->
+  <path d="M 485 252 L 534 252 L 534 228 L 626 228" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round"/>
+  <g>
+    <rect x="540" y="221" width="50" height="18" rx="4" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
+    <text x="565" y="234" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GND</text>
+  </g>
+
+  <!-- WIRE 3: SDA (BLUE) -->
+  <path d="M 485 304 L 548 304 L 548 244 L 626 244" fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <g>
+    <rect x="555" y="247" width="48" height="18" rx="4" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
+    <text x="579" y="260" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">SDA</text>
+  </g>
+
+  <!-- WIRE 4: SCL (YELLOW) -->
+  <path d="M 485 354 L 562 354 L 562 260 Q 562 252 572 252 L 600 252 L 600 244 L 691 244" fill="none" stroke="#eab308" stroke-width="3" stroke-linecap="round"/>
+  <g>
+    <rect x="568" y="269" width="46" height="18" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
+    <text x="591" y="282" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">SCL</text>
+  </g>
+
+
+  <!-- ═══════════════════════ WIRES: ESP32 to BH1750 (dashed = shared bus) ═══════════════════════ -->
+
+  <!-- WIRE 5: 3.3V (RED dashed) -->
+  <path d="M 520 212 L 520 382 L 626 382" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
+  <g>
+    <rect x="524" y="367" width="60" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
+    <text x="554" y="380" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">3.3V</text>
+  </g>
+
+  <!-- WIRE 6: GND (BLACK dashed) -->
+  <path d="M 534 252 L 534 398 L 626 398" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
+  <g>
+    <rect x="540" y="391" width="50" height="18" rx="4" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
+    <text x="565" y="404" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GND</text>
+  </g>
+
+  <!-- WIRE 7: SDA (BLUE dashed) -->
+  <path d="M 548 304 L 548 414 L 626 414" fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
+  <g>
+    <rect x="555" y="417" width="48" height="18" rx="4" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
+    <text x="579" y="430" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">SDA</text>
+  </g>
+
+  <!-- WIRE 8: SCL (YELLOW dashed) -->
+  <path d="M 562 354 L 562 414 L 691 414" fill="none" stroke="#eab308" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
+  <g>
+    <rect x="568" y="440" width="46" height="18" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
+    <text x="591" y="453" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">SCL</text>
+  </g>
 
 
   <!-- ═══════════════════════ SHARED BUS NOTE ═══════════════════════ -->
-  <rect x="442" y="224" width="120" height="42" rx="6" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
-  <text x="502" y="240" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Shared I2C Bus</text>
-  <text x="502" y="252" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">Both sensors share the</text>
-  <text x="502" y="262" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">same 4 wires (no conflict)</text>
+  <rect x="500" y="296" width="116" height="50" rx="6" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <text x="558" y="314" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Shared I2C Bus</text>
+  <text x="558" y="332" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">Both sensors share</text>
+  <text x="558" y="344" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">the same 4 wires</text>
 
 
   <!-- ═══════════════════════ WIRING STEP LIST ═══════════════════════ -->
-  <rect x="20" y="392" width="760" height="190" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
+  <rect x="24" y="436" width="852" height="240" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
 
-  <text x="40" y="414" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Wiring Steps (8 jumper wires total)</text>
+  <text x="50" y="462" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Wiring Steps (8 jumper wires total)</text>
 
-  <!-- Column 1: ESP32 → SHT31 -->
-  <text x="40" y="436" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">ESP32 to SHT31-D (4 wires):</text>
+  <!-- Column 1: ESP32 to SHT31 -->
+  <text x="50" y="488" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32 to SHT31-D (4 wires):</text>
 
-  <circle cx="48" cy="454" r="4" fill="#ef4444"/>
-  <text x="58" y="458" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">1. ESP32 3.3V (pin 1)</text>
-  <text x="200" y="458" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="222" y="458" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 VIN</text>
-  <rect x="300" y="446" width="56" height="16" rx="8" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="328" y="457" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">red wire</text>
+  <circle cx="60" cy="510" r="5" fill="#ef4444"/>
+  <text x="72" y="514" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">1. ESP32 3.3V (pin 1)</text>
+  <text x="220" y="514" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="244" y="514" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 VIN</text>
+  <rect x="330" y="502" width="60" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
+  <text x="360" y="515" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9">red wire</text>
 
-  <circle cx="48" cy="474" r="4" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="58" y="478" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">2. ESP32 GND (pin 2)</text>
-  <text x="200" y="478" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="222" y="478" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 GND</text>
-  <rect x="300" y="466" width="64" height="16" rx="8" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="332" y="477" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">black wire</text>
+  <circle cx="60" cy="534" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
+  <text x="72" y="538" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">2. ESP32 GND (pin 2)</text>
+  <text x="220" y="538" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="244" y="538" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 GND</text>
+  <rect x="330" y="526" width="68" height="18" rx="4" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
+  <text x="364" y="539" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">black wire</text>
 
-  <circle cx="48" cy="494" r="4" fill="#3b82f6"/>
-  <text x="58" y="498" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">3. ESP32 GPIO 21 (SDA)</text>
-  <text x="200" y="498" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="222" y="498" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 SDA</text>
-  <rect x="300" y="486" width="58" height="16" rx="8" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
-  <text x="329" y="497" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8">blue wire</text>
+  <circle cx="60" cy="558" r="5" fill="#3b82f6"/>
+  <text x="72" y="562" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">3. ESP32 GPIO 21 (SDA)</text>
+  <text x="220" y="562" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="244" y="562" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 SDA</text>
+  <rect x="330" y="550" width="62" height="18" rx="4" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
+  <text x="361" y="563" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9">blue wire</text>
 
-  <circle cx="48" cy="514" r="4" fill="#eab308"/>
-  <text x="58" y="518" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">4. ESP32 GPIO 22 (SCL)</text>
-  <text x="200" y="518" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="222" y="518" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 SCL</text>
-  <rect x="300" y="506" width="68" height="16" rx="8" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
-  <text x="334" y="517" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">yellow wire</text>
+  <circle cx="60" cy="582" r="5" fill="#eab308"/>
+  <text x="72" y="586" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">4. ESP32 GPIO 22 (SCL)</text>
+  <text x="220" y="586" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="244" y="586" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 SCL</text>
+  <rect x="330" y="574" width="72" height="18" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
+  <text x="366" y="587" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9">yellow wire</text>
 
-  <!-- Column 2: ESP32 → BH1750 -->
-  <text x="420" y="436" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">ESP32 to BH1750 (4 wires):</text>
+  <!-- Column 2: ESP32 to BH1750 -->
+  <text x="470" y="488" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32 to BH1750 (4 wires):</text>
 
-  <circle cx="428" cy="454" r="4" fill="#ef4444"/>
-  <text x="438" y="458" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">5. ESP32 3.3V (pin 1)</text>
-  <text x="580" y="458" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="602" y="458" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 VCC</text>
-  <rect x="684" y="446" width="56" height="16" rx="8" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="712" y="457" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">red wire</text>
+  <circle cx="480" cy="510" r="5" fill="#ef4444"/>
+  <text x="492" y="514" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">5. ESP32 3.3V (pin 1)</text>
+  <text x="640" y="514" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="664" y="514" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 VCC</text>
+  <rect x="754" y="502" width="60" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
+  <text x="784" y="515" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9">red wire</text>
 
-  <circle cx="428" cy="474" r="4" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="438" y="478" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">6. ESP32 GND (pin 2)</text>
-  <text x="580" y="478" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="602" y="478" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 GND</text>
-  <rect x="684" y="466" width="64" height="16" rx="8" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="716" y="477" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">black wire</text>
+  <circle cx="480" cy="534" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
+  <text x="492" y="538" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">6. ESP32 GND (pin 2)</text>
+  <text x="640" y="538" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="664" y="538" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 GND</text>
+  <rect x="754" y="526" width="68" height="18" rx="4" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
+  <text x="788" y="539" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">black wire</text>
 
-  <circle cx="428" cy="494" r="4" fill="#3b82f6"/>
-  <text x="438" y="498" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">7. ESP32 GPIO 21 (SDA)</text>
-  <text x="580" y="498" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="602" y="498" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 SDA</text>
-  <rect x="684" y="486" width="58" height="16" rx="8" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
-  <text x="713" y="497" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8">blue wire</text>
+  <circle cx="480" cy="558" r="5" fill="#3b82f6"/>
+  <text x="492" y="562" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">7. ESP32 GPIO 21 (SDA)</text>
+  <text x="640" y="562" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="664" y="562" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 SDA</text>
+  <rect x="754" y="550" width="62" height="18" rx="4" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
+  <text x="785" y="563" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9">blue wire</text>
 
-  <circle cx="428" cy="514" r="4" fill="#eab308"/>
-  <text x="438" y="518" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">8. ESP32 GPIO 22 (SCL)</text>
-  <text x="580" y="518" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
-  <text x="602" y="518" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 SCL</text>
-  <rect x="684" y="506" width="68" height="16" rx="8" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
-  <text x="718" y="517" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">yellow wire</text>
+  <circle cx="480" cy="582" r="5" fill="#eab308"/>
+  <text x="492" y="586" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">8. ESP32 GPIO 22 (SCL)</text>
+  <text x="640" y="586" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">--></text>
+  <text x="664" y="586" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 SCL</text>
+  <rect x="754" y="574" width="72" height="18" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
+  <text x="790" y="587" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9">yellow wire</text>
 
-  <!-- Tip row -->
-  <text x="40" y="548" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">Tip: Both sensors share the same I2C bus -- different addresses (0x44 and 0x23) so no conflict. Dashed lines above show the shared connections.</text>
-  <text x="40" y="564" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">In practice you can daisy-chain: ESP32 pin --> SHT31 pin --> BH1750 pin (use the same wire for both).</text>
+  <!-- Tip rows -->
+  <text x="50" y="618" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic">Tip: Both sensors share the same I2C bus -- different addresses (0x44 and 0x23) so no conflict.</text>
+  <text x="50" y="638" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic">Dashed lines above show shared connections. You can daisy-chain: ESP32 pin --> SHT31 --> BH1750.</text>
+  <text x="50" y="658" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic">The Pi and Tasmota plug need zero wires -- they connect to the ESP32 and each other over WiFi.</text>
+
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="400" y="590" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="8">SporePrint  |  Tier 1: Bare Bones  |  github.com/sporeprintai/sporeprint</text>
+  <text x="450" y="690" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 1: Bare Bones  |  github.com/sporeprintai/sporeprint</text>
 
 </svg>
