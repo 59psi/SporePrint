@@ -89,7 +89,7 @@ export default function Sidebar() {
 
         {/* Footer */}
         <div className="p-4 border-t border-[var(--color-border)] text-xs text-[var(--color-text-secondary)]">
-          v3.0.2
+          v3.0.3
         </div>
       </aside>
 

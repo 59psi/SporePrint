@@ -1,7 +1,7 @@
 FROM python:3.12.12-slim
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    adduser --disabled-password --no-create-home appuser
+RUN pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
+    adduser --disabled-password --gecos "" --no-create-home appuser
 
 WORKDIR /app
 
