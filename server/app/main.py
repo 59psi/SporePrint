@@ -96,6 +96,7 @@ from .automation.router import router as automation_router
 from .vision.router import router as vision_router
 from .transcript.router import router as transcript_router
 from .builder.router import router as builder_router
+from .builder.models_router import router as models_router
 from .cloud.router import router as cloud_router
 from .health.router import router as health_router
 from .weather.router import router as weather_router
@@ -114,6 +115,7 @@ app.include_router(automation_router, prefix="/api/automation", tags=["automatio
 app.include_router(vision_router, prefix="/api/vision", tags=["vision"])
 app.include_router(transcript_router, prefix="/api/transcript", tags=["transcript"])
 app.include_router(builder_router, prefix="/api/builder", tags=["builder"])
+app.include_router(models_router, prefix="/api/builder", tags=["builder"])
 app.include_router(weather_router, prefix="/api/weather", tags=["weather"])
 app.include_router(cloud_router, prefix="/api/cloud", tags=["cloud"])
 app.include_router(health_router, prefix="/api/health/detail", tags=["health"])
