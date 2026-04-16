@@ -191,7 +191,7 @@ def test_telemetry_history_with_resolution(client):
     })
     assert r.status_code == 200
     data = r.json()
-    # 300s buckets: 1000,1100→900; 1200,13.0.11400→1200; 1500→1500
+    # 300s buckets: 1000,1100 -> 900; 1200,1300,1400 -> 1200; 1500 -> 1500
     assert len(data) == 3
 
 

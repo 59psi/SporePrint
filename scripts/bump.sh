@@ -25,14 +25,19 @@ esac
 NEW="${MAJOR}.${MINOR}.${PATCH}"
 echo "Bumping $CURRENT → $NEW ($LEVEL)"
 
-# Update server version
-sed -i.bak "s/$CURRENT/$NEW/g" \
-  server/app/main.py \
-  server/tests/test_api.py
+# Escape dots for sed regex (3.0.10 → 3\.0\.10) to avoid matching unrelated numbers
+ESCAPED=$(echo "$CURRENT" | sed 's/\./\\./g')
+
+# Update server version (only match exact version strings, not random numbers)
+sed -i.bak "s/\"${ESCAPED}\"/\"${NEW}\"/g" server/app/main.py
+sed -i.bak "s/\"${ESCAPED}\"/\"${NEW}\"/g" server/tests/test_api.py
 
 # Update UI version
-sed -i.bak "s/\"version\": \"$CURRENT\"/\"version\": \"$NEW\"/" ui/package.json
-sed -i.bak "s/v${CURRENT}/v${NEW}/g" ui/src/components/layout/Sidebar.tsx
+sed -i.bak "s/\"version\": \"${ESCAPED}\"/\"version\": \"${NEW}\"/" ui/package.json
+sed -i.bak "s/v${ESCAPED}/v${NEW}/g" ui/src/components/layout/Sidebar.tsx
+
+# Update pyproject.toml
+sed -i.bak "s/version = \"${ESCAPED}\"/version = \"${NEW}\"/" server/pyproject.toml
 
 # Clean up .bak files
 find . -name "*.bak" -delete 2>/dev/null || true
