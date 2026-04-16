@@ -207,6 +207,9 @@ docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 
 ## Architecture
 
+![Architecture Overview](docs/architecture-overview.svg)
+![Data Flow](docs/data-flow.svg)
+
 ```
 ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST/WS──> React UI
   (sensors,            (FastAPI, SQLite,                  (dashboard,
