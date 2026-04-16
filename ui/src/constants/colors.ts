@@ -2,12 +2,14 @@ export const CATEGORY_COLORS: Record<string, string> = {
   gourmet: 'var(--color-accent-gourmet)',
   medicinal: 'var(--color-accent-medicinal)',
   active: 'var(--color-accent-active)',
+  novelty: '#8b5cf6',
 }
 
 export const CATEGORY_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   gourmet: { bg: 'bg-green-500/10', text: 'text-green-500' },
   medicinal: { bg: 'bg-amber-500/10', text: 'text-amber-500' },
   active: { bg: 'bg-purple-500/10', text: 'text-purple-500' },
+  novelty: { bg: 'bg-violet-500/10', text: 'text-violet-400' },
 }
 
 export const STATUS_COLORS: Record<string, string> = {

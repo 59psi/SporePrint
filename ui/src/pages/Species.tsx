@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { AlertTriangle, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import { api } from '../api/client'
 import { CATEGORY_BADGE_COLORS } from '../constants/colors'
 
@@ -19,6 +19,27 @@ interface PhaseParams {
   temp_swing_delta_f?: number
 }
 
+interface TekStep {
+  step_number: number
+  title: string
+  description: string
+  duration: string
+  tips: string[]
+  common_mistakes: string[]
+}
+
+interface SubstrateRecipe {
+  name: string
+  ingredients: Record<string, string>
+  water_liters_per_liter_substrate: number
+  spawn_rate_percent: number
+  sterilization_method: string
+  sterilization_time_min: number
+  sterilization_temp_f: number | null
+  suitability: string
+  notes: string
+}
+
 interface Profile {
   id: string
   common_name: string
@@ -33,6 +54,17 @@ interface Profile {
   flush_count_typical: number
   yield_notes: string
   tags: string[]
+  tldr: string
+  flavor_profile: string
+  edible: boolean
+  safety_warning: string
+  legal_disclaimer: string
+  tek_guide: TekStep[]
+  substrate_recipes: SubstrateRecipe[]
+  substrate_preference_ranking: string[]
+  contamination_risks: string[]
+  photo_references: Record<string, string>
+  regional_notes: string
 }
 
 const categoryColors = CATEGORY_BADGE_COLORS
@@ -71,7 +103,7 @@ export default function Species() {
 
       {/* Category filter */}
       <div className="flex gap-2 mb-4">
-        {['all', 'gourmet', 'medicinal', 'active'].map((cat) => (
+        {['all', 'gourmet', 'medicinal', 'active', 'novelty'].map((cat) => (
           <button
             key={cat}
             onClick={() => setFilter(cat)}
@@ -115,6 +147,40 @@ export default function Species() {
 
               {expanded && (
                 <div className="px-4 pb-4 border-t border-[var(--color-border)]">
+                  {/* Legal disclaimer (active species) */}
+                  {profile.legal_disclaimer && (
+                    <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                      <p className="text-xs text-red-400 font-medium">{profile.legal_disclaimer}</p>
+                    </div>
+                  )}
+
+                  {/* Not edible warning */}
+                  {!profile.edible && (
+                    <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle size={16} className="text-red-400" />
+                        <p className="text-xs text-red-400 font-bold">NOT EDIBLE — {profile.safety_warning}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Safety warning for edible species */}
+                  {profile.edible && profile.safety_warning && (
+                    <div className="mt-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                      <p className="text-xs text-amber-400">{profile.safety_warning}</p>
+                    </div>
+                  )}
+
+                  {/* TLDR */}
+                  {profile.tldr && (
+                    <p className="text-sm mt-3 text-[var(--color-text-secondary)]">{profile.tldr}</p>
+                  )}
+
+                  {/* Flavor profile */}
+                  {profile.flavor_profile && (
+                    <p className="text-xs mt-1 italic text-[var(--color-text-secondary)]">{profile.flavor_profile}</p>
+                  )}
+
                   {/* Tags */}
                   <div className="flex flex-wrap gap-1 mt-3 mb-4">
                     {profile.tags.map((tag) => (
@@ -187,6 +253,103 @@ export default function Species() {
                   </div>
 
                   <p className="text-xs text-[var(--color-text-secondary)] mt-3">{profile.yield_notes}</p>
+
+                  {/* TEK Guide */}
+                  {profile.tek_guide?.length > 0 && (
+                    <details className="mt-4">
+                      <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
+                        Growing Guide ({profile.tek_guide.length} steps)
+                      </summary>
+                      <div className="mt-2 space-y-3">
+                        {profile.tek_guide.map((step) => (
+                          <div key={step.step_number} className="p-3 bg-[var(--color-bg-primary)] rounded-lg">
+                            <p className="text-sm font-medium">
+                              {step.step_number}. {step.title}
+                              <span className="text-xs text-[var(--color-text-secondary)] ml-2">({step.duration})</span>
+                            </p>
+                            <p className="text-xs mt-1">{step.description}</p>
+                            {step.tips.length > 0 && (
+                              <div className="mt-2">
+                                {step.tips.map((tip, i) => (
+                                  <p key={i} className="text-xs text-emerald-400">{'\u2713'} {tip}</p>
+                                ))}
+                              </div>
+                            )}
+                            {step.common_mistakes.length > 0 && (
+                              <div className="mt-1">
+                                {step.common_mistakes.map((m, i) => (
+                                  <p key={i} className="text-xs text-red-400">{'\u2717'} {m}</p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Substrate Recipes */}
+                  {profile.substrate_recipes?.length > 0 && (
+                    <details className="mt-3">
+                      <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
+                        Substrate Recipes ({profile.substrate_recipes.length})
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {profile.substrate_recipes.map((recipe, i) => (
+                          <div key={i} className="p-3 bg-[var(--color-bg-primary)] rounded-lg">
+                            <div className="flex justify-between items-center mb-1">
+                              <p className="text-sm font-medium">{recipe.name}</p>
+                              <span className={`text-xs px-2 py-0.5 rounded ${
+                                recipe.suitability === 'optimal' ? 'bg-emerald-500/10 text-emerald-400' :
+                                recipe.suitability === 'good' ? 'bg-blue-500/10 text-blue-400' :
+                                'bg-amber-500/10 text-amber-400'
+                              }`}>{recipe.suitability}</span>
+                            </div>
+                            <div className="text-xs space-y-0.5">
+                              {Object.entries(recipe.ingredients).map(([name, amount]) => (
+                                <p key={name}>{name}: {amount}</p>
+                              ))}
+                            </div>
+                            <p className="text-xs text-[var(--color-text-secondary)] mt-1">
+                              Spawn rate: {recipe.spawn_rate_percent}% · {recipe.sterilization_method.replace(/_/g, ' ')} · {recipe.sterilization_time_min}min
+                              {recipe.sterilization_temp_f && ` at ${recipe.sterilization_temp_f}\u00b0F`}
+                            </p>
+                            {recipe.notes && <p className="text-xs text-[var(--color-text-secondary)] mt-1 italic">{recipe.notes}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Photo References */}
+                  {profile.photo_references && Object.keys(profile.photo_references).length > 0 && (
+                    <details className="mt-3">
+                      <summary className="text-sm font-medium cursor-pointer hover:text-emerald-400">
+                        Photo References
+                      </summary>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {Object.entries(profile.photo_references).map(([phase, ref]) => (
+                          <a key={phase} href={ref.startsWith('http') ? ref : undefined}
+                             target="_blank" rel="noopener noreferrer"
+                             className={`text-xs px-2 py-1 rounded bg-[var(--color-bg-primary)] ${
+                               ref.startsWith('http') ? 'text-blue-400 hover:text-blue-300 underline' : 'text-[var(--color-text-secondary)]'
+                             }`}>
+                            {phase}: {ref.startsWith('http') ? 'View' : ref}
+                          </a>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Contamination Risks */}
+                  {profile.contamination_risks?.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-xs text-[var(--color-text-secondary)] mb-1">Species-Specific Risks</p>
+                      {profile.contamination_risks.map((risk, i) => (
+                        <p key={i} className="text-xs text-amber-400">{'\u26a0'} {risk}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
