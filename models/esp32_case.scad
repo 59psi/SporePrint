@@ -1,5 +1,6 @@
-// SporePrint ESP32 DevKit Case
-// Fits ESP32-WROOM-32 or ESP32-S3 DevKit (USB-C)
+// SporePrint ESP32-S3 DevKit Case
+// Fits ESP32-S3-DevKitC-1 (25.5x70mm, USB-C)
+// Also fits classic ESP32-WROOM-32 DevKit (28x52mm) by adjusting parameters
 //
 // Mounting options:
 //   - M3 screw holes (for permanent mounting via external tabs)
@@ -7,19 +8,22 @@
 //   - Suction cup mount (for glass/smooth surfaces)
 //
 // Print settings: PLA, 0.2mm layer height, no supports needed
-// Designed for: 28x52mm ESP32 DevKit PCBs
+// Designed for: ESP32-S3-DevKitC-1 (25.5x70mm) — primary recommendation
+//   To fit classic ESP32-WROOM: set board_w=28, board_l=52
 //
 // Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
 // ── Parameters (customize for your board) ──────────────────────
-board_w   = 28;   // mm — DevKit PCB width
-board_l   = 52;   // mm — DevKit PCB length
+// ESP32-S3-DevKitC-1 dimensions (default)
+// For classic ESP32-WROOM-32: set board_w=28, board_l=52
+board_w   = 25.5; // mm — ESP32-S3-DevKitC-1 PCB width
+board_l   = 70;   // mm — ESP32-S3-DevKitC-1 PCB length
 board_h   = 10;   // mm — max component height above PCB
 wall      = 2;    // mm — wall thickness
-usb_w     = 12;   // mm — USB connector cutout width
-usb_h     = 7;    // mm — USB connector cutout height
+usb_w     = 9;    // mm — USB-C connector cutout width (narrower than micro-USB)
+usb_h     = 4;    // mm — USB-C connector cutout height
 pcb_thick = 1.6;  // mm — PCB thickness
 tolerance = 0.3;  // mm — fit tolerance
 lid_lip   = 1.5;  // mm — snap-fit lip depth
