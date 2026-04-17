@@ -276,7 +276,7 @@
   <rect x="1200" y="440" width="370" height="88" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="1224" y="466" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Camera Node 1</text>
   <text x="1380" y="466" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">from Tier 2</text>
-  <text x="1224" y="488" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV5640 | USB-C 5V only</text>
+  <text x="1224" y="488" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV2640/OV5640 | USB-C 5V</text>
   <text x="1224" y="508" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone. No GPIO wiring. Shelf A angle.</text>
   <g><rect x="1224" y="512" width="100" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="1274" y="525" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to Pi</text></g>
@@ -287,7 +287,7 @@
   <text x="1224" y="572" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Camera Node 2</text>
   <g><rect x="1380" y="558" width="100" height="22" rx="4" fill="#2e1065" stroke="#a78bfa" stroke-width="0.5"/>
   <text x="1430" y="573" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">NEW IN TIER 3</text></g>
-  <text x="1224" y="594" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV5640 | USB-C 5V only</text>
+  <text x="1224" y="594" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV2640/OV5640 | USB-C 5V</text>
   <text x="1224" y="614" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone. No GPIO wiring. Shelf B angle.</text>
   <g><rect x="1224" y="618" width="100" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="1274" y="631" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to Pi</text></g>
