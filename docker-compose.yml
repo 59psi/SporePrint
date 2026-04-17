@@ -7,6 +7,7 @@ services:
       - ./server:/app
       - ./models:/models
       - ./docs:/docs
+      - ./firmware:/firmware:ro
       - ./data/db:/data/db
       - ./data/vision:/data/vision
     environment:
