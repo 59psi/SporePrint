@@ -108,6 +108,22 @@ cd ui && npm install && npm run dev
 docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 ```
 
+### ESP32 Firmware
+
+Once the Pi is running, open the Builder page (`http://<pi-ip>:3001/builder`)
+and scroll to **ESP32 Firmware**. Each node (`climate_node`, `relay_node`,
+`lighting_node`, `cam_node`) has a **ZIP** button that downloads a
+self-contained PlatformIO project. Unzip, then flash with:
+
+```bash
+cd firmware
+pio run -t upload -e climate_node   # or relay_node / lighting_node / cam_node
+```
+
+Or clone the repo and flash from `firmware/` directly — the ZIP bundle is
+equivalent to `firmware/src/<node>/ + firmware/lib/sporeprint_common/ +
+firmware/platformio.ini`.
+
 ### Prerequisites
 
 Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
@@ -115,7 +131,7 @@ Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 - Python 3.11+
 - Node.js 20+
 - Docker and Docker Compose (for production deployment)
-- PlatformIO (for ESP32 firmware, optional)
+- PlatformIO Core (for ESP32 firmware — `pip install platformio`)
 
 ---
 

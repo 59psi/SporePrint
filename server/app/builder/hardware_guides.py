@@ -269,7 +269,7 @@ TIER_BARE_BONES = HardwareTier(
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS, run setup.sh",
         "Wire SHT31-D and BH1750 to ESP32 per diagram above (shared I2C bus)",
-        "Install PlatformIO: pip install platformio",
+        "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash climate_node firmware: cd firmware && pio run -t upload -e climate_node",
         "ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
         "SENSOR PLACEMENT — Climate node (SHT31 + BH1750): Mount the sensor board inside the "
@@ -476,7 +476,7 @@ TIER_RECOMMENDED = HardwareTier(
         "Wire climate node: SHT31-D + SCD41 + BH1750 on shared I2C bus (SDA=GPIO21, SCL=GPIO22) per diagram",
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
         "Wire lighting node: same MOSFET pattern — white LED strip on GPIO 25, blue on GPIO 26",
-        "Install PlatformIO: pip install platformio",
+        "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash all 4 firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
         "Flash ESP32-S3 CAM: connect via USB-C, flash cam_node firmware (no programmer needed)",
         "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
@@ -713,7 +713,7 @@ TIER_ALL = HardwareTier(
         "Wire climate node #2 identically on a second ESP32 — this goes on a different shelf for per-shelf monitoring",
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
         "Wire lighting node: same MOSFET pattern — white (GPIO 25), blue (GPIO 26), red (GPIO 27), far-red (GPIO 14)",
-        "Install PlatformIO: pip install platformio",
+        "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash all firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
         "Flash climate node #2 with different node_id: set MQTT node_id to 'climate-02' before flashing",
         "Flash both ESP32-S3 CAMs via USB-C: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
