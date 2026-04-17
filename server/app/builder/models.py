@@ -19,12 +19,22 @@ class WiringConnection(BaseModel):
     note: str = ""
 
 
+class CapabilityGroup(BaseModel):
+    """A grouped capability breakdown for a tier (Monitoring, Automation, etc.)."""
+    title: str
+    items: list[str]
+
+
 class HardwareTier(BaseModel):
     id: str
     name: str
     tagline: str
     estimated_cost: str
     what_you_get: list[str]
+    best_for: str = ""
+    species_support: str = ""
+    capability_groups: list[CapabilityGroup] = []
+    limitations: list[str] = []
     components: list[Component]
     wiring: list[WiringConnection]
     wiring_diagram: str

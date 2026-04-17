@@ -1,6 +1,6 @@
 """Pre-built hardware integration guides for the 3 SporePrint tiers."""
 
-from .models import Component, WiringConnection, HardwareTier
+from .models import CapabilityGroup, Component, WiringConnection, HardwareTier
 
 # ── Shared components ───────────────────────────────────────────
 
@@ -159,12 +159,67 @@ TIER_BARE_BONES = HardwareTier(
     name="Bare Bones",
     tagline="Monitor your grow. Smart plug for humidifier.",
     estimated_cost="~$135",
+    best_for=(
+        "First-time mushroom cultivators who want reliable monitoring and basic humidity "
+        "control without committing to full automation. Ideal for a single grow tent or "
+        "monotub setup where fresh air exchange is handled manually."
+    ),
+    species_support=(
+        "Gourmet species that tolerate manual FAE: white button, cremini, basic oyster "
+        "grows. Not recommended for CO2-sensitive species like Lion's Mane or King Oyster "
+        "— those benefit from the Recommended tier's active CO2-triggered fans."
+    ),
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
         "Smart plug control for humidifier (on/off via app)",
         "Session tracking with manual observations",
         "Species profile target overlays on gauges",
+    ],
+    capability_groups=[
+        CapabilityGroup(
+            title="Environmental monitoring",
+            items=[
+                "Temperature at substrate level (±0.3°C accuracy, SHT31-D)",
+                "Relative humidity (±2% RH, SHT31-D)",
+                "Ambient light level in lux (BH1750, 1-65535 lux range)",
+                "Single-zone monitoring — one set of sensors per chamber",
+            ],
+        ),
+        CapabilityGroup(
+            title="Automation & control",
+            items=[
+                "Smart plug on/off control for humidifier (Athom Tasmota, MQTT)",
+                "Threshold-based rules: humidifier triggers when RH drops below setpoint",
+                "Time-based schedules (e.g. scheduled hydration cycles)",
+                "Manual override from mobile app — remote on/off from anywhere",
+            ],
+        ),
+        CapabilityGroup(
+            title="Session tracking",
+            items=[
+                "Manual session creation with species selection and target profiles",
+                "Visual overlays showing target ranges on live gauges",
+                "Harvest logging with wet/dry weights per flush",
+                "Notes and photo attachments per session",
+                "Full event transcript export (Markdown / JSON)",
+            ],
+        ),
+        CapabilityGroup(
+            title="Alerting",
+            items=[
+                "Push notifications when conditions exit target range",
+                "Alerts for sensor failures or node offline events",
+                "Quiet hours support — suppress non-critical pushes overnight",
+            ],
+        ),
+    ],
+    limitations=[
+        "No CO2 monitoring — required for heavy fruiters like Lion's Mane or King Oyster",
+        "No fan automation — you must open the chamber manually for fresh air exchange",
+        "No lighting automation — LED timers must be external",
+        "No camera / vision features — no contamination detection, no growth tracking",
+        "No automated heating or cooling — single plug channel only",
     ],
     components=[
         _RPI, _RPI_SD, _RPI_PSU,
@@ -242,6 +297,19 @@ TIER_RECOMMENDED = HardwareTier(
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
     estimated_cost="~$240",
+    best_for=(
+        "Serious hobbyists producing 2-10 flushes per year and experimenting with multiple "
+        "species. This is the sweet spot for most home growers: full climate sensing, "
+        "active FAE automation, multi-spectrum lighting, and camera-based contamination "
+        "detection — without the complexity or cost of redundant systems."
+    ),
+    species_support=(
+        "All gourmet varieties: Blue Oyster, Pink Oyster, Lion's Mane, Shiitake, King "
+        "Oyster, Pioppino, Chestnut, Pearl Oyster, Maitake, Nameko. Covers CO2-sensitive "
+        "species via active FAE fans. Cordyceps militaris is supported via the blue "
+        "450nm LED channel, though best results come from the All the Things tier's "
+        "full 4-spectrum setup."
+    ),
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
@@ -255,6 +323,72 @@ TIER_RECOMMENDED = HardwareTier(
         "Claude Vision analysis on demand",
         "Automated humidity control via smart plug",
         "Full automation rules engine",
+    ],
+    capability_groups=[
+        CapabilityGroup(
+            title="Environmental monitoring",
+            items=[
+                "Temperature (±0.3°C, SHT31-D) and humidity (±2% RH)",
+                "CO2 (±50 ppm, SCD41 NDIR) — required for commercial-quality oyster/lion's mane",
+                "Ambient light (BH1750, 1-65535 lux)",
+                "Single-chamber monitoring with shared I2C bus layout",
+            ],
+        ),
+        CapabilityGroup(
+            title="Active automation (4 relay channels)",
+            items=[
+                "CO2-triggered FAE fan — opens when ppm exceeds species setpoint",
+                "Exhaust fan for temperature regulation",
+                "Circulation fan for even humidity distribution",
+                "Aux channel — misting, secondary exhaust, or custom device",
+                "Flyback-protected MOSFET switching (safe for inductive loads)",
+            ],
+        ),
+        CapabilityGroup(
+            title="Lighting (2 PWM channels)",
+            items=[
+                "6500K cool white LED strip — colonization and general fruiting light",
+                "450nm blue LED strip — Cordyceps fruiting, pinning trigger",
+                "Scene presets: colonization (dark), fruiting (white), cordyceps blue",
+                "Schedulable photoperiods per species profile",
+            ],
+        ),
+        CapabilityGroup(
+            title="Vision & AI",
+            items=[
+                "ESP32-S3 WROOM CAM (OV2640, 2MP) with built-in flash LED",
+                "Auto-capture every 15 minutes for timelapse",
+                "Local CNN contamination pre-filter (runs on Pi, no cloud required)",
+                "Claude Vision analysis on demand — detailed growth stage + issue reports",
+                "Photo gallery with EXIF timestamps per session",
+            ],
+        ),
+        CapabilityGroup(
+            title="Smart plug control (2 plugs)",
+            items=[
+                "Humidifier plug — threshold-based RH control via MQTT",
+                "Heater or cooler plug — thermostat logic for temperature setpoints",
+                "Power monitoring built in (Athom HLW8032) — tracks watts per plug",
+                "Remote manual control from mobile app",
+            ],
+        ),
+        CapabilityGroup(
+            title="Session & analytics",
+            items=[
+                "Full automation rules engine with condition/action builder",
+                "Per-session metric timelines (temp, RH, CO2, light trends)",
+                "Yield analytics — per-species, per-flush comparisons",
+                "Environmental correlation analysis — CO2 vs yield, RH vs contamination",
+                "CSV + Markdown exports for every session",
+            ],
+        ),
+    ],
+    limitations=[
+        "Single climate sensor per chamber — no redundancy if a sensor fails",
+        "Two-channel lighting only — no red or far-red morphology tuning",
+        "Two smart plugs — can't run both humidifier + dehumidifier concurrently",
+        "Single camera angle — either front view or top-down, not both",
+        "No load cell — harvest weights are manually entered",
     ],
     components=[
         _RPI, _RPI_SD, _RPI_PSU,
@@ -390,6 +524,19 @@ TIER_ALL = HardwareTier(
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
     estimated_cost="~$415+",
+    best_for=(
+        "Advanced growers running multiple shelves or chambers, commercial-adjacent "
+        "operations, and researchers tuning parameters for yield optimization. Ideal "
+        "for anyone producing specialty medicinal species, running A/B experiments, "
+        "or requiring fail-safe redundant monitoring for high-value crops."
+    ),
+    species_support=(
+        "Everything the Recommended tier supports plus specialty varieties requiring "
+        "precise spectral control: Cordyceps militaris (demands blue 450nm), Reishi "
+        "(benefits from red 660nm for antler formation), Turkey Tail, Chaga substrate "
+        "grows, and experimental cultivars. Dual climate nodes let you run two "
+        "different species on separate shelves simultaneously."
+    ),
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
@@ -408,6 +555,75 @@ TIER_ALL = HardwareTier(
         "Load cell for automated harvest weight tracking",
         "Peristaltic pump for automated misting between flushes",
         "Weather-predictive automation",
+    ],
+    capability_groups=[
+        CapabilityGroup(
+            title="Redundant environmental monitoring",
+            items=[
+                "2x climate nodes — different shelves OR primary + backup on same shelf",
+                "Per-shelf temperature, humidity, CO2, and light readings",
+                "Cross-sensor validation — alerts if readings diverge (flags drift/failure)",
+                "Door reed switch — pauses humidity automation when chamber opens",
+                "Automatic sensor fallback if one climate node drops offline",
+            ],
+        ),
+        CapabilityGroup(
+            title="Full-spectrum lighting (4 PWM channels)",
+            items=[
+                "6500K cool white — colonization and general fruiting",
+                "450nm blue — Cordyceps fruiting + pinning trigger",
+                "660nm red — fruiting enhancement (reishi antler formation, stem elongation)",
+                "730nm far-red — morphology control, day/night transitions",
+                "Scene presets per species and per phase (colonization/pinning/fruiting)",
+            ],
+        ),
+        CapabilityGroup(
+            title="Comprehensive power control (4 smart plugs)",
+            items=[
+                "Humidifier — RH threshold control with quiet-period enforcement",
+                "Dehumidifier — runs inverse to humidifier, prevents oscillation",
+                "Space heater — temperature setpoint with PID-style cycling",
+                "Peltier cooler — active cooling for temperature-sensitive species",
+                "Per-plug power monitoring — tracks kWh and cost over time",
+            ],
+        ),
+        CapabilityGroup(
+            title="Advanced automation",
+            items=[
+                "Peristaltic dosing pump for automated misting between flushes",
+                "Load cell (5kg HX711) — automatic harvest weight logging",
+                "Weather-predictive automation — adjusts fans based on forecast",
+                "Door-open detection suspends humidity to prevent pooling",
+                "Multi-zone rules — different setpoints per shelf",
+            ],
+        ),
+        CapabilityGroup(
+            title="Dual-angle vision + AI",
+            items=[
+                "Front-facing camera at substrate level — pin formation and fruiting bodies",
+                "Top-down camera — colonization progress and full-chamber overview",
+                "Dual-view contamination detection (front + top reduce false positives)",
+                "Claude Vision — on-demand detailed species ID and health assessment",
+                "Timelapse generation from captured frames",
+            ],
+        ),
+        CapabilityGroup(
+            title="Experiment & analytics suite",
+            items=[
+                "Full metrics history with custom time ranges and downsampling",
+                "A/B experiment mode — compare chambers side-by-side",
+                "Environmental correlation reports (yield vs CO2, RH vs contamination)",
+                "Species yield benchmarks across all your grows",
+                "Lineage tracking for culture propagation and genetic experiments",
+                "CSV + Markdown + JSON exports for external analysis",
+            ],
+        ),
+    ],
+    limitations=[
+        "Higher assembly complexity — plan for a weekend build",
+        "Requires 12V 10A power supply and more wiring than lower tiers",
+        "Far-red 730nm LED strips are specialty items — may require non-Amazon suppliers",
+        "Peltier coolers have limited capacity — not suitable for large chambers in hot rooms",
     ],
     components=[
         _RPI, _RPI_SD, _RPI_PSU,

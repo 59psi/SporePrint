@@ -19,6 +19,10 @@ async def list_tiers():
             "tagline": t.tagline,
             "estimated_cost": t.estimated_cost,
             "what_you_get": t.what_you_get,
+            "best_for": t.best_for,
+            "species_support": t.species_support,
+            "capability_groups": [g.model_dump() for g in t.capability_groups],
+            "limitations": t.limitations,
             "component_count": sum(c.quantity for c in t.components),
         }
         for t in TIERS
