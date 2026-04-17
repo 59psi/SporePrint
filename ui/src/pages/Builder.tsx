@@ -506,49 +506,62 @@ export default function Builder() {
             from the <code className="font-mono">firmware/</code> directory.
           </p>
           <div className="space-y-3">
-            {firmware.map((group) => (
-              <div key={group.path} className="rounded-lg border border-[var(--color-border)] overflow-hidden">
-                <div className="px-3 py-2 text-xs font-mono bg-[var(--color-bg-hover)] flex items-center justify-between gap-2">
-                  <span className="truncate">{group.path}</span>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-[var(--color-text-tertiary)]">
-                      {group.files.length} file{group.files.length !== 1 ? 's' : ''}
-                    </span>
-                    {group.bundle_url && (
-                      <a
-                        href={group.bundle_url}
-                        download={group.bundle_filename}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans transition-colors"
-                        style={{
-                          background: 'rgba(61, 214, 140, 0.10)',
-                          border: '1px solid rgba(61, 214, 140, 0.28)',
-                          color: 'var(--color-accent-primary)',
-                        }}
-                        title="Download a self-contained PlatformIO project (node source + sporeprint_common + platformio.ini)"
-                      >
-                        <Download size={11} strokeWidth={1.8} />
-                        ZIP
-                      </a>
-                    )}
+            {firmware.map((group) => {
+              const isFullBundle = group.node === 'full'
+              return (
+                <div key={group.path} className="rounded-lg border border-[var(--color-border)] overflow-hidden"
+                  style={isFullBundle ? { borderColor: 'rgba(61, 214, 140, 0.28)' } : undefined}
+                >
+                  <div className="px-3 py-2 text-xs font-mono bg-[var(--color-bg-hover)] flex items-center justify-between gap-2">
+                    <span className="truncate">{group.path}</span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {!isFullBundle && (
+                        <span className="text-[var(--color-text-tertiary)]">
+                          {group.files.length} file{group.files.length !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                      {group.bundle_url && (
+                        <a
+                          href={group.bundle_url}
+                          download={group.bundle_filename}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans transition-colors"
+                          style={{
+                            background: 'rgba(61, 214, 140, 0.10)',
+                            border: '1px solid rgba(61, 214, 140, 0.28)',
+                            color: 'var(--color-accent-primary)',
+                          }}
+                          title={
+                            isFullBundle
+                              ? 'Download the entire firmware/ tree as a single ZIP'
+                              : 'Download a self-contained PlatformIO project (source + sporeprint_common + platformio.ini)'
+                          }
+                        >
+                          <Download size={11} strokeWidth={1.8} />
+                          ZIP
+                        </a>
+                      )}
+                    </div>
                   </div>
+                  {group.files.length > 0 && (
+                    <div className="divide-y divide-[var(--color-border)]">
+                      {group.files.map((f) => (
+                        <a
+                          key={f.filename}
+                          href={f.url}
+                          download
+                          className="flex items-center justify-between px-3 py-2 text-xs font-mono hover:bg-[var(--color-bg-hover)] transition-colors"
+                        >
+                          <span className="truncate">{f.filename}</span>
+                          <span className="text-[var(--color-text-tertiary)] ml-2 flex-shrink-0">
+                            {(f.size_bytes / 1024).toFixed(1)} KB
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="divide-y divide-[var(--color-border)]">
-                  {group.files.map((f) => (
-                    <a
-                      key={f.filename}
-                      href={f.url}
-                      download
-                      className="flex items-center justify-between px-3 py-2 text-xs font-mono hover:bg-[var(--color-bg-hover)] transition-colors"
-                    >
-                      <span className="truncate">{f.filename}</span>
-                      <span className="text-[var(--color-text-tertiary)] ml-2 flex-shrink-0">
-                        {(f.size_bytes / 1024).toFixed(1)} KB
-                      </span>
-                    </a>
-                  ))}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </Collapsible>
       )}
