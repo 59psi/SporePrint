@@ -4,7 +4,7 @@ import {
   Cpu, Cable, ListChecks, ChevronDown, ChevronRight,
   ExternalLink, Zap, Star, Rocket, Box,
   Target, Sprout, AlertTriangle, Info, Image as ImageIcon,
-  FileCode,
+  FileCode, Download,
 } from 'lucide-react'
 import { api } from '../api/client'
 import WiringDiagram from '../components/builder/WiringDiagram'
@@ -111,7 +111,13 @@ export default function Builder() {
 
   const [models, setModels] = useState<{filename: string, size_bytes: number, url: string}[]>([])
   const [diagrams, setDiagrams] = useState<{filename: string, size_bytes: number, url: string}[]>([])
-  const [firmware, setFirmware] = useState<{node: string, path: string, files: {filename: string, size_bytes: number, url: string}[]}[]>([])
+  const [firmware, setFirmware] = useState<{
+    node: string
+    path: string
+    files: {filename: string, size_bytes: number, url: string}[]
+    bundle_url?: string
+    bundle_filename?: string
+  }[]>([])
 
   const [showAssistant, setShowAssistant] = useState(false)
   const [request, setRequest] = useState('')
@@ -126,8 +132,13 @@ export default function Builder() {
       .then(setModels).catch(() => {})
     api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/diagrams')
       .then(setDiagrams).catch(() => {})
-    api.get<{node: string, path: string, files: {filename: string, size_bytes: number, url: string}[]}[]>('/builder/firmware')
-      .then(setFirmware).catch(() => {})
+    api.get<{
+      node: string
+      path: string
+      files: {filename: string, size_bytes: number, url: string}[]
+      bundle_url?: string
+      bundle_filename?: string
+    }[]>('/builder/firmware').then(setFirmware).catch(() => {})
   }, [])
 
   const selectTier = async (tierId: string) => {
@@ -497,9 +508,29 @@ export default function Builder() {
           <div className="space-y-3">
             {firmware.map((group) => (
               <div key={group.path} className="rounded-lg border border-[var(--color-border)] overflow-hidden">
-                <div className="px-3 py-2 text-xs font-mono bg-[var(--color-bg-hover)] flex items-center justify-between">
-                  <span>{group.path}</span>
-                  <span className="text-[var(--color-text-tertiary)]">{group.files.length} file{group.files.length !== 1 ? 's' : ''}</span>
+                <div className="px-3 py-2 text-xs font-mono bg-[var(--color-bg-hover)] flex items-center justify-between gap-2">
+                  <span className="truncate">{group.path}</span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-[var(--color-text-tertiary)]">
+                      {group.files.length} file{group.files.length !== 1 ? 's' : ''}
+                    </span>
+                    {group.bundle_url && (
+                      <a
+                        href={group.bundle_url}
+                        download={group.bundle_filename}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans transition-colors"
+                        style={{
+                          background: 'rgba(61, 214, 140, 0.10)',
+                          border: '1px solid rgba(61, 214, 140, 0.28)',
+                          color: 'var(--color-accent-primary)',
+                        }}
+                        title="Download a self-contained PlatformIO project (node source + sporeprint_common + platformio.ini)"
+                      >
+                        <Download size={11} strokeWidth={1.8} />
+                        ZIP
+                      </a>
+                    )}
+                  </div>
                 </div>
                 <div className="divide-y divide-[var(--color-border)]">
                   {group.files.map((f) => (

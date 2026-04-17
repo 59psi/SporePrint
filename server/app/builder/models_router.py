@@ -1,7 +1,9 @@
+import io
 import time
+import zipfile
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 router = APIRouter()
 
@@ -13,6 +15,17 @@ _FIRMWARE_DIR = Path("/firmware") if Path("/firmware").exists() else _REPO_ROOT 
 # Allow-list of firmware roots we expose — prevents traversal via /api/builder/firmware/..
 _FIRMWARE_ROOTS = ("src/climate_node", "src/relay_node", "src/lighting_node",
                    "src/cam_node", "lib/sporeprint_common")
+
+# Map of bundleable node slug → (source root, human label). The shared
+# sporeprint_common library + platformio.ini are included in every per-node
+# bundle so the archive is a complete, self-contained PlatformIO project.
+_BUNDLE_NODES: dict[str, tuple[str, str]] = {
+    "climate_node": ("src/climate_node", "Climate node"),
+    "relay_node": ("src/relay_node", "Relay node"),
+    "lighting_node": ("src/lighting_node", "Lighting node"),
+    "cam_node": ("src/cam_node", "Camera node"),
+}
+_BUNDLE_SUFFIXES = {".cpp", ".h", ".hpp", ".ino", ".ini", ".md", ".txt"}
 
 _models_cache: dict = {"data": [], "ts": 0}
 _diagrams_cache: dict = {"data": [], "ts": 0}
@@ -104,7 +117,14 @@ async def list_firmware():
                 "url": f"/api/builder/firmware/{rel}",
             })
         if files:
-            groups.append({"node": root_rel.split("/")[-1], "path": root_rel, "files": files})
+            node = root_rel.split("/")[-1]
+            group: dict = {"node": node, "path": root_rel, "files": files}
+            # Only top-level node firmware gets a per-node bundle. The shared
+            # `sporeprint_common` library is always packed INTO those bundles.
+            if node in _BUNDLE_NODES:
+                group["bundle_url"] = f"/api/builder/firmware/bundle/{node}"
+                group["bundle_filename"] = f"sporeprint-{node}.zip"
+            groups.append(group)
 
     pio = _FIRMWARE_DIR / "platformio.ini"
     if pio.exists():
@@ -121,6 +141,66 @@ async def list_firmware():
     _firmware_cache["data"] = groups
     _firmware_cache["ts"] = now
     return groups
+
+
+def _build_node_bundle(node: str) -> bytes:
+    """Build an in-memory ZIP for a single node — includes the node's source,
+    the shared sporeprint_common lib, and the top-level platformio.ini so the
+    archive is a complete PlatformIO project."""
+    if node not in _BUNDLE_NODES:
+        raise HTTPException(404, "Unknown node")
+    node_rel, _label = _BUNDLE_NODES[node]
+    node_root = _FIRMWARE_DIR / node_rel
+    if not node_root.is_dir():
+        raise HTTPException(404, "Node source not found")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        def add_tree(src_root: Path, arc_prefix: str) -> None:
+            if not src_root.exists():
+                return
+            for f in sorted(src_root.rglob("*")):
+                if not f.is_file():
+                    continue
+                if f.suffix not in _BUNDLE_SUFFIXES:
+                    continue
+                arc = f"{arc_prefix}/{f.relative_to(src_root)}"
+                zf.write(f, arc)
+
+        add_tree(node_root, f"firmware/{node_rel}")
+        add_tree(_FIRMWARE_DIR / "lib/sporeprint_common", "firmware/lib/sporeprint_common")
+
+        pio = _FIRMWARE_DIR / "platformio.ini"
+        if pio.is_file():
+            zf.write(pio, "firmware/platformio.ini")
+
+        readme = (
+            f"# SporePrint — {node} firmware\n\n"
+            f"Unzip this archive and flash with PlatformIO:\n\n"
+            f"```bash\n"
+            f"cd firmware\n"
+            f"pio run -t upload -e {node}\n"
+            f"```\n\n"
+            f"Full source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
+        )
+        zf.writestr(f"firmware/src/{node}/README.md", readme)
+
+    return buf.getvalue()
+
+
+@router.get("/firmware/bundle/{node}")
+async def download_firmware_bundle(node: str):
+    """Stream a ZIP bundle containing the node's source + shared lib + platformio.ini."""
+    data = _build_node_bundle(node)
+    filename = f"sporeprint-{node}.zip"
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(data)),
+        },
+    )
 
 
 @router.get("/firmware/{path:path}")
