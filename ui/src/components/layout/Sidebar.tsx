@@ -17,6 +17,8 @@ import {
   Box,
   FlaskConical,
   ShoppingCart,
+  HelpCircle,
+  ExternalLink,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -95,9 +97,21 @@ export default function Sidebar() {
           ))}
         </nav>
 
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-[var(--color-border)] font-mono text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
-          v3.1.3
+        {/* Footer: docs link + version */}
+        <div className="border-t border-[var(--color-border)]">
+          <a
+            href="https://sporeprint.ai/docs/user-guide.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 px-5 py-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+          >
+            <HelpCircle size={16} strokeWidth={1.5} />
+            <span className="flex-1">Docs</span>
+            <ExternalLink size={10} className="opacity-50" />
+          </a>
+          <div className="px-5 py-2 font-mono text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
+            v3.1.5
+          </div>
         </div>
       </aside>
 

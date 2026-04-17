@@ -4,6 +4,7 @@ import {
   Cpu, Cable, ListChecks, ChevronDown, ChevronRight,
   ExternalLink, Zap, Star, Rocket, Box,
   Target, Sprout, AlertTriangle, Info, Image as ImageIcon,
+  FileCode,
 } from 'lucide-react'
 import { api } from '../api/client'
 import WiringDiagram from '../components/builder/WiringDiagram'
@@ -110,6 +111,7 @@ export default function Builder() {
 
   const [models, setModels] = useState<{filename: string, size_bytes: number, url: string}[]>([])
   const [diagrams, setDiagrams] = useState<{filename: string, size_bytes: number, url: string}[]>([])
+  const [firmware, setFirmware] = useState<{node: string, path: string, files: {filename: string, size_bytes: number, url: string}[]}[]>([])
 
   const [showAssistant, setShowAssistant] = useState(false)
   const [request, setRequest] = useState('')
@@ -124,6 +126,8 @@ export default function Builder() {
       .then(setModels).catch(() => {})
     api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/diagrams')
       .then(setDiagrams).catch(() => {})
+    api.get<{node: string, path: string, files: {filename: string, size_bytes: number, url: string}[]}[]>('/builder/firmware')
+      .then(setFirmware).catch(() => {})
   }, [])
 
   const selectTier = async (tierId: string) => {
@@ -462,6 +466,57 @@ export default function Builder() {
                   {d.filename.replace('.svg', '').replace(/wiring-/g, '').replace(/-/g, ' ')}
                 </p>
               </a>
+            ))}
+          </div>
+        </Collapsible>
+      )}
+
+      {firmware.length > 0 && (
+        <Collapsible
+          title="ESP32 Firmware"
+          summary="PlatformIO source for each node — clone + flash with pio run -t upload -e <node>"
+          icon={FileCode}
+          count={firmware.reduce((n, g) => n + g.files.length, 0)}
+        >
+          <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+            Download any file or browse the full source on GitHub:{' '}
+            <a
+              href="https://github.com/59psi/SporePrint/tree/main/firmware"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'var(--color-accent-primary)' }}
+            >
+              github.com/59psi/SporePrint/firmware
+            </a>
+            . Each node compiles to an independent binary via{' '}
+            <code className="font-mono text-[var(--color-accent-primary)]">
+              pio run -t upload -e &lt;node&gt;
+            </code>{' '}
+            from the <code className="font-mono">firmware/</code> directory.
+          </p>
+          <div className="space-y-3">
+            {firmware.map((group) => (
+              <div key={group.path} className="rounded-lg border border-[var(--color-border)] overflow-hidden">
+                <div className="px-3 py-2 text-xs font-mono bg-[var(--color-bg-hover)] flex items-center justify-between">
+                  <span>{group.path}</span>
+                  <span className="text-[var(--color-text-tertiary)]">{group.files.length} file{group.files.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="divide-y divide-[var(--color-border)]">
+                  {group.files.map((f) => (
+                    <a
+                      key={f.filename}
+                      href={f.url}
+                      download
+                      className="flex items-center justify-between px-3 py-2 text-xs font-mono hover:bg-[var(--color-bg-hover)] transition-colors"
+                    >
+                      <span className="truncate">{f.filename}</span>
+                      <span className="text-[var(--color-text-tertiary)] ml-2 flex-shrink-0">
+                        {(f.size_bytes / 1024).toFixed(1)} KB
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         </Collapsible>

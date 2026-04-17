@@ -53,28 +53,44 @@ Whether you are growing oyster mushrooms in a closet or managing multiple fruiti
 
 ## Quick Start
 
-### Docker Compose (recommended)
+### One-command install on a Raspberry Pi (recommended)
+
+SSH into a freshly-imaged Raspberry Pi (64-bit Raspberry Pi OS, Ubuntu Server,
+or Debian 12+) and run:
 
 ```bash
-git clone https://github.com/59psi/SporePrint.git && cd SporePrint
-cp .env.example .env          # Edit with your location + API keys
+curl -fsSL https://raw.githubusercontent.com/59psi/SporePrint/main/scripts/setup-pi.sh | bash
+```
+
+`scripts/setup-pi.sh` is idempotent — it:
+
+1. Installs Docker Engine + the Compose plugin (via `get.docker.com`) if not already present
+2. Clones the SporePrint repo into `~/SporePrint` (or pulls latest if it already exists)
+3. Seeds a `.env` from the template (weather lat/lon blank — fill in after)
+4. Builds the stack and brings it up with `docker compose up -d --build`
+5. Prints next steps, the Pi's LAN URLs, and common ops commands
+
+Re-run the same one-liner any time to pull updates and rebuild.
+
+After it finishes:
+
+- Dashboard: `http://<pi-ip>:3001` (or `http://sporeprint.local:3001` if mDNS works)
+- Generate a 6-digit pairing code in Settings → Cloud Pairing, then pair from the mobile app
+
+### Manual Docker Compose
+
+```bash
+git clone --recurse-submodules https://github.com/59psi/SporePrint.git
+cd SporePrint
+cp .env.example .env     # edit weather lat/lon
 docker compose up -d
 ```
 
-Services start on:
+Services:
 - **UI**: http://localhost:3001
 - **API**: http://localhost:8000
-- **MQTT**: localhost:1883
-- **ntfy**: http://localhost:8080
-
-### Setup Script
-
-```bash
-git clone https://github.com/59psi/SporePrint.git && cd SporePrint
-./setup.sh
-```
-
-The setup script checks prerequisites, creates `.env` from the template, prompts for API keys, installs all dependencies, and prints next steps.
+- **MQTT**: localhost:1883 (ESP32 nodes connect here)
+- **ntfy**: http://localhost:8080 (free-tier push fallback)
 
 ### Manual Development Setup
 
@@ -82,7 +98,7 @@ The setup script checks prerequisites, creates `.env` from the template, prompts
 # Backend
 cd server && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env    # Edit with your settings
+cp .env.example .env    # edit with your settings
 uvicorn app.main:socket_app --reload
 
 # Frontend (separate terminal)
@@ -93,6 +109,8 @@ docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 ```
 
 ### Prerequisites
+
+Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 
 - Python 3.11+
 - Node.js 20+
