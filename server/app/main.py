@@ -86,13 +86,18 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="3.1.1", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.1.2", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
-# Allows: localhost/127.0.0.1 (any port), *.local (mDNS), RFC1918 private IPs
-# (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), and Capacitor native shells.
-# A wildcard "*" origin would let any website the user visits toggle their
-# fans, lights, and smart plugs via cross-origin requests.
+# Allows:
+#   - localhost / 127.0.0.1 (any port) — local browser dev + Pi itself
+#   - *.local (mDNS, e.g. sporeprint.local) — zeroconf discovery
+#   - RFC1918 private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) — LAN access
+#   - capacitor://localhost — native iOS/Android shells
+#   - https://sporeprint.ai — the hosted web app (for device pairing + /cloud/configure POSTs
+#     sent from the user's browser directly to the Pi during initial setup)
+# A wildcard "*" origin would let ANY website the user visits toggle their fans,
+# lights, and smart plugs via cross-origin requests — that's the attack we're blocking.
 _LAN_ORIGIN_REGEX = (
     r"^(https?://)?("
     r"localhost|127\.0\.0\.1|"
@@ -100,7 +105,7 @@ _LAN_ORIGIN_REGEX = (
     r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
     r"192\.168\.\d{1,3}\.\d{1,3}|"
     r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
-    r")(:\d+)?$|^capacitor://localhost$"
+    r")(:\d+)?$|^capacitor://localhost$|^https://sporeprint\.ai$"
 )
 
 app.add_middleware(
@@ -154,7 +159,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.1.1"}
+    return {"status": "ok", "version": "3.1.2"}
 
 
 # Track Socket.IO clients for health reporting

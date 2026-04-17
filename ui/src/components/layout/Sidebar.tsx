@@ -97,7 +97,7 @@ export default function Sidebar() {
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-[var(--color-border)] font-mono text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
-          v3.1.1
+          v3.1.2
         </div>
       </aside>
 
