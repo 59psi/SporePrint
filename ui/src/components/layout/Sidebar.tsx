@@ -110,7 +110,7 @@ export default function Sidebar() {
             <ExternalLink size={10} className="opacity-50" />
           </a>
           <div className="px-5 py-2 font-mono text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
-            v3.1.6
+            v3.1.7
           </div>
         </div>
       </aside>
