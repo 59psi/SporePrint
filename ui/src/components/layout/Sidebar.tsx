@@ -58,11 +58,14 @@ export default function Sidebar() {
         }`}
       >
         {/* Logo */}
-        <div className="p-5 border-b border-[var(--color-border)]">
-          <h1 className="text-lg font-semibold tracking-tight">
-            <span className="text-[var(--color-accent-gourmet)]">Spore</span>Print
+        <div className="px-5 py-6 border-b border-[var(--color-border)]">
+          <h1 className="text-base font-light tracking-wide">
+            <span style={{ color: 'var(--color-accent-primary)' }}>Spore</span>Print
+            <span className="ml-1 font-mono text-[10px]" style={{ color: 'var(--color-text-tertiary)', letterSpacing: '0.08em' }}>.ai</span>
           </h1>
-          <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">Grow Automation</p>
+          <p className="text-[10px] mt-1.5" style={{ color: 'var(--color-text-tertiary)', letterSpacing: '0.18em', textTransform: 'uppercase' }}>
+            Grow Automation
+          </p>
         </div>
 
         {/* Nav */}
@@ -74,22 +77,27 @@ export default function Sidebar() {
               end={to === '/'}
               onClick={() => setOpen(false)}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
+                `flex items-center gap-3 py-2 text-[13px] transition-colors ${
                   isActive
-                    ? 'text-[var(--color-text-primary)] bg-[var(--color-bg-hover)] border-r-2 border-[var(--color-accent-gourmet)]'
+                    ? 'text-[var(--color-text-primary)] bg-[var(--color-bg-hover)]'
                     : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
                 }`
               }
+              style={({ isActive }) =>
+                isActive
+                  ? { borderLeft: '2px solid var(--color-accent-primary)', paddingLeft: 18, paddingRight: 20 }
+                  : { borderLeft: '2px solid transparent', paddingLeft: 18, paddingRight: 20 }
+              }
             >
-              <Icon size={18} />
+              <Icon size={16} strokeWidth={1.5} />
               {label}
             </NavLink>
           ))}
         </nav>
 
         {/* Footer */}
-        <div className="p-4 border-t border-[var(--color-border)] text-xs text-[var(--color-text-secondary)]">
-          v3.0.43
+        <div className="px-5 py-3 border-t border-[var(--color-border)] font-mono text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
+          v3.0.44
         </div>
       </aside>
 

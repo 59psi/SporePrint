@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Thermometer, Droplets, Wind, Sun, Activity, CloudSun } from 'lucide-react'
-import SensorGauge from '../components/dashboard/SensorGauge'
+import { useEffect, useMemo, useState } from 'react'
+import { Thermometer, Droplets, Wind, Sun, CloudSun, ArrowRight } from 'lucide-react'
+import SensorCard from '../components/ui/SensorCard'
+import StatusPill from '../components/ui/StatusPill'
+import Sparkline from '../components/ui/Sparkline'
+import SporePrintMark from '../components/ui/SporePrintMark'
 import NodeStatus from '../components/dashboard/NodeStatus'
 import DeviceControl from '../components/dashboard/DeviceControl'
 import WeatherForecast from '../components/dashboard/WeatherForecast'
@@ -9,7 +12,6 @@ import { socket } from '../api/socket'
 import { api } from '../api/client'
 import { displayTemp, convertTemp, tempLabel } from '../lib/units'
 
-// Demo data for when no real telemetry is connected
 const DEMO_READING = {
   timestamp: Date.now() / 1000,
   temp_f: 73.4,
@@ -34,6 +36,14 @@ const DEMO_EVENTS = [
   { id: 4, type: 'harvest', description: 'Flush #2 harvested: 142g wet', timestamp: Date.now() / 1000 - 86400 },
 ]
 
+const EVENT_TONE: Record<string, string> = {
+  phase_change: 'var(--color-accent-primary)',
+  automation: 'var(--color-accent-amber)',
+  note_added: 'var(--color-text-tertiary)',
+  harvest: 'var(--color-accent-primary)',
+  alert: 'var(--color-danger)',
+}
+
 interface DeviceState {
   name: string
   type: 'fan' | 'humidifier' | 'heater' | 'cooler'
@@ -55,7 +65,6 @@ function QuickControls() {
   const toggleDevice = async (idx: number) => {
     const dev = devices[idx]
     const newState = dev.status === 'on' ? 'off' : 'on'
-
     try {
       if (dev.channel) {
         await api.post(`/hardware/nodes/${dev.target}/command`, {
@@ -65,11 +74,8 @@ function QuickControls() {
       } else {
         await api.post(`/automation/plugs/${dev.target}/command`, { state: newState })
       }
-    } catch { /* still update UI optimistically */ }
-
-    setDevices((prev) =>
-      prev.map((d, i) => (i === idx ? { ...d, status: newState } : d))
-    )
+    } catch { /* optimistic */ }
+    setDevices((prev) => prev.map((d, i) => (i === idx ? { ...d, status: newState } : d)))
   }
 
   return (
@@ -95,15 +101,20 @@ interface WeatherData {
   forecast_low_f: number | null
 }
 
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() / 1000 - ts
+  if (diff < 60) return `${Math.floor(diff)}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
 export default function Dashboard() {
   const { latest, history, setReading, addHistory } = useTelemetryStore()
   const [weather, setWeather] = useState<WeatherData | null>(null)
 
   useEffect(() => {
-    // Set demo data as initial
     setReading('climate-01', DEMO_READING)
-
-    // Fetch initial weather
     api.get<WeatherData>('/weather/current').then((w) => {
       if (w && !('status' in w)) setWeather(w)
     }).catch(() => {})
@@ -113,10 +124,7 @@ export default function Dashboard() {
       setReading(node_id, reading as typeof DEMO_READING)
       addHistory(reading as typeof DEMO_READING)
     })
-
-    socket.on('weather', (data: WeatherData) => {
-      setWeather(data)
-    })
+    socket.on('weather', (data: WeatherData) => setWeather(data))
 
     return () => {
       socket.off('telemetry')
@@ -125,10 +133,8 @@ export default function Dashboard() {
   }, [setReading, addHistory])
 
   const reading = latest['climate-01'] || DEMO_READING
-  // Real data arrives via socket — history is only populated by live telemetry events
   const hasRealData = history.length > 0
 
-  // Default targets (Blue Oyster fruiting phase)
   const targets = {
     temp: { min: 72, max: 76 },
     humidity: { min: 85, max: 92 },
@@ -136,204 +142,301 @@ export default function Dashboard() {
     lux: { min: 200, max: 500 },
   }
 
+  const histories = useMemo(() => {
+    const last = history.slice(-60)
+    return {
+      temp: last.map((r) => convertTemp(r.temp_f)),
+      humidity: last.map((r) => r.humidity),
+      co2: last.map((r) => r.co2_ppm),
+      lux: last.map((r) => r.lux),
+    }
+  }, [history])
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold">Dashboard</h1>
-          <p className="text-sm text-[var(--color-text-secondary)]">Real-time grow environment</p>
+    <div className="max-w-[1400px]">
+      {/* Hero — current grow status */}
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center gap-4">
+          <SporePrintMark size={56} />
+          <div>
+            <div className="label-caps mb-1">Current Grow</div>
+            <h1 className="text-2xl font-light tracking-tight" style={{ color: 'var(--color-text-primary)' }}>
+              Blue Oyster <span style={{ color: 'var(--color-text-tertiary)' }}>/</span> Block #1
+            </h1>
+            <div className="flex items-center gap-3 mt-1.5">
+              <StatusPill label="Fruiting" tone="primary" />
+              <span className="font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                <span style={{ color: 'var(--color-text-primary)' }}>Day 22</span> · Flush 2 · 284g wet
+              </span>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--color-accent-active)]/10 text-[var(--color-accent-active)] text-sm">
-          <Activity size={14} />
-          Live
+        <div className="hidden md:flex items-center gap-2">
+          <div className="relative" style={{ width: 160, height: 40 }}>
+            <Sparkline values={histories.temp.length ? histories.temp : [23, 23.2, 23.5, 23.3, 23.4]} width={160} height={40} />
+          </div>
+          <div className="label-caps">24h Temp</div>
         </div>
       </div>
 
-      {/* Getting Started — shown when no real telemetry has arrived */}
+      {/* Getting Started — first-run onboarding */}
       {!hasRealData && (
-        <div className="p-6 rounded-xl bg-gradient-to-br from-emerald-500/10 to-transparent border border-emerald-500/20 mb-6">
-          <h2 className="text-lg font-semibold mb-2">Welcome to SporePrint</h2>
-          <p className="text-sm text-[var(--color-text-secondary)] mb-4">
-            Get your automated mushroom grow set up in 3 steps:
-          </p>
+        <div
+          className="p-6 rounded-2xl mb-8 relative overflow-hidden"
+          style={{
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border)',
+            boxShadow: 'var(--shadow-glow)',
+          }}
+        >
+          <div className="label-caps mb-2">Get started</div>
+          <h2 className="text-xl font-light mb-5" style={{ color: 'var(--color-text-primary)' }}>
+            Three steps to your first automated grow
+          </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <a href="/builder" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
-              <p className="text-sm font-medium">1. Get Hardware</p>
-              <p className="text-xs text-[var(--color-text-secondary)] mt-1">3 tiers from $135 — see build guides</p>
-            </a>
-            <a href="/settings" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
-              <p className="text-sm font-medium">2. Set Up Pi</p>
-              <p className="text-xs text-[var(--color-text-secondary)] mt-1">docker compose up -d</p>
-            </a>
-            <a href="/species" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
-              <p className="text-sm font-medium">3. Choose Species</p>
-              <p className="text-xs text-[var(--color-text-secondary)] mt-1">55 profiles with TEK guides</p>
-            </a>
+            {[
+              { href: '/builder', label: '01  Hardware', hint: '3 tiers from $135 — see build guides' },
+              { href: '/settings', label: '02  Pi Setup', hint: 'docker compose up -d' },
+              { href: '/species', label: '03  Species', hint: '55 profiles with TEK guides' },
+            ].map((step) => (
+              <a
+                key={step.href}
+                href={step.href}
+                className="group p-4 rounded-xl transition-colors"
+                style={{
+                  background: 'var(--color-bg-hover)',
+                  border: '1px solid var(--color-border)',
+                }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-sm" style={{ color: 'var(--color-text-primary)' }}>{step.label}</span>
+                  <ArrowRight size={14} style={{ color: 'var(--color-accent-primary)' }} className="opacity-60 group-hover:opacity-100 transition-opacity" />
+                </div>
+                <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>{step.hint}</p>
+              </a>
+            ))}
           </div>
         </div>
       )}
 
-      {/* Sensor Gauges */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-        <SensorGauge
-          label="Temperature"
-          value={convertTemp(reading.temp_f)}
-          unit={tempLabel()}
-          min={convertTemp(40)}
-          max={convertTemp(100)}
-          targetMin={convertTemp(targets.temp.min)}
-          targetMax={convertTemp(targets.temp.max)}
-          icon={<Thermometer size={14} />}
-        />
-        <SensorGauge
-          label="Humidity"
-          value={reading.humidity}
-          unit="%"
-          min={0}
-          max={100}
-          targetMin={targets.humidity.min}
-          targetMax={targets.humidity.max}
-          icon={<Droplets size={14} />}
-        />
-        <SensorGauge
-          label="CO2"
-          value={reading.co2_ppm}
-          unit="ppm"
-          min={0}
-          max={5000}
-          targetMin={0}
-          targetMax={targets.co2.max}
-          decimals={0}
-          icon={<Wind size={14} />}
-        />
-        <SensorGauge
-          label="Light"
-          value={reading.lux}
-          unit="lux"
-          min={0}
-          max={2000}
-          targetMin={targets.lux.min}
-          targetMax={targets.lux.max}
-          decimals={0}
-          icon={<Sun size={14} />}
-        />
+      {/* Sensor cards */}
+      <div className="mb-6">
+        <div className="label-caps mb-3">Environment</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <SensorCard
+            label="Temperature"
+            value={convertTemp(reading.temp_f)}
+            unit={tempLabel()}
+            icon={<Thermometer size={14} strokeWidth={1.5} />}
+            target={{ min: convertTemp(targets.temp.min), max: convertTemp(targets.temp.max) }}
+            setpoint={convertTemp((targets.temp.min + targets.temp.max) / 2)}
+            history={histories.temp}
+          />
+          <SensorCard
+            label="Humidity"
+            value={reading.humidity}
+            unit="%"
+            icon={<Droplets size={14} strokeWidth={1.5} />}
+            target={{ min: targets.humidity.min, max: targets.humidity.max }}
+            setpoint={(targets.humidity.min + targets.humidity.max) / 2}
+            history={histories.humidity}
+          />
+          <SensorCard
+            label="CO₂"
+            value={reading.co2_ppm}
+            unit="ppm"
+            icon={<Wind size={14} strokeWidth={1.5} />}
+            decimals={0}
+            target={{ min: 0, max: targets.co2.max }}
+            setpoint={targets.co2.max}
+            history={histories.co2}
+          />
+          <SensorCard
+            label="Light"
+            value={reading.lux}
+            unit="lux"
+            icon={<Sun size={14} strokeWidth={1.5} />}
+            decimals={0}
+            target={{ min: targets.lux.min, max: targets.lux.max }}
+            setpoint={(targets.lux.min + targets.lux.max) / 2}
+            history={histories.lux}
+          />
+        </div>
       </div>
 
-      {/* 7-Day Forecast + Impact */}
       <WeatherForecast />
 
-      {/* Current Weather */}
+      {/* Outdoor strip */}
       {weather && (
-        <div className="bg-[var(--color-bg-card)] rounded-xl p-4 border border-[var(--color-border)] mb-6">
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-              <CloudSun size={16} />
-              Outdoor
+        <div
+          className="flex items-center gap-6 px-4 py-3 rounded-xl mb-6"
+          style={{
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border)',
+            boxShadow: 'var(--shadow-glow)',
+          }}
+        >
+          <div className="flex items-center gap-2 label-caps">
+            <CloudSun size={14} />
+            Outdoor
+          </div>
+          <div className="flex gap-6 text-sm">
+            <div className="font-mono">
+              <span style={{ color: 'var(--color-text-tertiary)' }}>NOW </span>
+              <span style={{ color: 'var(--color-text-primary)' }}>{displayTemp(weather.outdoor_temp_f)}</span>
+              <span className="ml-2" style={{ color: 'var(--color-text-secondary)' }}>{weather.outdoor_humidity}% RH</span>
             </div>
-            <div className="flex gap-6 text-sm">
-              <div>
-                <span className="text-[var(--color-text-secondary)]">Now </span>
-                <span className="font-medium">{displayTemp(weather.outdoor_temp_f)}</span>
-                <span className="text-[var(--color-text-secondary)] ml-1">{weather.outdoor_humidity}% RH</span>
+            {weather.forecast_high_f != null && (
+              <div className="font-mono">
+                <span style={{ color: 'var(--color-text-tertiary)' }}>HIGH </span>
+                <span style={{
+                  color: weather.forecast_high_f > 95 ? 'var(--color-danger)'
+                    : weather.forecast_high_f > 90 ? 'var(--color-accent-amber)'
+                    : 'var(--color-text-primary)'
+                }}>
+                  {displayTemp(weather.forecast_high_f)}
+                </span>
               </div>
-              {weather.forecast_high_f != null && (
-                <div>
-                  <span className="text-[var(--color-text-secondary)]">High </span>
-                  <span className={`font-medium ${weather.forecast_high_f > 90 ? 'text-[var(--color-warning)]' : weather.forecast_high_f > 95 ? 'text-[var(--color-danger)]' : ''}`}>
-                    {displayTemp(weather.forecast_high_f)}
-                  </span>
-                </div>
-              )}
-              {weather.forecast_low_f != null && (
-                <div>
-                  <span className="text-[var(--color-text-secondary)]">Low </span>
-                  <span className="font-medium">{displayTemp(weather.forecast_low_f)}</span>
-                </div>
-              )}
-              <div className="text-[var(--color-text-secondary)]">{weather.outdoor_condition}</div>
-            </div>
+            )}
+            {weather.forecast_low_f != null && (
+              <div className="font-mono">
+                <span style={{ color: 'var(--color-text-tertiary)' }}>LOW </span>
+                <span style={{ color: 'var(--color-text-primary)' }}>{displayTemp(weather.forecast_low_f)}</span>
+              </div>
+            )}
+            <div style={{ color: 'var(--color-text-secondary)' }}>{weather.outdoor_condition}</div>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Active Session Card */}
-        <div className="lg:col-span-2 bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)]">
-          <h2 className="text-base font-semibold mb-4">Active Session</h2>
-          <div className="flex items-start gap-4">
-            <div className="flex-1">
-              <p className="text-lg font-medium">Blue Oyster — Block #1</p>
-              <p className="text-sm text-[var(--color-text-secondary)] mt-0.5">
-                <span className="text-[var(--color-accent-active)]">Active</span> &middot; CVG substrate
-              </p>
-
-              <div className="mt-4 space-y-3">
-                <div>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-[var(--color-text-secondary)]">Current Phase</span>
-                    <span className="font-medium">Fruiting</span>
-                  </div>
-                  <div className="h-2 bg-[var(--color-bg-primary)] rounded-full overflow-hidden">
-                    <div className="h-full bg-[var(--color-accent-active)] rounded-full" style={{ width: '65%' }} />
-                  </div>
-                </div>
-                <div className="flex gap-6 text-sm">
-                  <div>
-                    <span className="text-[var(--color-text-secondary)]">Days in Phase</span>
-                    <p className="font-medium">8 / 14</p>
-                  </div>
-                  <div>
-                    <span className="text-[var(--color-text-secondary)]">Flush</span>
-                    <p className="font-medium">#2</p>
-                  </div>
-                  <div>
-                    <span className="text-[var(--color-text-secondary)]">Total Yield</span>
-                    <p className="font-medium">284g wet</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+      {/* Hardware nodes + growth timeline */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-6">
+        <div
+          className="lg:col-span-2 p-5 rounded-2xl"
+          style={{
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border)',
+            boxShadow: 'var(--shadow-glow)',
+          }}
+        >
+          <div className="label-caps mb-4">Growth Timeline</div>
+          <GrowthTimeline current="fruiting" />
         </div>
 
-        {/* Node Health */}
-        <div className="bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)]">
-          <h2 className="text-base font-semibold mb-3">Hardware Nodes</h2>
-          <div className="divide-y divide-[var(--color-border)]">
+        <div
+          className="p-5 rounded-2xl"
+          style={{
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border)',
+            boxShadow: 'var(--shadow-glow)',
+          }}
+        >
+          <div className="label-caps mb-3">Hardware</div>
+          <div style={{ borderTop: '1px solid var(--color-border)' }}>
             {DEMO_NODES.map((node) => (
               <NodeStatus key={node.nodeId} {...node} />
             ))}
           </div>
         </div>
+      </div>
 
-        {/* Quick Controls */}
-        <div className="lg:col-span-3 bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)]">
-          <h2 className="text-base font-semibold mb-3">Quick Controls</h2>
-          <QuickControls />
-        </div>
+      {/* Quick Controls */}
+      <div
+        className="p-5 rounded-2xl mb-6"
+        style={{
+          background: 'var(--color-bg-card)',
+          border: '1px solid var(--color-border)',
+          boxShadow: 'var(--shadow-glow)',
+        }}
+      >
+        <div className="label-caps mb-4">Actuators</div>
+        <QuickControls />
+      </div>
 
-        {/* Recent Events */}
-        <div className="lg:col-span-3 bg-[var(--color-bg-card)] rounded-xl p-5 border border-[var(--color-border)]">
-          <h2 className="text-base font-semibold mb-3">Recent Events</h2>
-          <div className="space-y-2">
-            {DEMO_EVENTS.map((event) => (
-              <div
-                key={event.id}
-                className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--color-bg-hover)] transition-colors"
-              >
-                <div className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent-gourmet)]" />
-                <span className="flex-1 text-sm">{event.description}</span>
-                <span className="text-xs text-[var(--color-text-secondary)]">
-                  {new Date(event.timestamp * 1000).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
-              </div>
-            ))}
-          </div>
+      {/* Recent Events — terminal-adjacent, softer */}
+      <div
+        className="p-5 rounded-2xl"
+        style={{
+          background: 'var(--color-bg-card)',
+          border: '1px solid var(--color-border)',
+          boxShadow: 'var(--shadow-glow)',
+        }}
+      >
+        <div className="label-caps mb-3">Recent Events</div>
+        <div>
+          {DEMO_EVENTS.map((event) => (
+            <div
+              key={event.id}
+              className="flex items-center gap-3 py-2 pl-3 font-mono text-xs"
+              style={{ borderLeft: `3px solid ${EVENT_TONE[event.type] || 'var(--color-text-tertiary)'}` }}
+            >
+              <span style={{ color: 'var(--color-text-tertiary)', minWidth: 80 }}>
+                {formatRelativeTime(event.timestamp)}
+              </span>
+              <span className="flex-1" style={{ color: 'var(--color-text-secondary)' }}>
+                {event.description}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+function GrowthTimeline({ current }: { current: string }) {
+  const phases = ['inoculation', 'colonization', 'pinning', 'fruiting', 'harvest']
+  const currentIdx = phases.indexOf(current)
+  return (
+    <div className="relative">
+      <div
+        className="absolute left-0 right-0 top-[11px] h-px"
+        style={{ background: 'var(--color-border-raised)' }}
+      />
+      <div
+        className="absolute left-0 top-[11px] h-px transition-all"
+        style={{
+          background: 'var(--color-accent-primary)',
+          width: `${(currentIdx / (phases.length - 1)) * 100}%`,
+          transitionDuration: 'var(--duration)',
+        }}
+      />
+      <div className="relative flex justify-between">
+        {phases.map((phase, i) => {
+          const done = i < currentIdx
+          const active = i === currentIdx
+          return (
+            <div key={phase} className="flex flex-col items-center gap-2">
+              <div
+                className="rounded-full"
+                style={{
+                  width: active ? 10 : 6,
+                  height: active ? 10 : 6,
+                  marginTop: active ? 8 : 10,
+                  background: done || active ? 'var(--color-accent-primary)' : 'var(--color-bg-hover)',
+                  border: `1px solid ${done || active ? 'var(--color-accent-primary)' : 'var(--color-border-raised)'}`,
+                  boxShadow: active ? '0 0 0 4px rgba(61, 214, 140, 0.12)' : 'none',
+                  animation: active ? 'sporepulse 2.4s var(--ease) infinite' : 'none',
+                }}
+              />
+              <span
+                className="label-caps"
+                style={{
+                  color: active ? 'var(--color-text-primary)' : done ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)',
+                }}
+              >
+                {phase}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      <style>{`
+        @keyframes sporepulse {
+          0%, 100% { box-shadow: 0 0 0 4px rgba(61, 214, 140, 0.12); }
+          50% { box-shadow: 0 0 0 7px rgba(61, 214, 140, 0.18); }
+        }
+      `}</style>
     </div>
   )
 }
