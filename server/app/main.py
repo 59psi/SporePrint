@@ -86,7 +86,7 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="3.1.13", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.1.14", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -173,7 +173,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.1.13"}
+    return {"status": "ok", "version": "3.1.14"}
 
 
 # Track Socket.IO clients for health reporting
