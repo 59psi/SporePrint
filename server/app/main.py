@@ -7,6 +7,13 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Socket.IO accepts wildcard origins because engineio's CORS implementation only
+# allows exact-string match (no regex/callable), and the Pi binds to a dynamic
+# LAN IP that varies per-household (192.168.x.x, 10.x.x.x, etc.) making a fixed
+# allowlist impractical. Risk is limited: the Pi only registers connect/disconnect
+# handlers — telemetry is emitted server→client, and ALL device commands flow
+# through the REST API (which uses the LAN-scoped CORS regex below). A cross-origin
+# attacker on the user's LAN could observe telemetry but cannot toggle devices.
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 
@@ -79,13 +86,29 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.1.1", lifespan=lifespan)
+
+# LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
+# Allows: localhost/127.0.0.1 (any port), *.local (mDNS), RFC1918 private IPs
+# (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), and Capacitor native shells.
+# A wildcard "*" origin would let any website the user visits toggle their
+# fans, lights, and smart plugs via cross-origin requests.
+_LAN_ORIGIN_REGEX = (
+    r"^(https?://)?("
+    r"localhost|127\.0\.0\.1|"
+    r"[a-zA-Z0-9-]+\.local|"
+    r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+    r"192\.168\.\d{1,3}\.\d{1,3}|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r")(:\d+)?$|^capacitor://localhost$"
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origin_regex=_LAN_ORIGIN_REGEX,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    allow_credentials=True,
 )
 
 from .telemetry.router import router as telemetry_router
@@ -131,7 +154,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.1.0"}
+    return {"status": "ok", "version": "3.1.1"}
 
 
 # Track Socket.IO clients for health reporting
