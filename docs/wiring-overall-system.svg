@@ -89,7 +89,7 @@
   <!-- Camera Node -->
   <rect x="740" y="86" width="172" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="826" y="110" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Camera Node(s)</text>
-  <text x="826" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">ESP32-S3 CAM (OV5640)</text>
+  <text x="826" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">ESP32-S3 CAM (OV2640/OV5640)</text>
   <text x="826" y="148" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Auto-capture every 15min</text>
 
   <path d="M 775 166 Q 700 210 620 254" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>

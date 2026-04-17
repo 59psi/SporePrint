@@ -70,13 +70,16 @@ _BH1750 = Component(
 _SCD41 = Component(
     name="SCD41 CO2 Sensor Breakout",
     role="CO2, temperature, humidity sensor (I2C, 0x62)",
-    price_approx="$45",
-    url="https://www.amazon.com/s?k=SCD41+CO2+sensor+module",
+    price_approx="$46",
+    url="https://shop.pimoroni.com/en-us/products/scd41-co2-sensor-breakout",
     category="sensor",
     notes="True NDIR CO2 sensor. 400-5000ppm range. Needs 5min warm-up. I2C 0x62. "
           "Same pinout as SCD40 — drop-in replacement with better accuracy. "
+          "Pimoroni PIM587 is the most reliable source (in stock, ~$46). "
+          "Premium alternative: SparkFun Qwiic SCD41 ~$75 (plug-and-play). "
           "Budget alternative: MH-Z19B (~$15, UART interface, different wiring). "
-          "Also: shop.pimoroni.com (in stock), newark.com, sparkfun.com. Avoid Adafruit (24-week backorder).",
+          "Also: DigiKey (Sensirion SEK-SCD41), Newark, Amazon (generic Sensirion modules). "
+          "Avoid Adafruit 5190 — historically long backorders.",
 )
 
 _IRLZ44N = Component(
@@ -110,14 +113,17 @@ _10K_RESISTOR = Component(
 )
 
 _ESP32_CAM = Component(
-    name="ESP32-S3 CAM (OV5640)",
+    name="Freenove ESP32-S3 WROOM CAM",
     role="Camera node — captures images for contamination detection + growth tracking",
-    price_approx="$12",
-    url="https://www.amazon.com/s?k=ESP32-S3+CAM+OV5640",
+    price_approx="$20",
+    url="https://www.amazon.com/Freenove-ESP32-S3-WROOM-Dual-core-Microcontroller-Wireless/dp/B0F48DV38M",
     category="controller",
-    notes="USB-C, no separate programmer needed. 5MP OV5640 camera. "
-          "Alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer, 2MP. "
-          "Also: seeedstudio.com (XIAO ESP32S3 Sense with OV5640), walmart.com, ebay.com",
+    notes="USB-C, no separate programmer needed. Ships with OV2640 (2MP) — more than adequate "
+          "for contamination detection at 15-30cm range. "
+          "Premium OV5640 (5MP) upgrade: XIAO ESP32S3 Sense (~$14) + OV5640 add-on module (~$20) = ~$34 total, "
+          "or Waveshare ESP32-S3-CAM-OV5640 (waveshare.com, ~$25). "
+          "Budget alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer. "
+          "Also: seeedstudio.com (XIAO ESP32S3 Sense), walmart.com, ebay.com.",
 )
 
 _FTDI = Component(
@@ -152,7 +158,7 @@ TIER_BARE_BONES = HardwareTier(
     id="bare_bones",
     name="Bare Bones",
     tagline="Monitor your grow. Smart plug for humidifier.",
-    estimated_cost="~$115",
+    estimated_cost="~$135",
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
@@ -235,7 +241,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$220",
+    estimated_cost="~$240",
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
@@ -260,15 +266,17 @@ TIER_RECOMMENDED = HardwareTier(
         Component(**{**_1N4007.model_dump(), "quantity": 8, "notes": "4 for relay node + 4 for lighting node flyback protection"}),
         Component(**{**_10K_RESISTOR.model_dump(), "quantity": 8, "notes": "4 for relay + 4 for lighting gate pull-downs"}),
         Component(
-            name="Noctua NF-A8 5V PWM Fan (80mm)",
+            name="Noctua NF-A8 PWM Fan (80mm)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
-            price_approx="$14",
-            url="https://www.amazon.com/s?k=noctua+nf-a8+5v+pwm",
+            price_approx="$17",
+            url="https://www.amazon.com/s?k=noctua+nf-a8+pwm",
             category="actuator",
-            notes="Quiet, PWM controllable, 5V version. Use 12V fans with 12V supply for stronger airflow. "
-                  "Alternative: Arctic P8 PWM (~$8). "
-                  "Also: newegg.com, walmart.com, noctua.at/buy. Alternative: Arctic P8 PWM (~$8).",
+            notes="Quiet, PWM controllable, 12V. Pairs with the 12V PSU the build already has for LEDs. "
+                  "5V variant (NF-A8 5V PWM, ~$26) is also available if you only want a 5V rail — "
+                  "see Amazon B0FSCRGT6Y or noctua.at/en/products/fan/nf-a8-5v-pwm. "
+                  "Budget alternative: Arctic P8 PWM (~$8). "
+                  "Also: newegg.com, walmart.com, noctua.at/buy.",
         ),
         Component(
             name="12V LED Strip - Cool White (6500K), 1m",
@@ -381,7 +389,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$370+",
+    estimated_cost="~$415+",
     what_you_get=[
         "Live temperature + humidity + light monitoring on dashboard",
         "Alerts when conditions go out of range",
@@ -423,7 +431,9 @@ TIER_ALL = HardwareTier(
         Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
         Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
         Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/s?k=12v+red+led+strip+660nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$12", url="https://www.amazon.com/s?k=730nm+far+red+led+strip+12v", category="actuator", notes="Specialty item. Also: superlightingled.com, ledlightsworld.com. May need to order from grow light suppliers."),
+        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$18", url="https://www.superlightingled.com/far-red-light-730nm-led-strip-c-1_352_675.html", category="actuator", notes="Specialty item — 12V flexible 730nm strips. SuperLightingLED carries 2835/5050 SMD variants and a tri-spectrum 450+660+730nm option that can replace 3 separate strips. "
+                  "Alternatives: ledworker.com (China direct, 3-5 day shipping). Amazon 'far red led' search returns 30W fixtures, not strips — avoid for this build. "
+                  "If unavailable, omit — far-red is optional morphology tuning, not required for fruiting."),
         Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
         Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view. Also: seeedstudio.com (XIAO ESP32S3 Sense with OV5640), walmart.com, ebay.com"}),
         _FTDI,
@@ -454,12 +464,13 @@ TIER_ALL = HardwareTier(
         Component(
             name="12V Peristaltic Pump (dosing pump)",
             role="Automated misting / substrate hydration between flushes",
-            price_approx="$12",
-            url="https://www.amazon.com/s?k=12v+peristaltic+pump+dosing",
+            price_approx="$25",
+            url="https://www.adafruit.com/product/1150",
             category="actuator",
-            notes="12V DC, ~100mL/min flow rate. Connect to relay node aux channel. "
-                  "Use food-safe silicone tubing. "
-                  "Also: adafruit.com/product/1150, ebay.com. Kamoer brand recommended for reliability.",
+            notes="12V DC, ~100mL/min flow rate. Adafruit 1150 is Kamoer KMP-A1 — reliable, food-safe silicone tubing included. "
+                  "Connect to relay node aux channel via IRLZ44N + flyback diode. "
+                  "Budget alternative: generic Amazon '12V peristaltic pump dosing' ($12-15) — quality varies. "
+                  "Also: ebay.com, aliexpress.com (search Kamoer).",
         ),
         Component(
             name="Breadboard + Jumper Wire Kit",

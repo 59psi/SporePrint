@@ -313,7 +313,7 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="700" y="536" width="300" height="120" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="724" y="562" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Camera Node</text>
-  <text x="724" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV5640 | USB-C 5V only</text>
+  <text x="724" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV2640/OV5640 | USB-C 5V</text>
 
   <rect x="724" y="596" width="260" height="46" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
   <text x="740" y="614" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone module: USB-C power only.</text>

@@ -159,7 +159,7 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <a href="/builder" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
               <p className="text-sm font-medium">1. Get Hardware</p>
-              <p className="text-xs text-[var(--color-text-secondary)] mt-1">3 tiers from $115 — see build guides</p>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-1">3 tiers from $135 — see build guides</p>
             </a>
             <a href="/settings" className="p-4 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] hover:border-emerald-500/30 transition-colors text-center">
               <p className="text-sm font-medium">2. Set Up Pi</p>

@@ -30,7 +30,7 @@
   <!-- ESP32 Sensors -->
   <rect x="30" y="98" width="120" height="52" rx="6" fill="#1a1a2e" stroke="#fbbf24" stroke-width="1"/>
   <text x="90" y="120" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32 Sensors</text>
-  <text x="90" y="138" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">SHT31 / SCD40 / BH1750</text>
+  <text x="90" y="138" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">SHT31 / SCD41 / BH1750</text>
 
   <!-- Arrow -->
   <line x1="150" y1="124" x2="186" y2="124" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRight)"/>

@@ -123,11 +123,11 @@
   <rect x="96" y="714" width="130" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
   <text x="161" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 Temp/RH</text>
   <rect x="236" y="714" width="144" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="308" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SCD40 CO2</text>
+  <text x="308" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SCD41 CO2</text>
   <rect x="96" y="752" width="130" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
   <text x="161" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 Light</text>
   <rect x="236" y="752" width="144" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="308" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">BME280 Pressure</text>
+  <text x="308" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Optional BME280</text>
 
   <!-- Relay/SSR Node -->
   <rect x="408" y="680" width="312" height="114" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
@@ -152,7 +152,7 @@
   <!-- Smart Plugs -->
   <rect x="80" y="886" width="640" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="908" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">MQTT Smart Plugs</text>
-  <text x="400" y="930" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Shelly  |  Tasmota  |  Power monitoring  |  On/Off scheduling</text>
+  <text x="400" y="930" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Tasmota  |  Athom plugs  |  Power monitoring  |  On/Off scheduling</text>
 
   <!-- Footer -->
   <text x="400" y="982" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Open Source  |  github.com/sporeprintai/sporeprint</text>
