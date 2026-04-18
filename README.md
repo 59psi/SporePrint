@@ -30,15 +30,24 @@
 
 ---
 
-> ## ⚠️ Upgrading to v3.3.0 — required migration steps
+> ## ⚠️ Upgrading to v3.3.1 — BREAKING: cloud relay must upgrade in lockstep
 >
-> **v3.3.0 is a breaking security release.** If you are upgrading an existing Pi, do all three of these **before** starting the stack, or your system will not come back up:
+> **v3.3.1 Pi refuses unsigned cloud commands.** The cloud relay now HMAC-signs every command frame; the Pi verifies before executing. Consequences:
+>
+> - **v3.3.1 Pi paired to v3.3.0 cloud**: every mobile-app command fails with `Signature check failed: missing signature`. Remote control is fully broken until the cloud is also at v3.3.1.
+> - **v3.3.0 Pi paired to v3.3.1 cloud**: commands still execute but nothing is cryptographically protected — upgrade the Pi the same day.
+>
+> The shared HMAC key is the already-provisioned `device_token` from pairing — no new operator secret. There is no opt-out flag. Coordinate both deploys.
+>
+> ## ⚠️ Upgrading to v3.3.0 — required migration steps (still apply for fresh v3.3.1 installs)
+>
+> **v3.3.0 was a breaking security release.** If you are upgrading an existing Pi from v3.2.x or earlier, do all three of these **before** starting the stack, or your system will not come back up:
 >
 > 1. **Run `./setup.sh` on the Pi.** It auto-generates `SPOREPRINT_API_KEY` and the Mosquitto `server` credential into `.env`, and provisions the broker `passwd` file. Nothing is overwritten — blank values only.
-> 2. **Add MQTT credentials to every firmware node before flashing v3.3.0 firmware.** The broker is now `allow_anonymous false`. Set `mqtt_user` and `mqtt_pass` in NVS via the captive portal (first-boot AP) or `ConfigStore`. Nodes without credentials will fail to connect.
+> 2. **Add MQTT credentials to every firmware node before flashing v3.3.0+ firmware.** The broker is now `allow_anonymous false`. Set `mqtt_user` and `mqtt_pass` in NVS via the captive portal (first-boot AP) or `ConfigStore`. Nodes without credentials will fail to connect.
 > 3. **Set a non-default OTA password on every node.** `OTAManager::begin` refuses to start when `ota_pass` is empty or equals the legacy default `"sporeprint"`. The node stays online but cannot receive OTA updates until the operator sets a strong password via the captive portal.
 >
-> Details and rationale for every change are in [CHANGELOG.md](./CHANGELOG.md). The [Security](#security) section below describes the new bearer-token gate, MQTT auth, and pairing handshake.
+> Details and rationale for every change are in [CHANGELOG.md](./CHANGELOG.md). The [Security](#security) section below describes the new bearer-token gate, MQTT auth, pairing handshake, and command-channel HMAC.
 
 ---
 

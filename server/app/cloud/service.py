@@ -14,6 +14,7 @@ import socketio
 
 from ..config import settings
 from ..health.service import get_system_metrics
+from .signing import verify_frame
 
 log = logging.getLogger(__name__)
 
@@ -85,8 +86,14 @@ async def start_cloud_connector():
     async def on_command(data):
         """Receive a command from the cloud (relayed from a mobile app).
 
-        Defense-in-depth (the cloud relay itself is out-of-tree and may sign
-        frames — this layer never trusts that signature implicitly):
+        Every frame must be signed with HMAC-SHA256 over the canonical
+        form of the frame using the Pi's `cloud_token` as the key. An
+        unsigned or tampered frame is rejected before any other check —
+        signature verification sits outside the tier/target checks so a
+        compromised relay cannot reach `mqtt_publish` even with a valid
+        tier string.
+
+        Additional defense-in-depth layers applied after signature passes:
         - tier must be 'premium'
         - command id must be present and not replayed (in-memory LRU)
         - target must match a registered hardware node OR smart plug
@@ -94,6 +101,16 @@ async def start_cloud_connector():
         """
         command_id = data.get("id")
         try:
+            ok, reason = verify_frame(settings.cloud_token, data)
+            if not ok:
+                log.warning("Cloud: rejecting command %s — %s", command_id, reason)
+                await _sio.emit("command_result", {
+                    "id": command_id,
+                    "success": False,
+                    "error": f"Signature check failed: {reason}",
+                })
+                return
+
             tier = data.get("tier", "free")
             if tier != "premium":
                 await _sio.emit("command_result", {
