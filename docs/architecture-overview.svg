@@ -155,5 +155,5 @@
   <text x="400" y="930" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Tasmota  |  Athom plugs  |  Power monitoring  |  On/Off scheduling</text>
 
   <!-- Footer -->
-  <text x="400" y="982" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Open Source  |  github.com/sporeprintai/sporeprint</text>
+  <text x="400" y="982" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  Open Source  |  github.com/59psi/SporePrint</text>
 </svg>

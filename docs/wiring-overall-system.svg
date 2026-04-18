@@ -38,7 +38,7 @@
   <text x="396" y="297" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SporePrint Server</text>
 
   <rect x="486" y="278" width="160" height="30" rx="4" fill="#0a0a0f" stroke="#34d399" stroke-width="0.5"/>
-  <text x="566" y="297" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Mosquitto MQTT :1883</text>
+  <text x="566" y="297" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Mosquitto MQTT :1883 (auth&apos;d, v3.3.0+)</text>
 
   <!-- Services row 2 -->
   <rect x="318" y="318" width="156" height="30" rx="4" fill="#0a0a0f" stroke="#3b82f6" stroke-width="0.5"/>
@@ -149,7 +149,7 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="730" y="228" width="256" height="150" rx="8" fill="#1e293b" stroke="#eab308" stroke-width="1.5" stroke-dasharray="6,3"/>
   <text x="858" y="256" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Cloud Relay (Optional)</text>
-  <text x="858" y="278" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">sporeprint.ai | Premium feature</text>
+  <text x="858" y="278" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">sporeprint.ai | Premium | HMAC-signed cmds (v3.3.1+)</text>
 
   <rect x="748" y="294" width="220" height="28" rx="4" fill="#0a0a0f" stroke="#eab308" stroke-width="0.5"/>
   <text x="858" y="312" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">WebSocket Relay Server</text>
@@ -198,6 +198,6 @@
 
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="500" y="698" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  System Overview  |  github.com/sporeprintai/sporeprint</text>
+  <text x="500" y="698" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  System Overview  |  github.com/59psi/SporePrint</text>
 
 </svg>

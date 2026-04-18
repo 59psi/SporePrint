@@ -32,7 +32,7 @@
   <rect x="500" y="66" width="320" height="58" rx="6" fill="#1e293b" stroke="#34d399" stroke-width="1.5"/>
   <rect x="500" y="66" width="320" height="4" rx="2" fill="#34d399" opacity="0.6"/>
   <text x="660" y="90" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Raspberry Pi 5</text>
-  <text x="660" y="110" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">SporePrint Server | Mosquitto MQTT :1883 | Web UI :3001</text>
+  <text x="660" y="110" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">SporePrint Server | Mosquitto :1883 (auth&apos;d, v3.3.0+) | Web UI :3001 (bearer)</text>
 
   <!-- WiFi dashes from Pi to each quadrant -->
   <path d="M 560 124 L 300 160" fill="none" stroke="#34d399" stroke-width="1.2" stroke-dasharray="5,3"/>
@@ -411,6 +411,6 @@
 
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="700" y="992" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 2: Recommended  |  github.com/sporeprintai/sporeprint</text>
+  <text x="700" y="992" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
 
 </svg>

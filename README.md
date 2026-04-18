@@ -266,8 +266,10 @@ Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 
 ## Architecture
 
-![Architecture Overview](docs/architecture-overview.svg)
-![Data Flow](docs/data-flow.svg)
+- [Architecture Overview](docs/architecture-overview.svg) — three-layer Pi system (web UI → server → ESP32)
+- [Data Flow](docs/data-flow.md) — telemetry, weather intelligence, user actions, and the closed-loop control path (Mermaid)
+- [Cloud Relay Flow](docs/cloud-relay-flow.md) — mobile → cloud → HMAC-signed command → Pi (Mermaid sequence diagram)
+- [Dual Repo Architecture](docs/dual-repo-architecture.md) — public Pi repo + private commercial layer (Mermaid)
 
 ```
 ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST/WS──> React UI

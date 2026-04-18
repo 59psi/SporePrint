@@ -29,7 +29,7 @@
   <rect x="24" y="80" width="220" height="106" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="134" y="104" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Raspberry Pi 5</text>
   <text x="134" y="122" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Runs SporePrint server</text>
-  <text x="134" y="138" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">+ MQTT broker</text>
+  <text x="134" y="138" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">+ MQTT broker (auth&apos;d)</text>
 
   <!-- WiFi icon -->
   <path d="M 112 160 Q 112 152 120 152" fill="none" stroke="#34d399" stroke-width="1.2"/>
@@ -285,6 +285,6 @@
 
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="450" y="690" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 1: Bare Bones  |  github.com/sporeprintai/sporeprint</text>
+  <text x="450" y="690" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  Tier 1: Bare Bones  |  github.com/59psi/SporePrint</text>
 
 </svg>
