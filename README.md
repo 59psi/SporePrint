@@ -30,6 +30,18 @@
 
 ---
 
+> ## ⚠️ Upgrading to v3.3.0 — required migration steps
+>
+> **v3.3.0 is a breaking security release.** If you are upgrading an existing Pi, do all three of these **before** starting the stack, or your system will not come back up:
+>
+> 1. **Run `./setup.sh` on the Pi.** It auto-generates `SPOREPRINT_API_KEY` and the Mosquitto `server` credential into `.env`, and provisions the broker `passwd` file. Nothing is overwritten — blank values only.
+> 2. **Add MQTT credentials to every firmware node before flashing v3.3.0 firmware.** The broker is now `allow_anonymous false`. Set `mqtt_user` and `mqtt_pass` in NVS via the captive portal (first-boot AP) or `ConfigStore`. Nodes without credentials will fail to connect.
+> 3. **Set a non-default OTA password on every node.** `OTAManager::begin` refuses to start when `ota_pass` is empty or equals the legacy default `"sporeprint"`. The node stays online but cannot receive OTA updates until the operator sets a strong password via the captive portal.
+>
+> Details and rationale for every change are in [CHANGELOG.md](./CHANGELOG.md). The [Security](#security) section below describes the new bearer-token gate, MQTT auth, and pairing handshake.
+
+---
+
 ## What is SporePrint?
 
 SporePrint turns a Raspberry Pi and a handful of ESP32 sensor nodes into a fully automated mushroom cultivation system. It monitors temperature, humidity, CO2, and light in real time, runs a declarative automation engine to control fans, lights, and smart plugs, and uses weather-predictive intelligence to anticipate environmental changes up to 72 hours in advance.
