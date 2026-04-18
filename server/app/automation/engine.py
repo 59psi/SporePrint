@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -25,6 +26,10 @@ _overrides: dict[str, ManualOverride] = {}
 _rule_cache: list[AutomationRule] = []
 _cache_ts: float = 0
 _overrides_loaded: bool = False
+
+# Per-actuator auto-off tasks for safety_max_on_seconds enforcement.
+# Key is "target:channel"; value is the asyncio.Task waiting to publish OFF.
+_safety_tasks: dict[str, asyncio.Task] = {}
 
 # How much a reading must exceed the species ceiling before we page the operator.
 _TEMP_SAFETY_MARGIN_F = 5.0
@@ -97,6 +102,9 @@ async def set_override(override: ManualOverride):
             )
             _overrides[key] = override
             log.info("Override set: %s — %s", key, override.reason)
+            # Operator takeover cancels the safety watchdog — they are
+            # responsible for timing while the override is in place.
+            _cancel_safety_task(override.target, override.channel)
         else:
             await db.execute(
                 "DELETE FROM manual_overrides WHERE target = ? AND (channel IS ? OR channel = ?)",
@@ -302,6 +310,64 @@ def _eval_schedule(schedule) -> bool:
     return False
 
 
+def _safety_key(target: str, channel: str | None) -> str:
+    return f"{target}:{channel or '*'}"
+
+
+def _cancel_safety_task(target: str, channel: str | None) -> None:
+    """Cancel any pending auto-off for this actuator.
+
+    Called when a new rule explicitly turns the actuator off, or when an
+    operator sets a manual override (they want to control timing themselves).
+    """
+    key = _safety_key(target, channel)
+    task = _safety_tasks.pop(key, None)
+    if task and not task.done():
+        task.cancel()
+
+
+async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int, rule_name: str) -> None:
+    """Sleep then publish OFF; fire-risk watchdog for stuck-on actuators."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        topic = (
+            f"sporeprint/{target}/cmd/{channel}"
+            if channel else f"sporeprint/{target}/cmd/config"
+        )
+        try:
+            published = await mqtt_publish(topic, {"state": "off", "reason": "safety_max_on_seconds"})
+            log.warning(
+                "safety_max_on_seconds triggered for rule '%s' → %s:%s (published=%s)",
+                rule_name, target, channel, published,
+            )
+            async with get_db() as db:
+                await db.execute(
+                    """INSERT INTO automation_firings
+                       (rule_id, rule_name, timestamp, condition_met, action_taken, session_id, status, error)
+                       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
+                    (
+                        None,
+                        f"safety_max_on_seconds:{rule_name}",
+                        time.time(),
+                        json.dumps({"reason": "safety_max_on_seconds", "original_rule": rule_name}),
+                        json.dumps({"state": "off"}),
+                        "sent" if published else "failed",
+                        None if published else "mqtt_publish returned False",
+                    ),
+                )
+                await db.commit()
+        except Exception as e:
+            log.error("safety auto-off publish for %s:%s failed: %s", target, channel, e)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        key = _safety_key(target, channel)
+        # Only pop if we're still the owner — a newer task may have taken over.
+        current = _safety_tasks.get(key)
+        if current is not None and current.done():
+            _safety_tasks.pop(key, None)
+
+
 async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=None):
     action = rule.action
     log.info("Firing rule '%s' → %s:%s %s", rule.name, action.target, action.channel, action.state)
@@ -372,6 +438,22 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
             (status, error, firing_id),
         )
         await db.commit()
+
+    # safety_max_on_seconds watchdog: stops actuators from staying ON beyond a
+    # species/rule-defined ceiling even if the condition that triggered the
+    # rule persists. This is the fire-risk guard ("heater stuck on after a
+    # power blip"). Only arm the timer when the command actually went out —
+    # otherwise we'd publish an OFF that never had an ON preceding it.
+    if status == "sent":
+        _cancel_safety_task(action.target, action.channel)
+        if action.state == "on" and rule.safety_max_on_seconds and rule.safety_max_on_seconds > 0:
+            key = _safety_key(action.target, action.channel)
+            _safety_tasks[key] = asyncio.create_task(
+                _safety_auto_off(action.target, action.channel, rule.safety_max_on_seconds, rule.name)
+            )
+        elif action.state == "off":
+            # OFF explicitly published — any pending watchdog is now redundant.
+            pass
 
     if sio:
         await sio.emit("rule_fired", {

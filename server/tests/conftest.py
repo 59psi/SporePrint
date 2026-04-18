@@ -102,6 +102,10 @@ def _reset_engine_state():
     engine._rule_cache.clear()
     engine._cache_ts = 0
     engine._overrides_loaded = False
+    for task in list(engine._safety_tasks.values()):
+        if not task.done():
+            task.cancel()
+    engine._safety_tasks.clear()
 
 
 @pytest.fixture(autouse=True)
