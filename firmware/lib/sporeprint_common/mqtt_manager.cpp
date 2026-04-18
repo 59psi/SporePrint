@@ -40,9 +40,18 @@ void MqttManager::_connect() {
     String lwtTopic = buildTopic("status");
     String lwtPayload = "{\"status\":\"offline\"}";
 
-    Serial.printf("[MQTT] Connecting as '%s'...\n", _clientId.c_str());
+    // Credentials come from NVS — set via captive portal or provisioning tool.
+    // NULL is passed when no user is configured so local dev brokers with
+    // allow_anonymous=true still work.
+    String user = _config.getString("mqtt_user");
+    String pass = _config.getString("mqtt_pass");
+    const char* userPtr = user.length() ? user.c_str() : NULL;
+    const char* passPtr = pass.length() ? pass.c_str() : NULL;
 
-    if (_mqtt.connect(_clientId.c_str(), NULL, NULL, lwtTopic.c_str(), 1, true, lwtPayload.c_str())) {
+    Serial.printf("[MQTT] Connecting as '%s' (user=%s)...\n",
+                  _clientId.c_str(), userPtr ? userPtr : "<anonymous>");
+
+    if (_mqtt.connect(_clientId.c_str(), userPtr, passPtr, lwtTopic.c_str(), 1, true, lwtPayload.c_str())) {
         Serial.println("[MQTT] Connected!");
 
         // Publish online status

@@ -97,6 +97,7 @@ async def get_system_metrics() -> dict:
     except Exception:
         pass
 
+    from ..mqtt import get_reliability_counters
     return {
         "cpu_percent": cpu_percent,
         "memory_percent": mem.percent,
@@ -109,6 +110,7 @@ async def get_system_metrics() -> dict:
         "uptime_hours": round((time.time() - boot_time) / 3600, 1),
         "db_size_mb": round(db_size_bytes / 1024 / 1024, 2),
         "table_counts": table_counts,
+        "reliability": get_reliability_counters(),
     }
 
 

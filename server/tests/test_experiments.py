@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.experiments.models import ExperimentCreate, ExperimentUpdate
 from app.experiments.service import (
@@ -264,9 +264,9 @@ async def test_analyze_experiment_with_mock_claude(monkeypatch):
     mock_response.content = [MagicMock(text=fake_json)]
 
     mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    with patch("anthropic.Anthropic", return_value=mock_client):
+    with patch("app.experiments.service.anthropic.AsyncAnthropic", return_value=mock_client):
         result = await analyze_experiment(exp["id"])
 
     assert result is not None

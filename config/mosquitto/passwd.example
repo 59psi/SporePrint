@@ -1,0 +1,9 @@
+# Placeholder for the mosquitto password file.
+#
+# DO NOT commit the real passwd file. setup.sh generates one on first run
+# by invoking `mosquitto_passwd` with random credentials for the `server`
+# user and each known node role. Firmware nodes read their password from
+# NVS (set via captive portal on first boot).
+#
+# Regenerate the server credential with:
+#   docker compose exec mqtt mosquitto_passwd -b /mosquitto/config/passwd server <new-password>

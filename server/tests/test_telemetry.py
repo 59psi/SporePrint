@@ -68,6 +68,17 @@ async def test_get_history_hourly_resolution():
 
 
 async def test_store_reading_with_session_id():
-    await store_reading("node-01", "temp_f", 75.0, 1000.0, session_id=42)
+    # FK constraints are now enforced (PRAGMA foreign_keys=ON), so the
+    # telemetry row must reference a real session. Create one first.
+    from app.sessions.models import SessionCreate
+    from app.sessions.service import create_session
+
+    session = await create_session(SessionCreate(
+        name="telemetry-fk-test",
+        species_profile_id="blue_oyster",
+        substrate="CVG",
+        substrate_volume="1 quart",
+    ))
+    await store_reading("node-01", "temp_f", 75.0, 1000.0, session_id=session["id"])
     rows = await get_latest()
     assert len(rows) == 1

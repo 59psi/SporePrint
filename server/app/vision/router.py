@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from pathlib import Path
 
@@ -10,6 +11,10 @@ from .service import analyze_frame_local, analyze_frame_claude, get_frames
 
 router = APIRouter()
 
+# Node IDs drive on-disk filenames — constrain the charset to what
+# firmware actually uses and reject traversal payloads like `../etc/passwd`.
+_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+
 
 @router.post("/frame")
 async def ingest_frame(
@@ -19,16 +24,24 @@ async def ingest_frame(
     x_resolution: str = Header(default=""),
     x_flash_used: str = Header(default="1"),
 ):
-    # Validate content type before reading file body
+    if not _NODE_ID_RE.match(x_node_id):
+        raise HTTPException(400, "Invalid X-Node-Id (alphanumeric, _, -, max 32 chars)")
+
     if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(415, "Only JPEG, PNG, and WebP images are accepted")
 
-    ts = float(x_timestamp) if x_timestamp else time.time()
-    storage = Path(settings.vision_storage)
+    try:
+        ts = float(x_timestamp) if x_timestamp else time.time()
+    except ValueError:
+        raise HTTPException(400, "Invalid X-Timestamp")
+
+    storage = Path(settings.vision_storage).resolve()
     storage.mkdir(parents=True, exist_ok=True)
 
     filename = f"{x_node_id}_{int(ts)}.jpg"
-    file_path = storage / filename
+    file_path = (storage / filename).resolve()
+    if not file_path.is_relative_to(storage):
+        raise HTTPException(400, "Invalid frame path")
 
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:  # 20MB limit

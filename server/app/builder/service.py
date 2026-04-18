@@ -2,6 +2,8 @@ import json
 import logging
 import time
 
+import anthropic
+
 from ..config import settings
 from ..db import get_db
 
@@ -113,15 +115,13 @@ Step-by-step verification checklist.
 Be thorough, practical, and specific. The operator is experienced with ESP32 and electronics."""
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=settings.claude_api_key)
+        client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
 
         user_msg = f"Request: {request}"
         if constraints:
             user_msg += f"\n\nConstraints: {constraints}"
 
-        message = client.messages.create(
+        message = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
             system=system_prompt,

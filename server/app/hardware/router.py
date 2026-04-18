@@ -1,4 +1,4 @@
-import json
+import re
 
 from fastapi import APIRouter, HTTPException
 
@@ -6,6 +6,11 @@ from ..db import get_db
 from ..mqtt import mqtt_publish
 
 router = APIRouter()
+
+# Path segments must stay inside the per-node namespace. A caller that set
+# `topic: "sporeprint/OTHER_NODE/cmd/heater"` previously bypassed it entirely.
+_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+_CHANNEL_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 
 
 @router.get("/nodes")
@@ -27,6 +32,13 @@ async def get_node(node_id: str):
 
 @router.post("/nodes/{node_id}/command")
 async def send_command(node_id: str, command: dict):
-    topic = command.pop("topic", f"sporeprint/{node_id}/cmd/config")
+    if not _NODE_ID_RE.match(node_id):
+        raise HTTPException(400, "Invalid node_id")
+    # Drop any caller-supplied `topic` — it is an old attack surface.
+    command.pop("topic", None)
+    channel = command.pop("channel", None) or "config"
+    if not _CHANNEL_RE.match(str(channel)):
+        raise HTTPException(400, "Invalid channel")
+    topic = f"sporeprint/{node_id}/cmd/{channel}"
     await mqtt_publish(topic, command)
     return {"status": "sent", "topic": topic}

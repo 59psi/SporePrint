@@ -8,12 +8,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Socket.IO accepts wildcard origins because engineio's CORS implementation only
-# allows exact-string match (no regex/callable), and the Pi binds to a dynamic
-# LAN IP that varies per-household (192.168.x.x, 10.x.x.x, etc.) making a fixed
-# allowlist impractical. Risk is limited: the Pi only registers connect/disconnect
-# handlers — telemetry is emitted server→client, and ALL device commands flow
-# through the REST API (which uses the LAN-scoped CORS regex below). A cross-origin
-# attacker on the user's LAN could observe telemetry but cannot toggle devices.
+# allows exact-string match (no regex/callable) and the Pi binds to a dynamic
+# LAN IP that varies per-household. The gate is the connect-handler auth check
+# (app.auth.socketio_auth_ok): when SPOREPRINT_API_KEY is set, every connect
+# must present a matching bearer in the `auth` payload or the server rejects
+# the handshake. Without the key an attacker reaching this WS can still read
+# telemetry — treat `SPOREPRINT_API_KEY` as the actual confidentiality gate,
+# not CORS.
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 
@@ -39,6 +40,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(start_cloud_connector()),
         asyncio.create_task(_daily_retrain()),
         asyncio.create_task(_nightly_weather_aggregate()),
+        asyncio.create_task(_node_liveness_sweeper()),
     ]
     yield
     for task in tasks:
@@ -86,7 +88,53 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
-app = FastAPI(title="SporePrint", version="3.2.1", lifespan=lifespan)
+# A node is considered offline once we haven't heard from it for this long.
+# Climate nodes publish every 60s + heartbeats every 5 min, so 15 min is three
+# missed heartbeats — enough to discriminate a WiFi blip from a true outage.
+_NODE_OFFLINE_THRESHOLD_SECONDS = 900
+_NODE_SWEEPER_INTERVAL_SECONDS = 60
+
+
+async def _node_liveness_sweeper():
+    """Flag hardware nodes whose last_seen is too stale and page the operator once."""
+    from .db import get_db
+    from .notifications.service import node_offline
+    log = logging.getLogger(__name__)
+
+    while True:
+        try:
+            await asyncio.sleep(_NODE_SWEEPER_INTERVAL_SECONDS)
+            now = time.time()
+            threshold = now - _NODE_OFFLINE_THRESHOLD_SECONDS
+            async with get_db() as db:
+                cursor = await db.execute(
+                    """SELECT node_id, last_seen FROM hardware_nodes
+                       WHERE status != 'offline' AND last_seen IS NOT NULL AND last_seen < ?""",
+                    (threshold,),
+                )
+                stale_rows = await cursor.fetchall()
+                for row in stale_rows:
+                    node_id = row["node_id"]
+                    await db.execute(
+                        "UPDATE hardware_nodes SET status = 'offline' WHERE node_id = ?",
+                        (node_id,),
+                    )
+                    log.warning("Node %s marked offline (last_seen %.0fs ago)",
+                                node_id, now - row["last_seen"])
+                    try:
+                        await node_offline(node_id)
+                    except Exception as e:
+                        log.warning("node_offline notification failed for %s: %s", node_id, e)
+                if stale_rows:
+                    await db.commit()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logging.getLogger(__name__).error("Node liveness sweeper failed: %s", e)
+            await asyncio.sleep(60)
+
+
+app = FastAPI(title="SporePrint", version="3.3.0", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -129,6 +177,10 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
     allow_credentials=True,
 )
+
+from .auth import ApiKeyMiddleware, socketio_auth_ok
+
+app.add_middleware(ApiKeyMiddleware)
 
 from .telemetry.router import router as telemetry_router
 from .sessions.router import router as sessions_router
@@ -173,7 +225,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.2.1"}
+    return {"status": "ok", "version": "3.3.0"}
 
 
 # Track Socket.IO clients for health reporting
@@ -181,7 +233,9 @@ from .health.service import track_client_connect, track_client_disconnect
 
 
 @sio.on("connect")
-async def _sio_connect(sid, environ):
+async def _sio_connect(sid, environ, auth=None):
+    if not socketio_auth_ok(auth):
+        return False
     track_client_connect(sid, environ)
 
 

@@ -21,18 +21,37 @@ async def _db(tmp_path, monkeypatch):
     await init_db()
 
 
+class _MqttCallsList(list):
+    """list subclass that also carries the mock callable (for .mock.return_value)."""
+
+
 @pytest.fixture()
 def mock_mqtt(monkeypatch):
-    """Patch mqtt_publish everywhere it's imported. Returns list of (topic, payload) calls."""
-    calls: list[tuple[str, dict]] = []
+    """Patch mqtt_publish everywhere it's imported. Returns list of (topic, payload) calls.
 
-    async def fake_publish(topic, payload):
-        calls.append((topic, payload))
+    Returns True by default so fire-rule status='sent' reflects success. Set
+    `mock_mqtt.mock.return_value = False` to simulate an MQTT outage.
+    """
+    calls = _MqttCallsList()
+
+    class _MockPublish:
+        return_value: bool = True
+
+        async def __call__(self, topic, payload):
+            calls.append((topic, payload))
+            return self.return_value
+
+    fake_publish = _MockPublish()
+    calls.mock = fake_publish
 
     import app.mqtt
     import app.automation.engine
+    import app.automation.smart_plugs
+    import app.hardware.router
     monkeypatch.setattr(app.mqtt, "mqtt_publish", fake_publish)
     monkeypatch.setattr(app.automation.engine, "mqtt_publish", fake_publish)
+    monkeypatch.setattr(app.automation.smart_plugs, "mqtt_publish", fake_publish)
+    monkeypatch.setattr(app.hardware.router, "mqtt_publish", fake_publish)
     return calls
 
 
@@ -67,6 +86,7 @@ def client(monkeypatch):
     monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _noop_coro)
     monkeypatch.setattr(app.main, "_daily_retrain", _noop_coro)
     monkeypatch.setattr(app.main, "_nightly_weather_aggregate", _noop_coro)
+    monkeypatch.setattr(app.main, "_node_liveness_sweeper", _noop_coro)
 
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -81,6 +101,7 @@ def _reset_engine_state():
     engine._overrides.clear()
     engine._rule_cache.clear()
     engine._cache_ts = 0
+    engine._overrides_loaded = False
 
 
 @pytest.fixture(autouse=True)

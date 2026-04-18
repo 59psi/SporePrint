@@ -4,6 +4,7 @@ import time
 
 from ..db import get_db
 from ..mqtt import mqtt_publish
+from ..notifications.service import co2_alert, temperature_alert
 from ..sessions.service import get_active_session
 from ..species.service import get_profile
 from .models import (
@@ -17,11 +18,53 @@ from .service import deserialize_rule_row
 
 log = logging.getLogger(__name__)
 
-# In-memory state
+# In-memory caches populated from the DB. The manual_overrides table is the
+# source of truth — this dict is a hot-path read cache kept coherent with it.
 _last_fired: dict[int, float] = {}  # rule_id -> last fire timestamp
-_overrides: dict[str, ManualOverride] = {}  # "target:channel" -> override
+_overrides: dict[str, ManualOverride] = {}
 _rule_cache: list[AutomationRule] = []
 _cache_ts: float = 0
+_overrides_loaded: bool = False
+
+# How much a reading must exceed the species ceiling before we page the operator.
+_TEMP_SAFETY_MARGIN_F = 5.0
+_CO2_SAFETY_MARGIN_PPM = 1000
+
+
+def _override_key(target: str, channel: str | None) -> str:
+    return f"{target}:{channel or '*'}"
+
+
+async def _load_overrides_from_db():
+    """Populate _overrides from the manual_overrides table; drop expired rows."""
+    global _overrides_loaded
+    now = time.time()
+    _overrides.clear()
+    async with get_db() as db:
+        await db.execute(
+            "DELETE FROM manual_overrides WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (now,),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT target, channel, locked, reason, expires_at FROM manual_overrides WHERE locked = 1"
+        )
+        for row in await cursor.fetchall():
+            ov = ManualOverride(
+                target=row["target"],
+                channel=row["channel"],
+                locked=bool(row["locked"]),
+                reason=row["reason"] or "",
+                expires_at=row["expires_at"],
+            )
+            _overrides[_override_key(ov.target, ov.channel)] = ov
+    _overrides_loaded = True
+    log.info("Loaded %d manual overrides from DB", len(_overrides))
+
+
+async def ensure_overrides_loaded():
+    if not _overrides_loaded:
+        await _load_overrides_from_db()
 
 
 async def load_rules() -> list[AutomationRule]:
@@ -41,29 +84,55 @@ async def load_rules() -> list[AutomationRule]:
         return rules
 
 
-def set_override(override: ManualOverride):
-    key = f"{override.target}:{override.channel or '*'}"
-    if override.locked:
-        _overrides[key] = override
-        log.info("Override set: %s — %s", key, override.reason)
-    else:
-        _overrides.pop(key, None)
-        log.info("Override cleared: %s", key)
+async def set_override(override: ManualOverride):
+    """Persist the override to the DB and refresh the in-memory cache."""
+    await ensure_overrides_loaded()
+    key = _override_key(override.target, override.channel)
+    async with get_db() as db:
+        if override.locked:
+            await db.execute(
+                """INSERT INTO manual_overrides (target, channel, locked, reason, expires_at)
+                   VALUES (?, ?, 1, ?, ?)""",
+                (override.target, override.channel, override.reason, override.expires_at),
+            )
+            _overrides[key] = override
+            log.info("Override set: %s — %s", key, override.reason)
+        else:
+            await db.execute(
+                "DELETE FROM manual_overrides WHERE target = ? AND (channel IS ? OR channel = ?)",
+                (override.target, override.channel, override.channel),
+            )
+            _overrides.pop(key, None)
+            log.info("Override cleared: %s", key)
+        await db.commit()
 
 
-def get_overrides() -> list[ManualOverride]:
+async def clear_override(target: str, channel: str | None):
+    await set_override(
+        ManualOverride(target=target, channel=channel, locked=False, reason="")
+    )
+
+
+async def get_overrides() -> list[ManualOverride]:
+    await ensure_overrides_loaded()
     now = time.time()
-    # Expire overrides
     expired = [k for k, v in _overrides.items() if v.expires_at and v.expires_at < now]
-    for k in expired:
-        log.info("Override expired: %s", k)
-        del _overrides[k]
+    if expired:
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM manual_overrides WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now,),
+            )
+            await db.commit()
+        for k in expired:
+            log.info("Override expired: %s", k)
+            del _overrides[k]
     return list(_overrides.values())
 
 
 def is_overridden(target: str, channel: str | None) -> bool:
     now = time.time()
-    for key in [f"{target}:{channel or '*'}", f"{target}:*"]:
+    for key in [_override_key(target, channel), _override_key(target, None)]:
         if key in _overrides:
             ov = _overrides[key]
             if ov.expires_at and ov.expires_at < now:
@@ -79,11 +148,11 @@ async def evaluate_rules(
     sio=None,
 ):
     """Evaluate all automation rules against new telemetry readings."""
+    await ensure_overrides_loaded()
     rules = await load_rules()
     if not rules:
         return
 
-    # Get active session context
     session = await get_active_session()
     if not session:
         return
@@ -91,34 +160,35 @@ async def evaluate_rules(
     species_profile = await get_profile(session["species_profile_id"])
     current_phase = session["current_phase"]
 
+    phase_params = None
+    if species_profile and current_phase in [p.value for p in species_profile.phases]:
+        from ..species.models import GrowPhase
+        try:
+            phase_params = species_profile.phases[GrowPhase(current_phase)]
+        except (ValueError, KeyError):
+            pass
+
+    # Proactive safety alerts — fire regardless of rule state. These are the
+    # "closet is on fire" alerts the operator must hear about even if no rule
+    # has been authored to handle them.
+    if phase_params is not None:
+        await _check_safety_thresholds(phase_params, readings)
+
     for rule in rules:
         try:
-            # Check phase applicability
             if rule.applies_to_phases and current_phase not in rule.applies_to_phases:
                 continue
 
-            # Check species applicability
             if rule.applies_to_species and session["species_profile_id"] not in rule.applies_to_species:
                 continue
 
-            # Check override
             if is_overridden(rule.action.target, rule.action.channel):
                 continue
 
-            # Check cooldown
             now = time.time()
             last = _last_fired.get(rule.id, 0)
             if now - last < rule.cooldown_seconds:
                 continue
-
-            # Evaluate condition
-            phase_params = None
-            if species_profile and current_phase in [p.value for p in species_profile.phases]:
-                from ..species.models import GrowPhase
-                try:
-                    phase_params = species_profile.phases[GrowPhase(current_phase)]
-                except (ValueError, KeyError):
-                    pass
 
             if _evaluate_condition(rule.condition, readings, phase_params):
                 await _fire_rule(rule, readings, session, sio)
@@ -126,6 +196,30 @@ async def evaluate_rules(
 
         except Exception as e:
             log.error("Error evaluating rule '%s': %s", rule.name, e)
+
+
+async def _check_safety_thresholds(phase_params, readings: dict):
+    """Page the operator when readings breach species ceilings by a safety margin."""
+    temp = readings.get("temp_f")
+    if isinstance(temp, (int, float)):
+        if temp > phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F:
+            try:
+                await temperature_alert(float(temp), "high")
+            except Exception as e:
+                log.warning("temperature_alert failed: %s", e)
+        elif temp < phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F:
+            try:
+                await temperature_alert(float(temp), "low")
+            except Exception as e:
+                log.warning("temperature_alert failed: %s", e)
+
+    co2 = readings.get("co2_ppm")
+    if isinstance(co2, (int, float)):
+        if co2 > phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM:
+            try:
+                await co2_alert(int(co2))
+            except Exception as e:
+                log.warning("co2_alert failed: %s", e)
 
 
 def _evaluate_condition(
@@ -160,7 +254,6 @@ def _eval_threshold(
 
     actual = readings[threshold.sensor]
 
-    # Resolve target value
     if threshold.value is not None:
         target = threshold.value
     elif threshold.profile_ref and phase_params:
@@ -191,7 +284,6 @@ def _eval_schedule(schedule) -> bool:
     now = time.localtime()
 
     if schedule.interval_min:
-        # Check if current minute aligns with interval
         total_min = now.tm_hour * 60 + now.tm_min
         return total_min % schedule.interval_min == 0
 
@@ -214,7 +306,6 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     action = rule.action
     log.info("Firing rule '%s' → %s:%s %s", rule.name, action.target, action.channel, action.state)
 
-    # Build MQTT command
     payload = {"state": action.state}
     if action.pwm is not None:
         payload["pwm"] = action.pwm
@@ -225,15 +316,19 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     if action.scene:
         payload["scene"] = action.scene
 
-    # Determine topic
     if action.channel:
         topic = f"sporeprint/{action.target}/cmd/{action.channel}"
     else:
         topic = f"sporeprint/{action.target}/cmd/config"
 
-    await mqtt_publish(topic, payload)
+    condition_met = json.dumps({
+        "readings": {k: readings.get(k) for k in ["temp_f", "humidity", "co2_ppm", "lux"] if k in readings}
+    })
+    action_taken = json.dumps(payload)
 
-    # Log to session + firing in a single transaction
+    # Reserve the audit row BEFORE publishing so we never claim "fired" without
+    # evidence the command actually went out.
+    firing_id: int | None = None
     async with get_db() as db:
         if rule.log_to_session and session:
             await db.execute(
@@ -246,19 +341,38 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
                     json.dumps({"rule_id": rule.id, "action": payload, "trigger_readings": readings}),
                 ),
             )
-        await db.execute(
-            """INSERT INTO automation_firings (rule_id, rule_name, timestamp, condition_met, action_taken, session_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+        cursor = await db.execute(
+            """INSERT INTO automation_firings
+               (rule_id, rule_name, timestamp, condition_met, action_taken, session_id, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending')""",
             (
                 rule.id, rule.name, time.time(),
-                json.dumps({"readings": {k: readings.get(k) for k in ["temp_f", "humidity", "co2_ppm", "lux"] if k in readings}}),
-                json.dumps(payload),
+                condition_met, action_taken,
                 session["id"] if session else None,
             ),
         )
+        firing_id = cursor.lastrowid
         await db.commit()
 
-    # Socket.IO broadcast
+    # Publish + update status to reflect what actually happened on the wire.
+    status = "failed"
+    error: str | None = None
+    try:
+        published = await mqtt_publish(topic, payload)
+        status = "sent" if published else "failed"
+        if not published:
+            error = "mqtt_publish returned False (client disconnected?)"
+    except Exception as e:
+        error = str(e)
+        log.warning("Rule '%s' publish failed: %s", rule.name, e)
+
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE automation_firings SET status = ?, error = ? WHERE id = ?",
+            (status, error, firing_id),
+        )
+        await db.commit()
+
     if sio:
         await sio.emit("rule_fired", {
             "rule_id": rule.id,
@@ -266,4 +380,5 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
             "target": action.target,
             "channel": action.channel,
             "action": action.state,
+            "status": status,
         })

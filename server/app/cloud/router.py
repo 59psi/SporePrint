@@ -1,14 +1,26 @@
+import re
 import secrets
 import time
 
 from fastapi import APIRouter, HTTPException
 
-from .service import get_cloud_status
+from .service import get_cloud_status, write_cloud_env
 
 router = APIRouter()
 
-# In-memory pairing code (single Pi, single code at a time)
+# In-memory pairing state: one pending code at a time per Pi.
 _pairing_code: dict | None = None
+_pairing_attempts = 0
+_pairing_lockout_until: float = 0.0
+_MAX_PAIRING_ATTEMPTS = 8
+
+# Short-lived token issued to a client that just presented a valid pairing code.
+# `/configure` requires this token, which closes the unauthenticated .env-rewrite
+# attack surface (sentinel S1).
+_configure_token: dict | None = None
+_CONFIGURE_TOKEN_TTL_SECONDS = 600
+
+_CLOUD_URL_RE = re.compile(r"^https?://[A-Za-z0-9._:/\-]+$")
 
 
 @router.get("/status")
@@ -27,13 +39,15 @@ async def cloud_reconnect():
 @router.post("/pairing-code")
 async def generate_pairing_code():
     """Generate a 6-digit pairing code valid for 10 minutes."""
-    global _pairing_code
+    global _pairing_code, _pairing_attempts, _pairing_lockout_until
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     _pairing_code = {
         "code": code,
         "created_at": time.time(),
-        "expires_at": time.time() + 600,  # 10 minutes
+        "expires_at": time.time() + 600,
     }
+    _pairing_attempts = 0
+    _pairing_lockout_until = 0.0
     return {"code": code, "expires_in": 600}
 
 
@@ -50,24 +64,44 @@ async def get_pairing_code():
 
 @router.post("/pair")
 async def pair_device(data: dict):
-    """Validate pairing code from mobile app. Returns device info if valid."""
-    global _pairing_code
+    """Validate pairing code from mobile app. Returns a configure-token on success.
+
+    The configure-token is required to call /configure — this prevents an
+    unauthenticated LAN caller from rewriting .env (sentinel S1). The pairing
+    code itself is single-use and invalidated here regardless of outcome.
+    """
+    global _pairing_code, _pairing_attempts, _pairing_lockout_until, _configure_token
+    now = time.time()
+
+    if now < _pairing_lockout_until:
+        raise HTTPException(429, "Too many failed pairing attempts. Try again later.")
+
     code = data.get("code", "")
 
     if not _pairing_code:
         raise HTTPException(400, "No pairing code active. Generate one from the Pi's settings page.")
-    if time.time() > _pairing_code["expires_at"]:
+    if now > _pairing_code["expires_at"]:
         _pairing_code = None
         raise HTTPException(400, "Pairing code expired. Generate a new one.")
     if code != _pairing_code["code"]:
+        _pairing_attempts += 1
+        if _pairing_attempts >= _MAX_PAIRING_ATTEMPTS:
+            _pairing_lockout_until = now + 600
+            _pairing_code = None
+            raise HTTPException(429, "Too many failed attempts. Pairing locked for 10 minutes.")
         raise HTTPException(400, "Invalid pairing code.")
 
-    # Code is valid — return device info for the mobile app to store
     from ..config import settings
     _pairing_code = None  # one-time use
+    _pairing_attempts = 0
+
+    token = secrets.token_urlsafe(32)
+    _configure_token = {"token": token, "expires_at": now + _CONFIGURE_TOKEN_TTL_SECONDS}
 
     return {
         "success": True,
+        "configure_token": token,
+        "configure_token_expires_in": _CONFIGURE_TOKEN_TTL_SECONDS,
         "device": {
             "cloud_device_id": settings.cloud_device_id or secrets.token_hex(16),
             "name": "SporePrint Pi",
@@ -78,39 +112,45 @@ async def pair_device(data: dict):
 
 @router.post("/configure")
 async def configure_cloud(data: dict):
-    """Receive cloud credentials from mobile app after pairing.
-    Writes them to .env so they persist across restarts."""
-    import os
-    from pathlib import Path
+    """Persist cloud credentials received from a paired mobile app.
+
+    Requires the short-lived configure_token issued by /pair — that token is
+    the only thing standing between an unauthenticated LAN request and a
+    `.env` rewrite.
+    """
+    global _configure_token
+
+    token = data.get("configure_token")
+    if not _configure_token or not token or token != _configure_token["token"]:
+        raise HTTPException(401, "Invalid or missing configure_token — re-pair the device.")
+    if time.time() > _configure_token["expires_at"]:
+        _configure_token = None
+        raise HTTPException(401, "configure_token expired — re-pair the device.")
 
     device_id = data.get("cloud_device_id", "")
-    token = data.get("device_token", "")
+    token_value = data.get("device_token", "")
     cloud_url = data.get("cloud_url", "")
 
-    if not device_id or not token:
+    if not device_id or not token_value:
         raise HTTPException(400, "Missing cloud_device_id or device_token")
 
-    # Write to .env file
-    env_path = Path(".env")
-    env_content = env_path.read_text() if env_path.exists() else ""
+    if cloud_url and not _CLOUD_URL_RE.match(cloud_url):
+        raise HTTPException(400, "Invalid cloud_url")
 
     updates = {
         "SPOREPRINT_CLOUD_DEVICE_ID": device_id,
-        "SPOREPRINT_CLOUD_TOKEN": token,
+        "SPOREPRINT_CLOUD_TOKEN": token_value,
     }
     if cloud_url:
         updates["SPOREPRINT_CLOUD_URL"] = cloud_url
 
-    for key, value in updates.items():
-        if f"{key}=" in env_content:
-            lines = env_content.split("\n")
-            env_content = "\n".join(
-                f"{key}={value}" if line.startswith(f"{key}=") else line
-                for line in lines
-            )
-        else:
-            env_content += f"\n{key}={value}"
+    try:
+        write_cloud_env(updates)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"Failed to persist cloud credentials: {e}")
 
-    env_path.write_text(env_content)
+    _configure_token = None
 
     return {"status": "configured", "message": "Cloud credentials saved. Restart to connect."}

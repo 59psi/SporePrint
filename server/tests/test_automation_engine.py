@@ -210,31 +210,47 @@ def test_compound_or_all_false():
 # ── Override tests ──────────────────────────────────────────────
 
 
-def test_set_and_check_override():
-    set_override(ManualOverride(target="relay-01", channel="fae", reason="testing"))
+async def test_set_and_check_override():
+    await set_override(ManualOverride(target="relay-01", channel="fae", reason="testing"))
     assert is_overridden("relay-01", "fae") is True
     assert is_overridden("relay-01", "exhaust") is False
 
 
-def test_override_wildcard_channel():
-    set_override(ManualOverride(target="relay-01", channel=None, reason="all channels"))
+async def test_override_wildcard_channel():
+    await set_override(ManualOverride(target="relay-01", channel=None, reason="all channels"))
     assert is_overridden("relay-01", "fae") is True
     assert is_overridden("relay-01", "exhaust") is True
 
 
-def test_override_expiry():
-    set_override(ManualOverride(target="relay-01", channel="fae", expires_at=time.time() - 10))
+async def test_override_expiry():
+    await set_override(ManualOverride(target="relay-01", channel="fae", expires_at=time.time() - 10))
     assert is_overridden("relay-01", "fae") is False
 
 
-def test_clear_override():
-    set_override(ManualOverride(target="relay-01", channel="fae", reason="test"))
+async def test_clear_override():
+    await set_override(ManualOverride(target="relay-01", channel="fae", reason="test"))
     assert is_overridden("relay-01", "fae") is True
-    set_override(ManualOverride(target="relay-01", channel="fae", locked=False))
+    await set_override(ManualOverride(target="relay-01", channel="fae", locked=False))
     assert is_overridden("relay-01", "fae") is False
 
 
-def test_get_overrides_expires():
-    set_override(ManualOverride(target="relay-01", channel="fae", expires_at=time.time() - 10))
-    overrides = get_overrides()
+async def test_get_overrides_expires():
+    await set_override(ManualOverride(target="relay-01", channel="fae", expires_at=time.time() - 10))
+    overrides = await get_overrides()
     assert len(overrides) == 0
+
+
+async def test_override_persists_across_reload():
+    """Overrides must survive a 'process restart' — i.e. losing the in-memory cache."""
+    import app.automation.engine as engine
+    await set_override(ManualOverride(target="relay-01", channel="heater", reason="operator hold"))
+    assert is_overridden("relay-01", "heater") is True
+
+    # Simulate process restart: clear cache + reload flag, then force a fresh load.
+    engine._overrides.clear()
+    engine._overrides_loaded = False
+    await engine.ensure_overrides_loaded()
+
+    assert is_overridden("relay-01", "heater") is True
+    overrides = await get_overrides()
+    assert any(o.target == "relay-01" and o.channel == "heater" for o in overrides)

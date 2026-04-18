@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     database_path: str = "data/db/sporeprint.db"
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
     ntfy_url: str = "http://localhost:8080"
     ntfy_topic: str = "sporeprint"
     vision_storage: str = "data/vision"
@@ -17,6 +19,10 @@ class Settings(BaseSettings):
     cloud_url: str = ""
     cloud_token: str = ""
     cloud_device_id: str = ""
+    # If set, all /api/* requests and Socket.IO connects must present
+    # Authorization: Bearer <api_key>. Empty means no auth (LAN-trust mode).
+    # setup.sh populates this on first run so the default is authed.
+    api_key: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
 

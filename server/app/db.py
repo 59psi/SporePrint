@@ -148,9 +148,12 @@ CREATE TABLE IF NOT EXISTS automation_firings (
     timestamp REAL NOT NULL,
     condition_met TEXT,
     action_taken TEXT,
-    session_id INTEGER REFERENCES sessions(id)
+    session_id INTEGER REFERENCES sessions(id),
+    status TEXT NOT NULL DEFAULT 'sent',
+    error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_firings_time ON automation_firings(timestamp);
+CREATE INDEX IF NOT EXISTS idx_firings_status ON automation_firings(status);
 
 -- Manual overrides
 CREATE TABLE IF NOT EXISTS manual_overrides (
@@ -361,9 +364,19 @@ async def _add_column_if_missing(db, pragma_sql: str, column: str, alter_sql: st
         pass  # Table doesn't exist yet (will be created by SCHEMA)
 
 
+async def _apply_connection_pragmas(db):
+    """Apply durability + concurrency + FK pragmas on every connection."""
+    await db.execute("PRAGMA foreign_keys=ON")
+    await db.execute("PRAGMA busy_timeout=5000")
+
+
 async def init_db():
     Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(settings.database_path) as db:
+        # journal_mode + synchronous are persistent, set once at init
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
+        await _apply_connection_pragmas(db)
         await db.executescript(SCHEMA)
         # Migrations for databases created before v3.0
         await _add_column_if_missing(
@@ -374,6 +387,15 @@ async def init_db():
             db, "PRAGMA table_info(sessions)", "chamber_id",
             "ALTER TABLE sessions ADD COLUMN chamber_id INTEGER REFERENCES chambers(id)",
         )
+        # v3.3.0: reverse rule-fire ordering
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(automation_firings)", "status",
+            "ALTER TABLE automation_firings ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'",
+        )
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(automation_firings)", "error",
+            "ALTER TABLE automation_firings ADD COLUMN error TEXT",
+        )
         await db.commit()
 
 
@@ -382,6 +404,7 @@ async def get_db():
     db = await aiosqlite.connect(settings.database_path)
     db.row_factory = aiosqlite.Row
     try:
+        await _apply_connection_pragmas(db)
         yield db
     finally:
         await db.close()

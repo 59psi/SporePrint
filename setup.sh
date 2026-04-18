@@ -92,6 +92,44 @@ header "Creating data directories..."
 mkdir -p data/db data/vision data/mosquitto data/ntfy
 info "data/db, data/vision, data/mosquitto, data/ntfy"
 
+# ── Secrets: API key, MQTT credentials ─────────────────────────
+
+header "Generating secrets..."
+
+_gen_secret() { openssl rand -base64 36 | tr -d '=+/' | cut -c1-40; }
+
+if grep -q '^SPOREPRINT_API_KEY=\s*$' .env 2>/dev/null; then
+    NEW_API_KEY=$(_gen_secret)
+    sed -i.bak "s|^SPOREPRINT_API_KEY=.*|SPOREPRINT_API_KEY=$NEW_API_KEY|" .env
+    rm -f .env.bak
+    info "Generated SPOREPRINT_API_KEY (bearer-token gate for /api/* and Socket.IO)"
+fi
+
+if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
+    MQTT_SERVER_PASS=$(_gen_secret)
+    sed -i.bak "s|^SPOREPRINT_MQTT_USERNAME=.*|SPOREPRINT_MQTT_USERNAME=server|" .env
+    sed -i.bak "s|^SPOREPRINT_MQTT_PASSWORD=.*|SPOREPRINT_MQTT_PASSWORD=$MQTT_SERVER_PASS|" .env
+    rm -f .env.bak
+
+    if command -v mosquitto_passwd &>/dev/null; then
+        : > config/mosquitto/passwd
+        mosquitto_passwd -b config/mosquitto/passwd server "$MQTT_SERVER_PASS"
+        chmod 600 config/mosquitto/passwd
+        info "Mosquitto 'server' user provisioned"
+    elif command -v docker &>/dev/null; then
+        : > config/mosquitto/passwd
+        docker run --rm -v "$PWD/config/mosquitto:/work" eclipse-mosquitto:2 \
+            mosquitto_passwd -b /work/passwd server "$MQTT_SERVER_PASS"
+        chmod 600 config/mosquitto/passwd
+        info "Mosquitto 'server' user provisioned via docker"
+    else
+        warn "mosquitto_passwd not available — run it manually after install:"
+        warn "  mosquitto_passwd -b config/mosquitto/passwd server '$MQTT_SERVER_PASS'"
+    fi
+fi
+
+chmod 600 .env 2>/dev/null || true
+
 # ── Python environment ─────────────────────────────────────────
 
 header "Setting up Python environment..."

@@ -1,6 +1,8 @@
 import json
 import time
 
+import anthropic
+
 from ..config import settings
 from ..db import get_db
 from ..sessions.service import get_session, get_session_stats
@@ -193,9 +195,8 @@ Provide a brief analysis in JSON format:
     if not settings.claude_api_key:
         return {"error": "Claude API not configured", "comparison": comparison}
 
-    import anthropic
-    client = anthropic.Anthropic(api_key=settings.claude_api_key)
-    response = client.messages.create(
+    client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
+    response = await client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}],

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..db import get_db
 from .models import AutomationRule, ManualOverride
-from .engine import set_override, get_overrides
+from .engine import set_override, get_overrides, clear_override as clear_override_engine
 from .service import deserialize_rule_row, serialize_rule_data
 from .smart_plugs import get_all_plugs, register_plug, send_plug_command
 
@@ -86,18 +86,18 @@ async def toggle_rule(rule_id: int):
 
 @router.get("/overrides")
 async def list_overrides():
-    return [o.model_dump() for o in get_overrides()]
+    return [o.model_dump() for o in await get_overrides()]
 
 
 @router.post("/overrides")
 async def create_override(override: ManualOverride):
-    set_override(override)
+    await set_override(override)
     return override.model_dump()
 
 
 @router.delete("/overrides/{target}")
-async def clear_override(target: str, channel: str | None = None):
-    set_override(ManualOverride(target=target, channel=channel, locked=False))
+async def clear_override_route(target: str, channel: str | None = None):
+    await clear_override_engine(target, channel)
     return {"status": "cleared"}
 
 

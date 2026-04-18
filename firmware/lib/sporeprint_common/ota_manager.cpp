@@ -4,10 +4,18 @@ OTAManager::OTAManager(ConfigStore& config, const char* hostname)
     : _config(config), _hostname(hostname) {}
 
 void OTAManager::begin() {
-    ArduinoOTA.setHostname(_hostname.c_str());
-
     String otaPass = _config.getString("ota_pass");
-    if (otaPass.length() == 0) otaPass = "sporeprint";
+
+    // Refuse to enable OTA until the operator has set a real password.
+    // The old default "sporeprint" let anyone on the LAN flash arbitrary
+    // firmware via espota.py — a persistent backdoor on every node.
+    if (otaPass.length() == 0 || otaPass == "sporeprint") {
+        Serial.println("[OTA] DISABLED — ota_pass unset or default.");
+        Serial.println("[OTA] Set a strong password via captive portal before OTA will work.");
+        return;
+    }
+
+    ArduinoOTA.setHostname(_hostname.c_str());
     ArduinoOTA.setPassword(otaPass.c_str());
 
     ArduinoOTA.onStart([]() {

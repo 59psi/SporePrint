@@ -1,9 +1,13 @@
+import base64
 import json
 import logging
 from pathlib import Path
 
+import anthropic
+
 from ..config import settings
 from ..db import get_db
+from ..notifications.service import contamination_alert
 
 log = logging.getLogger(__name__)
 
@@ -62,15 +66,12 @@ async def analyze_frame_claude(frame: dict) -> dict | None:
     file_path = Path(frame["file_path"])
 
     try:
-        import anthropic
-        import base64
-
-        client = anthropic.Anthropic(api_key=settings.claude_api_key)
+        client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
 
         image_data = base64.standard_b64encode(file_path.read_bytes()).decode("utf-8")
 
-        # Get session context
         session_context = ""
+        species_name = "Unknown"
         if frame.get("session_id"):
             async with get_db() as db:
                 cursor = await db.execute(
@@ -81,9 +82,10 @@ async def analyze_frame_claude(frame: dict) -> dict | None:
                 if row:
                     session = dict(row)
                     profile = json.loads(session.get("profile_data", "{}")) if session.get("profile_data") else {}
+                    species_name = profile.get("common_name", session.get("species_profile_id", "Unknown"))
                     session_context = f"""
 Session: {session.get('name', 'Unknown')}
-Species: {profile.get('common_name', session.get('species_profile_id', 'Unknown'))}
+Species: {species_name}
 Current Phase: {session.get('current_phase', 'Unknown')}
 Colonization Visual: {profile.get('colonization_visual_description', 'N/A')}
 Contamination Notes: {profile.get('contamination_risk_notes', 'N/A')}
@@ -102,7 +104,7 @@ Provide a structured analysis in JSON format with these fields:
 
 {session_context}"""
 
-        message = client.messages.create(
+        message = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
             messages=[
@@ -127,7 +129,20 @@ Provide a structured analysis in JSON format with these fields:
             system=system_prompt,
         )
 
-        return parse_claude_json(message.content[0].text)
+        result = parse_claude_json(message.content[0].text)
+
+        contam = result.get("contamination_detected") if isinstance(result, dict) else None
+        if isinstance(contam, dict):
+            try:
+                await contamination_alert(
+                    species=species_name,
+                    contam_type=str(contam.get("type", "unknown")),
+                    confidence=float(contam.get("confidence") or 0.0),
+                )
+            except Exception as e:
+                log.warning("contamination_alert failed: %s", e)
+
+        return result
 
     except Exception as e:
         log.error("Claude vision analysis failed: %s", e)

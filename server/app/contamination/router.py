@@ -1,6 +1,7 @@
 import base64
 import logging
 
+import anthropic
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from ..config import settings
@@ -46,9 +47,8 @@ async def identify_contamination(file: UploadFile = File(...)):
     image_data = base64.standard_b64encode(content).decode("utf-8")
 
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=settings.claude_api_key)
-        message = client.messages.create(
+        client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
+        message = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
             system=IDENTIFICATION_SYSTEM_PROMPT,

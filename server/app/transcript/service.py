@@ -1,6 +1,8 @@
 import json
 import time
 
+import anthropic
+
 from ..config import settings
 from ..db import get_db
 from ..species.service import get_profile
@@ -180,9 +182,7 @@ async def analyze_with_claude(session_id: int) -> dict:
     transcript = await export_json(session_id)
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=settings.claude_api_key)
+        client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
 
         system_prompt = """You are an expert mycologist analyzing a mushroom cultivation session transcript.
 Provide a comprehensive analysis as JSON with these fields:
@@ -213,7 +213,7 @@ Provide a comprehensive analysis as JSON with these fields:
             ],
         }
 
-        message = client.messages.create(
+        message = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2048,
             system=system_prompt,
