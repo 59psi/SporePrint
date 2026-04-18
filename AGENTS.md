@@ -20,11 +20,11 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 
 **When**: Working on the Python FastAPI backend under `server/app/`.
 
-**Context**: Python 3.11+, FastAPI, aiosqlite (raw SQL, no ORM), aiomqtt, python-socketio, Pydantic v2. No auth — single operator, local network. 17 server modules, 26 SQLite tables, 80+ endpoints across 17 router groups.
+**Context**: Python 3.11+, FastAPI, aiosqlite (raw SQL, no ORM), aiomqtt, python-socketio, Pydantic v2. Opt-in bearer-token auth via `SPOREPRINT_API_KEY` (v3.3.0+); when unset, the LAN-scoped CORS regex is the only gate — single operator, local network. 17 server modules, 26 SQLite tables, 80+ endpoints across 17 router groups.
 
 **Key constraints**:
-- All imports at module top (no inline imports)
-- DB access via `async with get_db() as db:` — batch writes in one context + single `commit()`
+- All imports at module top (no inline imports) — including `anthropic` (use `anthropic.AsyncAnthropic` everywhere; never `anthropic.Anthropic`)
+- DB access via `async with get_db() as db:` — batch writes in one context + single `commit()`. Every connection automatically gets `PRAGMA foreign_keys=ON` + `busy_timeout=5000` via `_apply_connection_pragmas`.
 - Routers are thin — business logic in service modules
 - Rule serialization: use `deserialize_rule_row()` / `serialize_rule_data()` from `automation/service.py`
 - Vision frame parsing: use `_deserialize_frame()` from `vision/service.py`
@@ -32,12 +32,18 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - Active session: use `get_active_session()` from `sessions/service.py` — don't duplicate
 - Weather providers: subclass `WeatherProvider` in `weather/providers.py`, register in `get_provider()`
 - Cloud connector: opt-in via `SPOREPRINT_CLOUD_URL`. No-op when unconfigured. Late import `mqtt_publish` in command handler to avoid circular dep with mqtt.py.
-- Health metrics: `psutil` for system stats. `sensors_temperatures()` wrapped in try/except (macOS compat).
-- Background tasks (MQTT, weather, retention, retrain, cloud, weather_history aggregation): started in `main.py` lifespan
+- MQTT broker: `allow_anonymous false` in production. `settings.mqtt_username`/`mqtt_password` flow into `aiomqtt.Client(...)`. Firmware reads `mqtt_user`/`mqtt_pass` from NVS. Server user needs topic-write permission on `cmd/#`; per-node users only get their own namespace (see `config/mosquitto/acl.conf`).
+- Bearer-token gate: `app/auth.py` `ApiKeyMiddleware` guards all `/api/*` + Socket.IO `connect`. Whitelist: `/api/health`, `/api/cloud/pair`, `/api/cloud/pairing-code`. Never add a new `/api/*` route that bypasses this without explicit justification.
+- Automation rule-fire ordering: INSERT `automation_firings` with `status='pending'` → `mqtt_publish` (returns bool) → UPDATE `status='sent'|'failed'`. Never write `status='sent'` before confirming the publish landed.
+- Manual overrides: source of truth is the `manual_overrides` table. Call `await ensure_overrides_loaded()` before reading the in-memory cache; use `set_override`/`clear_override` (both async now) for writes.
+- Timestamp clamp: any `ts < 1577836800` (2020-01-01) in incoming telemetry is firmware uptime-seconds — clamp to `time.time()` in `mqtt._handle_message`. Do not relax this.
+- Retention rollups: use `INSERT ... ON CONFLICT DO UPDATE` with weighted-mean merging, never `INSERT OR IGNORE + DELETE`.
+- Health metrics: `psutil` for system stats. `sensors_temperatures()` wrapped in try/except (macOS compat). Reliability counters (`uptime_ts_clamps`, `mqtt_supervisor_restarts`) surface on `/api/health/detail/system.reliability`.
+- Background tasks (MQTT, weather, retention, retrain, cloud, weather_history aggregation, node-liveness sweeper): started in `main.py` lifespan
 - Config via `pydantic-settings` with `SPOREPRINT_` env prefix
-- Schema defined in `db.py` SCHEMA constant (26 tables)
+- Schema defined in `db.py` SCHEMA constant (26 tables) + migrations via `_add_column_if_missing`
 - New v3.0 modules (planner/, contamination/, cultures/, chambers/, experiments/, labels/) follow same patterns: models.py, service.py, router.py
-- Additional dependencies: qrcode[pil], icalendar, matplotlib
+- Additional dependencies: qrcode[pil], icalendar, matplotlib, `python-multipart>=0.0.18` (CVE-2024-24762)
 
 ## frontend-agent
 
@@ -58,10 +64,11 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 **When**: Writing or running tests.
 
 **Context**:
-- Backend: pytest + pytest-asyncio (121 tests). Tests in `server/tests/`. Run with `cd server && pytest`.
+- Backend: pytest + pytest-asyncio (256 tests as of v3.3.0). Tests in `server/tests/`. Run with `cd server && pytest`.
 - Frontend: vitest (20 tests). Tests in `ui/src/__tests__/`. Run with `cd ui && npm run check` (tsc -b + vitest + eslint).
-- Uses temp file SQLite (not `:memory:` — `get_db()` opens new connections). Conftest monkeypatches `settings.database_path`.
-- Background tasks (MQTT, weather, retention, retrain) are mocked to no-ops in conftest `client` fixture.
+- Uses temp file SQLite (not `:memory:` — `get_db()` opens new connections). Conftest monkeypatches `settings.database_path`. FK constraints are live, so tests that insert child rows must first insert the parent (see `test_store_reading_with_session_id`).
+- Background tasks (MQTT, weather, retention, retrain, node-liveness sweeper) are mocked to no-ops in conftest `client` fixture.
+- `mock_mqtt` fixture returns a calls-list with a `.mock` attribute; set `mock_mqtt.mock.return_value = False` to simulate a broker-down state mid-publish.
 
 ## species-agent
 
