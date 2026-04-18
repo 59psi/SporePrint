@@ -47,11 +47,12 @@ def mock_mqtt(monkeypatch):
     import app.mqtt
     import app.automation.engine
     import app.automation.smart_plugs
-    import app.hardware.router
+    import app.hardware.service
     monkeypatch.setattr(app.mqtt, "mqtt_publish", fake_publish)
     monkeypatch.setattr(app.automation.engine, "mqtt_publish", fake_publish)
     monkeypatch.setattr(app.automation.smart_plugs, "mqtt_publish", fake_publish)
-    monkeypatch.setattr(app.hardware.router, "mqtt_publish", fake_publish)
+    # v3.3.2 refactor: hardware/router imports mqtt_publish via hardware/service
+    monkeypatch.setattr(app.hardware.service, "mqtt_publish", fake_publish)
     return calls
 
 

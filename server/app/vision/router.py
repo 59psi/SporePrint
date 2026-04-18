@@ -1,4 +1,3 @@
-import json
 import re
 import time
 from pathlib import Path
@@ -6,14 +5,24 @@ from pathlib import Path
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
 from ..config import settings
-from ..db import get_db
-from .service import analyze_frame_local, analyze_frame_claude, get_frames
+from .service import (
+    analyze_frame_claude,
+    analyze_frame_local,
+    apply_user_label,
+    get_active_session_id,
+    get_frame_by_id,
+    get_frames,
+    insert_frame,
+    update_analysis_claude,
+    update_analysis_local,
+)
 
 router = APIRouter()
 
 # Node IDs drive on-disk filenames — constrain the charset to what
 # firmware actually uses and reject traversal payloads like `../etc/passwd`.
 _NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 @router.post("/frame")
@@ -44,38 +53,24 @@ async def ingest_frame(
         raise HTTPException(400, "Invalid frame path")
 
     content = await file.read()
-    if len(content) > 20 * 1024 * 1024:  # 20MB limit
+    if len(content) > _MAX_UPLOAD_BYTES:
         raise HTTPException(413, "File too large (max 20MB)")
     file_path.write_bytes(content)
 
-    # Get active session
-    session_id = None
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT id FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-        if row:
-            session_id = row["id"]
+    session_id = await get_active_session_id()
+    frame_id = await insert_frame(
+        session_id=session_id,
+        node_id=x_node_id,
+        timestamp=ts,
+        file_path=str(file_path),
+        resolution=x_resolution,
+        flash_used=int(x_flash_used),
+    )
 
-        # Store frame record
-        cursor = await db.execute(
-            """INSERT INTO vision_frames (session_id, node_id, timestamp, file_path, resolution, flash_used)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (session_id, x_node_id, ts, str(file_path), x_resolution, int(x_flash_used)),
-        )
-        frame_id = cursor.lastrowid
-        await db.commit()
-
-    # Run local CNN analysis (async, non-blocking)
+    # Run local CNN analysis (async, non-blocking).
     local_result = await analyze_frame_local(file_path)
     if local_result:
-        async with get_db() as db:
-            await db.execute(
-                "UPDATE vision_frames SET analysis_local = ? WHERE id = ?",
-                (json.dumps(local_result), frame_id),
-            )
-            await db.commit()
+        await update_analysis_local(frame_id, local_result)
 
     return {
         "frame_id": frame_id,
@@ -95,33 +90,21 @@ async def list_frames(
 
 @router.get("/frames/{frame_id}")
 async def get_frame(frame_id: int):
-    async with get_db() as db:
-        cursor = await db.execute("SELECT * FROM vision_frames WHERE id = ?", (frame_id,))
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(404, "Frame not found")
-        return dict(row)
+    frame = await get_frame_by_id(frame_id)
+    if not frame:
+        raise HTTPException(404, "Frame not found")
+    return frame
 
 
 @router.post("/frames/{frame_id}/analyze")
 async def trigger_claude_analysis(frame_id: int):
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT * FROM vision_frames WHERE id = ?", (frame_id,)
-        )
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(404, "Frame not found")
-        frame = dict(row)
+    frame = await get_frame_by_id(frame_id)
+    if not frame:
+        raise HTTPException(404, "Frame not found")
 
     result = await analyze_frame_claude(frame)
     if result:
-        async with get_db() as db:
-            await db.execute(
-                "UPDATE vision_frames SET analysis_claude = ? WHERE id = ?",
-                (json.dumps(result), frame_id),
-            )
-            await db.commit()
+        await update_analysis_claude(frame_id, result)
 
     return result
 
@@ -131,18 +114,6 @@ async def label_frame(frame_id: int, data: dict):
     """Active learning: confirm or correct local CNN prediction."""
     label = data.get("label")
     correct = data.get("correct", True)
-    async with get_db() as db:
-        cursor = await db.execute("SELECT analysis_local FROM vision_frames WHERE id = ?", (frame_id,))
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(404, "Frame not found")
-
-        local = json.loads(row["analysis_local"]) if row["analysis_local"] else {}
-        local["user_label"] = label
-        local["user_confirmed"] = correct
-        await db.execute(
-            "UPDATE vision_frames SET analysis_local = ? WHERE id = ?",
-            (json.dumps(local), frame_id),
-        )
-        await db.commit()
+    if not await apply_user_label(frame_id, label, correct):
+        raise HTTPException(404, "Frame not found")
     return {"status": "labeled"}

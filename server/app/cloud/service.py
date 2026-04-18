@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 
 import socketio
 
@@ -27,7 +28,11 @@ _last_forward: float = 0
 _reconnect_attempts: int = 0
 _heartbeat_task: asyncio.Task | None = None
 _queue_drops: int = 0
-_seen_command_ids: set[str] = set()
+
+# Replayed-command protection. Cache is a real FIFO/LRU — popitem(last=False)
+# evicts the oldest-inserted id. A burst of >1024 distinct ids no longer lets
+# an arbitrary earlier id be resurrected (which the prior set.pop() allowed).
+_seen_command_ids: OrderedDict[str, None] = OrderedDict()
 _COMMAND_ID_CACHE_CAP = 1024
 
 HEALTH_HEARTBEAT_INTERVAL = 60  # seconds
@@ -95,7 +100,9 @@ async def start_cloud_connector():
 
         Additional defense-in-depth layers applied after signature passes:
         - tier must be 'premium'
-        - command id must be present and not replayed (in-memory LRU)
+        - command id must be present and not replayed (in-memory FIFO cache,
+          1024 entries, O(1) OrderedDict with popitem(last=False) eviction —
+          oldest-inserted id is always the one that gets evicted)
         - target must match a registered hardware node OR smart plug
         - channel must match the safe-charset regex — no injection into topic
         """
@@ -135,9 +142,12 @@ async def start_cloud_connector():
                     "error": "Replayed command id",
                 })
                 return
-            _seen_command_ids.add(command_id)
-            if len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
-                _seen_command_ids.pop()
+            _seen_command_ids[command_id] = None
+            # Evict the OLDEST entry (FIFO) when the cache is over capacity.
+            # OrderedDict.popitem(last=False) is O(1) and — unlike set.pop() —
+            # removes the insertion-order-oldest, not an arbitrary element.
+            while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
+                _seen_command_ids.popitem(last=False)
 
             target = data.get("target")
             channel = data.get("channel")

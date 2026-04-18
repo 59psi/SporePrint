@@ -33,6 +33,20 @@ async def lifespan(app: FastAPI):
     await seed_builtins()
     await seed_builtin_rules()
 
+    # Re-arm any safety watchdogs that were in-flight before the Pi restarted.
+    # If an actuator's safety_max_on_seconds elapsed while the Pi was down,
+    # rehydrate_safety_watchdogs publishes OFF immediately to get the device
+    # back to a safe state.
+    try:
+        from .automation.engine import rehydrate_safety_watchdogs
+        count = await rehydrate_safety_watchdogs()
+        if count:
+            logging.getLogger(__name__).info(
+                "Rehydrated %d safety watchdog(s) from prior process", count
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning("safety watchdog rehydration failed: %s", e)
+
     tasks = [
         asyncio.create_task(start_mqtt(sio)),
         asyncio.create_task(start_weather_polling(sio)),
@@ -96,9 +110,14 @@ _NODE_SWEEPER_INTERVAL_SECONDS = 60
 
 
 async def _node_liveness_sweeper():
-    """Flag hardware nodes whose last_seen is too stale and page the operator once."""
+    """Flag hardware nodes whose last_seen is too stale and page the operator once.
+
+    Pages ntfy locally AND forwards the event to the cloud relay so premium
+    mobile subscribers get a push notification when a node drops offline.
+    """
     from .db import get_db
     from .notifications.service import node_offline
+    from .cloud.service import forward_event
     log = logging.getLogger(__name__)
 
     while True:
@@ -115,16 +134,25 @@ async def _node_liveness_sweeper():
                 stale_rows = await cursor.fetchall()
                 for row in stale_rows:
                     node_id = row["node_id"]
+                    last_seen = row["last_seen"]
                     await db.execute(
                         "UPDATE hardware_nodes SET status = 'offline' WHERE node_id = ?",
                         (node_id,),
                     )
                     log.warning("Node %s marked offline (last_seen %.0fs ago)",
-                                node_id, now - row["last_seen"])
+                                node_id, now - last_seen)
                     try:
                         await node_offline(node_id)
                     except Exception as e:
                         log.warning("node_offline notification failed for %s: %s", node_id, e)
+                    try:
+                        await forward_event("node_offline", {
+                            "node_id": node_id,
+                            "last_seen": last_seen,
+                            "seconds_stale": now - last_seen,
+                        })
+                    except Exception as e:
+                        log.warning("forward_event(node_offline) failed for %s: %s", node_id, e)
                 if stale_rows:
                     await db.commit()
         except asyncio.CancelledError:
@@ -134,7 +162,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="3.3.1", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.3.2", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -225,7 +253,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.3.1"}
+    return {"status": "ok", "version": "3.3.2"}
 
 
 # Track Socket.IO clients for health reporting

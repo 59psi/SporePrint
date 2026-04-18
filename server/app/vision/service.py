@@ -133,14 +133,29 @@ Provide a structured analysis in JSON format with these fields:
 
         contam = result.get("contamination_detected") if isinstance(result, dict) else None
         if isinstance(contam, dict):
+            contam_type = str(contam.get("type", "unknown"))
+            confidence = float(contam.get("confidence") or 0.0)
             try:
                 await contamination_alert(
                     species=species_name,
-                    contam_type=str(contam.get("type", "unknown")),
-                    confidence=float(contam.get("confidence") or 0.0),
+                    contam_type=contam_type,
+                    confidence=confidence,
                 )
             except Exception as e:
                 log.warning("contamination_alert failed: %s", e)
+            # Also forward to cloud so premium mobile subscribers get the push.
+            try:
+                from ..cloud.service import forward_event
+                await forward_event("contamination_alert", {
+                    "node_id": frame.get("node_id"),
+                    "session_id": frame.get("session_id"),
+                    "species": species_name,
+                    "contamination_type": contam_type,
+                    "confidence": confidence,
+                    "frame_id": frame.get("id"),
+                })
+            except Exception as e:
+                log.warning("forward_event(contamination_alert) failed: %s", e)
 
         return result
 
@@ -178,3 +193,76 @@ def _deserialize_frame(row) -> dict:
         if frame.get(field):
             frame[field] = json.loads(frame[field])
     return frame
+
+
+# ─── CRUD helpers for the vision router (P12 layering cleanup) ──────────
+# Router now imports these instead of running inline SQL. Shared helpers also
+# used by vision/router.py ingest path.
+
+async def get_active_session_id() -> int | None:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT id FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        return row["id"] if row else None
+
+
+async def insert_frame(session_id: int | None, node_id: str, timestamp: float,
+                       file_path: str, resolution: str, flash_used: int) -> int:
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO vision_frames (session_id, node_id, timestamp, file_path, resolution, flash_used)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (session_id, node_id, timestamp, file_path, resolution, flash_used),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_analysis_local(frame_id: int, analysis: dict) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE vision_frames SET analysis_local = ? WHERE id = ?",
+            (json.dumps(analysis), frame_id),
+        )
+        await db.commit()
+
+
+async def update_analysis_claude(frame_id: int, analysis: dict) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE vision_frames SET analysis_claude = ? WHERE id = ?",
+            (json.dumps(analysis), frame_id),
+        )
+        await db.commit()
+
+
+async def get_frame_by_id(frame_id: int) -> dict | None:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM vision_frames WHERE id = ?", (frame_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> bool:
+    """Active-learning update on vision_frames.analysis_local JSON blob.
+
+    Returns True if the row existed, False otherwise.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT analysis_local FROM vision_frames WHERE id = ?", (frame_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        local = json.loads(row["analysis_local"]) if row["analysis_local"] else {}
+        local["user_label"] = label
+        local["user_confirmed"] = correct
+        await db.execute(
+            "UPDATE vision_frames SET analysis_local = ? WHERE id = ?",
+            (json.dumps(local), frame_id),
+        )
+        await db.commit()
+        return True

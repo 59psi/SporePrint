@@ -155,6 +155,22 @@ CREATE TABLE IF NOT EXISTS automation_firings (
 CREATE INDEX IF NOT EXISTS idx_firings_time ON automation_firings(timestamp);
 CREATE INDEX IF NOT EXISTS idx_firings_status ON automation_firings(status);
 
+-- Safety watchdog registry. Each row represents a currently-ARMED
+-- safety_max_on_seconds auto-off. Survives Pi restart: on boot we scan
+-- this table and re-arm any watchdog whose expires_at is still in the
+-- future; expired rows get published OFF immediately then removed.
+-- Prior to v3.3.2 the watchdog was a RAM-only asyncio.Task, so a Pi
+-- reboot with a heater ON left the actuator stuck ON indefinitely.
+CREATE TABLE IF NOT EXISTS safety_watchdogs (
+    target TEXT NOT NULL,
+    channel TEXT,
+    rule_name TEXT NOT NULL,
+    armed_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (target, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_safety_expires ON safety_watchdogs(expires_at);
+
 -- Manual overrides
 CREATE TABLE IF NOT EXISTS manual_overrides (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

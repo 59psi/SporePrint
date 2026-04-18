@@ -30,6 +30,10 @@
 
 ---
 
+> ## v3.3.2 — cloud-parity release (non-breaking for the Pi)
+>
+> v3.3.2 closes the remaining audit items on the cloud + mobile side (escalation engine wired, mobile pairing sends `configure_token`, cloud AI async, Sentry instrumentation, privacy policy scrub) and adds Pi safety-watchdog persistence across reboots. Pull the repo, restart the server (SQLite auto-migrates the new `safety_watchdogs` table). No protocol changes — v3.3.1 and v3.3.2 Pis interoperate with a v3.3.1+ cloud.
+
 > ## ⚠️ Upgrading to v3.3.1 — BREAKING: cloud relay must upgrade in lockstep
 >
 > **v3.3.1 Pi refuses unsigned cloud commands.** The cloud relay now HMAC-signs every command frame; the Pi verifies before executing. Consequences:
