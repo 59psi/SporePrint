@@ -162,7 +162,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="3.3.2", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.3.3", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -253,7 +253,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.3.2"}
+    return {"status": "ok", "version": "3.3.3"}
 
 
 # Track Socket.IO clients for health reporting
@@ -262,9 +262,16 @@ from .health.service import track_client_connect, track_client_disconnect
 
 @sio.on("connect")
 async def _sio_connect(sid, environ, auth=None):
-    if not socketio_auth_ok(auth):
+    # v3.3.3 — pass the remote address into the auth callback so its rate-limit
+    # can kick in (see app.auth.socketio_auth_ok docstring for the LAN-trust
+    # rationale). environ['REMOTE_ADDR'] is set by uvicorn's ASGI layer.
+    _log = logging.getLogger(__name__)
+    remote_addr = environ.get("REMOTE_ADDR") or environ.get("HTTP_X_FORWARDED_FOR")
+    if not socketio_auth_ok(auth, remote_addr=remote_addr):
+        _log.warning("Socket.IO connect refused: sid=%s remote=%s", sid, remote_addr or "?")
         return False
     track_client_connect(sid, environ)
+    _log.info("Socket.IO connect: sid=%s remote=%s", sid, remote_addr or "?")
 
 
 @sio.on("disconnect")

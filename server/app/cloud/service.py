@@ -32,13 +32,63 @@ _queue_drops: int = 0
 # Replayed-command protection. Cache is a real FIFO/LRU — popitem(last=False)
 # evicts the oldest-inserted id. A burst of >1024 distinct ids no longer lets
 # an arbitrary earlier id be resurrected (which the prior set.pop() allowed).
+#
+# v3.3.3 — also write-through to the SQLite `cloud_command_replay` table so
+# a Pi restart inside the 30s replay window doesn't re-open the window.
+# Rehydration runs once at startup and loads entries ≤60s old.
 _seen_command_ids: OrderedDict[str, None] = OrderedDict()
 _COMMAND_ID_CACHE_CAP = 1024
+_REPLAY_WINDOW_SECONDS = 60  # keep entries 2× the sign window for safety
 
 HEALTH_HEARTBEAT_INTERVAL = 60  # seconds
 
 # Task registry for health reporting
 _task_status: dict = {"cloud_connector": {"status": "idle", "last_run": None}}
+
+
+async def _rehydrate_replay_cache() -> int:
+    """Load persisted command ids from SQLite into the in-memory FIFO.
+
+    Called once at connector startup. Entries older than ``_REPLAY_WINDOW_SECONDS``
+    are pruned from disk. Returns the number of entries loaded.
+    """
+    from ..db import get_db  # lazy import — avoid circular with main.py lifespan
+
+    now = time.time()
+    loaded = 0
+    try:
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM cloud_command_replay WHERE received_at < ?",
+                (now - _REPLAY_WINDOW_SECONDS,),
+            )
+            await db.commit()
+            cursor = await db.execute(
+                "SELECT command_id FROM cloud_command_replay ORDER BY received_at ASC"
+            )
+            rows = await cursor.fetchall()
+        for row in rows:
+            cid = row["command_id"]
+            _seen_command_ids[cid] = None
+            loaded += 1
+        # Trim to cap — should be a no-op unless the persistent store exceeded
+        # _COMMAND_ID_CACHE_CAP during the last session.
+        while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
+            _seen_command_ids.popitem(last=False)
+    except Exception as e:
+        log.warning("Cloud: replay cache rehydrate failed: %s", e)
+    return loaded
+
+
+async def _persist_replay_id(command_id: str) -> None:
+    from ..db import get_db
+
+    async with get_db() as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO cloud_command_replay (command_id, received_at) VALUES (?, ?)",
+            (command_id, time.time()),
+        )
+        await db.commit()
 
 
 async def start_cloud_connector():
@@ -53,6 +103,12 @@ async def start_cloud_connector():
     _start_time = time.time()
     _task_status["cloud_connector"]["status"] = "connecting"
     log.info("Cloud connector starting: %s", settings.cloud_url)
+
+    # v3.3.3 — rehydrate the replay cache from SQLite so a Pi restart inside
+    # the sign window still rejects a replayed command id.
+    loaded = await _rehydrate_replay_cache()
+    if loaded:
+        log.info("Cloud: replay cache rehydrated with %d recent command ids", loaded)
 
     _sio = socketio.AsyncClient(reconnection=False)
 
@@ -148,6 +204,14 @@ async def start_cloud_connector():
             # removes the insertion-order-oldest, not an arbitrary element.
             while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
                 _seen_command_ids.popitem(last=False)
+            # v3.3.3 — persist so a restart inside the replay window still
+            # rejects the replay. Failure to persist is logged but does not
+            # reject the command; replay protection in that window falls back
+            # to the in-memory cache which is always consistent.
+            try:
+                await _persist_replay_id(command_id)
+            except Exception as e:
+                log.warning("Cloud: replay cache persist failed: %s", e)
 
             target = data.get("target")
             channel = data.get("channel")

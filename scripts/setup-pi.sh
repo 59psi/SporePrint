@@ -50,7 +50,37 @@ OS="$(. /etc/os-release 2>/dev/null && echo "${ID:-unknown}")"
 ARCH="$(uname -m)"
 green "  OS: $OS ($ARCH)"
 
-# ── 2. Install Docker + Compose if missing ──────────────────────────────────
+# ── 2. Ensure chrony is installed + active for NTP time sync ────────────────
+#
+# Why: the cloud relay rejects every command frame whose `ts` field is more
+# than 30 s away from its own clock (see signing.py). On a headless Pi with a
+# drifted RTC, every remote command silently fails with "ts outside replay
+# window" and the failure surface is a user-reported support ticket. Chrony
+# tracks multiple NTP sources in parallel, slews (not steps) the clock, and
+# stays accurate to within a few milliseconds of pool.ntp.org — which is
+# what Railway's host OS uses too, so cloud ↔ Pi drift stays well below the
+# 30 s window.
+step "Ensuring chrony (NTP time sync) is installed"
+if command -v chronyc >/dev/null 2>&1; then
+  green "  chrony already installed ($(chronyc -n tracking 2>/dev/null | head -1 || echo present))"
+else
+  yellow "  Installing chrony via apt…"
+  sudo apt-get update -q
+  sudo apt-get install -y chrony
+fi
+
+# Ensure the daemon is enabled + running. On Raspberry Pi OS the package
+# ships enabled; this is defense-in-depth in case a prior admin disabled it.
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl enable --now chrony 2>/dev/null || sudo systemctl enable --now chronyd 2>/dev/null || true
+  # Emit a one-line status so the setup log shows sync offset + sources.
+  if command -v chronyc >/dev/null 2>&1; then
+    OFFSET="$(chronyc -n tracking 2>/dev/null | awk -F'[ ]+' '/System time/ {print $4, $5, $6}' || echo "unknown")"
+    green "  chrony tracking offset: $OFFSET"
+  fi
+fi
+
+# ── 3. Install Docker + Compose if missing ──────────────────────────────────
 
 step "Ensuring Docker is installed"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then

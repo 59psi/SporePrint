@@ -10,7 +10,11 @@ Both sides agree on:
   - A `ts` (epoch seconds) field that must be within `REPLAY_WINDOW_SECONDS` of wall-clock.
 
 The cloud side lives at `cloud/app/relay/signing.py` in the commercial
-repo and mirrors this helper byte-for-byte.
+repo and mirrors this helper byte-for-byte. This duplication is deliberate
+— see the parent repo's docs/signing-architecture.md for the rationale.
+Drift between the two `signing.py` files (or their test fixtures) is
+blocked at release time by `bump.sh` which runs `diff -q` on the
+golden-file fixtures before permitting the version bump.
 """
 
 from __future__ import annotations

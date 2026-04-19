@@ -171,6 +171,19 @@ CREATE TABLE IF NOT EXISTS safety_watchdogs (
 );
 CREATE INDEX IF NOT EXISTS idx_safety_expires ON safety_watchdogs(expires_at);
 
+-- v3.3.3 — persistent command replay cache for the cloud connector.
+-- Previously in-memory only (_seen_command_ids OrderedDict). A Pi restart
+-- inside the 30s replay window re-opened the window because the in-memory
+-- set was empty after boot. This table mirrors the OrderedDict so the
+-- connector can rehydrate the last 30 s of seen command ids on boot.
+-- Rows older than 60 s are pruned at rehydration time.
+CREATE TABLE IF NOT EXISTS cloud_command_replay (
+    command_id TEXT PRIMARY KEY,
+    received_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_command_replay_received
+    ON cloud_command_replay(received_at);
+
 -- Manual overrides
 CREATE TABLE IF NOT EXISTS manual_overrides (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

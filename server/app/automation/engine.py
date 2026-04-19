@@ -413,7 +413,15 @@ def _cancel_safety_task(target: str, channel: str | None) -> None:
 
 
 async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int, rule_name: str) -> None:
-    """Sleep then publish OFF; fire-risk watchdog for stuck-on actuators."""
+    """Sleep then publish OFF; fire-risk watchdog for stuck-on actuators.
+
+    v3.3.3 — publish retries bounded-exponential (2s, 4s, 8s, 16s, 30s cap) for
+    up to 60 s total so a transient MQTT disconnect during the exact moment the
+    watchdog fires does not leave an actuator stuck ON until the next rule
+    fire or reboot. A persistent publish failure is still logged at ERROR and
+    leaves the persisted watchdog row in place so rehydrate_safety_watchdogs()
+    will re-arm and retry on the next Pi boot.
+    """
     try:
         await asyncio.sleep(delay_seconds)
         topic = (
@@ -421,10 +429,36 @@ async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int,
             if channel else f"sporeprint/{target}/cmd/config"
         )
         try:
-            published = await mqtt_publish(topic, {"state": "off", "reason": "safety_max_on_seconds"})
+            published = False
+            attempt = 0
+            delays = (2, 4, 8, 16, 30)
+            while True:
+                attempt += 1
+                try:
+                    published = await mqtt_publish(
+                        topic, {"state": "off", "reason": "safety_max_on_seconds"}
+                    )
+                except Exception as pub_err:
+                    log.warning(
+                        "safety_auto_off publish attempt %d for %s:%s raised %s — retrying",
+                        attempt, target, channel, pub_err,
+                    )
+                    published = False
+                if published:
+                    break
+                if attempt >= len(delays) + 1:
+                    # Ran out of retries — leave the persisted row so the next
+                    # boot retries via rehydrate_safety_watchdogs().
+                    log.error(
+                        "safety_auto_off exhausted retries for %s:%s (rule %r) — "
+                        "actuator may still be ON; watchdog row retained for next boot",
+                        target, channel, rule_name,
+                    )
+                    break
+                await asyncio.sleep(delays[attempt - 1])
             log.warning(
-                "safety_max_on_seconds triggered for rule '%s' → %s:%s (published=%s)",
-                rule_name, target, channel, published,
+                "safety_max_on_seconds triggered for rule '%s' → %s:%s (published=%s attempts=%d)",
+                rule_name, target, channel, published, attempt,
             )
             async with get_db() as db:
                 await db.execute(
@@ -438,19 +472,19 @@ async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int,
                         json.dumps({"reason": "safety_max_on_seconds", "original_rule": rule_name}),
                         json.dumps({"state": "off"}),
                         "sent" if published else "failed",
-                        None if published else "mqtt_publish returned False",
+                        None if published else f"mqtt_publish failed after {attempt} attempts",
                     ),
                 )
                 await db.commit()
-            # Remove the persisted record — the watchdog has fired.
-            await _clear_persisted_safety_watchdog(target, channel)
+            if published:
+                # Only clear the persisted row once we've successfully published.
+                await _clear_persisted_safety_watchdog(target, channel)
         except Exception as e:
-            log.error("safety auto-off publish for %s:%s failed: %s", target, channel, e)
+            log.error("safety auto-off bookkeeping for %s:%s failed: %s", target, channel, e)
     except asyncio.CancelledError:
         pass
     finally:
         key = _safety_key(target, channel)
-        # Only pop if we're still the owner — a newer task may have taken over.
         current = _safety_tasks.get(key)
         if current is not None and current.done():
             _safety_tasks.pop(key, None)
