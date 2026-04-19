@@ -81,12 +81,27 @@ async def _rehydrate_replay_cache() -> int:
 
 
 async def _persist_replay_id(command_id: str) -> None:
+    """Persist an accepted command id for replay-cache rehydrate on restart.
+
+    v3.3.4 — also prunes entries older than 2× ``_REPLAY_WINDOW_SECONDS``
+    in the same transaction so the table stays bounded. Without this a
+    busy Pi accumulates rows forever (the only cleanup was on connector
+    start). The prune runs every accepted command which keeps the table
+    size O(replay-window × command-rate), typically under 100 rows.
+    """
     from ..db import get_db
 
+    now = time.time()
     async with get_db() as db:
         await db.execute(
             "INSERT OR REPLACE INTO cloud_command_replay (command_id, received_at) VALUES (?, ?)",
-            (command_id, time.time()),
+            (command_id, now),
+        )
+        # Retention: drop anything past 2× the replay window. The rehydrate
+        # path already prunes on boot; this keeps steady-state bounded.
+        await db.execute(
+            "DELETE FROM cloud_command_replay WHERE received_at < ?",
+            (now - (_REPLAY_WINDOW_SECONDS * 2),),
         )
         await db.commit()
 

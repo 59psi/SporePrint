@@ -159,7 +159,11 @@ async def _handle_message(sio, topic: str, payload: dict):
             log.warning("Failed to forward component health: %s", e)
 
     elif msg_type == "alert":
-        log.warning("Alert from %s: %s", node_id, payload)
+        # v3.3.4 — log the alert-type only, not the full payload.
+        # Users may include sensor thresholds in payload that, while local,
+        # should still not land in journalctl verbatim at WARNING level.
+        alert_kind = payload.get("kind") or payload.get("type") or "unknown"
+        log.warning("Alert from node=%s kind=%s", node_id, alert_kind)
         await sio.emit("alert", {"node_id": node_id, **payload})
         await forward_event("alert", {"node_id": node_id, **payload})
 
