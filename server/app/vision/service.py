@@ -1,6 +1,8 @@
 import base64
 import json
 import logging
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import anthropic
@@ -10,6 +12,30 @@ from ..db import get_db
 from ..notifications.service import contamination_alert
 
 log = logging.getLogger(__name__)
+
+
+@contextmanager
+def _ai_timing_span(op: str, **tags):
+    """v3.3.5 — Pi-side lightweight tracer for AI paths.
+
+    The Pi is deliberately Sentry-free (documented non-goal). Instead of
+    adding the SDK, we emit structured INFO lines with ``op`` + duration
+    + outcome so an operator can ``journalctl -u sporeprint | grep ai_span``
+    and get the same latency distribution a real tracer would. Matches
+    the shape the cloud Sentry spans use so a future integration can
+    harvest this stream without a format rewrite.
+    """
+    t0 = time.monotonic()
+    status = "ok"
+    try:
+        yield
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        dur_ms = int((time.monotonic() - t0) * 1000)
+        extras = " ".join(f"{k}={v}" for k, v in tags.items() if v is not None)
+        log.info("ai_span op=%s status=%s duration_ms=%d %s", op, status, dur_ms, extras)
 
 
 def parse_claude_json(text: str) -> dict:
@@ -104,30 +130,38 @@ Provide a structured analysis in JSON format with these fields:
 
 {session_context}"""
 
-        message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_data,
+        # v3.3.5 — wrap in the Pi-side AI tracer so an operator can see
+        # latency + success rate in journalctl without adding Sentry.
+        image_bytes_len = len(image_data)
+        with _ai_timing_span(
+            "pi.vision.claude",
+            species=species_name,
+            image_b64_bytes=image_bytes_len,
+        ):
+            message = await client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": image_data,
+                                },
                             },
-                        },
-                        {
-                            "type": "text",
-                            "text": "Analyze this mushroom cultivation image. Respond with JSON only.",
-                        },
-                    ],
-                }
-            ],
-            system=system_prompt,
-        )
+                            {
+                                "type": "text",
+                                "text": "Analyze this mushroom cultivation image. Respond with JSON only.",
+                            },
+                        ],
+                    }
+                ],
+                system=system_prompt,
+            )
 
         result = parse_claude_json(message.content[0].text)
 
