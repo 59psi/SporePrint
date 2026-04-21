@@ -181,11 +181,27 @@ async def start_cloud_connector():
         try:
             ok, reason = verify_frame(settings.cloud_token, data)
             if not ok:
-                log.warning("Cloud: rejecting command %s — %s", command_id, reason)
+                # v3.3.10 (P2-10 / E-2): classify rejection so cloud can tag the
+                # SLO sample. Clock-skew rejection is operationally different
+                # from a signature mismatch or a replay attack — the former
+                # means "Pi's clock has drifted past the 30s window" and the
+                # fix is NTP/chrony, not redeploying the cloud. A signature
+                # mismatch after the Pi's .env has the right cloud_token is a
+                # signing-contract drift between cloud + Pi — a release bug.
+                category = (
+                    "clock_skew" if reason and "replay window" in reason
+                    else "signature_mismatch" if reason and "signature" in reason
+                    else "bad_frame"
+                )
+                log.warning(
+                    "Cloud: rejecting command %s — %s (category=%s)",
+                    command_id, reason, category,
+                )
                 await _sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
                     "error": f"Signature check failed: {reason}",
+                    "reject_reason": category,
                 })
                 return
 

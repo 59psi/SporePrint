@@ -110,6 +110,35 @@ async def pair_device(data: dict):
     }
 
 
+@router.get("/pair-verify")
+async def pair_verify(configure_token: str = ""):
+    """v3.3.10 (S-M-11): third-party proof that a `configure_token` was
+    issued by THIS Pi. The cloud calls this from its own network side
+    during the pairing flow so a hostile LAN host can't convince the
+    mobile app that it's a Pi and trick the cloud into writing an
+    attacker-chosen device_token into Supabase.
+
+    Returns ``{"valid": true, "cloud_device_id": ...}`` if the token is
+    the one we just issued, 401 otherwise. No secrets leak; the token
+    is already in the mobile's possession when this is called.
+    """
+    global _configure_token
+    if not _configure_token or not configure_token:
+        raise HTTPException(401, "No active pairing session")
+    if configure_token != _configure_token["token"]:
+        raise HTTPException(401, "Unknown configure_token")
+    now = time.time()
+    if now > _configure_token["expires_at"]:
+        _configure_token = None
+        raise HTTPException(401, "configure_token expired")
+    from ..config import settings
+    return {
+        "valid": True,
+        "cloud_device_id": settings.cloud_device_id or "",
+        "expires_in": int(_configure_token["expires_at"] - now),
+    }
+
+
 @router.post("/configure")
 async def configure_cloud(data: dict):
     """Persist cloud credentials received from a paired mobile app.
