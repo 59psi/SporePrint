@@ -30,6 +30,10 @@
 
 ---
 
+> ## 🔐 v3.4.1 — version-bump lockstep (no Pi protocol changes)
+>
+> Cloud repo v3.4.1 closes every archaeology finding from its v3.4.0 deep-scan pass. Zero Pi-side changes — HMAC signing, pair-verify, MQTT auth, bearer gate, all byte-compatible with v3.3.3+ / v3.4.x clouds. This version bump exists to keep the signing-vectors fixture + release cadence in lockstep.
+
 > ## 📢 v3.4.0 — commercial layer clarification (no Pi protocol changes)
 >
 > v3.4 is a business-model clarification in the cloud + mobile repo — it doesn't alter any protocol between the Pi and the cloud. Context for Pi operators:
