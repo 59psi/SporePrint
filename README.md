@@ -30,9 +30,24 @@
 
 ---
 
+> ## 📢 v3.4.0 — commercial layer clarification (no Pi protocol changes)
+>
+> v3.4 is a business-model clarification in the cloud + mobile repo — it doesn't alter any protocol between the Pi and the cloud. Context for Pi operators:
+>
+> - **The Pi software is, and remains, free and open source under AGPL-3.0.** Nothing about the Pi's behavior, MQTT auth, command signing, captive portal, or local web UI changed. v3.3.x Pis interoperate with a v3.4.0 cloud.
+> - **The cloud relay + mobile app + sporeprint.ai web app are paid.** The `sporeprint-cloud` repo (closed source) is a commercial product; the Pi (this repo) is not. If you're running self-host without the commercial subscription, your Pi still works exactly as before — monitoring, control, automation, alerts via ntfy, and the Pi's own web UI on the LAN are all unchanged.
+> - **AI on the Pi**: the Pi has always required BYOK (your own Anthropic API key) for Claude vision + grow advisor. That's still the free-tier path. The paid cloud's `/ai/*` endpoints use the commercial relay — Pi-standalone users don't need them.
+> - **Pairing a Pi to the paid cloud**: now gated by `require_premium` on the cloud side. A v3.3.x Pi trying to pair with a free-tier account on the cloud will see a 402 response. This doesn't affect Pi-to-Pi or LAN-only usage.
+>
+> See the cloud repo's CHANGELOG entry for v3.4.0 for the commercial-side details. No Pi action required.
+
 > ## v3.3.2 — cloud-parity release (non-breaking for the Pi)
 >
 > v3.3.2 closes the remaining audit items on the cloud + mobile side (escalation engine wired, mobile pairing sends `configure_token`, cloud AI async, Sentry instrumentation, privacy policy scrub) and adds Pi safety-watchdog persistence across reboots. Pull the repo, restart the server (SQLite auto-migrates the new `safety_watchdogs` table). No protocol changes — v3.3.1 and v3.3.2 Pis interoperate with a v3.3.1+ cloud.
+>
+> ## v3.3.3 / v3.3.4 — cloud-side hardening + Pi clock sync (pull recommended)
+>
+> v3.3.3 added strict command-signing clock-drift handling + a persistent replay-nonce cache on the Pi; chrony is now installed by `scripts/setup-pi.sh` so the Pi stays within ±30 s of the cloud. v3.3.4 wired `/api/cloud/pair-verify` so the cloud can confirm a pairing session from its own network (S-M-11). Neither is breaking — older cloud versions keep working against a v3.3.3+ Pi — but pull the Pi repo to pick up the tightened replay window + clock-skew reason categories.
 
 > ## ⚠️ Upgrading to v3.3.1 — BREAKING: cloud relay must upgrade in lockstep
 >
