@@ -14,11 +14,33 @@ _pairing_attempts = 0
 _pairing_lockout_until: float = 0.0
 _MAX_PAIRING_ATTEMPTS = 8
 
-# Short-lived token issued to a client that just presented a valid pairing code.
-# `/configure` requires this token, which closes the unauthenticated .env-rewrite
-# attack surface (sentinel S1).
-_configure_token: dict | None = None
+# Short-lived tokens issued to clients that just presented a valid pairing
+# code. `/configure` requires this token, which closes the unauthenticated
+# .env-rewrite attack surface (sentinel S1).
+#
+# v3.4.1 (L-4): was a single `dict | None` slot — a second parallel /pair
+# would overwrite the first's token and invalidate it before the first
+# client could call /configure. Real scenario: admin testing on two
+# mobiles against the same Pi simultaneously. Now keyed by token so N
+# active sessions coexist, each TTL-expired on its own clock. Caps at
+# _MAX_CONFIGURE_TOKENS so a pair-spam attacker can't blow up memory;
+# expired entries are swept opportunistically on every read.
+_configure_tokens: dict[str, dict] = {}
+_MAX_CONFIGURE_TOKENS = 32
 _CONFIGURE_TOKEN_TTL_SECONDS = 600
+
+
+def _sweep_expired_configure_tokens() -> None:
+    """Drop expired tokens so the dict doesn't grow without bound."""
+    now = time.time()
+    for tok in list(_configure_tokens.keys()):
+        entry = _configure_tokens.get(tok)
+        if entry and entry.get("expires_at", 0) < now:
+            _configure_tokens.pop(tok, None)
+    # Hard cap — if something sprays the endpoint, FIFO-evict oldest.
+    while len(_configure_tokens) > _MAX_CONFIGURE_TOKENS:
+        oldest_tok = min(_configure_tokens, key=lambda k: _configure_tokens[k].get("expires_at", 0))
+        _configure_tokens.pop(oldest_tok, None)
 
 _CLOUD_URL_RE = re.compile(r"^https?://[A-Za-z0-9._:/\-]+$")
 
@@ -70,7 +92,7 @@ async def pair_device(data: dict):
     unauthenticated LAN caller from rewriting .env (sentinel S1). The pairing
     code itself is single-use and invalidated here regardless of outcome.
     """
-    global _pairing_code, _pairing_attempts, _pairing_lockout_until, _configure_token
+    global _pairing_code, _pairing_attempts, _pairing_lockout_until
     now = time.time()
 
     if now < _pairing_lockout_until:
@@ -96,7 +118,8 @@ async def pair_device(data: dict):
     _pairing_attempts = 0
 
     token = secrets.token_urlsafe(32)
-    _configure_token = {"token": token, "expires_at": now + _CONFIGURE_TOKEN_TTL_SECONDS}
+    _sweep_expired_configure_tokens()
+    _configure_tokens[token] = {"expires_at": now + _CONFIGURE_TOKEN_TTL_SECONDS}
 
     return {
         "success": True,
@@ -122,20 +145,21 @@ async def pair_verify(configure_token: str = ""):
     the one we just issued, 401 otherwise. No secrets leak; the token
     is already in the mobile's possession when this is called.
     """
-    global _configure_token
-    if not _configure_token or not configure_token:
+    _sweep_expired_configure_tokens()
+    if not configure_token:
         raise HTTPException(401, "No active pairing session")
-    if configure_token != _configure_token["token"]:
+    entry = _configure_tokens.get(configure_token)
+    if not entry:
         raise HTTPException(401, "Unknown configure_token")
     now = time.time()
-    if now > _configure_token["expires_at"]:
-        _configure_token = None
+    if now > entry["expires_at"]:
+        _configure_tokens.pop(configure_token, None)
         raise HTTPException(401, "configure_token expired")
     from ..config import settings
     return {
         "valid": True,
         "cloud_device_id": settings.cloud_device_id or "",
-        "expires_in": int(_configure_token["expires_at"] - now),
+        "expires_in": int(entry["expires_at"] - now),
     }
 
 
@@ -146,14 +170,17 @@ async def configure_cloud(data: dict):
     Requires the short-lived configure_token issued by /pair — that token is
     the only thing standing between an unauthenticated LAN request and a
     `.env` rewrite.
-    """
-    global _configure_token
 
-    token = data.get("configure_token")
-    if not _configure_token or not token or token != _configure_token["token"]:
+    v3.4.1 (L-4): reads from the per-token dict so parallel /pair sessions
+    don't invalidate each other.
+    """
+    _sweep_expired_configure_tokens()
+    token = data.get("configure_token") or ""
+    entry = _configure_tokens.get(token)
+    if not entry:
         raise HTTPException(401, "Invalid or missing configure_token — re-pair the device.")
-    if time.time() > _configure_token["expires_at"]:
-        _configure_token = None
+    if time.time() > entry["expires_at"]:
+        _configure_tokens.pop(token, None)
         raise HTTPException(401, "configure_token expired — re-pair the device.")
 
     device_id = data.get("cloud_device_id", "")
@@ -180,6 +207,8 @@ async def configure_cloud(data: dict):
     except OSError as e:
         raise HTTPException(500, f"Failed to persist cloud credentials: {e}")
 
-    _configure_token = None
+    # One-time use — burn the token so a replay (caught webhook body) can't
+    # re-configure the Pi.
+    _configure_tokens.pop(token, None)
 
     return {"status": "configured", "message": "Cloud credentials saved. Restart to connect."}
