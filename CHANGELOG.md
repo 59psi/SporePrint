@@ -5,6 +5,45 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-04-21
+
+No Pi-side functional changes. Version bump to stay in lockstep with the commercial cloud release (tier-model clarification on the cloud side — see the cloud repo's CHANGELOG for details).
+
+### Changed
+
+- `scripts/bump.sh` now matches the cloud-side bump script: auto-inserts a CHANGELOG skeleton for the new version, updates the README's `**Version:**` banner if present, and prints a doc-drift warning for any lingering `v${CURRENT}` references in README / docs.
+
+### Documentation
+
+- README banner rewritten to explain the new commercial/OSS split: the Pi repo stays AGPL-3.0 free software; cloud-relay/mobile/web-app are paid. Pi-standalone users are unaffected.
+- Added historical release callouts for v3.3.3 / v3.3.4 that were previously only in the cloud repo's CHANGELOG.
+
+## [3.3.4] - 2026-04-20
+
+Cloud-side fourth-archaeology close-out — the Pi changes in this release are support endpoints for the cloud's updated pairing + command-signing flows.
+
+### Added
+
+- **`GET /api/cloud/pair-verify?configure_token=<tok>`** (`server/app/cloud/router.py`). Closes S-M-11: the cloud now calls this endpoint from its own network during `POST /devices/pair` to confirm the configure_token really was issued by this Pi. Prevents a hostile LAN host from tricking the mobile app into writing an attacker-chosen device_token into Supabase.
+- Signing-frame rejection categories (`server/app/cloud/service.py`). The Pi now tags rejection reasons as `clock_skew`, `signature_mismatch`, or `bad_frame` so the cloud + mobile UI can distinguish a drifting RTC-less Pi from a real signature mismatch (P2-10 / E-2).
+
+### Unchanged
+
+- HMAC signing protocol, nonce-cache shape, bearer-token scheme, MQTT auth, OTA password gate — all stable since v3.3.1.
+
+## [3.3.3] - 2026-04-19
+
+Pi-side hardening for command-signing freshness + replay protection.
+
+### Added
+
+- Persistent replay-nonce cache — survives Pi reboots so a Pi that restarts mid-attack can't accept a previously-seen command id within its 30s HMAC window.
+- `scripts/setup-pi.sh` now installs and configures `chrony` so the Pi's clock stays within ±30 s of the cloud. Prior: a Pi whose clock drifted (common after long power outages on an RTC-less unit) would silently reject signed commands as stale.
+
+### Fixed
+
+- Clock-drift rejections now log with enough detail for operators to tell "bad signature" apart from "your clock is wrong."
+
 ## [3.3.2] - 2026-04-18
 
 Cloud-parity release following the second-pass archaeology audit. Pi-side hardening in v3.3.0/v3.3.1 was airtight; this release extends the same discipline to the rest of the system and closes the remaining audit items.
