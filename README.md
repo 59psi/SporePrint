@@ -30,6 +30,10 @@
 
 ---
 
+> ## 🧼 v3.4.5 — lockstep bump (no Pi changes)
+>
+> Cloud-side v3.4.5 was a second `/simplify` pass over the v3.3.10 → v3.4.4 window: batched `metric_active_alerts` reads on every telemetry ingest, parallelized the daily-summary fan-out, bounded the auth caches, finally routed `alerts/escalation.py` through its persistence layer, and swept narrative-ID comments. Pi side unchanged.
+
 > ## 🧽 v3.4.4 — lockstep bump (no Pi changes)
 >
 > Cloud-side v3.4.4 was a `/simplify` cleanup pass (duplicate `push/persistence.py` folded into existing per-domain services, DNS resolution moved off the event loop, tier reconcile parallelized). Pi side unchanged.
