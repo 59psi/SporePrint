@@ -30,6 +30,10 @@
 
 ---
 
+> ## 🧽 v3.4.4 — lockstep bump (no Pi changes)
+>
+> Cloud-side v3.4.4 was a `/simplify` cleanup pass (duplicate `push/persistence.py` folded into existing per-domain services, DNS resolution moved off the event loop, tier reconcile parallelized). Pi side unchanged.
+
 > ## 🛡️ v3.4.3 — lockstep bump (no Pi changes)
 >
 > Cloud-side v3.4.3 added an npm `overrides` in the mobile app's package.json to pull a CVE-free `@xmldom/xmldom`. Pi side unchanged.
