@@ -5,6 +5,10 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.4] - 2026-04-22
+
+No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.4 `/simplify` cleanup pass (code-reuse consolidation, event-loop offloading for DNS, parallelized tier reconcile, dead-import/dead-comment sweep). See the parent repo's `CHANGELOG.md` for the full list.
+
 ## [3.4.3] - 2026-04-22
 
 No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.3 (`@xmldom/xmldom` CVE override in the mobile app's dependency tree).
