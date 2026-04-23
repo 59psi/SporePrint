@@ -5,6 +5,14 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.2] - 2026-04-22
+
+No Pi protocol changes. Version bumped in lockstep with the cloud-side v3.4.2 release (catch-up bump covering the gap-close + no-deferrals work that landed between v3.4.1 and this version).
+
+### Changed
+
+- **L-4 `_configure_token` multi-slot dict.** Pre-v3.4.2 carried a single `dict | None` global — a second parallel `/pair` would overwrite the first's token and invalidate it before the first client could `/configure`. Now keyed by token in `_configure_tokens` with TTL sweeps and a 32-entry hard cap. Parallel `/pair` sessions coexist; pair-spam attackers can't blow memory.
+
 ## [3.4.1] - 2026-04-21
 
 No Pi-side functional changes. Version bumped in lockstep with the cloud repo's fifth-archaeology close-out — see the cloud CHANGELOG for v3.4.1 for the commercial-side fixes (SSRF guard on `/devices/pair`, tier-cache invalidation on downgrade, `_device_sids` race fix, Pi-emit event pass-through handlers, CSP tightening, AI quota race lock, and 20 new regression tests).

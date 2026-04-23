@@ -30,6 +30,10 @@
 
 ---
 
+> ## 🧩 v3.4.2 — version bump + L-4 multi-slot pair sessions
+>
+> Cloud-side v3.4.2 closes the remaining PG-tier archaeology items. On the Pi side, `_configure_token` is now a per-token dict with TTL sweeps so parallel `/pair` sessions no longer invalidate each other — admin testing on two mobiles against the same Pi works as expected. No protocol changes; v3.3.3+ clouds remain byte-compatible.
+
 > ## 🔐 v3.4.1 — version-bump lockstep (no Pi protocol changes)
 >
 > Cloud repo v3.4.1 closes every archaeology finding from its v3.4.0 deep-scan pass. Zero Pi-side changes — HMAC signing, pair-verify, MQTT auth, bearer gate, all byte-compatible with v3.3.3+ / v3.4.x clouds. This version bump exists to keep the signing-vectors fixture + release cadence in lockstep.
