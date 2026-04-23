@@ -30,6 +30,10 @@
 
 ---
 
+> ## 🛡️ v3.4.3 — lockstep bump (no Pi changes)
+>
+> Cloud-side v3.4.3 added an npm `overrides` in the mobile app's package.json to pull a CVE-free `@xmldom/xmldom`. Pi side unchanged.
+
 > ## 🧩 v3.4.2 — version bump + L-4 multi-slot pair sessions
 >
 > Cloud-side v3.4.2 closes the remaining PG-tier archaeology items. On the Pi side, `_configure_token` is now a per-token dict with TTL sweeps so parallel `/pair` sessions no longer invalidate each other — admin testing on two mobiles against the same Pi works as expected. No protocol changes; v3.3.3+ clouds remain byte-compatible.
