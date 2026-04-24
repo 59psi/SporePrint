@@ -1,7 +1,13 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_task_wdt.h>
 #include "sporeprint_common.h"
 #include "health.h"
+
+// v3.4.9 — task watchdog parity with relay_node. A hung scene transition or
+// LEDC driver glitch freezes the main task; WDT recovers to safe-state
+// (all channels OFF, same as setup()).
+static const uint32_t WDT_TIMEOUT_SEC = 10;
 
 #define NODE_TYPE "lighting"
 #define DEFAULT_NODE_ID "light-01"
@@ -67,6 +73,9 @@ void reportLevels() {
 }
 
 void onSceneCommand(const char* topic, JsonDocument& doc) {
+    // v3.4.9 C-1 — HMAC verify before applying scene.
+    if (!sporeprint::verifyOrWarn(doc, config, topic)) return;
+
     if (doc.containsKey("scene")) {
         applyScene(doc["scene"].as<const char*>());
         reportLevels();
@@ -74,6 +83,9 @@ void onSceneCommand(const char* topic, JsonDocument& doc) {
 }
 
 void onChannelCommand(const char* topic, JsonDocument& doc) {
+    // v3.4.9 C-1 — HMAC verify before actuating a channel.
+    if (!sporeprint::verifyOrWarn(doc, config, topic)) return;
+
     String topicStr = String(topic);
     for (int i = 0; i < NUM_CHANNELS; i++) {
         if (topicStr.endsWith(String("/") + CHANNEL_NAMES[i])) {
@@ -98,11 +110,19 @@ void setup() {
 
     // Arduino-ESP32 core 2.x LEDC API (see relay_node/main.cpp for context).
     // GPIO assignments unchanged — only the configure+attach API calls.
+    // Safe-state (all channels off) runs BEFORE esp_task_wdt_add so a WDT
+    // reset during WiFi connect still boots into a dark chamber.
     for (int i = 0; i < NUM_CHANNELS; i++) {
         ledcSetup(i, PWM_FREQ, PWM_RESOLUTION);
         ledcAttachPin(CHANNEL_PINS[i], i);
         ledcWrite(i, 0);
     }
+
+    esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
+    esp_task_wdt_add(NULL);
+
+    // v3.4.9 C-1 — optional build-flag NVS provisioning.
+    sporeprint::bootstrapHmacKeyFromBuildFlag(config);
 
     wifi.begin();
 
@@ -118,6 +138,7 @@ void setup() {
 
     String hostname = "sporeprint-" + nodeId;
     ota = new OTAManager(config, hostname.c_str());
+    ota->setMqtt(mqtt);
     ota->begin();
 
     heartbeat = new Heartbeat(*mqtt);
@@ -130,6 +151,8 @@ void setup() {
 }
 
 void loop() {
+    esp_task_wdt_reset();
+
     mqtt->loop();
     ota->loop();
     heartbeat->loop();

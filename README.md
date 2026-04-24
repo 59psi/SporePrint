@@ -26,6 +26,10 @@
 
 ---
 
+> ## 🛡️ v3.4.9 — archaeology close-out (31 fixes, firmware-heavy)
+>
+> Second fresh archaeology sweep (see the parent repo's `analysis/`). The Critical plus every High / Medium / Low + operator-feedback item closed in one pass. **HMAC-verified MQTT command frames on every ESP32 node** — the cloud→Pi signed chain now reaches firmware; `scripts/provision-node.sh` generates + distributes the shared key. **Watchdogs on all four nodes**, NTP at WiFi connect, OTA lifecycle events on MQTT, bare-`{}` relay refusal, wrap-safe `offAt`, 1 KB inbound buffer, live `safety_cutoffs`/`captureFail` counters, `esp_reset_reason` + reconnect counters in heartbeat, firmware_version from `VERSION.txt` (bump.sh-integrated), cam `server_url` allow-list, minimum 12-char OTA password, Mosquitto user-split, `/api/vision/frame` whitelisted, structured JSON logs with `request_id`. Builds clean on all four envs (65–69% flash); 276 tests green. `docs/firmware-security.md` documents the secure-boot-v2 / flash-encryption opt-in path.
+
 > ## 🧪 v3.4.8 — firmware CI hygiene
 >
 > Firmware now builds clean from a fresh `pio install`. Pinned `platform = espressif32@6.13.0` so the Arduino-ESP32 core version is deterministic, then reshaped two mixed-API sites to match core 2.x: `ledcAttach(pin, freq, resolution)` → `ledcSetup(channel, …)` + `ledcAttachPin(pin, channel)` on relay + lighting nodes, and ClosedCube SHT31D 1.5's `readSerialNumber()` → `uint32_t` on the climate node. No GPIO / I2C / PWM pin changed — pure API reshape. Relay/climate/lighting/cam envs all build cleanly; macOS + Python 3.14 also needs `pip install intelhex` for esptool's bootloader step.

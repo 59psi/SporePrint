@@ -79,6 +79,13 @@ void reportChannel(int ch) {
 }
 
 void onChannelCommand(const char* topic, JsonDocument& doc) {
+    // v3.4.9 C-1 — verify HMAC signature before acting on any command.
+    // With hmac_key unprovisioned (migration period) this warns+allows;
+    // once provisioned it rejects unsigned/stale/tampered frames.
+    if (!sporeprint::verifyOrWarn(doc, config, topic)) {
+        return;
+    }
+
     String topicStr = String(topic);
 
     // Find which channel
@@ -91,11 +98,25 @@ void onChannelCommand(const char* topic, JsonDocument& doc) {
     }
     if (ch < 0) return;
 
-    bool on = true;
-    uint8_t pwm = 255;
+    // v3.4.9 — refuse commands that specify neither state nor pwm. A bare
+    // `{}` payload (or a retained broker message that survives a restart)
+    // previously defaulted to on=true, pwm=255 and latched the channel at
+    // full power with only the 30-min max-on cutoff as backstop. The clamp
+    // on duration_sec doesn't apply if duration_sec isn't present either,
+    // so this was the highest-consequence default in the handler.
+    if (!doc.containsKey("state") && !doc.containsKey("pwm")) {
+        Serial.printf("[RELAY] Ch%d: payload lacks state and pwm — ignoring\n", ch);
+        return;
+    }
+
+    bool on = false;
+    uint8_t pwm = 0;
 
     if (doc.containsKey("state")) {
-        on = String(doc["state"].as<const char*>()) == "on";
+        String s = String(doc["state"].as<const char*>());
+        s.toLowerCase();
+        on = (s == "on");
+        pwm = on ? 255 : 0;
     }
     if (doc.containsKey("pwm")) {
         pwm = doc["pwm"].as<uint8_t>();
@@ -152,6 +173,11 @@ void setup() {
     esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
     esp_task_wdt_add(NULL);
 
+    // v3.4.9 C-1 — if built with -DSPOREPRINT_PROVISION_HMAC=<hex> and NVS
+    // has no hmac_key yet, store it. No-op otherwise. Must run before the
+    // first MQTT command arrives.
+    sporeprint::bootstrapHmacKeyFromBuildFlag(config);
+
     wifi.begin();
 
     String nodeId = config.getString("node_id");
@@ -168,6 +194,7 @@ void setup() {
 
     String hostname = "sporeprint-" + nodeId;
     ota = new OTAManager(config, hostname.c_str());
+    ota->setMqtt(mqtt);  // publish OTA lifecycle events to sporeprint/<id>/ota
     ota->begin();
 
     heartbeat = new Heartbeat(*mqtt);
@@ -188,19 +215,31 @@ void loop() {
     unsigned long now = millis();
 
     // Safety checks
+    //
+    // millis() wraps every ~49.7 days. Signed-subtraction pattern
+    // `(long)(now - deadline) >= 0` stays correct across the wrap for
+    // windows shorter than 24.8 days; absolute `now >= deadline` compares
+    // misbehave exactly once per wrap. Max-on (`now - onSince`) is naturally
+    // wrap-safe — the subtraction produces the right unsigned delta — so
+    // only offAt needs the signed-cast form.
     for (int i = 0; i < NUM_CHANNELS; i++) {
-        // Timed off
-        if (channels[i].offAt > 0 && now >= channels[i].offAt) {
+        // Timed off — wrap-safe compare. Also counts as a safety_cutoff
+        // because an explicit duration is the user / rule saying "don't
+        // stay on past T"; honouring it is the defense.
+        if (channels[i].offAt > 0 && (long)(now - channels[i].offAt) >= 0) {
             Serial.printf("[SAFETY] Ch%d auto-off (timer expired)\n", i);
             setChannel(i, false, 0);
             reportChannel(i);
+            if (healthReporter) healthReporter->channels[i].safetyCutoffs++;
         }
-        // Max-on safety cutoff
+        // Max-on safety cutoff — naturally wrap-safe, and the load-bearing
+        // backstop against a stuck channel.
         if (channels[i].on && channels[i].onSince > 0 &&
             (now - channels[i].onSince) > channels[i].maxOnMs) {
             Serial.printf("[SAFETY] Ch%d auto-off (max-on exceeded)\n", i);
             setChannel(i, false, 0);
             reportChannel(i);
+            if (healthReporter) healthReporter->channels[i].safetyCutoffs++;
         }
     }
 

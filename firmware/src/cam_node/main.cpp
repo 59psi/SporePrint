@@ -2,9 +2,15 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <esp_task_wdt.h>
 #include "esp_camera.h"
 #include "sporeprint_common.h"
 #include "health.h"
+
+// v3.4.9 — task watchdog parity with relay_node. Longer timeout than the
+// others because an outbound JPEG POST on a slow upload can legitimately
+// hold the main task for 10-15 seconds. 60s leaves plenty of margin.
+static const uint32_t WDT_TIMEOUT_SEC = 60;
 
 #define NODE_TYPE "camera"
 #define DEFAULT_NODE_ID "cam-01"
@@ -92,18 +98,22 @@ void flashPulse() {
 }
 
 bool captureAndPost() {
+    unsigned long startMs = millis();
     flashPulse();
     delay(100);
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
-        Serial.println("[CAM] Capture failed");
+        Serial.println("[CAM] Capture failed (frame buffer null)");
+        if (healthReporter) healthReporter->captureFail++;
         return false;
     }
 
     Serial.printf("[CAM] Captured %dx%d (%u bytes)\n", fb->width, fb->height, fb->len);
 
     if (serverUrl.length() == 0) {
+        Serial.println("[CAM] server_url unset — frame captured but cannot post");
+        if (healthReporter) healthReporter->captureFail++;
         esp_camera_fb_return(fb);
         return false;
     }
@@ -122,16 +132,98 @@ bool captureAndPost() {
 
     http.end();
     esp_camera_fb_return(fb);
-    return httpCode == 200;
+
+    bool ok = (httpCode == 200);
+    if (healthReporter) {
+        if (ok) {
+            healthReporter->captureSuccess++;
+            healthReporter->lastCapture = millis();
+            unsigned long latency = millis() - startMs;
+            // EMA with alpha=0.2 — smooths spikes, reacts to trends.
+            healthReporter->avgLatencyMs =
+                healthReporter->avgLatencyMs * 0.8f + (float)latency * 0.2f;
+        } else {
+            healthReporter->captureFail++;
+        }
+    }
+    return ok;
+}
+
+// v3.4.9 H-1: validate server_url before accepting + persisting. Prior
+// behavior wrote whatever arrived over MQTT straight to NVS — a LAN actor
+// with broker creds could redirect every captured frame to an attacker
+// server indefinitely. Allow only:
+//   - http:// or https:// scheme
+//   - hostname of the paired Pi (stored during provisioning) OR
+//     sporeprint.local (mDNS) OR sporeprint.ai (cloud fallback)
+//   - no userinfo, no query string, no fragment
+//   - total length <= 128 chars (prevents flash-filling DoS)
+static bool isServerUrlAllowed(const String& url) {
+    if (url.length() == 0 || url.length() > 128) return false;
+
+    // Scheme check
+    String lower = url;
+    lower.toLowerCase();
+    bool https = lower.startsWith("https://");
+    bool http = lower.startsWith("http://");
+    if (!https && !http) return false;
+
+    // No userinfo (prohibits http://attacker@pi/)
+    int schemeEnd = lower.indexOf("://") + 3;
+    int hostEnd = lower.indexOf('/', schemeEnd);
+    if (hostEnd < 0) hostEnd = lower.length();
+    String hostPart = lower.substring(schemeEnd, hostEnd);
+    if (hostPart.indexOf('@') >= 0) return false;
+
+    // Strip port
+    int colon = hostPart.indexOf(':');
+    String host = (colon >= 0) ? hostPart.substring(0, colon) : hostPart;
+
+    // No query / fragment anywhere in the URL (keep it to the Pi ingest path).
+    if (lower.indexOf('?') >= 0 || lower.indexOf('#') >= 0) return false;
+
+    // Allow-list of acceptable hosts. The pairedPiHost is set at
+    // provisioning time via `paired_pi_host` in NVS; falls back to the
+    // mDNS / cloud hostnames if unset.
+    String pairedPi = config.getString("paired_pi_host");
+    pairedPi.toLowerCase();
+    if (host == "sporeprint.local") return true;
+    if (host == "sporeprint.ai") return true;
+    if (pairedPi.length() > 0 && host == pairedPi) return true;
+
+    // RFC1918 ranges — acceptable for LAN Pi that isn't using mDNS.
+    // Cheap check: must start with 10., 172.16-31., or 192.168.
+    if (host.startsWith("10.")) return true;
+    if (host.startsWith("192.168.")) return true;
+    if (host.startsWith("172.")) {
+        int secondDot = host.indexOf('.', 4);
+        if (secondDot > 0) {
+            int secondOctet = host.substring(4, secondDot).toInt();
+            if (secondOctet >= 16 && secondOctet <= 31) return true;
+        }
+    }
+    return false;
 }
 
 void onCommand(const char* topic, JsonDocument& doc) {
+    // v3.4.9 C-1 — HMAC verify before any action (capture or config).
+    // H-1 server_url validation kicks in on top for belt-and-suspenders.
+    if (!sporeprint::verifyOrWarn(doc, config, topic)) {
+        return;
+    }
+
     if (doc.containsKey("capture") && doc["capture"].as<bool>()) {
         Serial.println("[CMD] On-demand capture requested");
         captureAndPost();
     }
     if (doc.containsKey("server_url")) {
-        serverUrl = doc["server_url"].as<String>();
+        String candidate = doc["server_url"].as<String>();
+        if (!isServerUrlAllowed(candidate)) {
+            Serial.printf("[CMD] REJECTED server_url=%s (not in allow-list)\n",
+                          candidate.c_str());
+            return;
+        }
+        serverUrl = candidate;
         config.setString("server_url", serverUrl);
         Serial.printf("[CMD] Server URL set to %s\n", serverUrl.c_str());
     }
@@ -145,6 +237,14 @@ void setup() {
     pinMode(FLASH_PIN, OUTPUT);
     digitalWrite(FLASH_PIN, LOW);
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
+
+    // Arm WDT before camera/wifi init — either can block on PSRAM / sensor
+    // handshake. Reset-state for cam_node is simply "try again from boot".
+    esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
+    esp_task_wdt_add(NULL);
+
+    // v3.4.9 C-1 — optional build-flag NVS provisioning.
+    sporeprint::bootstrapHmacKeyFromBuildFlag(config);
 
     if (!initCamera()) {
         Serial.println("[CAM] Camera init failed! Restarting...");
@@ -166,6 +266,7 @@ void setup() {
 
     String hostname = "sporeprint-" + nodeId;
     ota = new OTAManager(config, hostname.c_str());
+    ota->setMqtt(mqtt);
     ota->begin();
 
     heartbeat = new Heartbeat(*mqtt);
@@ -175,6 +276,8 @@ void setup() {
 }
 
 void loop() {
+    esp_task_wdt_reset();
+
     mqtt->loop();
     ota->loop();
     heartbeat->loop();

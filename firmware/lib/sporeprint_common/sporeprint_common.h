@@ -6,3 +6,4 @@
 #include "ota_manager.h"
 #include "heartbeat.h"
 #include "offline_buffer.h"
+#include "frame_verify.h"

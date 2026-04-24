@@ -1,0 +1,89 @@
+name: firmware-ci
+
+# v3.4.9 Risk 15 — build-clean CI for every push that touches firmware/.
+# Catches platform-pin regressions, library API drift (like the v3.4.7
+# ledcAttach/ledcAttachPin issue), and syntax errors same-day.
+#
+# Runs all four node environments. No hardware required — this only
+# proves the binaries link, not that they boot correctly. HIL testing
+# remains a manual step per release.
+#
+# Security: no step consumes untrusted event input (issue titles, PR
+# bodies, head refs, commit messages) — only VERSION.txt which is
+# committed by the operator via scripts/bump.sh. Safe against the
+# workflow-injection class.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware-ci.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware-ci.yml'
+
+concurrency:
+  group: firmware-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [relay_node, climate_node, lighting_node, cam_node]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Cache PlatformIO platform + libdeps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO + esptool prereq
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install platformio intelhex
+
+      - name: Read firmware version
+        id: fwver
+        working-directory: firmware
+        run: |
+          if [ -f VERSION.txt ]; then
+            V=$(tr -d '[:space:]' < VERSION.txt)
+            echo "version=${V}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build firmware
+        working-directory: firmware
+        env:
+          FW_ENV: ${{ matrix.env }}
+          SPOREPRINT_FW_VERSION: ${{ steps.fwver.outputs.version }}
+          SPOREPRINT_PROVISION_HMAC: ''
+        run: |
+          pio run -e "$FW_ENV"
+
+      - name: Report footprint
+        working-directory: firmware
+        env:
+          FW_ENV: ${{ matrix.env }}
+        run: |
+          pio run -e "$FW_ENV" -t size | tail -30 || true

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # shipping a production Pi with no auth because the operator never ran
     # setup.sh or forgot to set SPOREPRINT_API_KEY.
     allow_unauthenticated: bool = False
+    # HMAC-SHA256 key used to sign every cmd/* MQTT frame the Pi publishes
+    # to an ESP32 node. v3.4.9 C-1. Must match the `hmac_key` stored in NVS
+    # on each node. Empty = unsigned (migration period; nodes log WARNING
+    # per command). Use scripts/provision-node.sh to generate and deploy.
+    mqtt_hmac_key: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
 
