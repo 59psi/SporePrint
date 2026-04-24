@@ -75,6 +75,17 @@ _PUBLIC_PATHS = frozenset({
     "/api/health",
     "/api/cloud/pair",
     "/api/cloud/pairing-code",
+    # v3.4.9 L-9 — cam_node posts JPEGs here but has no slot for
+    # SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
+    # distribution channel from the Pi to each ESP32). The endpoint's
+    # existing defenses already gate abuse:
+    #   * X-Node-Id header must match [a-zA-Z0-9_-]{1,32}
+    #   * node_id must exist in hardware_nodes (registered device only)
+    #   * 20 MB upload cap
+    #   * storage path is resolve()+is_relative_to guarded
+    # A stronger per-node auth is tracked for v3.5 (HMAC over the JPEG
+    # with the same hmac_key we now enforce on MQTT commands).
+    "/api/vision/frame",
 })
 
 

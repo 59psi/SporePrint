@@ -44,6 +44,26 @@ bool WiFiManager::_tryConnect() {
     if (WiFi.status() == WL_CONNECTED) {
         _connected = true;
         Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+        // v3.4.9 — sync system clock via SNTP so firmware-level signed
+        // command frame verification (frame_verify.h) can enforce the
+        // 30-second replay window. Without NTP, every verify would reject
+        // as "ts outside replay window" because the node's wall-clock
+        // stays at 1970. pool.ntp.org is fine for the LAN/home context;
+        // the broker's ts is authoritative to 1-second resolution.
+        configTime(0, 0, "pool.ntp.org", "time.google.com");
+        // Non-blocking — the HMAC path reads time(nullptr) on every
+        // command and accepts a 30s window, so any sync within the first
+        // minute of uptime is soon enough. Log once when we do see a
+        // plausible post-2020 epoch.
+        for (int i = 0; i < 10; ++i) {
+            time_t now = time(nullptr);
+            if (now > 1577836800) {  // 2020-01-01
+                Serial.printf("[TIME] SNTP synced at %ld\n", (long)now);
+                break;
+            }
+            delay(200);
+        }
         return true;
     }
 

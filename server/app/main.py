@@ -22,6 +22,7 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 async def lifespan(app: FastAPI):
     from .config import settings
     from .db import init_db
+    from .logging_config import configure as configure_logging
     from .mqtt import start_mqtt
     from .species.service import seed_builtins
 
@@ -29,6 +30,11 @@ async def lifespan(app: FastAPI):
     from .cloud.service import start_cloud_connector
     from .retention.service import start_retention_task
     from .weather.service import start_weather_polling
+
+    # v3.4.9 Debt 5 — configure structured logging with request_id
+    # threading before anything else so even boot-path messages carry
+    # the contextvar (empty on boot; non-empty per-request).
+    configure_logging()
 
     log = logging.getLogger(__name__)
 
@@ -68,6 +74,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("safety watchdog rehydration failed: %s", e)
 
+    # v3.4.9 Debt 4 — wire the previously-orphaned task registry. Each
+    # long-running supervisor registers on boot; the admin dashboard now
+    # shows real status instead of derived best-guess.
+    from .health.service import register_task
+    register_task("mqtt", "running")
+    register_task("weather_polling", "running")
+    register_task("retention", "running")
+    register_task("cloud_connector", "running")
+    register_task("daily_retrain", "idle")
+    register_task("nightly_weather_aggregate", "idle")
+    register_task("node_liveness_sweeper", "running")
+
     tasks = [
         asyncio.create_task(start_mqtt(sio)),
         asyncio.create_task(start_weather_polling(sio)),
@@ -90,6 +108,7 @@ async def lifespan(app: FastAPI):
 async def _daily_retrain():
     """Retrain prediction models daily at 4 AM (after retention runs at 3 AM)."""
     from .weather.prediction import retrain_models
+    from .health.service import update_task
     while True:
         try:
             now = time.time()
@@ -97,10 +116,13 @@ async def _daily_retrain():
             if next_4am <= now:
                 next_4am += 86400
             await asyncio.sleep(next_4am - now)
+            update_task("daily_retrain", "running")
             await retrain_models()
+            update_task("daily_retrain", "idle")
         except asyncio.CancelledError:
             return
         except Exception as e:
+            update_task("daily_retrain", "error", error=str(e))
             logging.getLogger(__name__).error("Daily retrain failed: %s", e)
             await asyncio.sleep(3600)
 
@@ -108,6 +130,7 @@ async def _daily_retrain():
 async def _nightly_weather_aggregate():
     """Aggregate yesterday's weather data at 2 AM for the seasonal planner."""
     from .planner.service import aggregate_daily_weather
+    from .health.service import update_task
     while True:
         try:
             now = time.time()
@@ -115,10 +138,13 @@ async def _nightly_weather_aggregate():
             if next_2am <= now:
                 next_2am += 86400
             await asyncio.sleep(next_2am - now)
+            update_task("nightly_weather_aggregate", "running")
             await aggregate_daily_weather()
+            update_task("nightly_weather_aggregate", "idle")
         except asyncio.CancelledError:
             return
         except Exception as e:
+            update_task("nightly_weather_aggregate", "error", error=str(e))
             logging.getLogger(__name__).error("Weather aggregate failed: %s", e)
             await asyncio.sleep(3600)
 
@@ -183,7 +209,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="3.4.8", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.4.9", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -228,8 +254,12 @@ app.add_middleware(
 )
 
 from .auth import ApiKeyMiddleware, socketio_auth_ok
+from ._request_id_mw import RequestIdMiddleware
 
+# v3.4.9 Debt 5 — request-id middleware lives BEFORE the api key check
+# so even rejected-401 requests carry a correlatable id in the log.
 app.add_middleware(ApiKeyMiddleware)
+app.add_middleware(RequestIdMiddleware)
 
 from .telemetry.router import router as telemetry_router
 from .sessions.router import router as sessions_router
@@ -274,7 +304,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.4.8"}
+    return {"status": "ok", "version": "3.4.9"}
 
 
 # Track Socket.IO clients for health reporting

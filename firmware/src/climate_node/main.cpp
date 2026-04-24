@@ -1,8 +1,14 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
+#include <esp_task_wdt.h>
 #include "sporeprint_common.h"
 #include "health.h"
+
+// v3.4.9 — task watchdog parity with relay_node. Climate's I2C reads can
+// block the main task on a sensor hang; WDT recovers the board to a known
+// boot state. 30s is generous — SHT31 + SCD40 + BH1750 full cycle is <1s.
+static const uint32_t WDT_TIMEOUT_SEC = 30;
 
 // Sensor libraries
 #include <ClosedCube_SHT31D.h>
@@ -76,6 +82,11 @@ static unsigned long clampULong(unsigned long v, unsigned long lo, unsigned long
 }
 
 void onCommand(const char* topic, JsonDocument& doc) {
+    // v3.4.9 C-1 — HMAC verify before applying config changes.
+    if (!sporeprint::verifyOrWarn(doc, config, topic)) {
+        return;
+    }
+
     if (doc.containsKey("read_interval_ms")) {
         unsigned long requested = doc["read_interval_ms"].as<unsigned long>();
         readInterval = clampULong(requested,
@@ -144,37 +155,38 @@ void readSensors() {
 }
 
 // ─── Alert Check ────────────────────────────────────────────────
+// v3.4.9: emit each tripped condition as a separate alert instead of
+// overwriting a single JsonDocument. Previously multiple simultaneous
+// conditions (temp + humidity both out of range) collapsed to the last
+// one, hiding the "door left open" signature from the grower. The Pi's
+// notification service already dedups by type+value, so per-event
+// publishes don't multiply operator noise.
 void checkAlerts() {
-    JsonDocument alert;
-    bool shouldAlert = false;
+    if (!mqtt->isConnected()) return;
+
+    auto emit = [](const char* type, float value, const char* message,
+                   const char* sensor = nullptr) {
+        JsonDocument alert;
+        alert["type"] = type;
+        alert["value"] = value;
+        alert["message"] = message;
+        if (sensor != nullptr) alert["sensor"] = sensor;
+        mqtt->publish(mqtt->buildTopic("alert").c_str(), alert);
+    };
 
     if (sht31Ok && (tempF > 90.0 || tempF < 40.0)) {
-        alert["type"] = "temperature";
-        alert["value"] = tempF;
-        alert["message"] = tempF > 90.0 ? "Temperature critically high!" : "Temperature critically low!";
-        shouldAlert = true;
+        emit("temperature", tempF,
+             tempF > 90.0 ? "Temperature critically high!" : "Temperature critically low!");
     }
     if (sht31Ok && (humidity > 99.0 || humidity < 30.0)) {
-        alert["type"] = "humidity";
-        alert["value"] = humidity;
-        alert["message"] = humidity > 99.0 ? "Humidity saturated!" : "Humidity critically low!";
-        shouldAlert = true;
+        emit("humidity", humidity,
+             humidity > 99.0 ? "Humidity saturated!" : "Humidity critically low!");
     }
     if (scd40Ok && co2Ppm > 4000) {
-        alert["type"] = "co2";
-        alert["value"] = co2Ppm;
-        alert["message"] = "CO2 dangerously high!";
-        shouldAlert = true;
+        emit("co2", (float)co2Ppm, "CO2 dangerously high!");
     }
     if (!sht31Ok) {
-        alert["type"] = "sensor_failure";
-        alert["sensor"] = "SHT31";
-        alert["message"] = "SHT31 sensor read failed";
-        shouldAlert = true;
-    }
-
-    if (shouldAlert && mqtt->isConnected()) {
-        mqtt->publish(mqtt->buildTopic("alert").c_str(), alert);
+        emit("sensor_failure", 0.0f, "SHT31 sensor read failed", "SHT31");
     }
 }
 
@@ -213,6 +225,14 @@ void setup() {
     // Factory reset button
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
 
+    // Arm the task watchdog before any potentially-blocking init (Wire.begin,
+    // sensor begin, WiFi connect). Panic=true triggers reboot on timeout.
+    esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
+    esp_task_wdt_add(NULL);
+
+    // v3.4.9 C-1 — optional build-flag NVS provisioning.
+    sporeprint::bootstrapHmacKeyFromBuildFlag(config);
+
     // WiFi
     wifi.begin();
 
@@ -228,6 +248,7 @@ void setup() {
     // OTA
     String hostname = "sporeprint-" + nodeId;
     ota = new OTAManager(config, hostname.c_str());
+    ota->setMqtt(mqtt);
     ota->begin();
 
     // Heartbeat
@@ -277,6 +298,11 @@ void setup() {
 
 // ─── Loop ───────────────────────────────────────────────────────
 void loop() {
+    // Pet the task watchdog at the top of every iteration. If any of the
+    // below deadlocks for >WDT_TIMEOUT_SEC, the ESP32 reboots and setup()
+    // re-initializes the sensors in a known state.
+    esp_task_wdt_reset();
+
     mqtt->loop();
     ota->loop();
     heartbeat->loop();

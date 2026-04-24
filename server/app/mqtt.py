@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -27,11 +29,53 @@ def get_reliability_counters() -> dict:
     }
 
 
+def _sign_cmd_payload(payload: dict) -> dict:
+    """Sign a cmd/* payload with HMAC-SHA256 over canonical JSON.
+
+    v3.4.9 C-1 — the firmware's verifyFrame expects:
+      * `ts` epoch seconds (Pi wall-clock, NTP-disciplined)
+      * `signature` = HMAC-SHA256(settings.mqtt_hmac_key, canonical_body)
+
+    The canonical body is the JSON with keys sorted and no whitespace
+    between separators, minus the `signature` field itself. Mirrors
+    sporeprint/firmware/lib/sporeprint_common/frame_verify.cpp#canonicalize.
+
+    If `settings.mqtt_hmac_key` is unset, the payload ships unsigned —
+    matches the firmware's migration-period "warn and accept" behavior so
+    upgrades don't break existing deployments. Set the key on both sides
+    (Pi env + firmware NVS via provisioning tool) to enable strict mode.
+    """
+    signed = dict(payload)
+    signed.setdefault("ts", int(time.time()))
+
+    key = settings.mqtt_hmac_key or ""
+    if not key:
+        return signed
+
+    canonical = json.dumps(
+        {k: v for k, v in signed.items() if k != "signature"},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    signed["signature"] = hmac.new(
+        key.encode("utf-8"), canonical, hashlib.sha256
+    ).hexdigest()
+    return signed
+
+
 async def mqtt_publish(topic: str, payload: dict) -> bool:
     if _client is None:
         return False
+
+    # Sign any cmd/* frame so the firmware can verify authenticity.
+    # Non-cmd topics (state/*, telemetry/*) don't need signing because they
+    # flow node→Pi, not Pi→node, and the Pi is the trust root.
+    outbound = payload
+    if "/cmd/" in topic or topic.endswith("/cmd") or "cmd/" in topic.split("/")[-2:][0]:
+        outbound = _sign_cmd_payload(payload)
+
     try:
-        await _client.publish(topic, json.dumps(payload))
+        await _client.publish(topic, json.dumps(outbound))
         return True
     except Exception as e:
         log.warning("mqtt_publish to %s failed: %s", topic, e)
@@ -40,8 +84,10 @@ async def mqtt_publish(topic: str, payload: dict) -> bool:
 
 async def start_mqtt(sio):
     global _client, _mqtt_restart_count
+    from .health.service import update_task
     while True:
         try:
+            update_task("mqtt", "connecting")
             mqtt_kwargs = {}
             if settings.mqtt_username:
                 mqtt_kwargs["username"] = settings.mqtt_username
@@ -51,6 +97,7 @@ async def start_mqtt(sio):
                 await client.subscribe("sporeprint/#")
                 await client.subscribe("shellies/#")
                 await client.subscribe("tasmota/#")
+                update_task("mqtt", "running")
                 log.info("MQTT connected to %s:%d", settings.mqtt_host, settings.mqtt_port)
 
                 async for message in client.messages:
@@ -66,15 +113,18 @@ async def start_mqtt(sio):
                         log.exception("_handle_message(%s) crashed: %s", topic, e)
 
         except aiomqtt.MqttError as e:
+            update_task("mqtt", "disconnected", error=str(e))
             log.warning("MQTT disconnected: %s — reconnecting in 5s", e)
             _client = None
             await asyncio.sleep(5)
         except asyncio.CancelledError:
             _client = None
+            update_task("mqtt", "stopped")
             return
         except Exception as e:
             _client = None
             _mqtt_restart_count += 1
+            update_task("mqtt", "error", error=str(e))
             log.exception("start_mqtt fatal error (restart=%d): %s", _mqtt_restart_count, e)
             await asyncio.sleep(5)
 

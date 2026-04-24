@@ -54,10 +54,13 @@ void MqttManager::_connect() {
     if (_mqtt.connect(_clientId.c_str(), userPtr, passPtr, lwtTopic.c_str(), 1, true, lwtPayload.c_str())) {
         Serial.println("[MQTT] Connected!");
 
-        // Publish online status
+        // Publish online status. firmware from -DSPOREPRINT_FW_VERSION.
+        #ifndef SPOREPRINT_FW_VERSION
+        #define SPOREPRINT_FW_VERSION "unset"
+        #endif
         JsonDocument doc;
         doc["status"] = "online";
-        doc["firmware"] = "0.1.0";
+        doc["firmware"] = SPOREPRINT_FW_VERSION;
         doc["type"] = _nodeType;
         doc["id"] = _nodeId;
         publish(buildTopic("status").c_str(), doc, true);
@@ -106,10 +109,24 @@ void MqttManager::_staticCallback(char* topic, byte* payload, unsigned int lengt
 }
 
 void MqttManager::_handleMessage(char* topic, byte* payload, unsigned int length) {
-    char json[512];
-    size_t copyLen = min((unsigned int)(sizeof(json) - 1), length);
-    memcpy(json, payload, copyLen);
-    json[copyLen] = '\0';
+    // Inbound buffer must match PubSubClient's setBufferSize(1024) on the
+    // publish side. The prior 512-byte stack array silently truncated
+    // frames >511 bytes into garbled JSON that deserializeJson rejected.
+    // Signed command frames from the cloud (v3.4.9) with the signature
+    // block land in the 600-900 byte range, so this matters in practice.
+    //
+    // Reject oversize frames explicitly rather than truncating, so the
+    // operator sees a real error rather than a silent JSON parse fail.
+    static const size_t JSON_BUF_SIZE = 1024;
+    if (length >= JSON_BUF_SIZE) {
+        Serial.printf("[MQTT] Dropping oversize frame on %s (%u bytes > %u)\n",
+                      topic, length, (unsigned)JSON_BUF_SIZE - 1);
+        return;
+    }
+
+    char json[JSON_BUF_SIZE];
+    memcpy(json, payload, length);
+    json[length] = '\0';
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, json);

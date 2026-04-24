@@ -5,6 +5,46 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.9] - 2026-04-24
+
+Fresh archaeology sweep of v3.4.8 (`analysis/02-security.md` in the parent repo). All Critical, High, Medium, Low + operator-feedback items closed in one pass. Firmware grew real defense-in-depth at the MQTT layer; the cloud relay gained tier/ownership re-checks + rate limiting + `cmd_id` correlation; the Pi server got structured logs + split MQTT ACL + synced dependency pins. Firmware-specific narrative in `firmware/CHANGELOG.md#349`.
+
+### Added
+
+- **HMAC verification of inbound MQTT commands on every ESP32 node** (`sporeprint_common/frame_verify.{h,cpp}`). Closes Sentinel **C-1** — the cloud-signed chain now extends past the broker to firmware. Shared canonical-JSON serialization is byte-identical to the Python `signing.py`. Uses mbedtls (part of ESP-IDF — no new dep).
+- **NTP sync at WiFi connect** so the 30-second replay window on firmware command frames is meaningful (`wifi_manager.cpp`).
+- **`scripts/provision-node.sh`** — generates an HMAC key, writes to `server/.env`, prints the `pio run` commands to bake the key into each node's NVS via `-DSPOREPRINT_PROVISION_HMAC`.
+- **`esp_task_wdt` on climate / lighting / cam nodes** (M-6). Parity with relay_node; timeouts tuned per node (30 / 10 / 60 s).
+- **`esp_reset_reason()` + wifi/mqtt reconnect counters** in every heartbeat (`heartbeat.cpp`).
+- **OTA lifecycle MQTT events** on `sporeprint/<id>/ota` (start / success / error).
+- **Minimum 12-char OTA password** (L-6).
+- **Split Mosquitto users**: `sp-cmd` / `sp-telemetry` / `sp-3p`. Replaces the single `server readwrite #` account. `scripts/rotate-mqtt-creds.sh` rotates them.
+- **`docs/firmware-security.md`** — operator guide for secure boot v2 + flash encryption + signed OTA.
+- **Firmware `VERSION.txt`** + `SPOREPRINT_FW_VERSION` build flag — no more hardcoded `"0.1.0"`. `scripts/bump.sh` keeps it in lockstep.
+- **`firmware/CHANGELOG.md`** — firmware changes now have their own narrative.
+- **`.github/workflows/firmware-ci.yml`** — `pio run` on all four envs for every PR touching `firmware/**` (Risk 15).
+- **Unity test-harness scaffold** at `firmware/test/` (Prescription 6.3.14 — opens the path).
+- **`/api/vision/frame` whitelisted** in the Pi ApiKeyMiddleware (L-9).
+- **Structured JSON logs on the Pi** with contextvar-based `request_id` threading (`logging_config.py` + `_request_id_mw.py`). Debt 5.
+- **`_task_registry` wired** — every long-running supervisor registers + transitions status. Previously declared but never called (Debt 4).
+- **`DesktopShell` component** (`app/src/components/web/DesktopShell.tsx`) — shared shell for the 18 desktop pages. Migration tracker in `app/src/pages/web/README.md`.
+
+### Changed
+
+- **Relay command handler refuses bare `{}` payloads** (M-5). Previously defaulted `state=on, pwm=255`.
+- **Case-insensitive `state` parse** in relay_node.
+- **`millis()` wrap-safe `offAt` compare** (L-1).
+- **Cam `server_url` allow-list** (H-1). Allowed: paired Pi LAN, `sporeprint.local`, `sporeprint.ai`, RFC1918.
+- **Climate alerts emit separately** (Debt 6) — simultaneous conditions no longer collapse.
+- **MQTT inbound buffer 512 → 1024 bytes** (L-2). Oversize frames now explicitly dropped with a Serial log.
+- **`OfflineBuffer::BUFFER_FILE` constant removed** (Debt 10).
+- **`safety_cutoffs` + `captureFail` + `captureSuccess` + `avgLatencyMs` counters now increment** (Debt 3).
+- **Pi `pyproject.toml` gains upper-bound caps** on every dep to match cloud policy (L-3).
+
+### Fixed
+
+- **`mqtt_publish()` signs every cmd/\* frame** with `settings.mqtt_hmac_key` before publishing. Paired with firmware verify, the Pi↔ESP32 hop is now HMAC-authenticated end-to-end.
+
 ## [3.4.8] - 2026-04-23
 
 Firmware CI hygiene — all four node builds now compile clean against a pinned `platformio/espressif32@6.13.0` platform. Pre-existing build breaks from mixed Arduino-ESP32 API usage fixed without changing any GPIO / I2C / PWM pin assignment. No protocol or runtime behavior change.
