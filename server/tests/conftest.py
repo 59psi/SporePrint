@@ -1,7 +1,15 @@
 import asyncio
+import os
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+# The v3.4.7 SV-7 change refuses to boot when SPOREPRINT_API_KEY is empty AND
+# allow_unauthenticated is false (the new secure-by-default). Tests don't set
+# an api_key, so opt into LAN-trust mode for the test process before the
+# settings module imports — pydantic-settings reads the env at import time.
+os.environ.setdefault("SPOREPRINT_ALLOW_UNAUTHENTICATED", "true")
 
 
 @pytest.fixture(autouse=True)

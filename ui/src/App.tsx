@@ -3,6 +3,7 @@ import { Suspense, lazy } from 'react'
 import Layout from './components/layout/Layout'
 import Dashboard from './pages/Dashboard'
 import { Loader2 } from 'lucide-react'
+import { Toaster } from './components/ui/Toaster'
 
 // Lazy-load all pages except Dashboard (initial landing page)
 const Sessions = lazy(() => import('./pages/Sessions'))
@@ -30,7 +31,9 @@ function PageLoader() {
 
 export default function App() {
   return (
-    <Routes>
+    <>
+      <Toaster />
+      <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/sessions" element={<Suspense fallback={<PageLoader />}><Sessions /></Suspense>} />
@@ -48,6 +51,7 @@ export default function App() {
         <Route path="/transcripts" element={<Suspense fallback={<PageLoader />}><Transcripts /></Suspense>} />
         <Route path="/settings" element={<Suspense fallback={<PageLoader />}><SettingsPage /></Suspense>} />
       </Route>
-    </Routes>
+      </Routes>
+    </>
   )
 }

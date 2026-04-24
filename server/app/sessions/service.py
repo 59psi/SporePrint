@@ -82,31 +82,51 @@ async def get_session(session_id: int) -> dict | None:
         return session
 
 
+_UPDATE_SESSION_SQL = """
+UPDATE sessions SET
+    name = COALESCE(?, name),
+    substrate = COALESCE(?, substrate),
+    substrate_volume = COALESCE(?, substrate_volume),
+    substrate_prep_notes = COALESCE(?, substrate_prep_notes),
+    inoculation_date = COALESCE(?, inoculation_date),
+    inoculation_method = COALESCE(?, inoculation_method),
+    spawn_source = COALESCE(?, spawn_source),
+    tub_number = COALESCE(?, tub_number),
+    shelf_number = COALESCE(?, shelf_number),
+    shelf_side = COALESCE(?, shelf_side),
+    growth_form = COALESCE(?, growth_form),
+    pinning_tek = COALESCE(?, pinning_tek)
+WHERE id = ?
+"""
+
+_UPDATE_SESSION_COLUMNS = (
+    "name",
+    "substrate",
+    "substrate_volume",
+    "substrate_prep_notes",
+    "inoculation_date",
+    "inoculation_method",
+    "spawn_source",
+    "tub_number",
+    "shelf_number",
+    "shelf_side",
+    "growth_form",
+    "pinning_tek",
+)
+
+
 async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
-    if not updates:
+    raw = data.model_dump()
+    # Skip the query entirely when there's nothing to change.
+    if not any(raw.get(c) is not None for c in _UPDATE_SESSION_COLUMNS):
         return await get_session(session_id)
 
+    # One atomic UPDATE. COALESCE(?, col) leaves the existing value in place
+    # for any column whose Pydantic input was None ("unchanged"). No f-string
+    # SQL construction — columns are fixed in _UPDATE_SESSION_SQL.
+    params = tuple(raw.get(c) for c in _UPDATE_SESSION_COLUMNS) + (session_id,)
     async with get_db() as db:
-        for col, val in updates.items():
-            # Each column is from the Pydantic model — not user input
-            await db.execute(
-                {
-                    "name": "UPDATE sessions SET name = ? WHERE id = ?",
-                    "substrate": "UPDATE sessions SET substrate = ? WHERE id = ?",
-                    "substrate_volume": "UPDATE sessions SET substrate_volume = ? WHERE id = ?",
-                    "substrate_prep_notes": "UPDATE sessions SET substrate_prep_notes = ? WHERE id = ?",
-                    "inoculation_date": "UPDATE sessions SET inoculation_date = ? WHERE id = ?",
-                    "inoculation_method": "UPDATE sessions SET inoculation_method = ? WHERE id = ?",
-                    "spawn_source": "UPDATE sessions SET spawn_source = ? WHERE id = ?",
-                    "tub_number": "UPDATE sessions SET tub_number = ? WHERE id = ?",
-                    "shelf_number": "UPDATE sessions SET shelf_number = ? WHERE id = ?",
-                    "shelf_side": "UPDATE sessions SET shelf_side = ? WHERE id = ?",
-                    "growth_form": "UPDATE sessions SET growth_form = ? WHERE id = ?",
-                    "pinning_tek": "UPDATE sessions SET pinning_tek = ? WHERE id = ?",
-                }[col],
-                (val, session_id),
-            )
+        await db.execute(_UPDATE_SESSION_SQL, params)
         await db.commit()
     return await get_session(session_id)
 

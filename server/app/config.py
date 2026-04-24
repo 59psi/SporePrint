@@ -20,9 +20,14 @@ class Settings(BaseSettings):
     cloud_token: str = ""
     cloud_device_id: str = ""
     # If set, all /api/* requests and Socket.IO connects must present
-    # Authorization: Bearer <api_key>. Empty means no auth (LAN-trust mode).
+    # Authorization: Bearer <api_key>. Empty means no auth.
     # setup.sh populates this on first run so the default is authed.
     api_key: str = ""
+    # Explicit opt-in to run with api_key unset. Default false — an empty
+    # api_key will refuse to boot unless this flag is true. Prevents silently
+    # shipping a production Pi with no auth because the operator never ran
+    # setup.sh or forgot to set SPOREPRINT_API_KEY.
+    allow_unauthenticated: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
 

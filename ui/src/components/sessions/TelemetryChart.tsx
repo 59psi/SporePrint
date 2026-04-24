@@ -11,6 +11,7 @@ import {
   ReferenceArea,
 } from 'recharts'
 import { api } from '../../api/client'
+import { reportFetchError } from '../../stores/toastStore'
 
 interface Props {
   nodeId: string
@@ -56,7 +57,7 @@ export default function TelemetryChart({
     api
       .get<DataPoint[]>(`/telemetry/history?${params}`)
       .then(setData)
-      .catch(() => {})
+      .catch((err) => reportFetchError('TelemetryChart/history', err, "Couldn't load telemetry history"))
   }, [nodeId, sensor, fromTs, toTs, rangeSeconds, resolution])
 
   const formatTime = (ts: number) => {

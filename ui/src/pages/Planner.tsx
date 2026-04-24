@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Calendar, Star, AlertTriangle, Thermometer, Droplets } from 'lucide-react'
 import { api } from '../api/client'
 import { displayTemp } from '../lib/units'
+import { reportFetchError } from '../stores/toastStore'
 
 interface RecommendedSpecies {
   species_id: string
@@ -37,7 +38,7 @@ export default function Planner() {
       setCalendarLoading(true)
       api.get<MonthData[]>('/planner/calendar')
         .then(setCalendar)
-        .catch(() => {})
+        .catch((err) => reportFetchError('Planner/calendar', err, "Couldn't load grow calendar"))
         .finally(() => setCalendarLoading(false))
     }
   }, [tab, calendar.length])

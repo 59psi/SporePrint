@@ -7,6 +7,7 @@ import {
   FileCode, Download,
 } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 import WiringDiagram from '../components/builder/WiringDiagram'
 
 interface CapabilityGroup {
@@ -127,18 +128,22 @@ export default function Builder() {
   const resultRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    api.get<TierSummary[]>('/builder/tiers').then(setTiers).catch(() => {})
+    api.get<TierSummary[]>('/builder/tiers').then(setTiers).catch((err) =>
+      reportFetchError('Builder/tiers', err, "Couldn't load builder tiers")
+    )
     api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/models')
-      .then(setModels).catch(() => {})
+      .then(setModels).catch((err) => reportFetchError('Builder/models', err, "Couldn't load 3D models"))
     api.get<{filename: string, size_bytes: number, url: string}[]>('/builder/diagrams')
-      .then(setDiagrams).catch(() => {})
+      .then(setDiagrams).catch((err) => reportFetchError('Builder/diagrams', err, "Couldn't load wiring diagrams"))
     api.get<{
       node: string
       path: string
       files: {filename: string, size_bytes: number, url: string}[]
       bundle_url?: string
       bundle_filename?: string
-    }[]>('/builder/firmware').then(setFirmware).catch(() => {})
+    }[]>('/builder/firmware').then(setFirmware).catch((err) =>
+      reportFetchError('Builder/firmware', err, "Couldn't load firmware bundles")
+    )
   }, [])
 
   const selectTier = async (tierId: string) => {

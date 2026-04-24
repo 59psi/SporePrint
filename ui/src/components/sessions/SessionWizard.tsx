@@ -4,6 +4,7 @@ import { api } from '../../api/client'
 import { CATEGORY_COLORS } from '../../constants/colors'
 import { haptic } from '../../lib/haptics'
 import type { Session } from '../../stores/sessionStore'
+import { reportFetchError } from '../../stores/toastStore'
 
 interface SpeciesProfile {
   id: string
@@ -49,8 +50,12 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
   })
 
   useEffect(() => {
-    api.get<SpeciesProfile[]>('/species').then(setProfiles).catch(() => {})
-    api.get<Chamber[]>('/chambers').then(setChambers).catch(() => {})
+    api.get<SpeciesProfile[]>('/species').then(setProfiles).catch((err) =>
+      reportFetchError('SessionWizard/species', err, "Couldn't load species list")
+    )
+    api.get<Chamber[]>('/chambers').then(setChambers).catch((err) =>
+      reportFetchError('SessionWizard/chambers', err, "Couldn't load chambers")
+    )
   }, [])
 
   const selectedProfile = profiles.find((p) => p.id === form.species_profile_id)

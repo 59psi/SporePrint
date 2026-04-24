@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CloudSun, AlertTriangle, CheckCircle, Loader2, Brain } from 'lucide-react'
 import { api } from '../../api/client'
 import { convertTemp } from '../../lib/units'
+import { reportFetchError } from '../../stores/toastStore'
 
 interface DaySummary {
   date: string
@@ -37,12 +38,12 @@ export default function WeatherForecast() {
   useEffect(() => {
     api.get<ImpactData>('/weather/impact').then((d) => {
       if (d && d.forecast) setData(d)
-    }).catch(() => {})
+    }).catch((err) => reportFetchError('WeatherForecast/impact', err, "Weather forecast unavailable"))
 
     const interval = setInterval(() => {
       api.get<ImpactData>('/weather/impact').then((d) => {
         if (d && d.forecast) setData(d)
-      }).catch(() => {})
+      }).catch((err) => reportFetchError('WeatherForecast/impact-refresh', err, "Couldn't refresh weather forecast"))
     }, 600_000) // refresh every 10 min
     return () => clearInterval(interval)
   }, [])

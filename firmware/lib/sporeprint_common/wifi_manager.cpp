@@ -85,9 +85,26 @@ void WiFiManager::_startCaptivePortal() {
 
     _portal->begin();
 
+    // Hard ceiling on how long the node sits in captive-portal mode. Without
+    // this, a user who opens the portal page, gets distracted, and never
+    // submits the form leaves the node stuck in AP mode forever. After 10
+    // minutes with no submit, reboot so the node re-attempts its saved
+    // credentials (or, if none, comes back into the portal fresh).
+    const unsigned long PORTAL_TIMEOUT_MS = 10UL * 60UL * 1000UL;
+    unsigned long portalStart = millis();
+
     while (!_portalDone) {
         _portal->handleClient();
         delay(10);
+
+        if (millis() - portalStart > PORTAL_TIMEOUT_MS) {
+            Serial.println("[WIFI] Captive portal timed out — rebooting to retry");
+            delete _portal;
+            _portal = nullptr;
+            delay(500);
+            ESP.restart();
+            return;  // unreachable; ESP.restart() does not return
+        }
     }
 
     delay(2000);

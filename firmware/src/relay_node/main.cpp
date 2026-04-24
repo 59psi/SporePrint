@@ -1,7 +1,14 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_task_wdt.h>
 #include "sporeprint_common.h"
 #include "health.h"
+
+// 10-second task watchdog. Relay loop() must check in at least this often;
+// if it gets stuck (WiFi reconnect pathology, MQTT library hang, etc.) the
+// ESP32 reboots. Safe state on reset is "all channels OFF" — which setup()
+// already enforces with ledcWrite(i, 0) on every boot.
+static const uint32_t WDT_TIMEOUT_SEC = 10;
 
 #define NODE_TYPE "relay"
 #define DEFAULT_NODE_ID "relay-01"
@@ -94,8 +101,24 @@ void onChannelCommand(const char* topic, JsonDocument& doc) {
         pwm = doc["pwm"].as<uint8_t>();
         on = pwm > 0;
     }
-    if (doc.containsKey("duration_sec") && doc["duration_sec"].as<int>() > 0) {
-        channels[ch].offAt = millis() + (doc["duration_sec"].as<unsigned long>() * 1000);
+    if (doc.containsKey("duration_sec")) {
+        // Accept as signed to catch negative payloads, then clamp to
+        // [1, 3600] s. Without this, a huge or negative value can wrap
+        // millis() arithmetic and latch a relay ON indefinitely — the
+        // worst failure mode for a heater or humidifier.
+        int requested = doc["duration_sec"].as<int>();
+        if (requested > 0) {
+            const int MAX_DURATION_SEC = 3600;
+            int clamped = requested;
+            if (clamped > MAX_DURATION_SEC) {
+                Serial.printf("[RELAY] duration_sec %d > %d, clamping\n",
+                              requested, MAX_DURATION_SEC);
+                clamped = MAX_DURATION_SEC;
+            }
+            channels[ch].offAt = millis() + ((unsigned long)clamped * 1000UL);
+        } else if (requested < 0) {
+            Serial.printf("[RELAY] ignoring negative duration_sec %d\n", requested);
+        }
     }
 
     Serial.printf("[RELAY] Ch%d (%s): %s PWM=%d\n", ch, CHANNEL_NAMES[ch], on ? "ON" : "OFF", pwm);
@@ -110,11 +133,18 @@ void setup() {
 
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
 
-    // Initialize all channels OFF
+    // Initialize all channels OFF BEFORE anything that could block. If the
+    // WDT trips during WiFi provisioning on a subsequent boot, coming up in
+    // the all-off state is the documented "safe" recovery.
     for (int i = 0; i < NUM_CHANNELS; i++) {
         ledcAttach(CHANNEL_PINS[i], PWM_FREQ, PWM_RESOLUTION);
         ledcWrite(i, 0);
     }
+
+    // Arm the task watchdog. Panic=true reboots on timeout (not just logs).
+    // Subscribe the Arduino main task (the one that runs setup()/loop()).
+    esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
+    esp_task_wdt_add(NULL);
 
     wifi.begin();
 
@@ -140,6 +170,11 @@ void setup() {
 }
 
 void loop() {
+    // Pet the watchdog at the top of every loop iteration. If any of the
+    // subsequent calls deadlocks for >WDT_TIMEOUT_SEC, the ESP32 reboots
+    // and setup() re-initializes all channels to OFF.
+    esp_task_wdt_reset();
+
     mqtt->loop();
     ota->loop();
     heartbeat->loop();

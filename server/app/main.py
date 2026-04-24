@@ -20,6 +20,7 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .config import settings
     from .db import init_db
     from .mqtt import start_mqtt
     from .species.service import seed_builtins
@@ -28,6 +29,26 @@ async def lifespan(app: FastAPI):
     from .cloud.service import start_cloud_connector
     from .retention.service import start_retention_task
     from .weather.service import start_weather_polling
+
+    log = logging.getLogger(__name__)
+
+    # Fail loudly if api_key is unset. allow_unauthenticated must be
+    # explicitly true for the server to boot without an API key — the
+    # previous behavior silently ran in LAN-trust mode, which is fine on
+    # an isolated network but dangerous if the Pi is ever port-forwarded
+    # or reachable from untrusted WiFi.
+    if not settings.api_key:
+        if not settings.allow_unauthenticated:
+            raise RuntimeError(
+                "SPOREPRINT_API_KEY is empty and SPOREPRINT_ALLOW_UNAUTHENTICATED=false. "
+                "Either set SPOREPRINT_API_KEY (recommended — run setup.sh) or, for "
+                "intentional LAN-trust mode on an isolated network, set "
+                "SPOREPRINT_ALLOW_UNAUTHENTICATED=true."
+            )
+        log.warning(
+            "SPOREPRINT_API_KEY is empty — running in LAN-trust mode with no auth. "
+            "Any host that can reach this server can read telemetry and issue commands."
+        )
 
     await init_db()
     await seed_builtins()
@@ -162,7 +183,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="3.4.6", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="3.4.7", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -253,7 +274,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.4.6"}
+    return {"status": "ok", "version": "3.4.7"}
 
 
 # Track Socket.IO clients for health reporting

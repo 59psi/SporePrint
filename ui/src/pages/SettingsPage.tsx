@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Wifi, WifiOff, Plug, Database, RefreshCw, Smartphone, Copy, Check, Thermometer, Scale, Settings2, Loader2, RotateCcw } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 import { getTempUnit, getWeightUnit } from '../lib/units'
 import { haptic } from '../lib/haptics'
 
@@ -302,7 +303,9 @@ function PairingCodeSection() {
       const data = await api.post<{ code: string; expires_in: number }>('/cloud/pairing-code', {})
       setCode(data.code)
       setExpiresIn(data.expires_in)
-    } catch { /* ignore */ }
+    } catch (err) {
+      reportFetchError('Settings/pairing-code', err, "Couldn't generate pairing code")
+    }
     setGenerating(false)
   }
 
@@ -388,9 +391,15 @@ export default function SettingsPage() {
   }
 
   const refresh = () => {
-    api.get<HardwareNode[]>('/hardware/nodes').then(setNodes).catch(() => {})
-    api.get<SmartPlug[]>('/automation/plugs').then(setPlugs).catch(() => {})
-    api.get<{ status: string; version: string }>('/health').then(setHealth).catch(() => {})
+    api.get<HardwareNode[]>('/hardware/nodes').then(setNodes).catch((err) =>
+      reportFetchError('Settings/hardware-nodes', err, "Couldn't load hardware nodes")
+    )
+    api.get<SmartPlug[]>('/automation/plugs').then(setPlugs).catch((err) =>
+      reportFetchError('Settings/plugs', err, "Couldn't load smart plugs")
+    )
+    api.get<{ status: string; version: string }>('/health').then(setHealth).catch((err) =>
+      reportFetchError('Settings/health', err, "Couldn't check server health")
+    )
   }
 
   useEffect(refresh, [])
