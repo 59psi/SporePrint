@@ -243,11 +243,13 @@ void setup() {
     // I2C Sensors
     Wire.begin();
 
-    // SHT31
+    // SHT31 — ClosedCube SHT31D 1.5.x returns the serial number directly as
+    // uint32_t rather than a struct. Zero is treated as "not responding" per
+    // the library's convention for failed reads.
     sht31.begin(0x44);
-    SHT31D check = sht31.readSerialNumber();
-    if (check.error == SHT3XD_NO_ERROR) {
-        Serial.printf("[SENSOR] SHT31 found (SN: %u)\n", check.sn);
+    uint32_t sht31Serial = sht31.readSerialNumber();
+    if (sht31Serial != 0) {
+        Serial.printf("[SENSOR] SHT31 found (SN: %u)\n", sht31Serial);
         sht31Ok = true;
     } else {
         Serial.println("[SENSOR] SHT31 not found!");

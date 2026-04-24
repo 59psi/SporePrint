@@ -5,6 +5,21 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.8] - 2026-04-23
+
+Firmware CI hygiene — all four node builds now compile clean against a pinned `platformio/espressif32@6.13.0` platform. Pre-existing build breaks from mixed Arduino-ESP32 API usage fixed without changing any GPIO / I2C / PWM pin assignment. No protocol or runtime behavior change.
+
+### Changed
+
+- **`firmware/platformio.ini`:** pinned `platform = espressif32@6.13.0` (official, Arduino-ESP32 core 2.x). Previously unpinned — fresh `pio install` pulled whatever latest happened to be, and the code's mix of core-2.x and core-3.x APIs compiled against neither.
+- **`firmware/src/relay_node/main.cpp`:** replaced core-3.x `ledcAttach(pin, freq, resolution)` with the core-2.x `ledcSetup(channel, freq, resolution)` + `ledcAttachPin(pin, channel)` idiom. GPIO assignments (`CHANNEL_PINS[] = {25, 26, 27, 14}`) unchanged.
+- **`firmware/src/lighting_node/main.cpp`:** same PWM API swap. GPIO assignments unchanged.
+- **`firmware/src/climate_node/main.cpp`:** ClosedCube SHT31D 1.5 `readSerialNumber()` returns `uint32_t` directly, not an `SHT31D` struct. Reworked the sensor-present probe to check the serial number is non-zero instead of inspecting a `.error` field that doesn't exist on the 1.5 API. I2C address (`0x44`) unchanged.
+
+### Fixed
+
+- All four PlatformIO envs (`relay_node`, `climate_node`, `lighting_node`, `cam_node`) build cleanly from a fresh `pio install`. Post-install dev setup also needs `python3 -m pip install intelhex` for esptool's bootloader-assembly step on macOS with Homebrew Python 3.14.
+
 ## [3.4.7] - 2026-04-23
 
 Independent code-archaeology sweep. 12 fixes across firmware safety, server concurrency, UI error visibility, and ops hardening. No breaking protocol changes; mobile + cloud clients unchanged.

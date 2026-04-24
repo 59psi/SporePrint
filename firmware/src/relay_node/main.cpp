@@ -136,8 +136,14 @@ void setup() {
     // Initialize all channels OFF BEFORE anything that could block. If the
     // WDT trips during WiFi provisioning on a subsequent boot, coming up in
     // the all-off state is the documented "safe" recovery.
+    //
+    // Arduino-ESP32 core 2.x LEDC API: ledcSetup(channel, ...) to configure,
+    // ledcAttachPin(pin, channel) to bind, ledcWrite(channel, duty) to drive.
+    // The newer single-call ledcAttach(pin, freq, res) is core-3.x-only and
+    // the official platformio/espressif32 6.x still tracks core 2.x.
     for (int i = 0; i < NUM_CHANNELS; i++) {
-        ledcAttach(CHANNEL_PINS[i], PWM_FREQ, PWM_RESOLUTION);
+        ledcSetup(i, PWM_FREQ, PWM_RESOLUTION);
+        ledcAttachPin(CHANNEL_PINS[i], i);
         ledcWrite(i, 0);
     }
 
