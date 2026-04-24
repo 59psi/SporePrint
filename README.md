@@ -26,6 +26,10 @@
 
 ---
 
+> ## 🧰 v3.4.10 — lockstep bump (no Pi/firmware changes)
+>
+> Cloud-side parent repo added a `KVCache` protocol for ephemeral in-pod state so a future Redis migration is drop-in. No firmware or Pi-server code changed in this release — firmware still builds at v3.4.10 via the `VERSION.txt` lockstep.
+
 > ## 🛡️ v3.4.9 — archaeology close-out (31 fixes, firmware-heavy)
 >
 > Second fresh archaeology sweep (see the parent repo's `analysis/`). The Critical plus every High / Medium / Low + operator-feedback item closed in one pass. **HMAC-verified MQTT command frames on every ESP32 node** — the cloud→Pi signed chain now reaches firmware; `scripts/provision-node.sh` generates + distributes the shared key. **Watchdogs on all four nodes**, NTP at WiFi connect, OTA lifecycle events on MQTT, bare-`{}` relay refusal, wrap-safe `offAt`, 1 KB inbound buffer, live `safety_cutoffs`/`captureFail` counters, `esp_reset_reason` + reconnect counters in heartbeat, firmware_version from `VERSION.txt` (bump.sh-integrated), cam `server_url` allow-list, minimum 12-char OTA password, Mosquitto user-split, `/api/vision/frame` whitelisted, structured JSON logs with `request_id`. Builds clean on all four envs (65–69% flash); 276 tests green. `docs/firmware-security.md` documents the secure-boot-v2 / flash-encryption opt-in path.

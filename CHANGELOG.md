@@ -5,6 +5,10 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.10] - 2026-04-24
+
+Lockstep version bump — no Pi or firmware changes. Cloud-side parent repo introduced a `KVCache` protocol for ephemeral in-pod state so a future Redis migration is drop-in. Firmware build unchanged.
+
 ## [3.4.9] - 2026-04-24
 
 Fresh archaeology sweep of v3.4.8 (`analysis/02-security.md` in the parent repo). All Critical, High, Medium, Low + operator-feedback items closed in one pass. Firmware grew real defense-in-depth at the MQTT layer; the cloud relay gained tier/ownership re-checks + rate limiting + `cmd_id` correlation; the Pi server got structured logs + split MQTT ACL + synced dependency pins. Firmware-specific narrative in `firmware/CHANGELOG.md#349`.

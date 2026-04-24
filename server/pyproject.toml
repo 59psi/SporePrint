@@ -1,6 +1,6 @@
 [project]
 name = "sporeprint-server"
-version = "3.4.9"
+version = "3.4.10"
 requires-python = ">=3.11"
 dependencies = [
     # v3.4.9 — cap-only pins matching cloud/pyproject.toml policy (L-3).
