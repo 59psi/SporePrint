@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="ui/public/mushroom-logo.svg" alt="SporePrint" width="80" />
-</p>
-
 <h1 align="center">SporePrint</h1>
 
 <p align="center">
@@ -29,6 +25,10 @@
 </p>
 
 ---
+
+> ## 🔬 v3.4.7 — independent archaeology sweep
+>
+> External code-review agent ran over this repo and found 14 items; 12 were real. Firmware: relay node clamps MQTT `duration_sec` to ≤3600 s and arms a 10 s ESP32 task watchdog (safe state on reset = all channels OFF); captive-portal loop gets a 10-minute timeout; climate node clamps `read_interval_ms`/`publish_interval_ms` to sane ranges with Serial warn on out-of-range. Server: `asyncio.Lock` guards `automation/engine` override + rule caches and `cloud/service` replay OrderedDict; `sessions.update_session` collapsed to a single COALESCE UPDATE so partial failure can't half-write a row; new `SPOREPRINT_ALLOW_UNAUTHENTICATED` flag makes LAN-trust mode explicit opt-in with a loud boot warning. UI: new toast store + `reportFetchError` replaces 26 silent `.catch(() => {})` / `catch {}` swallows across 13 pages; `api` client accepts `AbortSignal` so `Vision.tsx` can cancel stale analyses on frame-switch. Ops: healthcheck blocks + `service_healthy` gating in `docker-compose.yml`. Docs: broken logo ref removed, README refs renamed from `CLAUDE.md` → `AGENTS.md`. 276 server tests green.
 
 > ## 🔗 v3.4.6 — lockstep bump (no Pi changes)
 >
@@ -380,7 +380,7 @@ SporePrint/
 │       └── __tests__/
 ├── config/                    # Mosquitto config
 ├── docker-compose.yml
-└── CLAUDE.md                  # Full system specification
+└── AGENTS.md                  # Full system specification
 ```
 
 ### UI Pages
@@ -654,7 +654,7 @@ Contributions are welcome. Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Follow existing code conventions (see `CLAUDE.md` for full specification)
+3. Follow existing code conventions (see `AGENTS.md` for full specification)
 4. Add tests for new backend functionality
 5. Run `cd server && ruff check app/ && pytest` and `cd ui && npm run check` before submitting
 6. Open a pull request with a clear description of the change

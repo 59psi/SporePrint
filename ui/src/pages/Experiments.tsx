@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { FlaskConical, Plus, X, BarChart3, ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Experiment {
   id: number
@@ -44,7 +45,9 @@ export default function Experiments() {
   })
 
   useEffect(() => {
-    api.get<Experiment[]>('/experiments').then(setExperiments).catch(() => {})
+    api.get<Experiment[]>('/experiments').then(setExperiments).catch((err) =>
+      reportFetchError('Experiments/list', err, "Couldn't load experiments")
+    )
   }, [])
 
   const handleCreate = async () => {

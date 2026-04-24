@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { FileText, Download, Brain, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Session {
   id: number
@@ -27,7 +28,9 @@ export default function Transcripts() {
   const [markdownPreview, setMarkdownPreview] = useState<string | null>(null)
 
   useEffect(() => {
-    api.get<Session[]>('/sessions').then(setSessions).catch(() => {})
+    api.get<Session[]>('/sessions').then(setSessions).catch((err) =>
+      reportFetchError('Transcripts/sessions', err, "Couldn't load sessions")
+    )
   }, [])
 
   const exportJSON = async (id: number) => {

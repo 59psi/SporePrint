@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Cog, ToggleLeft, ToggleRight, Clock, Zap, Shield, ChevronDown, ChevronUp } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Rule {
   id: number
@@ -30,8 +31,12 @@ export default function Automation() {
   const [tab, setTab] = useState<'rules' | 'history' | 'overrides'>('rules')
 
   useEffect(() => {
-    api.get<Rule[]>('/automation/rules').then(setRules).catch(() => {})
-    api.get<Firing[]>('/automation/firings?limit=20').then(setFirings).catch(() => {})
+    api.get<Rule[]>('/automation/rules').then(setRules).catch((err) =>
+      reportFetchError('Automation/rules', err, "Couldn't load automation rules")
+    )
+    api.get<Firing[]>('/automation/firings?limit=20').then(setFirings).catch((err) =>
+      reportFetchError('Automation/firings', err, "Couldn't load rule firings")
+    )
   }, [])
 
   const toggleRule = async (ruleId: number) => {
@@ -42,7 +47,9 @@ export default function Automation() {
       setRules((prev) =>
         prev.map((r) => (r.id === result.id ? { ...r, enabled: result.enabled } : r))
       )
-    } catch { /* ignore */ }
+    } catch (err) {
+      reportFetchError('Automation/toggle-rule', err, "Couldn't toggle rule")
+    }
   }
 
   return (

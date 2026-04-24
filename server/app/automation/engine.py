@@ -29,7 +29,20 @@ _overrides_loaded: bool = False
 
 # Per-actuator auto-off tasks for safety_max_on_seconds enforcement.
 # Key is "target:channel"; value is the asyncio.Task waiting to publish OFF.
+# Not guarded by an asyncio lock: single dict.get/pop/setitem ops are atomic
+# under the CPython GIL, and _cancel_safety_task is called from sync callers
+# (e.g. set_override) that can't acquire an async lock. The only realistic
+# race — two rules firing on the same actuator and both replacing the task —
+# is a logical concern (rule precedence), not a data-corruption one.
 _safety_tasks: dict[str, asyncio.Task] = {}
+
+# Guards the read-modify-write spans on the shared dicts above. Concurrent
+# telemetry frames can hit evaluate_rules while the override CRUD endpoints
+# mutate _overrides; without the lock, a dict resize during iteration can
+# raise RuntimeError in the evaluator. We do NOT hold these across DB awaits
+# — only around the in-memory mutations that follow.
+_state_lock = asyncio.Lock()
+_safety_tasks_lock = asyncio.Lock()
 
 # How much a reading must exceed the species ceiling before we page the operator.
 _TEMP_SAFETY_MARGIN_F = 5.0
@@ -44,7 +57,9 @@ async def _load_overrides_from_db():
     """Populate _overrides from the manual_overrides table; drop expired rows."""
     global _overrides_loaded
     now = time.time()
-    _overrides.clear()
+    # Fetch under DB lock only; swap the in-memory dict atomically afterward
+    # under _state_lock so concurrent evaluators never see a half-loaded cache.
+    fresh: dict[str, ManualOverride] = {}
     async with get_db() as db:
         await db.execute(
             "DELETE FROM manual_overrides WHERE expires_at IS NOT NULL AND expires_at < ?",
@@ -62,9 +77,12 @@ async def _load_overrides_from_db():
                 reason=row["reason"] or "",
                 expires_at=row["expires_at"],
             )
-            _overrides[_override_key(ov.target, ov.channel)] = ov
-    _overrides_loaded = True
-    log.info("Loaded %d manual overrides from DB", len(_overrides))
+            fresh[_override_key(ov.target, ov.channel)] = ov
+    async with _state_lock:
+        _overrides.clear()
+        _overrides.update(fresh)
+        _overrides_loaded = True
+    log.info("Loaded %d manual overrides from DB", len(fresh))
 
 
 async def ensure_overrides_loaded():
@@ -84,9 +102,12 @@ async def load_rules() -> list[AutomationRule]:
         )
         rows = await cursor.fetchall()
         rules = [AutomationRule.model_validate(deserialize_rule_row(row)) for row in rows]
+    # Update the cache outside the DB scope under the state lock so concurrent
+    # callers can't observe a torn _rule_cache / _cache_ts pair.
+    async with _state_lock:
         _rule_cache = rules
         _cache_ts = now
-        return rules
+    return rules
 
 
 async def set_override(override: ManualOverride):
@@ -118,16 +139,20 @@ async def set_override(override: ManualOverride):
                     "DELETE FROM safety_watchdogs WHERE target = ? AND channel = ?",
                     (override.target, override.channel),
                 )
-            _overrides[key] = override
+            await db.commit()
+            async with _state_lock:
+                _overrides[key] = override
             log.info("Override set: %s — %s", key, override.reason)
+            return
         else:
             await db.execute(
                 "DELETE FROM manual_overrides WHERE target = ? AND (channel IS ? OR channel = ?)",
                 (override.target, override.channel, override.channel),
             )
+            await db.commit()
+        async with _state_lock:
             _overrides.pop(key, None)
-            log.info("Override cleared: %s", key)
-        await db.commit()
+        log.info("Override cleared: %s", key)
 
 
 async def clear_override(target: str, channel: str | None):
@@ -139,7 +164,9 @@ async def clear_override(target: str, channel: str | None):
 async def get_overrides() -> list[ManualOverride]:
     await ensure_overrides_loaded()
     now = time.time()
-    expired = [k for k, v in _overrides.items() if v.expires_at and v.expires_at < now]
+    # Snapshot expired keys under the lock so we don't race with set_override.
+    async with _state_lock:
+        expired = [k for k, v in _overrides.items() if v.expires_at and v.expires_at < now]
     if expired:
         async with get_db() as db:
             await db.execute(
@@ -147,21 +174,36 @@ async def get_overrides() -> list[ManualOverride]:
                 (now,),
             )
             await db.commit()
-        for k in expired:
-            log.info("Override expired: %s", k)
-            del _overrides[k]
-    return list(_overrides.values())
+        async with _state_lock:
+            for k in expired:
+                log.info("Override expired: %s", k)
+                _overrides.pop(k, None)
+    async with _state_lock:
+        return list(_overrides.values())
 
 
 def is_overridden(target: str, channel: str | None) -> bool:
+    # Sync function called from the hot evaluation path — dict reads in CPython
+    # are atomic under the GIL, so we don't take the async lock here. The
+    # worst-case race is a stale-by-one-tick read (missing an override that was
+    # just set, or seeing an override that was just cleared), both of which
+    # self-heal on the next telemetry frame.
     now = time.time()
+    stale_keys: list[str] = []
     for key in [_override_key(target, channel), _override_key(target, None)]:
-        if key in _overrides:
-            ov = _overrides[key]
-            if ov.expires_at and ov.expires_at < now:
-                del _overrides[key]
-                continue
-            return True
+        ov = _overrides.get(key)
+        if ov is None:
+            continue
+        if ov.expires_at and ov.expires_at < now:
+            stale_keys.append(key)
+            continue
+        # Before declaring the channel overridden, sweep any expired entries
+        # we noticed along the way so callers don't accumulate cruft.
+        for k in stale_keys:
+            _overrides.pop(k, None)
+        return True
+    for k in stale_keys:
+        _overrides.pop(k, None)
     return False
 
 
@@ -215,7 +257,8 @@ async def evaluate_rules(
 
             if _evaluate_condition(rule.condition, readings, phase_params):
                 await _fire_rule(rule, readings, session, sio)
-                _last_fired[rule.id] = now
+                async with _state_lock:
+                    _last_fired[rule.id] = now
 
         except Exception as e:
             log.error("Error evaluating rule '%s': %s", rule.name, e)

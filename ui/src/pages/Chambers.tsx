@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Box, Plus, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Chamber {
   id: number
@@ -19,7 +20,9 @@ export default function Chambers() {
   const [description, setDescription] = useState('')
 
   useEffect(() => {
-    api.get<Chamber[]>('/chambers').then(setChambers).catch(() => {})
+    api.get<Chamber[]>('/chambers').then(setChambers).catch((err) =>
+      reportFetchError('Chambers/list', err, "Couldn't load chambers")
+    )
   }, [])
 
   const handleCreate = async () => {

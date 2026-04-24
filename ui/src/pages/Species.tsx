@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import { api } from '../api/client'
 import { CATEGORY_BADGE_COLORS } from '../constants/colors'
+import { reportFetchError } from '../stores/toastStore'
 
 interface PhaseParams {
   temp_min_f: number
@@ -85,7 +86,9 @@ export default function Species() {
   const [filter, setFilter] = useState<string>('all')
 
   useEffect(() => {
-    api.get<Profile[]>('/species').then(setProfiles).catch(() => {})
+    api.get<Profile[]>('/species').then(setProfiles).catch((err) =>
+      reportFetchError('Species/list', err, "Couldn't load species library")
+    )
   }, [])
 
   const filtered = filter === 'all' ? profiles : profiles.filter((p) => p.category === filter)

@@ -25,9 +25,18 @@ services:
       - SPOREPRINT_WEATHER_LON=${SPOREPRINT_WEATHER_LON:-}
       - SPOREPRINT_WEATHER_POLL_MINUTES=${SPOREPRINT_WEATHER_POLL_MINUTES:-10}
       - SPOREPRINT_API_KEY=${SPOREPRINT_API_KEY:-}
+      - SPOREPRINT_ALLOW_UNAUTHENTICATED=${SPOREPRINT_ALLOW_UNAUTHENTICATED:-false}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status==200 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     depends_on:
-      - mqtt
-      - ntfy
+      mqtt:
+        condition: service_healthy
+      ntfy:
+        condition: service_healthy
     restart: unless-stopped
 
   mqtt:
@@ -43,6 +52,12 @@ services:
       - ./config/mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
       - ./config/mosquitto/passwd:/mosquitto/config/passwd:ro
       - ./data/mosquitto:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/version' -C 1 -W 2 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   ntfy:
@@ -52,6 +67,12 @@ services:
     volumes:
       - ./data/ntfy:/var/cache/ntfy
     command: serve
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/v1/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   ui:
@@ -59,5 +80,6 @@ services:
     ports:
       - "3001:80"
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     restart: unless-stopped

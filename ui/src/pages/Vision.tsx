@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Camera, Brain, CheckCircle, XCircle, AlertTriangle, Eye } from 'lucide-react'
 import { api } from '../api/client'
 import { HEALTH_COLORS } from '../constants/colors'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Frame {
   id: number
@@ -28,23 +29,50 @@ export default function Vision() {
   const [frames, setFrames] = useState<Frame[]>([])
   const [selectedFrame, setSelectedFrame] = useState<Frame | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
+  // Tracks the in-flight Claude analysis request so we can cancel it when
+  // the user clicks a different frame (or unmounts). Without this, a slow
+  // response for frame A would clobber state after the user had already
+  // navigated to frame B.
+  const analysisController = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    api.get<Frame[]>('/vision/frames?limit=50').then(setFrames).catch(() => {})
+    api.get<Frame[]>('/vision/frames?limit=50').then(setFrames).catch((err) =>
+      reportFetchError('Vision/frames', err, "Couldn't load vision frames")
+    )
+    return () => {
+      analysisController.current?.abort()
+    }
   }, [])
 
   const triggerAnalysis = async (frameId: number) => {
+    // Cancel any previous analysis before starting a new one.
+    analysisController.current?.abort()
+    const controller = new AbortController()
+    analysisController.current = controller
     setAnalyzing(true)
     try {
-      const result = await api.post<Record<string, unknown>>(`/vision/frames/${frameId}/analyze`, {})
+      const result = await api.post<Record<string, unknown>>(
+        `/vision/frames/${frameId}/analyze`,
+        {},
+        { signal: controller.signal },
+      )
+      if (controller.signal.aborted) return
       setFrames((prev) =>
         prev.map((f) => (f.id === frameId ? { ...f, analysis_claude: result as Frame['analysis_claude'] } : f))
       )
       if (selectedFrame?.id === frameId) {
         setSelectedFrame({ ...selectedFrame, analysis_claude: result as Frame['analysis_claude'] })
       }
-    } catch { /* ignore */ }
-    setAnalyzing(false)
+    } catch (err) {
+      // AbortError is expected when the user navigates away — don't noise the
+      // log or pop a toast for a user-initiated cancel.
+      if (controller.signal.aborted) return
+      reportFetchError('Vision/analyze', err, "Analysis request failed")
+    } finally {
+      if (analysisController.current === controller) {
+        setAnalyzing(false)
+      }
+    }
   }
 
   const labelFrame = async (frameId: number, label: string, correct: boolean) => {

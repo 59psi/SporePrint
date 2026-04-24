@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { Bug, Upload, ChevronDown, ChevronRight, AlertTriangle, Shield } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Contaminant {
   name: string
@@ -50,7 +51,9 @@ export default function ContaminationGuide() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    api.get<LibraryEntry[]>('/contamination/library').then(setLibrary).catch(() => {})
+    api.get<LibraryEntry[]>('/contamination/library').then(setLibrary).catch((err) =>
+      reportFetchError('Contamination/library', err, "Couldn't load contamination library")
+    )
   }, [])
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

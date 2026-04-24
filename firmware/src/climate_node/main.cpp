@@ -53,13 +53,41 @@ float calcDewPointC(float tempC, float rh) {
 float cToF(float c) { return c * 9.0 / 5.0 + 32.0; }
 
 // ─── MQTT Command Handler ───────────────────────────────────────
+// Interval clamps protect against pathological MQTT payloads. Without them:
+//   - read_interval_ms = 0 busy-loops readSensors() and starves the MQTT /
+//     OTA tasks (WDT trip a few seconds later).
+//   - A gigantic value silently stalls sensor reads for days.
+// Clamp + log on out-of-range input rather than silently apply.
+static const unsigned long MIN_READ_INTERVAL_MS = 1000UL;       // 1 s
+static const unsigned long MAX_READ_INTERVAL_MS = 600000UL;     // 10 min
+static const unsigned long MIN_PUBLISH_INTERVAL_MS = 5000UL;    // 5 s
+static const unsigned long MAX_PUBLISH_INTERVAL_MS = 3600000UL; // 1 h
+
+static unsigned long clampULong(unsigned long v, unsigned long lo, unsigned long hi, const char* label) {
+    if (v < lo) {
+        Serial.printf("[CMD] %s=%lu below min %lu — clamping\n", label, v, lo);
+        return lo;
+    }
+    if (v > hi) {
+        Serial.printf("[CMD] %s=%lu above max %lu — clamping\n", label, v, hi);
+        return hi;
+    }
+    return v;
+}
+
 void onCommand(const char* topic, JsonDocument& doc) {
     if (doc.containsKey("read_interval_ms")) {
-        readInterval = doc["read_interval_ms"].as<unsigned long>();
+        unsigned long requested = doc["read_interval_ms"].as<unsigned long>();
+        readInterval = clampULong(requested,
+                                  MIN_READ_INTERVAL_MS, MAX_READ_INTERVAL_MS,
+                                  "read_interval_ms");
         Serial.printf("[CMD] Read interval set to %lu ms\n", readInterval);
     }
     if (doc.containsKey("publish_interval_ms")) {
-        publishInterval = doc["publish_interval_ms"].as<unsigned long>();
+        unsigned long requested = doc["publish_interval_ms"].as<unsigned long>();
+        publishInterval = clampULong(requested,
+                                     MIN_PUBLISH_INTERVAL_MS, MAX_PUBLISH_INTERVAL_MS,
+                                     "publish_interval_ms");
         Serial.printf("[CMD] Publish interval set to %lu ms\n", publishInterval);
     }
     if (doc.containsKey("calibrate_co2") && doc["calibrate_co2"].as<bool>()) {

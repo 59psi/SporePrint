@@ -10,6 +10,7 @@ import WeatherForecast from '../components/dashboard/WeatherForecast'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { socket } from '../api/socket'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 import { displayTemp, convertTemp, tempLabel } from '../lib/units'
 
 const DEMO_READING = {
@@ -117,7 +118,7 @@ export default function Dashboard() {
     setReading('climate-01', DEMO_READING)
     api.get<WeatherData>('/weather/current').then((w) => {
       if (w && !('status' in w)) setWeather(w)
-    }).catch(() => {})
+    }).catch((err) => reportFetchError('Dashboard/weather', err, "Couldn't load current weather"))
 
     socket.on('telemetry', (data: { node_id: string } & Record<string, number>) => {
       const { node_id, ...reading } = data

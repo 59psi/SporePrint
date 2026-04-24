@@ -40,6 +40,11 @@ _seen_command_ids: OrderedDict[str, None] = OrderedDict()
 _COMMAND_ID_CACHE_CAP = 1024
 _REPLAY_WINDOW_SECONDS = 60  # keep entries 2× the sign window for safety
 
+# Guards concurrent mutation of _seen_command_ids. The replay-cache rehydrator
+# populates it at startup while the command handler may already be accepting
+# frames, and the popitem eviction sweep can race with a concurrent insert.
+_replay_lock = asyncio.Lock()
+
 HEALTH_HEARTBEAT_INTERVAL = 60  # seconds
 
 # Task registry for health reporting
@@ -67,14 +72,15 @@ async def _rehydrate_replay_cache() -> int:
                 "SELECT command_id FROM cloud_command_replay ORDER BY received_at ASC"
             )
             rows = await cursor.fetchall()
-        for row in rows:
-            cid = row["command_id"]
-            _seen_command_ids[cid] = None
-            loaded += 1
-        # Trim to cap — should be a no-op unless the persistent store exceeded
-        # _COMMAND_ID_CACHE_CAP during the last session.
-        while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
-            _seen_command_ids.popitem(last=False)
+        async with _replay_lock:
+            for row in rows:
+                cid = row["command_id"]
+                _seen_command_ids[cid] = None
+                loaded += 1
+            # Trim to cap — should be a no-op unless the persistent store
+            # exceeded _COMMAND_ID_CACHE_CAP during the last session.
+            while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
+                _seen_command_ids.popitem(last=False)
     except Exception as e:
         log.warning("Cloud: replay cache rehydrate failed: %s", e)
     return loaded
@@ -222,19 +228,30 @@ async def start_cloud_connector():
                 })
                 return
 
-            if command_id in _seen_command_ids:
+            # Atomic check-and-insert under the replay lock so two concurrent
+            # frames carrying the same command_id can't both pass the dedup
+            # test. Without the lock, both would see "not in cache" and both
+            # would proceed to execute the command. We do the socket emit
+            # OUTSIDE the lock to avoid holding it across a network await.
+            already_seen = False
+            async with _replay_lock:
+                if command_id in _seen_command_ids:
+                    already_seen = True
+                else:
+                    _seen_command_ids[command_id] = None
+                    # Evict the OLDEST entry (FIFO) when the cache is over
+                    # capacity. OrderedDict.popitem(last=False) is O(1) and —
+                    # unlike set.pop() — removes the insertion-order-oldest,
+                    # not an arbitrary element.
+                    while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
+                        _seen_command_ids.popitem(last=False)
+            if already_seen:
                 await _sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
                     "error": "Replayed command id",
                 })
                 return
-            _seen_command_ids[command_id] = None
-            # Evict the OLDEST entry (FIFO) when the cache is over capacity.
-            # OrderedDict.popitem(last=False) is O(1) and — unlike set.pop() —
-            # removes the insertion-order-oldest, not an arbitrary element.
-            while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
-                _seen_command_ids.popitem(last=False)
             # v3.3.3 — persist so a restart inside the replay window still
             # rejects the replay. Failure to persist is logged but does not
             # reject the command; replay protection in that window falls back

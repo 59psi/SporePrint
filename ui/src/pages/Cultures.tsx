@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { GitBranch, Plus, X, ChevronRight } from 'lucide-react'
 import { api } from '../api/client'
+import { reportFetchError } from '../stores/toastStore'
 
 interface Culture {
   id: number
@@ -59,7 +60,9 @@ export default function Cultures() {
   })
 
   useEffect(() => {
-    api.get<Culture[]>('/cultures').then(setCultures).catch(() => {})
+    api.get<Culture[]>('/cultures').then(setCultures).catch((err) =>
+      reportFetchError('Cultures/list', err, "Couldn't load cultures")
+    )
   }, [])
 
   useEffect(() => {

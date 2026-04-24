@@ -5,6 +5,33 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.7] - 2026-04-23
+
+Independent code-archaeology sweep. 12 fixes across firmware safety, server concurrency, UI error visibility, and ops hardening. No breaking protocol changes; mobile + cloud clients unchanged.
+
+### Added
+
+- **Toast notification system** — `ui/src/stores/toastStore.ts` + `ui/src/components/ui/Toaster.tsx`. Replaces 26 silent `.catch(() => {})` / `catch { /* ignore */ }` swallows across 13 pages/components. Fetch failures now log with context to the console and surface a dismissable toast in the UI. `reportFetchError(context, err, userMessage)` is the single entry point.
+- **`allow_unauthenticated` config flag (`server/app/config.py`)** — explicit opt-in for running the Pi without `SPOREPRINT_API_KEY`. Default is `False`; the server refuses to boot when both the key is empty and the flag is false. When opted in, a loud startup WARNING replaces the silent LAN-trust behavior. `docker-compose.yml` defaults the env var to `false` — fresh stacks must set it to `true` explicitly or provide an api_key.
+- **`_SESSION_UPDATE_COLUMNS` whitelist (`server/app/sessions/service.py`)** — defense-in-depth for the (already Pydantic-typed) update column set.
+- **Docker healthchecks** — `server` (urllib → `/health`), `mqtt` (`mosquitto_sub` on `$SYS/broker/version`), `ntfy` (`wget /v1/health`). `depends_on` upgraded to the long form with `condition: service_healthy` so `server` waits for the broker to actually accept subscriptions and `ui` waits for the API to respond.
+- **AbortController for Vision analyze** — `ui/src/pages/Vision.tsx` now cancels in-flight `POST /vision/frames/{id}/analyze` when the user clicks a different frame. `api.post`/`get`/etc. accept an optional `{ signal }` option. Prevents stale responses clobbering the newer frame's state.
+
+### Changed
+
+- **`sessions.update_session` collapsed from N-per-column UPDATEs to a single `UPDATE ... COALESCE(?, col) ...`** statement. Partial failure mid-loop can no longer half-write a row; also 1 DB round-trip instead of up to 12.
+- **`automation.engine` — `_state_lock: asyncio.Lock`** guards read-modify-write spans on `_overrides`, `_rule_cache`, `_last_fired`. `_load_overrides_from_db` fetches into a fresh dict and atomically swaps under the lock so concurrent evaluators never observe a cleared cache. `get_overrides` expiry sweep is lock-protected.
+- **`cloud.service` — `_replay_lock: asyncio.Lock`** guards `_seen_command_ids` OrderedDict. Check-and-insert is atomic; two concurrent frames carrying the same command id can no longer both pass the dedup test. Socket emit is done outside the lock.
+
+### Fixed
+
+- **Firmware FW-1 (`relay_node/main.cpp`):** MQTT `duration_sec` is now clamped to `[1, 3600]` seconds before computing the off-at deadline. Previously, a huge or negative payload could wrap the `millis()` arithmetic and latch a relay ON indefinitely — the worst failure mode for a heater/humidifier.
+- **Firmware FW-2 (`relay_node/main.cpp`):** ESP32 task watchdog armed at 10 s. `loop()` resets on each iteration; any deadlock in MQTT/OTA/WiFi now triggers a reboot. Safe state on reset is all-channels-OFF (setup() enforces).
+- **Firmware FW-3 (`wifi_manager.cpp`):** Captive portal now has a 10-minute timeout. An abandoned provisioning session reboots the node rather than leaving it stranded in AP mode forever.
+- **Firmware FW-4 (`climate_node/main.cpp`):** `read_interval_ms` and `publish_interval_ms` MQTT payloads are clamped to sensible ranges (1s–10min read, 5s–1h publish) with Serial warn on out-of-range. A `read_interval_ms=0` payload previously would busy-loop `readSensors()` and starve the MQTT/OTA tasks.
+- **README:** removed broken `ui/public/mushroom-logo.svg` `<img>` reference. Renamed two `CLAUDE.md` references to `AGENTS.md` (the file that actually exists in this repo).
+- **Tests:** `server/tests/conftest.py` sets `SPOREPRINT_ALLOW_UNAUTHENTICATED=true` at import so the test process can boot under the new secure-by-default behavior.
+
 ## [3.4.6] - 2026-04-23
 
 No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.6 release-tooling fix — the parent repo added `scripts/sync-after-merge.sh` and a bump preflight to prevent submodule-pointer drift after rebase/squash merges on GitHub. See the parent repo's `CHANGELOG.md` for the full context.

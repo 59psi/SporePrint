@@ -3,6 +3,7 @@ import { Sprout, Plus, ChevronRight } from 'lucide-react'
 import { api } from '../api/client'
 import { STATUS_COLORS } from '../constants/colors'
 import { useSessionStore, type Session } from '../stores/sessionStore'
+import { reportFetchError } from '../stores/toastStore'
 import SessionDetail from '../components/sessions/SessionDetail'
 import SessionWizard from '../components/sessions/SessionWizard'
 
@@ -12,7 +13,9 @@ export default function Sessions() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
   useEffect(() => {
-    api.get<Session[]>('/sessions').then(setSessions).catch(() => {})
+    api.get<Session[]>('/sessions').then(setSessions).catch((err) =>
+      reportFetchError('Sessions/list', err, "Couldn't load sessions")
+    )
   }, [setSessions])
 
   const handleCreated = (session: Session) => {

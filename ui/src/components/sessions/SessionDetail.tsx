@@ -6,6 +6,7 @@ import {
 import { api } from '../../api/client'
 import { PHASE_ORDER } from '../../constants/phases'
 import { displayWeight, tempLabel } from '../../lib/units'
+import { reportFetchError } from '../../stores/toastStore'
 import PhaseTimeline from './PhaseTimeline'
 import TelemetryChart from './TelemetryChart'
 
@@ -56,8 +57,12 @@ export default function SessionDetail({ sessionId, onBack }: Props) {
   const rangeSeconds = rangeSecondsMap[timeRange] || 86400
 
   useEffect(() => {
-    api.get<SessionFull>(`/sessions/${sessionId}`).then(setSession).catch(() => {})
-    api.get<Event[]>(`/sessions/${sessionId}/events`).then(setEvents).catch(() => {})
+    api.get<SessionFull>(`/sessions/${sessionId}`).then(setSession).catch((err) =>
+      reportFetchError('SessionDetail/session', err, "Couldn't load session details")
+    )
+    api.get<Event[]>(`/sessions/${sessionId}/events`).then(setEvents).catch((err) =>
+      reportFetchError('SessionDetail/events', err, "Couldn't load session events")
+    )
   }, [sessionId])
 
   if (!session) return null
