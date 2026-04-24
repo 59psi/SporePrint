@@ -30,6 +30,10 @@
 
 ---
 
+> ## 🔗 v3.4.6 — lockstep bump (no Pi changes)
+>
+> Cloud-side v3.4.6 is a release-tooling fix: the parent repo's submodule pointer had drifted to a deleted branch-tip SHA after GitHub's rebase/squash merge of PR #4. The fix was repointing to `1c3be7d` (the equivalent commit on this repo's `main`) and adding a `sync-after-merge.sh` script + `bump.sh` preflight so the drift can't happen again. Pi side unchanged.
+
 > ## 🧼 v3.4.5 — lockstep bump (no Pi changes)
 >
 > Cloud-side v3.4.5 was a second `/simplify` pass over the v3.3.10 → v3.4.4 window: batched `metric_active_alerts` reads on every telemetry ingest, parallelized the daily-summary fan-out, bounded the auth caches, finally routed `alerts/escalation.py` through its persistence layer, and swept narrative-ID comments. Pi side unchanged.
