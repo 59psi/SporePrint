@@ -96,8 +96,11 @@ void setup() {
 
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
 
+    // Arduino-ESP32 core 2.x LEDC API (see relay_node/main.cpp for context).
+    // GPIO assignments unchanged — only the configure+attach API calls.
     for (int i = 0; i < NUM_CHANNELS; i++) {
-        ledcAttach(CHANNEL_PINS[i], PWM_FREQ, PWM_RESOLUTION);
+        ledcSetup(i, PWM_FREQ, PWM_RESOLUTION);
+        ledcAttachPin(CHANNEL_PINS[i], i);
         ledcWrite(i, 0);
     }
 

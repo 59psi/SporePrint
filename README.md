@@ -26,6 +26,10 @@
 
 ---
 
+> ## 🧪 v3.4.8 — firmware CI hygiene
+>
+> Firmware now builds clean from a fresh `pio install`. Pinned `platform = espressif32@6.13.0` so the Arduino-ESP32 core version is deterministic, then reshaped two mixed-API sites to match core 2.x: `ledcAttach(pin, freq, resolution)` → `ledcSetup(channel, …)` + `ledcAttachPin(pin, channel)` on relay + lighting nodes, and ClosedCube SHT31D 1.5's `readSerialNumber()` → `uint32_t` on the climate node. No GPIO / I2C / PWM pin changed — pure API reshape. Relay/climate/lighting/cam envs all build cleanly; macOS + Python 3.14 also needs `pip install intelhex` for esptool's bootloader step.
+
 > ## 🔬 v3.4.7 — independent archaeology sweep
 >
 > External code-review agent ran over this repo and found 14 items; 12 were real. Firmware: relay node clamps MQTT `duration_sec` to ≤3600 s and arms a 10 s ESP32 task watchdog (safe state on reset = all channels OFF); captive-portal loop gets a 10-minute timeout; climate node clamps `read_interval_ms`/`publish_interval_ms` to sane ranges with Serial warn on out-of-range. Server: `asyncio.Lock` guards `automation/engine` override + rule caches and `cloud/service` replay OrderedDict; `sessions.update_session` collapsed to a single COALESCE UPDATE so partial failure can't half-write a row; new `SPOREPRINT_ALLOW_UNAUTHENTICATED` flag makes LAN-trust mode explicit opt-in with a loud boot warning. UI: new toast store + `reportFetchError` replaces 26 silent `.catch(() => {})` / `catch {}` swallows across 13 pages; `api` client accepts `AbortSignal` so `Vision.tsx` can cancel stale analyses on frame-switch. Ops: healthcheck blocks + `service_healthy` gating in `docker-compose.yml`. Docs: broken logo ref removed, README refs renamed from `CLAUDE.md` → `AGENTS.md`. 276 server tests green.
