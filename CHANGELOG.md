@@ -5,6 +5,10 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2] - 2026-05-01
+
+Lockstep version bump only — no Pi-side, server, UI, or firmware changes. v4.0.2 fixes a cloud-web middleware short-circuit that was 5xx-ing Railway's healthcheck on the v4.0.1 deploy.
+
 ## [4.0.1] - 2026-05-01
 
 Lockstep version bump only — no Pi-side code, server, UI, or firmware changes in this release. All v4.0.1 deltas are in the parent cloud monorepo (cloud-web landing page, Dockerfile + start.sh runtime aliasing, middleware allow-list expansion, GHA deploy-job disable, jsdom lockfile sync, placeholder cleanup). The submodule pointer moves with the parent so `release-guard.sh`'s lockstep invariant stays green.
