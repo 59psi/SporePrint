@@ -6,6 +6,10 @@ Kept in lockstep with the Pi server + cloud repo via `scripts/bump.sh`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-05-01
+
+Lockstep version bump only — no firmware changes in this release. v4.0.1 is a parent-cloud hotfix release (landing page + runtime env aliasing + middleware healthcheck unblocking). No GPIO / I2C / PWM pin changes, no `partitions.csv` change, no `coredump.{h,cpp}` or `log_forward.{h,cpp}` change. The `VERSION.txt` bump is for the lockstep heartbeat string only.
+
 ## [4.0.0] - 2026-04-30
 
 Major version bump in lockstep with the cloud parent + Pi server v4. Firmware-side this release is purely additive: a 64 KB coredump partition, on-boot coredump upload over MQTT, and a 32-entry log-forward ring buffer drained on `SP_LOG()` calls. No GPIO / I2C / PWM pin assignment changes — the only mechanical change is the new `partitions.csv`.
