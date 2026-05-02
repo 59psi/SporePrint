@@ -5,6 +5,10 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.3] - 2026-05-02
+
+Lockstep version bump in step with the cloud parent — no Pi-side server, UI, or firmware code changes in this release.
+
 ## [4.0.2] - 2026-05-01
 
 Lockstep version bump only — no Pi-side, server, UI, or firmware changes. v4.0.2 fixes a cloud-web middleware short-circuit that was 5xx-ing Railway's healthcheck on the v4.0.1 deploy.
