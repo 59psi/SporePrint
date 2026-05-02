@@ -7,3 +7,5 @@
 #include "heartbeat.h"
 #include "offline_buffer.h"
 #include "frame_verify.h"
+#include "coredump.h"
+#include "log_forward.h"

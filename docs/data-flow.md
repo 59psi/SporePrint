@@ -2,6 +2,8 @@
 
 How data moves through the SporePrint system across its four main flows: sensor telemetry, weather intelligence, user actions, and the closed-loop hardware control path.
 
+> **Cloud-side context (v4)**: from the Pi's perspective, nothing about these flows changed. The cloud upgraded its public surface from a Vite SPA at `/app/*` to a Next.js 15 App Router app at `/`, both running on the same Railway service that has always handled the Pi's cloud connector. Telemetry / commands / heartbeats still hit the same `https://sporeprint.ai` Socket.IO endpoint.
+
 ```mermaid
 flowchart TB
     subgraph TelemetryFlow["① Telemetry Flow (sensor → storage → consumers)"]

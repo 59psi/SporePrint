@@ -142,7 +142,8 @@ void onChannelCommand(const char* topic, JsonDocument& doc) {
         }
     }
 
-    Serial.printf("[RELAY] Ch%d (%s): %s PWM=%d\n", ch, CHANNEL_NAMES[ch], on ? "ON" : "OFF", pwm);
+    SP_LOG(LOG_INFO, "[RELAY] Ch%d (%s): %s PWM=%d", ch, CHANNEL_NAMES[ch],
+           on ? "ON" : "OFF", pwm);
     setChannel(ch, on, pwm);
     reportChannel(ch);
 }
@@ -151,6 +152,8 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n=== SporePrint Relay Node ===");
+    SP_LOG(LOG_INFO, "[BOOT] relay node starting, reset_reason=%d",
+           (int)esp_reset_reason());
 
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
 
@@ -199,7 +202,11 @@ void setup() {
 
     heartbeat = new Heartbeat(*mqtt);
 
-    Serial.println("[SETUP] Relay node ready!");
+    // v4 archaeology fixes #12 + #13 — wire log forwarder, drain prior panic dump.
+    sporeprint::logfwd::LogForward::attachMqtt(mqtt);
+    sporeprint::coredump::uploadIfPresent(*mqtt);
+
+    SP_LOG(LOG_INFO, "[SETUP] relay node ready (channels=%d)", NUM_CHANNELS);
 }
 
 void loop() {
@@ -211,6 +218,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    sporeprint::logfwd::LogForward::loop();
 
     unsigned long now = millis();
 
@@ -227,7 +235,7 @@ void loop() {
         // because an explicit duration is the user / rule saying "don't
         // stay on past T"; honouring it is the defense.
         if (channels[i].offAt > 0 && (long)(now - channels[i].offAt) >= 0) {
-            Serial.printf("[SAFETY] Ch%d auto-off (timer expired)\n", i);
+            SP_LOG(LOG_WARN, "[SAFETY] Ch%d auto-off (timer expired)", i);
             setChannel(i, false, 0);
             reportChannel(i);
             if (healthReporter) healthReporter->channels[i].safetyCutoffs++;
@@ -236,7 +244,7 @@ void loop() {
         // backstop against a stuck channel.
         if (channels[i].on && channels[i].onSince > 0 &&
             (now - channels[i].onSince) > channels[i].maxOnMs) {
-            Serial.printf("[SAFETY] Ch%d auto-off (max-on exceeded)\n", i);
+            SP_LOG(LOG_ERROR, "[SAFETY] Ch%d auto-off (max-on exceeded)", i);
             setChannel(i, false, 0);
             reportChannel(i);
             if (healthReporter) healthReporter->channels[i].safetyCutoffs++;

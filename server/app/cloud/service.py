@@ -86,6 +86,144 @@ async def _rehydrate_replay_cache() -> int:
     return loaded
 
 
+# Allowlist of accepted target_kind values. The Pi resolves these to a
+# concrete node_id at publish time via the hardware_nodes registry; the
+# `system` kind is a virtual target the Pi server handles in-process
+# (automation pause/resume, session start/end, rule suspend, reboot,
+# ota). Mobile + cloud-relay + Pi all share this allowlist verbatim.
+_VALID_TARGET_KINDS: set[str] = {"climate", "relay", "lighting", "camera", "system"}
+
+
+async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[bool, str | None]:
+    """Handle a chamber-level "system" command in-process — no MQTT publish.
+    These are operations on the Pi server itself rather than a hardware node.
+
+    Returns `(ok, error)`. The cloud `command_result` ack carries this back
+    to the originating client.
+
+    Channels:
+      - automation: payload `{paused: bool}` — pause/resume the chamber's
+        automation engine.
+      - session_start / session_end: forward to the sessions service.
+      - rule: payload `{rule_id: str, minutes: int}` — temporarily suspend
+        a single automation rule.
+      - reboot: schedule `systemctl reboot` after a 5s grace period so the
+        ack flushes before the box goes down.
+      - ota: schedule a firmware update (placeholder — Pi-side updater
+        is the next piece).
+    """
+    if not channel:
+        return False, "system command requires a channel"
+
+    if channel == "automation":
+        try:
+            from ..automation.engine import set_paused
+        except ImportError:
+            return False, "automation engine not available on this Pi"
+        try:
+            await set_paused(bool(payload.get("paused", False)))
+            return True, None
+        except Exception as e:
+            return False, f"automation toggle failed: {type(e).__name__}: {e}"
+
+    if channel in ("session_start", "session_end"):
+        try:
+            from ..sessions.service import handle_remote_command
+        except ImportError:
+            return False, "sessions service not available on this Pi"
+        try:
+            await handle_remote_command(channel, payload)
+            return True, None
+        except Exception as e:
+            return False, f"session command failed: {type(e).__name__}: {e}"
+
+    if channel == "rule":
+        try:
+            from ..automation.engine import suspend_rule
+        except ImportError:
+            return False, "automation engine not available on this Pi"
+        rule_id = payload.get("rule_id")
+        minutes = int(payload.get("minutes", 30))
+        if not isinstance(rule_id, str) or not rule_id:
+            return False, "rule_suspend requires payload.rule_id"
+        try:
+            await suspend_rule(rule_id, minutes)
+            return True, None
+        except Exception as e:
+            return False, f"rule suspend failed: {type(e).__name__}: {e}"
+
+    if channel == "reboot":
+        # Schedule the reboot AFTER the ack flushes — we don't want to
+        # blackhole the response. 5s gives the relay + mobile time to
+        # receive the success ack. subprocess with a static arg list
+        # avoids shell-injection risk; the args are hardcoded constants.
+        async def _reboot_task():
+            try:
+                await asyncio.sleep(5)
+                import subprocess
+                subprocess.run(["sudo", "systemctl", "reboot"], check=False)
+            except Exception as e:
+                log.error("Reboot scheduling failed: %s", e)
+        asyncio.create_task(_reboot_task())
+        return True, None
+
+    if channel == "ota":
+        firmware_version = payload.get("firmware_version")
+        channel_str = payload.get("channel", "stable")
+        if not isinstance(firmware_version, str) or not firmware_version:
+            return False, "ota requires payload.firmware_version"
+        if channel_str not in ("stable", "beta", "dev"):
+            return False, "ota channel must be one of: stable | beta | dev"
+
+        # Run the full OTA pipeline (download → verify Ed25519 → stage →
+        # promote → systemctl restart) as a background task so the
+        # command_result ack flushes BEFORE we restart ourselves. Failure
+        # state is persisted to /var/lib/sporeprint/ota/state.json — the
+        # next-boot health check surfaces it. The running install is
+        # never touched if any step fails.
+        from . import ota as _ota
+        log.info(
+            "OTA pipeline starting: version=%s channel=%s",
+            firmware_version, channel_str,
+        )
+        async def _ota_task():
+            await asyncio.sleep(2)  # let the ack flush
+            try:
+                result = await _ota.run_ota_update(firmware_version, channel_str)
+                if result.get("ok"):
+                    log.info("OTA pipeline complete: %s", result)
+                else:
+                    log.error(
+                        "OTA pipeline failed at step=%s: %s",
+                        result.get("step"), result.get("error"),
+                    )
+            except Exception as e:
+                log.exception("OTA pipeline raised: %s", e)
+        asyncio.create_task(_ota_task())
+        return True, None
+
+    return False, f"Unknown system channel '{channel}'"
+
+
+async def _resolve_node_id_by_type(node_type: str) -> str | None:
+    """Pick the chamber's hardware node of the given type. Most chambers
+    have exactly one of each kind; we pick the most-recently-seen if
+    multiple are registered. Returns None when no matching node exists,
+    in which case the command is rejected upstream.
+    """
+    from ..db import get_db
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT node_id FROM hardware_nodes WHERE node_type = ? "
+            "ORDER BY last_seen DESC LIMIT 1",
+            (node_type,),
+        )
+        row = await cursor.fetchone()
+    if not row:
+        return None
+    return row["node_id"] if hasattr(row, "keys") else row[0]
+
+
 async def _persist_replay_id(command_id: str) -> None:
     """Persist an accepted command id for replay-cache rehydrate on restart.
 
@@ -261,19 +399,53 @@ async def start_cloud_connector():
             except Exception as e:
                 log.warning("Cloud: replay cache persist failed: %s", e)
 
-            target = data.get("target")
+            # v3.4.x coordinated wire shape: every command frame carries
+            # `{device_id, target_kind, channel, payload}`. mobile, cloud
+            # relay, and Pi all speak this shape — no translation anywhere.
+            # The Pi resolves `target_kind` → MQTT node_id at publish time
+            # via the hardware_nodes registry (internal data lookup, not
+            # cross-shape mapping). `target_kind == "system"` is a Pi-
+            # internal pseudo-target for chamber-level commands handled by
+            # the Pi server itself (automation, session, rule, reboot,
+            # ota), routed in-process rather than to MQTT.
+            target_kind = data.get("target_kind")
             channel = data.get("channel")
             payload = data.get("payload", {})
 
-            if not _is_safe_target(target) or (channel is not None and not _is_safe_channel(channel)):
+            if target_kind not in _VALID_TARGET_KINDS or (channel is not None and not _is_safe_channel(channel)):
                 await _sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
-                    "error": "Invalid target or channel",
+                    "error": f"Invalid target_kind or channel (target_kind={target_kind!r})",
                 })
                 return
 
-            if not await _target_is_registered(target):
+            # Resolve target_kind → MQTT node_id (or "system" for in-process).
+            if target_kind == "system":
+                target = "system"
+            else:
+                target = await _resolve_node_id_by_type(target_kind)
+                if not target:
+                    await _sio.emit("command_result", {
+                        "id": command_id,
+                        "success": False,
+                        "error": f"No registered {target_kind} node",
+                    })
+                    return
+                # Sanity check the resolved node id against the safety regex.
+                if not _is_safe_target(target):
+                    await _sio.emit("command_result", {
+                        "id": command_id,
+                        "success": False,
+                        "error": "Resolved node id failed safety check",
+                    })
+                    return
+
+            # `system` skips the registered-target check — it's a Pi-
+            # internal virtual target, not a hardware_nodes row. The
+            # downstream MQTT publish path also treats it specially
+            # (see below).
+            if target != "system" and not await _target_is_registered(target):
                 await _sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
@@ -281,25 +453,50 @@ async def start_cloud_connector():
                 })
                 return
 
-            # Late import to avoid circular dependency with mqtt.py
-            from ..mqtt import mqtt_publish
-
-            if channel:
-                topic = f"sporeprint/{target}/cmd/{channel}"
+            # Dispatch:
+            #   - target == "system"  → in-process system handler
+            #     (automation pause/resume, session start/end, rule
+            #     suspend, reboot, ota). No MQTT publish.
+            #   - hardware target     → MQTT publish to
+            #     `sporeprint/{node_id}/cmd/{channel}` per the existing
+            #     contract.
+            if target == "system":
+                ok, err = await _dispatch_system_command(channel, payload)
+                await _sio.emit("command_result", {
+                    "id": command_id,
+                    "success": ok,
+                    "target_kind": target_kind,
+                    "channel": channel,
+                    "error": err,
+                })
+                log.info(
+                    "Cloud: %s system command %s from %s",
+                    "executed" if ok else "rejected", channel, tier,
+                )
             else:
-                topic = f"sporeprint/{target}/cmd/config"
+                # Late import to avoid circular dependency with mqtt.py
+                from ..mqtt import mqtt_publish
 
-            published = await mqtt_publish(topic, payload)
+                if channel:
+                    topic = f"sporeprint/{target}/cmd/{channel}"
+                else:
+                    topic = f"sporeprint/{target}/cmd/config"
 
-            await _sio.emit("command_result", {
-                "id": command_id,
-                "success": bool(published),
-                "target": target,
-                "channel": channel,
-                "error": None if published else "mqtt_publish failed (broker disconnected?)",
-            })
-            log.info("Cloud: %s command %s/%s from %s",
-                     "executed" if published else "attempted", target, channel, tier)
+                published = await mqtt_publish(topic, payload)
+
+                await _sio.emit("command_result", {
+                    "id": command_id,
+                    "success": bool(published),
+                    "target_kind": target_kind,
+                    "target": target,
+                    "channel": channel,
+                    "error": None if published else "mqtt_publish failed (broker disconnected?)",
+                })
+                log.info(
+                    "Cloud: %s command %s/%s/%s from %s",
+                    "executed" if published else "attempted",
+                    target_kind, target, channel, tier,
+                )
 
         except Exception as e:
             log.error("Cloud: command execution failed: %s", e)
@@ -374,11 +571,19 @@ async def forward_component_health(node_id: str, data: dict):
 
 
 async def forward_event(event_type: str, data: dict):
-    """Forward session events, alerts, vision results to cloud."""
+    """Forward session events, alerts, vision results to cloud.
+
+    `ota_step` rides its own Socket.IO channel so the cloud relay can persist
+    pipeline progress into `ota_progress_events`. Everything else uses the
+    legacy `event` envelope so existing push/escalation handlers fire unchanged.
+    """
     if not settings.cloud_url or not _connected or not _sio:
         return
     try:
-        await _sio.emit("event", {"type": event_type, "ts": time.time(), **data})
+        if event_type == "ota_step":
+            await _sio.emit("ota_step", {"ts": time.time(), **data})
+        else:
+            await _sio.emit("event", {"type": event_type, "ts": time.time(), **data})
     except Exception as e:
         log.debug("Cloud: event forward failed: %s", e)
 

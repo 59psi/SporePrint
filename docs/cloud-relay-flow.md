@@ -1,14 +1,16 @@
 # Cloud Relay Flow
 
-Remote access flow: phone → cloud relay at sporeprint.ai → paired Pi on the operator's LAN. v3.3.1 added HMAC-SHA256 signing over the command frames; the Pi refuses unsigned frames.
+Remote access flow: client (mobile app or browser) → cloud relay at sporeprint.ai → paired Pi on the operator's LAN. v3.3.1 added HMAC-SHA256 signing over the command frames; the Pi refuses unsigned frames.
 
-**v3.4 gating (cloud side)**: the relay refuses a mobile-app Socket.IO connect whose effective tier is not `premium` — the connect raises `ConnectionRefusedError("subscription_required")`. The sequence below assumes a paying user. A free user never reaches step 1 beyond the refusal handshake. The Pi-side of the flow (steps starting at the `Pi->>Relay: Socket.IO connect`) is unaffected — Pi device-token auth doesn't know or care about mobile-user tier.
+**v3.4 gating (cloud side)**: the relay refuses a Socket.IO connect whose effective tier is not `premium` — the connect raises `ConnectionRefusedError("subscription_required")`. The sequence below assumes a paying user. A free user never reaches step 1 beyond the refusal handshake. The Pi-side of the flow (steps starting at the `Pi->>Relay: Socket.IO connect`) is unaffected — Pi device-token auth doesn't know or care about mobile-user tier.
+
+**v4 wire shape**: the browser-side Socket.IO client opens a WebSocket to `wss://sporeprint.ai/socket.io/`. The cloud-web Next.js layer's custom `server.js` listens for HTTP-upgrade events on `/socket.io/*` and proxies the WSS handshake to FastAPI on `127.0.0.1:9000`. The mobile app talks to the same URL directly (no HTTP-upgrade dance — Socket.IO falls through Next's rewrites). From the Pi's perspective, the FastAPI server it talks to is byte-compatible with the v3.x cloud — only the path taken by the *opposite* end of the relay (browser/mobile → FastAPI) changed.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant App as Mobile App<br/>(Capacitor)
-    participant Relay as Cloud Relay<br/>(sporeprint.ai)
+    participant App as Client<br/>(Capacitor mobile<br/>OR browser at sporeprint.ai)
+    participant Relay as Cloud Relay<br/>(sporeprint.ai · Next + FastAPI)
     participant Pi as Raspberry Pi<br/>(FastAPI)
     participant ESP as ESP32 Node
 

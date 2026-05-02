@@ -293,7 +293,7 @@ Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 
 ### Hardware Builder
 
-- **3 hardware tiers** -- Bare Bones (~$100), Recommended (~$200), All the Things (~$350+)
+- **3 hardware tiers** -- Bare Bones (~$120), Recommended (~$305), All the Things (~$445+)
 - **Shopping lists** -- complete parts lists with purchase links
 - **Wiring diagrams** -- color-coded SVG diagrams for each tier
 - **Step-by-step assembly** -- guides for building sensor and actuator nodes
@@ -496,9 +496,9 @@ Species can also be imported as custom JSON profiles for varieties not in the bu
 
 | Tier | Cost | What You Get |
 |------|------|--------------|
-| **Bare Bones** | ~$100 | Pi + 1 climate node + 1 relay + 1 smart plug |
-| **Recommended** | ~$200 | + CO2 sensor + lighting node + camera |
-| **All the Things** | ~$350+ | + multiple chambers + redundant sensors + full lighting |
+| **Bare Bones** | ~$120 | Pi + 1 climate node + 1 relay + 1 smart plug |
+| **Recommended** | ~$305 | + CO2 sensor + lighting node + camera |
+| **All the Things** | ~$445+ | + multiple chambers + redundant sensors + full lighting |
 
 The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams (4 wiring diagrams + system overview), step-by-step assembly instructions for each tier, and 8 parametric OpenSCAD 3D-printable enclosure models (sensor mounts, ESP32 cases, Pi case, fan duct, power supply mount).
 

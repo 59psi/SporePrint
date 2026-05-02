@@ -126,6 +126,23 @@ app header — `bump.sh` can set this from `VERSION.txt`.
   `sporeprint/<node>/ota`, so a half-applied OTA is visible cloud-side
   even without secure boot.
 
+## v4 cloud-side OTA pubkey landing zone
+
+The cloud added a `PUT /settings/ota-pubkey` endpoint in v4. Operators
+who run flash-encrypted nodes can register the public side of their
+secure-boot signing key with the cloud so the cloud-web admin surface
+can verify OTA payloads end-to-end before publishing them. The private
+key never leaves the operator's machine — only the public verifier
+ships. The endpoint persists into the operator's `profiles` row and is
+read by `cloud/app/devices/router.py::ota_push` before signing the
+delta. If no pubkey is registered, the cloud falls back to per-device
+HMAC-only flow as before.
+
+This is independent of web-push (browser) VAPID keys, which sign
+cloud-→-browser notifications and have nothing to do with firmware. The
+two key systems are namespaced separately (`CLOUD_VAPID_*` vs
+per-user `ota_pubkey`).
+
 ## What's still open for v3.5+
 
 - Tooling around `scripts/provision-node.sh --with-secure-boot` that

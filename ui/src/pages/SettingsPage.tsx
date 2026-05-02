@@ -250,6 +250,79 @@ function SystemSettingsSection() {
         </div>
       </fieldset>
 
+      {/* OTA Verify Key — Ed25519 public key used to verify firmware
+          bundles. Public keys aren't secrets, so we render the full
+          value (the settings_service `_mask` helper has an explicit
+          carve-out for this key). Empty = OTA disabled. */}
+      <fieldset className="mt-4">
+        <legend className="text-xs font-medium text-[var(--color-text-secondary)] uppercase tracking-wider mb-2">OTA Updates</legend>
+        <div className="py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">OTA verify key</span>
+            <SourceBadge source={settings.ota_pubkey_b64?.source} />
+          </div>
+          <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+            Base64-encoded raw 32-byte Ed25519 public key. Generate with{' '}
+            <code className="font-mono">scripts/generate-ota-keypair.py</code> and
+            paste the public half here. Empty = OTA disabled (fail-closed).
+          </p>
+          {editingKey === 'ota_pubkey_b64' ? (
+            <div className="flex gap-2 mt-1.5 items-end flex-wrap">
+              <input
+                type="text"
+                value={draft.ota_pubkey_b64 ?? ''}
+                onChange={(e) => setDraft({ ...draft, ota_pubkey_b64: e.target.value })}
+                placeholder="Paste base64 public key (44 chars)"
+                className={inputCls + ' min-w-[320px] flex-1 font-mono text-xs'}
+                autoFocus
+                spellCheck={false}
+                autoCorrect="off"
+              />
+              <button
+                onClick={() => save('ota_pubkey_b64', draft.ota_pubkey_b64 ?? '')}
+                disabled={saving === 'ota_pubkey_b64'}
+                className={saveBtnCls}
+              >
+                {saving === 'ota_pubkey_b64' ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                onClick={() => {
+                  setEditingKey(null)
+                  setDraft((d) => { const n = { ...d }; delete n.ota_pubkey_b64; return n })
+                }}
+                className="text-xs text-[var(--color-text-secondary)]"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2 mt-1.5 items-center">
+              <p className="text-xs font-mono break-all flex-1">
+                {settings.ota_pubkey_b64?.display_value || '(not set — OTA disabled)'}
+              </p>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setEditingKey('ota_pubkey_b64')}
+                  className="px-2 py-1 rounded text-xs text-[var(--color-accent-active)] hover:bg-[var(--color-bg-hover)]"
+                >
+                  Edit
+                </button>
+                {settings.ota_pubkey_b64?.source === 'user' && (
+                  <button
+                    onClick={() => revert('ota_pubkey_b64')}
+                    disabled={saving === 'ota_pubkey_b64'}
+                    className="px-2 py-1 rounded text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+                    title="Revert to env/default"
+                  >
+                    <RotateCcw size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </fieldset>
+
       {/* ntfy Topic */}
       <fieldset className="mt-4">
         <legend className="text-xs font-medium text-[var(--color-text-secondary)] uppercase tracking-wider mb-2">Notifications</legend>

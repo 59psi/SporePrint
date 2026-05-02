@@ -121,7 +121,7 @@ void readSensors() {
         if (healthReporter) healthReporter->sht31.recordRead(true);
     } else {
         sht31Ok = false;
-        Serial.println("[SENSOR] SHT31 read error!");
+        SP_LOG(LOG_WARN, "[SENSOR] SHT31 read error (err=%d)", (int)result.error);
         if (healthReporter) healthReporter->sht31.recordRead(false, "read error");
     }
 
@@ -221,6 +221,8 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n=== SporePrint Climate Node ===");
+    SP_LOG(LOG_INFO, "[BOOT] climate node starting, reset_reason=%d",
+           (int)esp_reset_reason());
 
     // Factory reset button
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
@@ -244,6 +246,10 @@ void setup() {
     mqtt = new MqttManager(config, NODE_TYPE, nodeId.c_str());
     mqtt->begin();
     mqtt->subscribe(mqtt->buildTopic("cmd/config").c_str(), onCommand);
+
+    // v4 archaeology fixes #12 + #13 — wire log forwarder, drain prior panic dump.
+    sporeprint::logfwd::LogForward::attachMqtt(mqtt);
+    sporeprint::coredump::uploadIfPresent(*mqtt);
 
     // OTA
     String hostname = "sporeprint-" + nodeId;
@@ -293,7 +299,8 @@ void setup() {
         Serial.println("[SENSOR] BH1750 not found!");
     }
 
-    Serial.println("[SETUP] Climate node ready!");
+    SP_LOG(LOG_INFO, "[SETUP] climate node ready (sht31=%d scd40=%d bh1750=%d)",
+           sht31Ok, scd40Ok, bh1750Ok);
 }
 
 // ─── Loop ───────────────────────────────────────────────────────
@@ -306,6 +313,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    sporeprint::logfwd::LogForward::loop();
     if (healthReporter) healthReporter->update();
 
     unsigned long now = millis();
