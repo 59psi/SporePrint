@@ -94,7 +94,7 @@ void onChannelCommand(const char* topic, JsonDocument& doc) {
                 level = 0;
             }
             setChannel(i, level);
-            Serial.printf("[LIGHT] %s = %d\n", CHANNEL_NAMES[i], level);
+            SP_LOG(LOG_INFO, "[LIGHT] %s = %d", CHANNEL_NAMES[i], level);
             reportLevels();
             return;
         }
@@ -105,6 +105,8 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n=== SporePrint Lighting Node ===");
+    SP_LOG(LOG_INFO, "[BOOT] lighting node starting, reset_reason=%d",
+           (int)esp_reset_reason());
 
     pinMode(FACTORY_RESET_PIN, INPUT_PULLUP);
 
@@ -144,10 +146,14 @@ void setup() {
     heartbeat = new Heartbeat(*mqtt);
     healthReporter = new LightingHealthReporter(nodeId.c_str(), *mqtt);
 
+    // v4 archaeology fixes #12 + #13 — wire log forwarder, drain prior panic dump.
+    sporeprint::logfwd::LogForward::attachMqtt(mqtt);
+    sporeprint::coredump::uploadIfPresent(*mqtt);
+
     // Start dark
     applyScene("colonization_dark");
 
-    Serial.println("[SETUP] Lighting node ready!");
+    SP_LOG(LOG_INFO, "[SETUP] lighting node ready (channels=%d)", NUM_CHANNELS);
 }
 
 void loop() {
@@ -156,6 +162,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    sporeprint::logfwd::LogForward::loop();
     if (healthReporter) healthReporter->update();
 
     unsigned long now = millis();

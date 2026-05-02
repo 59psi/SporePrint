@@ -8,6 +8,12 @@ venv/
 # Node
 node_modules/
 dist/
+# v4 exception — the Pi UI dist is the SHIPPED artifact (the v4 source
+# lives in the private cloud monorepo's frontend/packages/pi-ui/; we
+# distribute the built bundle via this public submodule). Allow
+# ui/dist/ specifically so the Pi can fetch + serve the v4 UI.
+!ui/dist/
+!ui/dist/**
 
 # Data
 data/

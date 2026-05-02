@@ -1,6 +1,6 @@
 [project]
 name = "sporeprint-server"
-version = "3.4.10"
+version = "4.0.0"
 requires-python = ">=3.11"
 dependencies = [
     # v3.4.9 — cap-only pins matching cloud/pyproject.toml policy (L-3).
@@ -21,6 +21,11 @@ dependencies = [
     "psutil>=5.9,<8.0",
     "qrcode[pil]>=7.4,<9.0",
     "icalendar>=5.0,<7.0",
+    # OTA self-update: Ed25519 detached-signature verification of firmware
+    # bundles fetched from updates.sporeprint.ai. cryptography ships with
+    # vetted, constant-time Ed25519 — much safer than a hand-rolled
+    # implementation (per the project's secure-by-default policy).
+    "cryptography>=41.0,<46.0",
 ]
 
 [project.optional-dependencies]

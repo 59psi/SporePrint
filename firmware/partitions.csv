@@ -1,0 +1,20 @@
+# 4 MB flash layout — shared by all four ESP32 nodes.
+#
+# v4 archaeology fix #12 added the coredump partition; the 64 KB came
+# out of spiffs (loss-tolerant caches that reformat cleanly on first boot
+# under the new table). app0/app1 offsets match platformio's default.csv
+# so pre-fix OTAs still boot under the new layout.
+#
+#   nvs       20 KB  — config_store (WiFi/MQTT creds, hmac_key)
+#   otadata    8 KB
+#   app0/app1 1.5 MB each — dual OTA slots
+#   spiffs    896 KB — offline buffer + label cache (was 960 KB)
+#   coredump  64 KB  — ELF panic dump; ESP-IDF truncates if oversize
+#
+# Name,     Type, SubType,  Offset,   Size,
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x180000,
+app1,       app,  ota_1,    0x190000, 0x180000,
+spiffs,     data, spiffs,   0x310000, 0xE0000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

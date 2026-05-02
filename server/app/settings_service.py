@@ -25,6 +25,18 @@ CONFIGURABLE_SETTINGS = {
     "weather_poll_minutes": ("weather_poll_minutes", "10", "Weather poll interval in minutes"),
     "claude_api_key": ("claude_api_key", "", "Claude API key for vision analysis"),
     "ntfy_topic": ("ntfy_topic", "sporeprint", "ntfy notification topic"),
+    "ota_pubkey_b64": (
+        "ota_pubkey_b64",
+        "",
+        "OTA verify key (base64-encoded raw 32-byte Ed25519 public key). "
+        "Paste the value from scripts/generate-ota-keypair.py. "
+        "Empty = OTA disabled (fail-closed).",
+    ),
+    "setup_complete": (
+        "setup_complete",
+        "0",
+        'First-run setup flag. "0" = wizard auto-launches; "1" = done.',
+    ),
 }
 
 
@@ -70,9 +82,13 @@ async def get_all_settings() -> dict:
 
 
 async def set_setting(key: str, value: str) -> dict:
-    """Set a user setting (persisted to DB, overrides env)."""
+    """Set a user setting (persisted to DB, overrides env). Per-key
+    validators run BEFORE persisting so a malformed value never lands
+    in the DB."""
     if key not in CONFIGURABLE_SETTINGS:
         raise ValueError(f"Unknown setting: {key}")
+
+    _validate_setting(key, value)
 
     async with get_db() as db:
         await db.execute(
@@ -105,8 +121,58 @@ async def delete_setting(key: str) -> dict:
     return await get_all_settings()
 
 
+def _validate_setting(key: str, value: str) -> None:
+    """Per-key validators. Raises ValueError on rejection. Empty value =
+    revert to default, always accepted."""
+    if not value:
+        return
+
+    if key == "ota_pubkey_b64":
+        # Decode AND construct the curve point so a valid-length-but-bogus
+        # value is rejected here, not at OTA time.
+        import base64
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except Exception as e:
+            raise ValueError(f"OTA pubkey is not valid base64: {e}") from e
+        if len(decoded) != 32:
+            raise ValueError(
+                f"OTA pubkey must decode to exactly 32 bytes, got {len(decoded)}"
+            )
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PublicKey,
+            )
+            Ed25519PublicKey.from_public_bytes(decoded)
+        except Exception as e:
+            raise ValueError(f"OTA pubkey rejected by Ed25519 verifier: {e}") from e
+
+    if key == "weather_lat":
+        try:
+            lat = float(value)
+        except ValueError as e:
+            raise ValueError("weather_lat must be a decimal number") from e
+        if lat < -90 or lat > 90:
+            raise ValueError("weather_lat must be in [-90, 90]")
+
+    if key == "weather_lon":
+        try:
+            lon = float(value)
+        except ValueError as e:
+            raise ValueError("weather_lon must be a decimal number") from e
+        if lon < -180 or lon > 180:
+            raise ValueError("weather_lon must be in [-180, 180]")
+
+
 def _mask(key: str, value: str) -> str:
-    """Mask sensitive values — show only last 4 chars for API keys."""
+    """Mask sensitive values — show only last 4 chars for API keys.
+
+    Public keys (ota_pubkey_b64) are explicitly excluded — they're not
+    secrets, and operators need to see the full value to verify which
+    key is loaded against the one printed by generate-ota-keypair.py.
+    """
+    if key == "ota_pubkey_b64":
+        return value
     if "key" in key.lower() and len(value) > 4:
         return "***" + value[-4:]
     return value

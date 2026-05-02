@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     mqtt_hmac_key: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
+    # OTA self-update — base64-encoded raw 32-byte Ed25519 public key.
+    # Empty = OTA fails closed with "OTA public key not configured".
+    # Generate via scripts/generate-ota-keypair.py; private key never
+    # leaves the release-signing host.
+    ota_pubkey_b64: str = ""
+    # First-run wizard flag. "0" = auto-launch on UI boot; "1" = done.
+    setup_complete: str = "0"
 
     model_config = {"env_prefix": "SPOREPRINT_", "env_file": ".env"}
 

@@ -5,6 +5,27 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-04-30
+
+Major version bump in lockstep with the cloud parent repo's v4 migration (Vite SPA at `/app/*` → Next.js 15 App Router at `/`). Pi-side scope this release: OTA progress event fan-out (archaeology #7), Ed25519 OTA signing helpers, Pi UI v4 dist bundle, and a `/simplify` pass on the cloud connector + settings router. No GPIO / I2C / PWM pin changes; firmware-specific notes live in `firmware/CHANGELOG.md#400`.
+
+### Added
+
+- **OTA progress events (v4 archaeology #7).** `server/app/cloud/ota.py` now emits per-step progress via a new `_emit_step()` helper that calls `forward_event("ota_step", payload)` on the cloud relay. Cloud parent persists each step into the new `ota_progress_events` Supabase table so the mobile app + cloud-web shell can render a real progress bar instead of polling for terminal success/failure. `_promote_and_restart` was split into `_promote` and `_restart_unit` so each phase emits its own event.
+- **OTA signing helpers in `scripts/`** — `generate-ota-keypair.py` (Ed25519 keypair generator) and `sign-ota-bundle.py` (signs an OTA tarball with the operator's private key). The cloud parent verifies the signature before promotion via `PUT /settings/ota-pubkey`. Operator workflow documented in `docs/firmware-security.md`.
+- **Pi UI v4.0.0 dist bundle** in `ui/dist/`, compiled from the parent monorepo's `frontend/packages/pi-ui/`. Pi-served LAN UI now matches the cloud-web design system (warm substrate palette, JetBrains Mono numerics, shared SporePrintMark canvas).
+
+### Changed
+
+- **`server/app/cloud/ota.py` simplified** — removed the unused `_promote_and_restart` back-compat wrapper after callers were updated to the split `_promote` + `_restart_unit` pair. Stripped narrational comment overhead (-136 LOC).
+- **`server/app/settings_router.py` simplified** — removed five redundant `try/except Exception → 500` patterns that just leaked exception text instead of letting FastAPI's default error handler do the right thing (-26 LOC).
+- **`server/app/cloud/service.py`** — `forward_event()` extended to accept the new `ota_step` channel alongside the existing telemetry/alert channels.
+- **Lockstep v4.0.0 version bump** with the cloud parent. No Pi-protocol break; v3.4.x Pis interoperate with a v4 cloud and vice-versa for telemetry, command signing, pairing, and HMAC. Web-app surface URL change (`/app/` → `/`) is parent-only.
+
+### Fixed
+
+- (none — `/simplify` cleanup + additive OTA-step plumbing only.)
+
 ## [3.4.10] - 2026-04-24
 
 Lockstep version bump — no Pi or firmware changes. Cloud-side parent repo introduced a `KVCache` protocol for ephemeral in-pod state so a future Redis migration is drop-in. Firmware build unchanged.

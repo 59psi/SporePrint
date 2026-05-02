@@ -285,6 +285,6 @@
 
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="450" y="690" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  Tier 1: Bare Bones  |  github.com/59psi/SporePrint</text>
+  <text x="450" y="690" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v4.0.0  |  Tier 1: Bare Bones  |  github.com/59psi/SporePrint</text>
 
 </svg>

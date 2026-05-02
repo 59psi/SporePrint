@@ -411,6 +411,6 @@
 
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="700" y="992" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
+  <text x="700" y="992" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v4.0.0  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
 
 </svg>

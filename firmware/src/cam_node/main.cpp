@@ -104,12 +104,12 @@ bool captureAndPost() {
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
-        Serial.println("[CAM] Capture failed (frame buffer null)");
+        SP_LOG(LOG_ERROR, "[CAM] Capture failed (frame buffer null)");
         if (healthReporter) healthReporter->captureFail++;
         return false;
     }
 
-    Serial.printf("[CAM] Captured %dx%d (%u bytes)\n", fb->width, fb->height, fb->len);
+    SP_LOG(LOG_INFO, "[CAM] Captured %dx%d (%u bytes)", fb->width, fb->height, fb->len);
 
     if (serverUrl.length() == 0) {
         Serial.println("[CAM] server_url unset — frame captured but cannot post");
@@ -128,7 +128,8 @@ bool captureAndPost() {
     http.addHeader("X-Flash-Used", "1");
 
     int httpCode = http.POST(fb->buf, fb->len);
-    Serial.printf("[CAM] POST %s → %d\n", url.c_str(), httpCode);
+    SP_LOG(httpCode == 200 ? LOG_INFO : LOG_WARN,
+           "[CAM] POST %s -> %d", url.c_str(), httpCode);
 
     http.end();
     esp_camera_fb_return(fb);
@@ -233,6 +234,8 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n=== SporePrint Camera Node ===");
+    SP_LOG(LOG_INFO, "[BOOT] camera node starting, reset_reason=%d",
+           (int)esp_reset_reason());
 
     pinMode(FLASH_PIN, OUTPUT);
     digitalWrite(FLASH_PIN, LOW);
@@ -272,7 +275,11 @@ void setup() {
     heartbeat = new Heartbeat(*mqtt);
     healthReporter = new CamHealthReporter(nodeId.c_str(), *mqtt);
 
-    Serial.println("[SETUP] Camera node ready!");
+    // v4 archaeology fixes #12 + #13 — wire log forwarder, drain prior panic dump.
+    sporeprint::logfwd::LogForward::attachMqtt(mqtt);
+    sporeprint::coredump::uploadIfPresent(*mqtt);
+
+    SP_LOG(LOG_INFO, "[SETUP] camera node ready");
 }
 
 void loop() {
@@ -281,6 +288,7 @@ void loop() {
     mqtt->loop();
     ota->loop();
     heartbeat->loop();
+    sporeprint::logfwd::LogForward::loop();
     if (healthReporter) healthReporter->update();
 
     unsigned long now = millis();
