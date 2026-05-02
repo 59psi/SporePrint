@@ -45,7 +45,7 @@ sequenceDiagram
     end
 ```
 
-## What v3.3.1 enforces
+## What v3.3.1 enforces (still current under v4)
 
 | Check | Code | Failure mode |
 |---|---|---|
@@ -57,6 +57,49 @@ sequenceDiagram
 | `target` / `channel` match `^[a-zA-Z0-9_-]{1,64}$` | `_is_safe_target` / `_is_safe_channel` | `Invalid target or channel` |
 
 Pre-v3.3.1 only the tier string was checked — a compromised cloud relay could have issued any command to any registered target. v3.3.1 closes that by making the Pi require a signature it can verify.
+
+## v4 cloud-side rechecks (before forwarding any command)
+
+The cloud relay does its own enforcement before signing + forwarding. As of
+v4, two additional rechecks happen on every inbound `command` from a browser
+or mobile client:
+
+| Check | Frequency | Failure mode |
+|---|---|---|
+| Tier recheck (effective tier still `premium`) | every 30 s per session, cached | command rejected with `subscription_required` |
+| Ownership recheck (`device_id ∈ user's devices`) | every 30 s per session, cached | command rejected with `not_owner` |
+
+The recheck guarantees that a user whose subscription expires mid-session
+loses control within 30 seconds — they don't keep operating the chamber until
+they happen to disconnect. The 30 s cache keeps the Supabase load bounded; a
+hard recheck at every command would 4-10× the auth round-trips during a
+busy session.
+
+## OTA progress events (Pi → cloud, v4)
+
+OTA promotion was rewritten in v4 to emit per-step progress upstream so the
+mobile app and cloud-web can render a real progress bar instead of a "wait
+30 s and pray" spinner.
+
+```
+Pi: ota.py
+  └─ _emit_step("downloading" | "verifying" | "promoting" | "restarting" | "healthy" | "failed")
+       └─ forward_event("ota_step", { step, percent, detail, error? })
+            └─ cloud relay: @sio.on("ota_step")
+                 ├─ validate step against allowlist (refuses arbitrary strings)
+                 ├─ persist to ota_progress_events (Supabase)
+                 └─ emit "ota_step" to subscriber rooms (mobile / cloud-web)
+```
+
+`_promote_and_restart` was also split into `_promote` + `_restart_unit` so
+the failure mode is recoverable — if `_promote` succeeds but the systemd
+restart fails, the next `_restart_unit` attempt resumes from the right
+place rather than re-promoting.
+
+OTA bundles themselves are now Ed25519-signed (`generate-ota-keypair.py`
++ `sign-ota-bundle.py` in `sporeprint/scripts/`); the cloud verifies the
+signature before approving the promotion, and the Pi's verification logic
+runs against the same public key during `_promote`.
 
 ## External services referenced in this flow
 

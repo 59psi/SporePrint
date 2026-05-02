@@ -8,14 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.0.0] - 2026-04-30
 
+Major version bump in lockstep with the cloud parent + Pi server v4. Firmware-side this release is purely additive: a 64 KB coredump partition, on-boot coredump upload over MQTT, and a 32-entry log-forward ring buffer drained on `SP_LOG()` calls. No GPIO / I2C / PWM pin assignment changes — the only mechanical change is the new `partitions.csv`.
+
 ### Added
-- TODO: fill in or delete
+
+- **`partitions.csv`** — explicit 4 MB partition layout reserving a 64 KB coredump slot at offset `0x3F0000`. Replaces the previous default partition table; required so the ESP32 can persist a coredump across resets without colliding with the OTA1 / SPIFFS regions.
+- **`lib/sporeprint_common/coredump.{h,cpp}`** — coredump helpers exposing `isPresent()`, `readChunked()`, `erase()`, and `uploadIfPresent()`. Each node's `setup()` calls `coredump::uploadIfPresent(*mqtt)` once Wi-Fi + MQTT are up; if a coredump is present, it is read in chunks, published over MQTT to the Pi server (which forwards to the cloud relay's new `ota_step` / coredump channel), then erased so the next reset has a clean slot.
+- **`lib/sporeprint_common/log_forward.{h,cpp}`** — `SP_LOG()` macro backed by a 32-entry × 200-byte ring buffer drained over MQTT. Replaces ad-hoc `Serial.printf` for diagnostic events that need to reach the operator without a USB cable. Ring buffer is opt-in per node via `LogForward::attachMqtt(mqtt)` in `setup()`.
 
 ### Changed
-- TODO: fill in or delete
+
+- **All four nodes (climate, relay, lighting, cam)** now wire up `LogForward::attachMqtt(mqtt)` and `coredump::uploadIfPresent(*mqtt)` in their `setup()` once MQTT is connected. Same call shape on every node so the diagnostic surface is uniform across the fleet.
+- **`platformio.ini`** — `board_build.partitions = partitions.csv` on every node env so the new partition table is flashed alongside the firmware bundle.
 
 ### Fixed
-- TODO: fill in or delete
+
+- (none — pure additive release.)
+
+### Removed
+
+- (none.)
+
+### No pin changes
+
+No GPIO / I2C / PWM pin reassignments in this release. Per `feedback_firmware_pin_changes`, the only mechanical change is the new `partitions.csv` — no wiring diagrams, schematics, BOM, or setup guides need updating.
 
 ## [3.4.10] - 2026-04-24
 

@@ -58,8 +58,10 @@ Key boundary: the Pi itself has **no paygate**. All paywalling lives in the comm
 ## Repo coupling contract
 
 - The private repo **pins** a specific public-repo SHA via `.gitmodules`. Bumping it is an explicit `git add sporeprint/` + commit, never a floating pointer.
+- **Lockstep version bumps**: the parent's `scripts/bump.sh` is the single authority — it edits `cloud/pyproject.toml` (the canonical version), `sporeprint/server/pyproject.toml`, `sporeprint/firmware/VERSION.txt`, and `sporeprint/ui/package.json` so every shipped artifact reports the same version. The Pi-side does not have its own `bump.sh`.
+- **Pi UI source vs bundle**: the source lives in the parent at `frontend/packages/pi-ui/`; the compiled output lands in the submodule at `sporeprint/ui/dist/`. The submodule's `.gitignore` has an explicit `!ui/dist/` exception so the prebuilt bundle is committed. The Pi pulls the submodule and serves the bundle locally — no Node toolchain required on the Pi.
 - The species library auto-syncs: `frontend/packages/design/src/data/speciesProfiles.ts` is auto-generated from `sporeprint/server/app/species/profiles.py` so the Pi remains the source of truth for the 55-entry library.
-- The private repo **never modifies** submodule files. If a cloud-side feature needs a public-repo change, it lands there first, then the pointer bumps via `scripts/bump.sh` and `scripts/sync-after-merge.sh`.
+- The private repo **never modifies** submodule files in-place from cloud-side branches. Submodule edits land via a branch + PR inside `sporeprint/`, then the parent bumps the pointer via `scripts/bump.sh` and `scripts/sync-after-merge.sh` (the post-merge script reconciles the submodule SHA after GitHub's squash-merge rewrites).
 - The public-repo tests (`cd sporeprint/server && pytest`) must stay green after any private-repo-driven public change — enforced by CI + the release checklist.
 
 ## What lives where (v4)
@@ -68,7 +70,8 @@ Key boundary: the Pi itself has **no paygate**. All paywalling lives in the comm
 |---|---|---|
 | Telemetry ingest | ✅ mqtt.py + aiosqlite | — |
 | Automation engine | ✅ (safety watchdog, overrides, rules) | — |
-| Pi local UI | ✅ `sporeprint/ui/` — also `frontend/packages/pi-ui/` (separate ship) | — |
+| Pi local UI source code | — | ✅ `frontend/packages/pi-ui/` (parent monorepo) |
+| Pi local UI compiled bundle | ✅ `sporeprint/ui/dist/` (git-tracked via `!ui/dist/` exception) | builds into the submodule |
 | Vision stub + Claude via Pi | ✅ | — |
 | Mobile shell (Capacitor) | — | ✅ `frontend/packages/mobile/` |
 | Cloud-web shell (Next.js 15) | — | ✅ `frontend/packages/cloud-web/` |
@@ -77,4 +80,5 @@ Key boundary: the Pi itself has **no paygate**. All paywalling lives in the comm
 | Subscriptions (RevenueCat mobile + Stripe web) | — | ✅ |
 | Admin (overrides, promos, broadcasts) | — | ✅ |
 | ESP32 firmware | ✅ | — |
-| Cloud HMAC command signing | verify side | sign side (both at v3.3.1) |
+| Cloud HMAC command signing | verify side | sign side (both at v3.3.1+) |
+| OTA bundle signing (Ed25519) | verify on Pi | sign-side helpers in `sporeprint/scripts/` |

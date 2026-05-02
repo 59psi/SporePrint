@@ -198,6 +198,6 @@
 
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="500" y="698" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v3.3.1  |  System Overview  |  github.com/59psi/SporePrint</text>
+  <text x="500" y="698" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v4.0.0  |  System Overview  |  github.com/59psi/SporePrint</text>
 
 </svg>

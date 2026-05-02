@@ -26,6 +26,12 @@
 
 ---
 
+> ## 🚀 v4.0.0 — cloud architecture shift (no Pi protocol changes)
+>
+> v4 is a major version bump on the cloud side that does **not** change any Pi or firmware behavior. The cloud (the closed-source private repo at `sporeprint-cloud`) shifted its public surface from a Vite SPA at `sporeprint.ai/app/*` to a Next.js 15 App Router app at `sporeprint.ai/` (no `/app/` prefix). Browser, mobile, and the Pi UI source code now live in a pnpm monorepo at `frontend/packages/{cloud-web,mobile,pi-ui,design}/`. The pre-built Pi UI bundle at `sporeprint/ui/dist/` (this repo) is now generated from the parent's `frontend/packages/pi-ui/` and committed to the submodule via an explicit `.gitignore` exception.
+>
+> From a Pi operator's perspective: nothing changed. v3.x clouds and v4.0.0 clouds are wire-compatible with v3.3.3+ Pis. HMAC-signed cloud→Pi commands, MQTT auth, OTA password gate, bearer-token gate — all byte-identical. The Pi server / firmware / Pi UI all version-bump in lockstep with the cloud, so a Pi pulled at v4.0.0 reports `4.0.0` everywhere, but the protocol surface is unchanged. v4 firmware additions (coredump partition + log forwarding ring buffer) are additive — they don't break older clouds.
+
 > ## 🧰 v3.4.10 — lockstep bump (no Pi/firmware changes)
 >
 > Cloud-side parent repo added a `KVCache` protocol for ephemeral in-pod state so a future Redis migration is drop-in. No firmware or Pi-server code changed in this release — firmware still builds at v3.4.10 via the `VERSION.txt` lockstep.
