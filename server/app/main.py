@@ -292,6 +292,7 @@ from .integrations._registry import (
 )
 from .integrations.grafana.router import router as grafana_metrics_router
 from .integrations.aranet.router import router as aranet_extra_router
+from .integrations.pulse.router import router as pulse_extra_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -319,6 +320,10 @@ app.include_router(grafana_metrics_router, tags=["integrations.grafana"])
 # Aranet extras — /api/integrations/aranet/discover for the settings UI.
 app.include_router(
     aranet_extra_router, prefix="/api/integrations/aranet", tags=["integrations.aranet"]
+)
+# Pulse Grow extras — /api/integrations/pulse/devices for the settings UI.
+app.include_router(
+    pulse_extra_router, prefix="/api/integrations/pulse", tags=["integrations.pulse"]
 )
 
 

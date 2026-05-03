@@ -18,6 +18,7 @@ from ._registry import register, registered_drivers, router
 # Add new vendors here — the registry only sees what's been imported.
 from . import grafana  # noqa: F401  — side-effect: registers the driver
 from . import aranet   # noqa: F401  — side-effect: registers the driver
+from . import pulse    # noqa: F401  — side-effect: registers the driver
 
 
 __all__ = [
