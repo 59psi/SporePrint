@@ -14,9 +14,11 @@ Request (cloud → Pi):
   {
     "id": "<cmd_id>",                   # cloud-supplied; echoed back
     "action": "list" | "get_config" | "put_config" | "test"
-              | "enable" | "disable",
-    "slug": "grafana",                  # for everything except "list"
-    "payload": { ... }                  # for "put_config" only
+              | "enable" | "disable" | "vendor_action"
+              | "automation_list" | "automation_create"
+              | "automation_update" | "automation_delete",
+    "slug": "grafana",                  # integrations actions only
+    "payload": { ... }                  # action-specific
   }
 
 Response (Pi → cloud):
@@ -26,6 +28,11 @@ Response (Pi → cloud):
     "body": <result>,                   # action-specific shape
     "error": "<message>"                # only when success=false
   }
+
+v4.1.5 — the same `integrations_request` channel now also carries
+automation-rule CRUD so the cloud-web operator can edit Pi-side rules
+without a brand-new RPC. The dispatch table below routes
+`automation_*` actions into the Pi's automation service helpers.
 """
 
 from __future__ import annotations
@@ -45,12 +52,77 @@ logger = logging.getLogger(__name__)
 _VALID_ACTIONS = {
     "list", "get_config", "put_config", "test", "enable", "disable",
     "vendor_action",
+    # v4.1.5 — automation rule CRUD via the same proxy channel.
+    "automation_list",
+    "automation_create",
+    "automation_update",
+    "automation_delete",
 }
+
+
+async def _dispatch_automation(
+    action: str, payload: dict[str, Any] | None
+) -> Any:
+    """v4.1.5 automation rule dispatch — calls the Pi's automation
+    service layer directly so the cloud-web caller gets the same shape
+    as the Pi's own ``/api/automation/rules`` surface.
+
+    Frames:
+      - automation_list    → returns list[dict]
+      - automation_create  → payload = {rule: AutomationRule dict}
+                            returns the persisted rule (with id)
+      - automation_update  → payload = {rule_id: int, rule: dict}
+                            returns 404 string when missing
+      - automation_delete  → payload = {rule_id: int}
+    """
+    from ..automation import service as automation_service
+    from ..automation.models import AutomationRule
+
+    if action == "automation_list":
+        return await automation_service.list_rules_with_created_at()
+
+    payload = payload or {}
+
+    if action == "automation_create":
+        raw = payload.get("rule")
+        if not isinstance(raw, dict):
+            raise ValueError("automation_create requires payload.rule")
+        rule = AutomationRule(**raw)
+        new_id = await automation_service.create_rule(rule)
+        rule.id = new_id
+        return rule.model_dump()
+
+    if action == "automation_update":
+        rule_id = payload.get("rule_id")
+        raw = payload.get("rule")
+        if not isinstance(rule_id, int):
+            raise ValueError("automation_update requires payload.rule_id")
+        if not isinstance(raw, dict):
+            raise ValueError("automation_update requires payload.rule")
+        rule = AutomationRule(**raw)
+        ok = await automation_service.update_rule(rule_id, rule)
+        if not ok:
+            raise HTTPException(404, "Rule not found")
+        rule.id = rule_id
+        return rule.model_dump()
+
+    if action == "automation_delete":
+        rule_id = payload.get("rule_id")
+        if not isinstance(rule_id, int):
+            raise ValueError("automation_delete requires payload.rule_id")
+        ok = await automation_service.delete_rule(rule_id)
+        if not ok:
+            raise HTTPException(404, "Rule not found")
+        return {"status": "deleted", "id": rule_id}
+
+    raise ValueError(f"unknown automation action {action!r}")
 
 
 async def _dispatch(action: str, slug: str | None, payload: dict[str, Any] | None) -> Any:
     if action == "list":
         return await _registry.list_integrations()
+    if action.startswith("automation_"):
+        return await _dispatch_automation(action, payload)
     if slug is None:
         raise ValueError("slug is required for this action")
     if action == "get_config":
