@@ -379,6 +379,21 @@ CREATE TABLE IF NOT EXISTS user_settings (
     value TEXT NOT NULL,
     updated_at REAL DEFAULT (unixepoch('now'))
 );
+
+-- v4.1 third-party integration drivers (Grafana / Aranet / Pulse Grow / …).
+-- One row per driver slug. `config` is JSON; secret fields are encrypted
+-- per-field with the integrations Fernet key (see app/integrations/
+-- _keystore.py). `last_health_*` are populated by each driver's health()
+-- method on a periodic refresh and on-demand from the settings UI.
+CREATE TABLE IF NOT EXISTS integration_settings (
+    slug TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    config TEXT NOT NULL DEFAULT '{}',
+    last_health_state TEXT,
+    last_health_at REAL,
+    last_error TEXT,
+    updated_at REAL DEFAULT (unixepoch('now'))
+);
 """
 
 

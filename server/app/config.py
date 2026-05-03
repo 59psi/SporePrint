@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     ota_pubkey_b64: str = ""
     # First-run wizard flag. "0" = auto-launch on UI boot; "1" = done.
     setup_complete: str = "0"
+    # v4.1 third-party integrations — Fernet key used to encrypt secret
+    # fields (API keys, tokens) inside `integration_settings.config`.
+    # Generated on first use if the file does not exist; mode 0600.
+    # Loss of this file means re-entering credentials, which is
+    # acceptable — there is intentionally no remote-recovery path.
+    integration_key_path: str = "data/db/.integration-key"
 
     model_config = {"env_prefix": "SPOREPRINT_", "env_file": ".env"}
 
