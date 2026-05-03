@@ -5,6 +5,30 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2026-05-02
+
+Adds seven new vendor drivers as defensible skeletons covering the Growlink-style lighting / HVAC / controller surface. Lockstep with cloud parent v4.1.1.
+
+### Added
+- **`server/app/integrations/_http_skeleton.py`** — shared `HttpVendorDriver` base. Subclasses override `poll_once()` and `test_connection()`; the base handles asyncio task lifecycle, idempotent start/stop, and `disabled → ok → degraded → error` health transitions.
+- **Seven new vendor drivers** (each in its own `app/integrations/<slug>/` subpackage):
+  - **Agrowtek GCX** (free, LAN HTTP) — controller bridge polling `/api/sensors`.
+  - **Trane Nexia / BAS** (premium, cloud) — HVAC telemetry against `mynexia.com`.
+  - **Fluence FluenceID** (premium, cloud) — fixture telemetry.
+  - **Quest dehumidifier** (free, LAN HTTP) — temperature / humidity / setpoint.
+  - **Anden dehumidifier** (free, LAN HTTP) — same shape as Quest plus power monitor.
+  - **Fohse FohseConnect** (premium, cloud) — fixture telemetry.
+  - **BIOS Lighting** (free, LAN HTTP) — fixture dim / power / temperature.
+- **`docs/integrations/lighting-hvac-skeletons.md`** — operator-facing overview of the skeleton approach, per-vendor notes, what's NOT in v4.1.1, workflow for refining a parser when an operator hits live hardware.
+
+### Changed
+- `app/integrations/__init__.py` imports the new vendor sub-packages so they self-register on boot.
+- `ui/dist/` rebuilt from the parent monorepo's `frontend/packages/pi-ui` so the compiled LAN UI's `/integrations` page renders the new vendor schemas.
+
+### Notes
+- **Live-device verification needed.** Vendor API shapes inferred from documentation only. Tolerant pydantic models accept payload-shape variance; `test_connection` surfaces transport errors verbatim. Operators with paired hardware should report unexpected payloads so the parser gets refined without shipping speculative code.
+- **Read-only.** v4.1.1 ships the read side (poll → telemetry pipeline) of every new driver. Vendor write paths land in v4.1.x.
+
 ## [4.1.0] - 2026-05-02
 
 First cut of the v4.1 third-party-integration grid on the Pi. Drivers run locally on each Pi; data stays on the LAN unless a vendor's API requires the cloud (premium-gated).
