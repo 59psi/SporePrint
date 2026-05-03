@@ -5,6 +5,29 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.2] - 2026-05-02
+
+Vendor write paths land across the integrations grid; two new free-tier smart-plug drivers ship end-to-end. Lockstep with cloud parent v4.1.2.
+
+### Added
+- **`app/integrations/_actions.py`** — single-map dispatcher for vendor write actions. Each driver advertises its writable actions in `VENDOR_ACTIONS`; the dispatcher filters payload kwargs to what the method accepts so stray fields don't blow up the call.
+- **Write methods on every existing v4.1.1 driver**:
+  - `set_dim(fixture_id, percent)` — Fluence, Fohse, BIOS.
+  - `set_setpoint(target_c, mode?)` — Trane.
+  - `set_setpoint(humidity_pct)` — Quest, Anden.
+  - `set_output(output_id, value)` — Agrowtek.
+- **Wemo driver** (`app/integrations/wemo/`) — UPnP/SOAP on TCP/49153. On/off control + Wemo Insight power-monitoring poll. SOAP envelopes inline; no new pip dep.
+- **Kasa driver** (`app/integrations/kasa/`) — encrypted JSON on TCP/9999. XOR cipher (rolling key seeded at 0xAB) implemented inline; round-trip tested. On/off + dim (HS220) + emeter power-monitoring.
+- **Cloud RPC handler** at `app/cloud/integrations_proxy.py` learns a new `vendor_action` action type that forwards inner-action + payload to the dispatcher, so cloud-web writes route through the same Socket.IO futures map as reads.
+- **`docs/integrations/smart-plugs.md`** — operator-facing setup for Wemo + Kasa plus the full vendor-actions table.
+
+### Changed
+- `app/integrations/__init__.py` imports `wemo` + `kasa` so they self-register on boot.
+- `ui/dist/` rebuilt to ship the parent monorepo's vendor-actions UI block + the Wemo/Kasa schemas.
+
+### Notes
+- **Write paths join the same "needs live-device verification" caveat as v4.1.1 reads.** Tolerant pydantic + dispatcher payload-filter mean unknown shapes degrade gracefully; refinements based on real hardware are additive.
+
 ## [4.1.1] - 2026-05-02
 
 Adds seven new vendor drivers as defensible skeletons covering the Growlink-style lighting / HVAC / controller surface. Lockstep with cloud parent v4.1.1.
