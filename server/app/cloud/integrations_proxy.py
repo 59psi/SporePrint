@@ -88,6 +88,32 @@ async def handle_request(sio_client, data: dict[str, Any]) -> None:
         logger.warning("integrations_request missing id; dropping")
         return
 
+    # v4.1.4 — verify the HMAC signature on signed frames. Unsigned
+    # frames continue to be accepted during the rollout window so a
+    # cloud running v4.1.3 talking to a Pi running v4.1.4 (or vice
+    # versa) doesn't break. Once both sides are on v4.1.4+ we can
+    # tighten this to require signatures.
+    if "signature" in data:
+        from ..config import settings
+        from .signing import verify_frame
+        if settings.cloud_token:
+            ok, reason = verify_frame(settings.cloud_token, data)
+            if not ok:
+                logger.warning(
+                    "integrations_request signature check failed (id=%s): %s",
+                    cmd_id, reason,
+                )
+                await sio_client.emit(
+                    "integrations_response",
+                    {
+                        "id": cmd_id,
+                        "success": False,
+                        "status": 401,
+                        "error": f"signature check failed: {reason}",
+                    },
+                )
+                return
+
     action = data.get("action")
     if action not in _VALID_ACTIONS:
         await sio_client.emit("integrations_response", {

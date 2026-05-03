@@ -636,10 +636,20 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     status = "failed"
     error: str | None = None
     try:
-        published = await mqtt_publish(topic, payload)
-        status = "sent" if published else "failed"
-        if not published:
-            error = "mqtt_publish returned False (client disconnected?)"
+        if action.vendor_slug:
+            # v4.1.4 — vendor write action. Bypasses MQTT entirely.
+            from ..integrations import _actions as _vendor_actions
+            await _vendor_actions.dispatch(
+                action.vendor_slug,
+                action.vendor_action or "",
+                action.vendor_params or {},
+            )
+            status = "sent"
+        else:
+            published = await mqtt_publish(topic, payload)
+            status = "sent" if published else "failed"
+            if not published:
+                error = "mqtt_publish returned False (client disconnected?)"
     except Exception as e:
         error = str(e)
         log.warning("Rule '%s' publish failed: %s", rule.name, e)
