@@ -5,6 +5,27 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-05-02
+
+First cut of the v4.1 third-party-integration grid on the Pi. Drivers run locally on each Pi; data stays on the LAN unless a vendor's API requires the cloud (premium-gated).
+
+### Added
+- **`server/app/integrations/`** — driver framework: `IntegrationDriver` ABC, encrypted-at-rest settings store (per-Pi Fernet key), registry-backed `/api/integrations/*` HTTP surface, lifespan boot with per-driver failure isolation.
+- **Grafana / Prometheus exporter** (free) — `/metrics` endpoint in Prometheus text format with chamber/sensor/session/contamination/actuator metrics. Optional bearer-token gate.
+- **Aranet PRO LAN poller** (free) — polls the PRO base station's local API and merges its sensors into the existing telemetry pipeline.
+- **Pulse Grow dual-transport driver** (free local / premium cloud):
+  - Cloud transport against `api.pulsegrow.com` with email + password (encrypted at rest, exchanged for session token on first poll).
+  - Local transport with UDP discovery on the LAN broadcast (port 5683 CoAP convention) + per-device HTTP polling. Operators can skip discovery entirely with `local_device_urls`.
+- **Cloud RPC handler** at `app/cloud/integrations_proxy.py` — listens for `integrations_request` events on the cloud connector socket, dispatches to local registry handlers, emits `integrations_response`. Powers the cloud-web mirror in the parent repo.
+- **Per-vendor docs** in `docs/integrations/{grafana,aranet,pulse}/README.md` covering setup, troubleshooting, and operator-facing contracts.
+- **Starter Grafana dashboard JSON** at `docs/integrations/grafana/sporeprint-chamber-dashboard.json`.
+
+### Changed
+- `ui/dist/` rebuilt from the parent monorepo's `frontend/packages/pi-ui` so the compiled LAN UI ships the new Integrations page + sidebar entry.
+
+### Notes
+- **Pulse local-mode discovery probe needs live-device verification.** Parser is tolerant of unknown payload shapes (degrades to empty rather than crashing). Refinements based on real hardware will be additive parser branches in v4.1.x.
+
 ## [4.0.7] - 2026-05-02
 
 Lockstep version bump in step with the cloud parent (Stripe price-ID build-arg fix on the cloud side) — no Pi-side server, UI, or firmware code changes in this release.
