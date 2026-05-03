@@ -5,6 +5,17 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.5] - 2026-05-03
+
+### Added
+- TODO: fill in or delete
+
+### Changed
+- TODO: fill in or delete
+
+### Fixed
+- TODO: fill in or delete
+
 ## [4.1.4] - 2026-05-03
 
 Pi side of the v4.1.4 release: automation engine fires vendor write actions, integrations RPC frames are HMAC-verified.
