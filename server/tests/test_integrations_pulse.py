@@ -95,9 +95,13 @@ def test_driver_auto_registers_on_import():
     assert "pulse" in _registry.registered_drivers()
 
 
-def test_tier_is_premium():
+def test_tier_is_free_for_dual_transport_driver():
+    """The driver advertises its lowest supported tier (free, for local
+    transport). The cloud-web settings UI is responsible for gating the
+    cloud-mode toggle behind the premium check.
+    """
     drv = _registry.registered_drivers()["pulse"]
-    assert drv.tier_required == "premium"
+    assert drv.tier_required == "free"
 
 
 def test_password_in_secret_fields():

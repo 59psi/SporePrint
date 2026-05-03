@@ -1,11 +1,11 @@
-"""Pulse Grow IntegrationDriver implementation (cloud transport).
+"""Pulse Grow IntegrationDriver implementation (dual transport).
 
-`tier_required = "premium"` because the data path traverses our cloud
-infrastructure: we hold the operator's Pulse credentials on the Pi
-(encrypted via the integrations Fernet key) and refresh tokens against
-api.pulsegrow.com. The cloud-web settings UI in phase 5 hides this
-toggle from free-tier users; the Pi-side driver itself does not enforce
-the gate (free-tier users can't have paired the Pi anyway).
+The driver itself is registered as ``free`` because the lowest tier it
+can run in (local transport — UDP discovery + LAN HTTP polling) does
+not touch our cloud. The cloud-web settings UI is responsible for
+hiding the cloud-transport option from free-tier users since cloud mode
+holds the operator's Pulse credentials and refreshes tokens against
+api.pulsegrow.com (premium per ``feedback_tier_model``).
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 class PulseDriver(IntegrationDriver):
     name: ClassVar[str] = "pulse"
-    tier_required: ClassVar[str] = "premium"
+    # Lowest tier the driver can run in: free (local transport). Cloud
+    # mode is gated by the cloud-web settings UI, not the driver.
+    tier_required: ClassVar[str] = "free"
     config_schema: ClassVar[type[BaseModel]] = PulseConfig
     secret_fields: ClassVar[set[str]] = {"password"}
 
@@ -65,10 +67,26 @@ class PulseDriver(IntegrationDriver):
             self._task = None
 
     async def test_connection(self) -> IntegrationHealth:
+        if self._cfg.transport == "local":
+            from .local_transport import PulseLocalTransport
+            client = PulseLocalTransport(self._cfg)
+            try:
+                devices = await client.list_devices()
+            except PulseError as exc:
+                return IntegrationHealth(state="error", last_error=str(exc))
+            return IntegrationHealth(
+                state="ok",
+                details={
+                    "transport": "local",
+                    "devices_seen": len(devices.devices),
+                },
+            )
+
+        # Cloud transport
         if not self._cfg.email or not self._cfg.password:
             return IntegrationHealth(
                 state="error",
-                last_error="email and password are required",
+                last_error="email and password are required for cloud transport",
             )
         client = PulseCloudClient(
             self._cfg.email,
@@ -82,7 +100,10 @@ class PulseDriver(IntegrationDriver):
             return IntegrationHealth(state="error", last_error=str(exc))
         return IntegrationHealth(
             state="ok",
-            details={"devices_seen": len(devices.devices)},
+            details={
+                "transport": "cloud",
+                "devices_seen": len(devices.devices),
+            },
         )
 
     async def health(self) -> IntegrationHealth:
