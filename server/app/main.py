@@ -290,6 +290,7 @@ from .integrations._registry import (
     start_enabled_drivers as _start_enabled_integrations,
     stop_all_drivers as _stop_all_integrations,
 )
+from .integrations.grafana.router import router as grafana_metrics_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -311,6 +312,9 @@ app.include_router(experiments_router, prefix="/api/experiments", tags=["experim
 app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(integrations_router, prefix="/api/integrations", tags=["integrations"])
+# Grafana exporter — mounted at /metrics (outside /api/* so the api-key
+# middleware does not gate it; bearer-token auth is configured per-driver).
+app.include_router(grafana_metrics_router, tags=["integrations.grafana"])
 
 
 @app.get("/api/health")
