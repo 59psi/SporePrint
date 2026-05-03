@@ -86,6 +86,11 @@ async def lifespan(app: FastAPI):
     register_task("nightly_weather_aggregate", "idle")
     register_task("node_liveness_sweeper", "running")
 
+    from .integrations._health_sweeper import (
+        run_health_sweeper,
+        push_state_snapshot,
+    )
+
     tasks = [
         asyncio.create_task(start_mqtt(sio)),
         asyncio.create_task(start_weather_polling(sio)),
@@ -94,11 +99,18 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_daily_retrain()),
         asyncio.create_task(_nightly_weather_aggregate()),
         asyncio.create_task(_node_liveness_sweeper()),
+        # v4.1.5 — emit vendor_health_degraded events on transitions
+        # so the cloud's push-rules + escalation chains can fire.
+        asyncio.create_task(run_health_sweeper()),
     ]
     # v4.1 integrations — boot every driver persisted as enabled. Failures
     # are isolated per-driver in the registry so a misconfigured Aranet
     # base station can't take down the Pi.
     await _start_enabled_integrations()
+    # v4.1.5 — push the initial snapshot so the cloud's fleet cache
+    # warms up immediately. Forwarded events queue if the cloud
+    # connector is still establishing its socket.
+    await push_state_snapshot()
     yield
     await _stop_all_integrations()
     for task in tasks:
@@ -214,7 +226,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="4.1.4", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="4.1.5", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -337,7 +349,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "4.1.4"}
+    return {"status": "ok", "version": "4.1.5"}
 
 
 # Track Socket.IO clients for health reporting

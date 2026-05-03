@@ -151,6 +151,7 @@ async def put_config(slug: str, payload: dict[str, Any]) -> dict[str, Any]:
     else:
         await driver.stop()
 
+    await _push_state_snapshot_safe()
     return {"slug": slug, "enabled": enabled, "ok": True}
 
 
@@ -173,6 +174,7 @@ async def enable(slug: str) -> dict[str, Any]:
         raise HTTPException(409, "configure before enabling")
     await store.save(slug, True, row.config, driver.secret_fields)
     await driver.start()
+    await _push_state_snapshot_safe()
     return {"slug": slug, "enabled": True}
 
 
@@ -183,7 +185,21 @@ async def disable(slug: str) -> dict[str, Any]:
     if row is not None:
         await store.save(slug, False, row.config, driver.secret_fields)
     await driver.stop()
+    await _push_state_snapshot_safe()
     return {"slug": slug, "enabled": False}
+
+
+async def _push_state_snapshot_safe() -> None:
+    """Best-effort snapshot push. Imported lazily so the registry
+    doesn't depend on the sweeper at import time (the sweeper depends
+    on the registry — avoiding a cycle).
+    """
+    try:
+        from ._health_sweeper import push_state_snapshot
+        await push_state_snapshot()
+    except Exception:
+        # Cloud connector may not be configured; that's fine.
+        pass
 
 
 # ── Lifespan helpers ───────────────────────────────────────────────────
