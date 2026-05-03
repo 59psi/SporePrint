@@ -26,6 +26,11 @@ dependencies = [
     # vetted, constant-time Ed25519 — much safer than a hand-rolled
     # implementation (per the project's secure-by-default policy).
     "cryptography>=41.0,<46.0",
+    # v4.1 Grafana integration — Prometheus text-format exposition for
+    # users who run their own Grafana + Prometheus on the LAN. The
+    # exporter at /metrics queries telemetry on each scrape, so there is
+    # no in-memory state to leak; a stale Pi just stops emitting samples.
+    "prometheus-client>=0.20,<1.0",
 ]
 
 [project.optional-dependencies]
