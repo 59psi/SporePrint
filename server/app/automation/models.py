@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -40,13 +41,38 @@ class RuleCondition(BaseModel):
 
 
 class RuleAction(BaseModel):
-    target: str  # node_id or smart_plug_id
-    channel: str | None = None  # relay channel name
+    """Action a rule fires when its condition matches.
+
+    Two action types share the same model so v3.x rules keep working:
+
+    - **Native (default):** ``target`` is a node_id or smart_plug_id;
+      the engine publishes ``sporeprint/{target}/cmd/{channel}`` with
+      ``state``, ``pwm``, ``duration_sec``, etc. (existing v3.x shape).
+
+    - **Vendor (v4.1.4):** set ``vendor_slug`` to a registered
+      integration (``wemo``, ``kasa``, ``tapo``, ``fluence``, …) and
+      ``vendor_action`` to one of that vendor's writable actions
+      (``set_power``, ``set_dim``, ``set_setpoint``, …). Engine
+      forwards ``vendor_params`` as kwargs to the integrations
+      dispatcher. ``target`` then names the rule's manual-override key
+      (typically ``vendor:{slug}:{ip-or-id}``).
+    """
+
+    target: str  # node_id, smart_plug_id, or vendor:* override key
+    channel: str | None = None  # relay channel name (native action type)
     state: str = "on"  # "on" | "off"
     pwm: int | None = None  # 0-255 for relay, 0-1023 for lighting
     duration_sec: int | None = None
     ramp_sec: int | None = None
     scene: str | None = None  # for lighting node
+
+    # v4.1.4 — vendor write-action escape hatch. When set, the engine
+    # routes through `app.integrations._actions.dispatch` instead of
+    # MQTT. `vendor_slug` MUST be a registered integration; the
+    # dispatcher rejects unknown slugs with a clear 404.
+    vendor_slug: str | None = None
+    vendor_action: str | None = None
+    vendor_params: dict[str, Any] = {}
 
 
 class AutomationRule(BaseModel):
