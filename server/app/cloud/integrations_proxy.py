@@ -36,12 +36,16 @@ from typing import Any
 from fastapi import HTTPException
 
 from ..integrations import _registry
+from ..integrations import _actions as _vendor_actions
 
 
 logger = logging.getLogger(__name__)
 
 
-_VALID_ACTIONS = {"list", "get_config", "put_config", "test", "enable", "disable"}
+_VALID_ACTIONS = {
+    "list", "get_config", "put_config", "test", "enable", "disable",
+    "vendor_action",
+}
 
 
 async def _dispatch(action: str, slug: str | None, payload: dict[str, Any] | None) -> Any:
@@ -65,6 +69,15 @@ async def _dispatch(action: str, slug: str | None, payload: dict[str, Any] | Non
         return await _registry.enable(slug)
     if action == "disable":
         return await _registry.disable(slug)
+    if action == "vendor_action":
+        # Frame: { action: "vendor_action", slug, payload: {action, ...} }
+        # The inner action name comes from `payload.action`; everything
+        # else in `payload` is forwarded as kwargs.
+        inner = (payload or {}).get("action")
+        if not isinstance(inner, str):
+            raise ValueError("vendor_action requires payload.action")
+        rest = {k: v for k, v in (payload or {}).items() if k != "action"}
+        return await _vendor_actions.dispatch(slug, inner, rest)
     raise ValueError(f"unknown action {action!r}")
 
 

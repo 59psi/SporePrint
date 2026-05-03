@@ -69,6 +69,23 @@ class AndenDriver(HttpVendorDriver):
                 rows += 1
         return rows, {"rows": rows}
 
+    async def set_setpoint(self, humidity_pct: int) -> dict[str, Any]:
+        if not 0 <= humidity_pct <= 100:
+            raise ValueError("humidity_pct must be in [0, 100]")
+        cfg: AndenConfig = self._cfg  # type: ignore[assignment]
+        if not cfg or not cfg.base_url:
+            raise RuntimeError("anden not configured")
+        async with httpx.AsyncClient(
+            timeout=cfg.request_timeout_seconds, follow_redirects=False
+        ) as client:
+            resp = await client.put(
+                f"{cfg.base_url}/api/setpoint",
+                json={"humidity": humidity_pct},
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Anden: HTTP {resp.status_code} on set_setpoint")
+        return {"humidity_pct": humidity_pct}
+
     async def _fetch_status(self, cfg: AndenConfig) -> dict[str, Any]:
         async with httpx.AsyncClient(
             timeout=cfg.request_timeout_seconds, follow_redirects=False

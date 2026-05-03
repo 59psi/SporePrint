@@ -73,6 +73,27 @@ class BiosDriver(HttpVendorDriver):
                     rows += 1
         return rows, {"fixtures": len(fixtures), "rows": rows}
 
+    async def set_dim(self, fixture_id: str, percent: int) -> dict[str, Any]:
+        if not 0 <= percent <= 100:
+            raise ValueError("percent must be in [0, 100]")
+        cfg: BiosConfig = self._cfg  # type: ignore[assignment]
+        if not cfg or not cfg.base_url:
+            raise RuntimeError("bios not configured")
+        headers = {}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        async with httpx.AsyncClient(
+            timeout=cfg.request_timeout_seconds, follow_redirects=False
+        ) as client:
+            resp = await client.put(
+                f"{cfg.base_url}/api/fixtures/{fixture_id}/dim",
+                headers=headers,
+                json={"dim": percent},
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"BIOS: HTTP {resp.status_code} on set_dim")
+        return {"fixture_id": fixture_id, "percent": percent}
+
     async def _fetch_fixtures(self, cfg: BiosConfig) -> list[dict[str, Any]]:
         headers = {}
         if cfg.api_key:

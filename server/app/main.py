@@ -286,6 +286,7 @@ from .experiments.router import router as experiments_router
 from .labels.router import router as labels_router
 from .settings_router import router as settings_router
 from .integrations import router as integrations_router
+from .integrations import actions_router as integrations_actions_router
 from .integrations._registry import (
     start_enabled_drivers as _start_enabled_integrations,
     stop_all_drivers as _stop_all_integrations,
@@ -314,6 +315,13 @@ app.include_router(experiments_router, prefix="/api/experiments", tags=["experim
 app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(integrations_router, prefix="/api/integrations", tags=["integrations"])
+# v4.1.2 — vendor write-action dispatcher. Same /api/integrations
+# prefix; routes are /{slug}/actions and /{slug}/actions/{action}.
+app.include_router(
+    integrations_actions_router,
+    prefix="/api/integrations",
+    tags=["integrations.actions"],
+)
 # Grafana exporter — mounted at /metrics (outside /api/* so the api-key
 # middleware does not gate it; bearer-token auth is configured per-driver).
 app.include_router(grafana_metrics_router, tags=["integrations.grafana"])

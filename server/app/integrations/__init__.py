@@ -13,6 +13,8 @@ from ._base import (
     IntegrationState,
 )
 from ._registry import register, registered_drivers, router
+from ._actions import VENDOR_ACTIONS, dispatch as dispatch_action
+from ._actions import router as actions_router
 
 # Import every shipped vendor sub-package so its driver self-registers.
 # Add new vendors here — the registry only sees what's been imported.
@@ -27,6 +29,9 @@ from . import quest     # noqa: F401
 from . import anden     # noqa: F401
 from . import fohse     # noqa: F401
 from . import bios      # noqa: F401
+# v4.1.2 LAN smart-plug drivers.
+from . import wemo      # noqa: F401
+from . import kasa      # noqa: F401
 
 
 __all__ = [
@@ -37,4 +42,7 @@ __all__ = [
     "register",
     "registered_drivers",
     "router",
+    "actions_router",
+    "dispatch_action",
+    "VENDOR_ACTIONS",
 ]
