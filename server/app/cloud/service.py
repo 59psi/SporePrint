@@ -271,6 +271,11 @@ async def start_cloud_connector():
 
     _sio = socketio.AsyncClient(reconnection=False)
 
+    # v4.1 — register the integrations RPC handler so cloud-web can read
+    # this Pi's /api/integrations state through the relay.
+    from . import integrations_proxy as _integrations_proxy
+    _integrations_proxy.attach(_sio)
+
     @_sio.on("connect")
     async def on_connect():
         global _connected, _reconnect_attempts, _heartbeat_task
