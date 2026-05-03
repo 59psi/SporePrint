@@ -1,46 +1,108 @@
-"""Pulse Grow driver config schema (cloud transport)."""
+"""Pulse Grow driver config schema (dual-transport: cloud + local)."""
 
 from __future__ import annotations
+
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class PulseConfig(BaseModel):
-    """Cloud-mode credentials + per-device chamber mapping.
+PulseTransport = Literal["cloud", "local"]
 
-    `email` + `password` are exchanged for a session token on first
-    poll; the token is held in process memory and refreshed
+
+class PulseConfig(BaseModel):
+    """Dual-transport config — cloud (premium, account-mediated) or local
+    (free, LAN-only).
+
+    Cloud mode: ``email`` + ``password`` exchanged for a session token on
+    first poll; the token is held in process memory and refreshed
     transparently when the Pulse API returns 401.
+
+    Local mode: UDP discovery on the LAN broadcast address (port 5683,
+    CoAP convention) followed by per-device HTTP polling on a configured
+    port. **Local-mode endpoint shape needs verification on a paired
+    Pulse device** — the parsing layer is tolerant by design but the
+    discovery probe has not been exercised against live hardware. If
+    your Pulse fleet is reachable at known LAN IPs, set
+    ``local_device_urls`` to skip discovery entirely.
 
     `device_mappings` maps Pulse device id → SporePrint chamber id so
     readings get tagged with the chamber for downstream UI. Devices not
     listed here are still polled and stored, just with chamber ``""``.
 
-    `poll_seconds` floor is 60 s — Pulse's cloud rate limit is roughly
-    1 req/sec per token across all devices, so a household with one
-    Pulse device is fine but a 4-device account would saturate the
-    limit at sub-minute intervals.
+    `poll_seconds` floor is 60 s for cloud (Pulse's cloud rate limit is
+    roughly 1 req/sec per token); 30 s for local (no remote rate limit
+    to worry about, but 30 s gives the device time to refresh).
     """
 
+    transport: PulseTransport = Field(
+        default="cloud",
+        description=(
+            "cloud = api.pulsegrow.com (premium); "
+            "local = LAN UDP discovery + HTTP poll (free)."
+        ),
+    )
+
+    # ── Cloud transport fields ──────────────────────────────────────
     email: str = Field(
         default="",
-        description="Pulse account email. Empty = driver stays disabled.",
+        description="Pulse account email. Cloud transport only.",
     )
     password: str = Field(
         default="",
         description=(
-            "Pulse account password. Stored encrypted at rest via the "
-            "integrations Fernet key. Exchanged for a session token on "
-            "first poll; never sent to anyone but api.pulsegrow.com."
+            "Pulse account password. Cloud transport only. Stored "
+            "encrypted at rest via the integrations Fernet key. Exchanged "
+            "for a session token on first poll; never sent to anyone "
+            "but api.pulsegrow.com."
         ),
     )
+
+    # ── Local transport fields ──────────────────────────────────────
+    local_broadcast_addr: str = Field(
+        default="255.255.255.255",
+        description=(
+            "UDP broadcast address used for local discovery. Default "
+            "limited-broadcast; set to your subnet broadcast (e.g. "
+            "10.0.0.255) if your router blocks limited-broadcast."
+        ),
+    )
+    local_discovery_port: int = Field(
+        default=5683,
+        ge=1,
+        le=65535,
+        description="UDP discovery port (CoAP convention).",
+    )
+    local_http_port: int = Field(
+        default=80,
+        ge=1,
+        le=65535,
+        description="Per-device HTTP port for local polling.",
+    )
+    local_device_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional list of explicit per-device URLs (e.g. "
+            "['http://10.0.0.5', 'http://10.0.0.6']). When non-empty, "
+            "discovery is skipped and these URLs are polled directly."
+        ),
+    )
+    local_discovery_timeout_seconds: float = Field(
+        default=3.0,
+        ge=1.0,
+        le=30.0,
+        description="UDP discovery scan timeout.",
+    )
+
+    # ── Common fields ───────────────────────────────────────────────
     poll_seconds: int = Field(
         default=120,
-        ge=60,
+        ge=30,
         le=3600,
         description=(
-            "Poll interval. Floor 60 s (Pulse cloud rate limit ~1 req/s "
-            "across all devices on a token). Ceiling 1 h."
+            "Poll interval. Cloud transport: 60 s floor recommended "
+            "(Pulse cloud rate limit ~1 req/s). Local transport: 30 s "
+            "minimum, default 120 s."
         ),
     )
     device_mappings: dict[str, str] = Field(

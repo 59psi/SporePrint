@@ -80,21 +80,31 @@ async def _publish_device(
     return written
 
 
+def _make_transport_for(cfg: PulseConfig):
+    """Construct the right transport for the configured mode. Imported
+    lazily to keep the module's import graph cycle-free.
+    """
+    if cfg.transport == "local":
+        from .local_transport import PulseLocalTransport
+        return PulseLocalTransport(cfg)
+    if not cfg.email or not cfg.password:
+        raise PulseError("email and password are required for cloud transport")
+    return PulseCloudClient(
+        cfg.email,
+        cfg.password,
+        timeout_s=cfg.request_timeout_seconds,
+    )
+
+
 async def run_one_poll(
     cfg: PulseConfig,
     *,
-    client: PulseCloudClient | None = None,
+    client=None,
     publisher: Callable[[str, str, float, float], Awaitable[None]] | None = None,
 ) -> tuple[int, list[PulseRecentDataResponse]]:
     """One poll cycle. Returns (rows_written, [responses])."""
     if client is None:
-        if not cfg.email or not cfg.password:
-            raise PulseError("email and password are required")
-        client = PulseCloudClient(
-            cfg.email,
-            cfg.password,
-            timeout_s=cfg.request_timeout_seconds,
-        )
+        client = _make_transport_for(cfg)
     if publisher is None:
         publisher = store_reading
 
@@ -122,7 +132,10 @@ async def poll_loop(
 ) -> None:
     while True:
         cfg = cfg_provider()
-        if not cfg.email or not cfg.password:
+        # Cloud transport needs creds before starting; local transport
+        # can run with just defaults (operator may have left
+        # local_device_urls empty, in which case discovery handles it).
+        if cfg.transport == "cloud" and (not cfg.email or not cfg.password):
             await sleep(cfg.poll_seconds)
             continue
         try:
