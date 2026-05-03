@@ -38,6 +38,7 @@ VENDOR_ACTIONS: dict[str, dict[str, str]] = {
     "anden": {"set_setpoint": "set_setpoint"},
     "wemo": {"set_power": "set_power"},
     "kasa": {"set_power": "set_power", "set_dim": "set_dim"},
+    "tapo": {"set_power": "set_power", "set_dim": "set_dim"},
 }
 
 

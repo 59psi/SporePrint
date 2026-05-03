@@ -50,6 +50,7 @@ def test_vendor_actions_map_covers_every_writable_vendor():
         "anden": {"set_setpoint"},
         "wemo": {"set_power"},
         "kasa": {"set_power", "set_dim"},
+        "tapo": {"set_power", "set_dim"},
     }
     actual = {slug: set(actions.keys()) for slug, actions in _actions.VENDOR_ACTIONS.items()}
     assert actual == expected

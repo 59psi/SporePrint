@@ -32,6 +32,8 @@ from . import bios      # noqa: F401
 # v4.1.2 LAN smart-plug drivers.
 from . import wemo      # noqa: F401
 from . import kasa      # noqa: F401
+# v4.1.3 — Tapo dual-transport driver.
+from . import tapo      # noqa: F401
 
 
 __all__ = [
