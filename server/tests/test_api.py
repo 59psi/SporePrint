@@ -14,7 +14,7 @@ def _seed(client):
 def test_health_endpoint(client):
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok", "version": "4.0.6"}
+    assert r.json() == {"status": "ok", "version": "4.0.7"}
 
 
 # ── Sessions ────────────────────────────────────────────────────
