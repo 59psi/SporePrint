@@ -5,6 +5,21 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.4] - 2026-05-03
+
+Pi side of the v4.1.4 release: automation engine fires vendor write actions, integrations RPC frames are HMAC-verified.
+
+### Added
+- `app/automation/models.py` — `RuleAction` gains `vendor_slug` / `vendor_action` / `vendor_params` (all optional, default None preserves v3.x behaviour).
+- `app/automation/engine.py` — `_fire_rule` routes vendor-action rules through `app.integrations._actions.dispatch`; native MQTT path untouched. Failure handling matches the existing audit trail (`automation_firings` row updates to `status='failed'` with the error string).
+- `app/cloud/integrations_proxy.py` — verifies HMAC-SHA256 signatures on inbound `integrations_request` frames using `app.cloud.signing.verify_frame` with the device's `cloud_token`. Bad signatures return `{success: false, status: 401}` with a precise reason field. Unsigned frames still accepted during the v4.1.4 rollout window.
+
+### Changed
+- Lockstep version bump with cloud parent v4.1.4.
+
+### Notes
+- **Vendor write actions inherit the existing safety surface.** Manual overrides (`manual_overrides` table) lock vendor targets the same way they lock MQTT targets — set `target = "vendor:<slug>"` to scope.
+
 ## [4.1.3] - 2026-05-02
 
 Adds TP-Link Tapo as the third LAN smart-plug driver alongside Wemo and Kasa. Dual-transport (free local KLAP / premium tplinkcloud.com cloud), mirroring Pulse's hybrid shape. Lockstep with cloud parent v4.1.3.
