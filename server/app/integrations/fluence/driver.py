@@ -76,6 +76,31 @@ class FluenceDriver(HttpVendorDriver):
                     rows += 1
         return rows, {"fixtures": len(fixtures), "rows": rows}
 
+    # ── Write paths ────────────────────────────────────────────────
+
+    async def set_dim(self, fixture_id: str, percent: int) -> dict[str, Any]:
+        if not 0 <= percent <= 100:
+            raise ValueError("percent must be in [0, 100]")
+        cfg: FluenceConfig = self._cfg  # type: ignore[assignment]
+        if not cfg or not cfg.email or not cfg.password:
+            raise RuntimeError("fluence not configured")
+        if self._token is None:
+            await self._login(cfg)
+        async with httpx.AsyncClient(
+            timeout=cfg.request_timeout_seconds, follow_redirects=False
+        ) as client:
+            resp = await client.put(
+                f"{_FLUENCE_API_BASE}/fixtures/{fixture_id}/dimming",
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={"dimming": percent},
+            )
+        if resp.status_code == 401:
+            self._token = None
+            raise RuntimeError("Fluence: token expired")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Fluence: HTTP {resp.status_code} on set_dim")
+        return {"fixture_id": fixture_id, "percent": percent}
+
     async def _login(self, cfg: FluenceConfig) -> None:
         async with httpx.AsyncClient(
             timeout=cfg.request_timeout_seconds, follow_redirects=False

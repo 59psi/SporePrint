@@ -84,6 +84,26 @@ class AgrowtekDriver(HttpVendorDriver):
                 rows += 1
         return rows, {"sensors": len(sensors), "rows": rows}
 
+    async def set_output(
+        self, output_id: str, value: float | bool
+    ) -> dict[str, Any]:
+        cfg: AgrowtekConfig = self._cfg  # type: ignore[assignment]
+        if not cfg or not cfg.base_url or not cfg.api_key:
+            raise RuntimeError("agrowtek not configured")
+        async with httpx.AsyncClient(
+            timeout=cfg.request_timeout_seconds, follow_redirects=False
+        ) as client:
+            resp = await client.put(
+                f"{cfg.base_url}/api/outputs/{output_id}",
+                headers={"Authorization": f"Bearer {cfg.api_key}"},
+                json={"value": value},
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Agrowtek: HTTP {resp.status_code} on set_output: {resp.text[:200]!r}"
+            )
+        return {"output_id": output_id, "value": value}
+
     async def _fetch_sensors(self, cfg: AgrowtekConfig) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(
             timeout=cfg.request_timeout_seconds, follow_redirects=False

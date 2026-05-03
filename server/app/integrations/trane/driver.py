@@ -80,6 +80,32 @@ class TraneDriver(HttpVendorDriver):
                     rows += 1
         return rows, {"houses": len(houses), "rows": rows}
 
+    async def set_setpoint(
+        self, thermostat_id: str, target_c: float, mode: str | None = None
+    ) -> dict[str, Any]:
+        cfg: TraneConfig = self._cfg  # type: ignore[assignment]
+        if not cfg or not cfg.email or not cfg.password:
+            raise RuntimeError("trane not configured")
+        if self._token is None:
+            await self._login(cfg)
+        body: dict[str, Any] = {"target_c": target_c}
+        if mode:
+            body["mode"] = mode
+        async with httpx.AsyncClient(
+            timeout=cfg.request_timeout_seconds, follow_redirects=False
+        ) as client:
+            resp = await client.put(
+                f"{_TRANE_API_BASE}/thermostats/{thermostat_id}/setpoint",
+                headers={"Authorization": f"Bearer {self._token}"},
+                json=body,
+            )
+        if resp.status_code == 401:
+            self._token = None
+            raise RuntimeError("Trane: 401 — token expired")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Trane: HTTP {resp.status_code} on set_setpoint")
+        return {"thermostat_id": thermostat_id, "target_c": target_c, "mode": mode}
+
     async def _login(self, cfg: TraneConfig) -> None:
         async with httpx.AsyncClient(
             timeout=cfg.request_timeout_seconds, follow_redirects=False

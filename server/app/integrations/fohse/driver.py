@@ -76,6 +76,29 @@ class FohseDriver(HttpVendorDriver):
                     rows += 1
         return rows, {"fixtures": len(fixtures), "rows": rows}
 
+    async def set_dim(self, fixture_id: str, percent: int) -> dict[str, Any]:
+        if not 0 <= percent <= 100:
+            raise ValueError("percent must be in [0, 100]")
+        cfg: FohseConfig = self._cfg  # type: ignore[assignment]
+        if not cfg or not cfg.email or not cfg.password:
+            raise RuntimeError("fohse not configured")
+        if self._token is None:
+            await self._login(cfg)
+        async with httpx.AsyncClient(
+            timeout=cfg.request_timeout_seconds, follow_redirects=False
+        ) as client:
+            resp = await client.put(
+                f"{_FOHSE_API_BASE}/fixtures/{fixture_id}/intensity",
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={"intensity_percent": percent},
+            )
+        if resp.status_code == 401:
+            self._token = None
+            raise RuntimeError("Fohse: token expired")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Fohse: HTTP {resp.status_code} on set_dim")
+        return {"fixture_id": fixture_id, "percent": percent}
+
     async def _login(self, cfg: FohseConfig) -> None:
         async with httpx.AsyncClient(
             timeout=cfg.request_timeout_seconds, follow_redirects=False
