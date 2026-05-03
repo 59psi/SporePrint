@@ -291,6 +291,7 @@ from .integrations._registry import (
     stop_all_drivers as _stop_all_integrations,
 )
 from .integrations.grafana.router import router as grafana_metrics_router
+from .integrations.aranet.router import router as aranet_extra_router
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -315,6 +316,10 @@ app.include_router(integrations_router, prefix="/api/integrations", tags=["integ
 # Grafana exporter — mounted at /metrics (outside /api/* so the api-key
 # middleware does not gate it; bearer-token auth is configured per-driver).
 app.include_router(grafana_metrics_router, tags=["integrations.grafana"])
+# Aranet extras — /api/integrations/aranet/discover for the settings UI.
+app.include_router(
+    aranet_extra_router, prefix="/api/integrations/aranet", tags=["integrations.aranet"]
+)
 
 
 @app.get("/api/health")

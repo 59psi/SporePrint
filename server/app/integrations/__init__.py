@@ -17,6 +17,7 @@ from ._registry import register, registered_drivers, router
 # Import every shipped vendor sub-package so its driver self-registers.
 # Add new vendors here — the registry only sees what's been imported.
 from . import grafana  # noqa: F401  — side-effect: registers the driver
+from . import aranet   # noqa: F401  — side-effect: registers the driver
 
 
 __all__ = [
