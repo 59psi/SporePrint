@@ -5,6 +5,21 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.3] - 2026-05-02
+
+Adds TP-Link Tapo as the third LAN smart-plug driver alongside Wemo and Kasa. Dual-transport (free local KLAP / premium tplinkcloud.com cloud), mirroring Pulse's hybrid shape. Lockstep with cloud parent v4.1.3.
+
+### Added
+- `app/integrations/tapo/` — driver, config, KLAP cipher implementation. `set_power` + `set_dim` write paths exposed via the unified vendor-actions dispatcher. SHA-1 in the user-hash is a TP-Link wire-protocol requirement (documented in `klap.py` and `.semgrepignore`).
+
+### Changed
+- `app/integrations/__init__.py` imports the `tapo` sub-package so it self-registers on boot.
+- `app/integrations/_actions.py` advertises tapo's `set_power` + `set_dim` actions.
+- `ui/dist/` rebuilt to ship the parent monorepo's Tapo schema + dual-transport UI.
+
+### Notes
+- **Live-device verification needed** — the KLAP handshake + cipher round-trip are unit-tested; on-wire behaviour against real Tapo firmware will be verified by operators with paired devices.
+
 ## [4.1.2] - 2026-05-02
 
 Vendor write paths land across the integrations grid; two new free-tier smart-plug drivers ship end-to-end. Lockstep with cloud parent v4.1.2.
