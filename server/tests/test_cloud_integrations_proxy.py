@@ -159,3 +159,148 @@ async def test_attach_registers_handler():
 
     integrations_proxy.attach(_Recorder())
     assert "integrations_request" in handlers
+
+
+# ── v4.1.5 automation rule CRUD via the same proxy ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_automation_list_dispatches_to_service(monkeypatch, fake_sio):
+    from app.automation import service as automation_service
+
+    fake = AsyncMock(return_value=[
+        {
+            "id": 1,
+            "name": "humidity floor",
+            "description": "",
+            "enabled": True,
+            "priority": 0,
+            "condition": {
+                "type": "threshold",
+                "threshold": {"sensor": "humidity", "operator": "lt", "value": 92},
+            },
+            "action": {"target": "node-1"},
+        }
+    ])
+    monkeypatch.setattr(automation_service, "list_rules_with_created_at", fake)
+
+    await integrations_proxy.handle_request(
+        fake_sio, {"id": "x", "action": "automation_list"}
+    )
+    fake.assert_awaited_once()
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is True
+    assert payload["body"][0]["id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_automation_create_hydrates_model(monkeypatch, fake_sio):
+    from app.automation import service as automation_service
+
+    captured = {}
+
+    async def fake_create(rule):
+        captured["rule"] = rule
+        return 42
+
+    monkeypatch.setattr(automation_service, "create_rule", fake_create)
+
+    rule_payload = {
+        "name": "co2 ceiling",
+        "condition": {
+            "type": "threshold",
+            "threshold": {"sensor": "co2_ppm", "operator": "gt", "value": 1200},
+        },
+        "action": {
+            "target": "vendor:wemo:10.0.0.20",
+            "vendor_slug": "wemo",
+            "vendor_action": "set_power",
+            "vendor_params": {"on": True},
+        },
+    }
+
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "automation_create",
+            "payload": {"rule": rule_payload},
+        },
+    )
+    assert captured["rule"].name == "co2 ceiling"
+    assert captured["rule"].action.vendor_slug == "wemo"
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is True
+    assert payload["body"]["id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_automation_create_rejects_missing_rule(fake_sio):
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {"id": "x", "action": "automation_create", "payload": {}},
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_automation_update_returns_404_when_missing(monkeypatch, fake_sio):
+    from app.automation import service as automation_service
+
+    monkeypatch.setattr(
+        automation_service, "update_rule", AsyncMock(return_value=False)
+    )
+
+    rule_payload = {
+        "name": "x",
+        "condition": {
+            "type": "threshold",
+            "threshold": {"sensor": "humidity", "operator": "lt", "value": 90},
+        },
+        "action": {"target": "node-1"},
+    }
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "automation_update",
+            "payload": {"rule_id": 999, "rule": rule_payload},
+        },
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 404
+
+
+@pytest.mark.asyncio
+async def test_automation_delete_dispatches(monkeypatch, fake_sio):
+    from app.automation import service as automation_service
+
+    monkeypatch.setattr(
+        automation_service, "delete_rule", AsyncMock(return_value=True)
+    )
+
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {"id": "x", "action": "automation_delete", "payload": {"rule_id": 7}},
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is True
+    assert payload["body"]["id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_automation_delete_rejects_non_int(fake_sio):
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "automation_delete",
+            "payload": {"rule_id": "seven"},
+        },
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 400

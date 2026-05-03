@@ -593,6 +593,12 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
         payload["ramp_sec"] = action.ramp_sec
     if action.scene:
         payload["scene"] = action.scene
+    # v4.1.4 — vendor write actions append to the audit payload so the
+    # session-events timeline shows which vendor was driven and how.
+    if action.vendor_slug:
+        payload["vendor_slug"] = action.vendor_slug
+        payload["vendor_action"] = action.vendor_action
+        payload["vendor_params"] = action.vendor_params
 
     if action.channel:
         topic = f"sporeprint/{action.target}/cmd/{action.channel}"
@@ -609,13 +615,29 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     firing_id: int | None = None
     async with get_db() as db:
         if rule.log_to_session and session:
+            # v4.1.5 — vendor actions get a more descriptive timeline
+            # row so chamber post-mortems read like
+            #   "Rule 'night-fog' fired: kasa.set_power({ip:10.0.0.20, on:true})"
+            # instead of the misleading legacy
+            #   "Rule 'night-fog' fired: vendor:kasa/None → on"
+            if action.vendor_slug:
+                description = (
+                    f"Rule '{rule.name}' fired: "
+                    f"{action.vendor_slug}.{action.vendor_action}"
+                    f"({json.dumps(action.vendor_params, separators=(',', ':'))})"
+                )
+            else:
+                description = (
+                    f"Rule '{rule.name}' fired: "
+                    f"{action.target}/{action.channel} → {action.state}"
+                )
             await db.execute(
                 "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
                 (
                     session["id"],
                     "automation",
                     f"rule:{rule.name}",
-                    f"Rule '{rule.name}' fired: {action.target}/{action.channel} → {action.state}",
+                    description,
                     json.dumps({"rule_id": rule.id, "action": payload, "trigger_readings": readings}),
                 ),
             )
