@@ -95,7 +95,12 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_nightly_weather_aggregate()),
         asyncio.create_task(_node_liveness_sweeper()),
     ]
+    # v4.1 integrations — boot every driver persisted as enabled. Failures
+    # are isolated per-driver in the registry so a misconfigured Aranet
+    # base station can't take down the Pi.
+    await _start_enabled_integrations()
     yield
+    await _stop_all_integrations()
     for task in tasks:
         task.cancel()
     for task in tasks:
@@ -280,6 +285,11 @@ from .chambers.router import router as chambers_router
 from .experiments.router import router as experiments_router
 from .labels.router import router as labels_router
 from .settings_router import router as settings_router
+from .integrations import router as integrations_router
+from .integrations._registry import (
+    start_enabled_drivers as _start_enabled_integrations,
+    stop_all_drivers as _stop_all_integrations,
+)
 
 app.include_router(telemetry_router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
@@ -300,6 +310,7 @@ app.include_router(chambers_router, prefix="/api/chambers", tags=["chambers"])
 app.include_router(experiments_router, prefix="/api/experiments", tags=["experiments"])
 app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+app.include_router(integrations_router, prefix="/api/integrations", tags=["integrations"])
 
 
 @app.get("/api/health")
