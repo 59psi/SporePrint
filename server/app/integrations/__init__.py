@@ -19,6 +19,14 @@ from ._registry import register, registered_drivers, router
 from . import grafana  # noqa: F401  — side-effect: registers the driver
 from . import aranet   # noqa: F401  — side-effect: registers the driver
 from . import pulse    # noqa: F401  — side-effect: registers the driver
+# v4.1.1 lighting / HVAC drivers (skeleton — see _http_skeleton.py).
+from . import agrowtek  # noqa: F401
+from . import trane     # noqa: F401
+from . import fluence   # noqa: F401
+from . import quest     # noqa: F401
+from . import anden     # noqa: F401
+from . import fohse     # noqa: F401
+from . import bios      # noqa: F401
 
 
 __all__ = [
