@@ -1,0 +1,8 @@
+{
+  "name": "sp_core",
+  "description": "SporePrint firmware core — native-safe, no Arduino dependencies",
+  "version": "2.0.0",
+  "build": {
+    "flags": ["-std=c++17"]
+  }
+}

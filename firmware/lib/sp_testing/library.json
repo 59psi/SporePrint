@@ -1,0 +1,11 @@
+{
+  "name": "sp_testing",
+  "description": "Scripted HAL mocks for native tests — host-only",
+  "version": "2.0.0",
+  "dependencies": {
+    "sp_drivers": "*"
+  },
+  "build": {
+    "flags": ["-std=c++17"]
+  }
+}
