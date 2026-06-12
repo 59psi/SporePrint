@@ -1,0 +1,86 @@
+{
+  "_generator": "cloud/tests/fixtures/_gen_signing_vectors.py",
+  "_doc": "Shared golden file for HMAC canonical-form + signature. Both runtimes load this file and assert equality — any byte-for-byte drift between cloud/app/relay/signing.py and sporeprint/server/app/cloud/signing.py trips the tests here. Regenerate only when canonical form intentionally changes.",
+  "key": "golden-file-signing-key-v1",
+  "vectors": [
+    {
+      "id": "a-simple-command",
+      "frame": {
+        "id": "cmd-1",
+        "tier": "premium",
+        "target": "relay-01",
+        "channel": "heater",
+        "ts": 1700000000.0
+      },
+      "expected_canonical": "{\"channel\":\"heater\",\"id\":\"cmd-1\",\"target\":\"relay-01\",\"tier\":\"premium\",\"ts\":1700000000.0}",
+      "expected_signature": "f5431a5ff489cf433c539f4e6c48307e336b34ef017a4ac37733998d0558c842"
+    },
+    {
+      "id": "reordered-keys-must-produce-same-signature",
+      "frame": {
+        "ts": 1700000000.5,
+        "channel": "fae",
+        "target": "relay-01",
+        "tier": "premium",
+        "id": "cmd-2"
+      },
+      "expected_canonical": "{\"channel\":\"fae\",\"id\":\"cmd-2\",\"target\":\"relay-01\",\"tier\":\"premium\",\"ts\":1700000000.5}",
+      "expected_signature": "82cabe122042fae3e738f4ebe1f997b04d51fb59b9c171637e331c37b148163f"
+    },
+    {
+      "id": "nested-payload",
+      "frame": {
+        "id": "cmd-3",
+        "tier": "premium",
+        "target": "relay-02",
+        "channel": "fan",
+        "ts": 1700000001.0,
+        "payload": {
+          "state": "on",
+          "pwm": 255,
+          "duration_sec": 300
+        }
+      },
+      "expected_canonical": "{\"channel\":\"fan\",\"id\":\"cmd-3\",\"payload\":{\"duration_sec\":300,\"pwm\":255,\"state\":\"on\"},\"target\":\"relay-02\",\"tier\":\"premium\",\"ts\":1700000001.0}",
+      "expected_signature": "b44b8cc8be5694e168fbc5eb3e46b994b2ed9df01c8eaa60a719db57bf5414b1"
+    },
+    {
+      "id": "unicode-in-payload",
+      "frame": {
+        "id": "cmd-4",
+        "tier": "premium",
+        "target": "relay-01",
+        "channel": "light",
+        "ts": 1700000002.0,
+        "payload": {
+          "scene": "daylight-6500K ☀️"
+        }
+      },
+      "expected_canonical": "{\"channel\":\"light\",\"id\":\"cmd-4\",\"payload\":{\"scene\":\"daylight-6500K \\u2600\\ufe0f\"},\"target\":\"relay-01\",\"tier\":\"premium\",\"ts\":1700000002.0}",
+      "expected_signature": "ca9a60f553c8b1444232e1529b9a8a2bcd20a1d38aa942ad2c26a6a4607df237"
+    },
+    {
+      "id": "null-channel",
+      "frame": {
+        "id": "cmd-5",
+        "tier": "premium",
+        "target": "relay-01",
+        "channel": null,
+        "ts": 1700000003.0
+      },
+      "expected_canonical": "{\"channel\":null,\"id\":\"cmd-5\",\"target\":\"relay-01\",\"tier\":\"premium\",\"ts\":1700000003.0}",
+      "expected_signature": "86ed58974c0bff2751557a76661031f531cf54999b7f877805e5476ff75028a4"
+    },
+    {
+      "id": "integer-ts-accepted",
+      "frame": {
+        "id": "cmd-6",
+        "tier": "premium",
+        "target": "plug-01",
+        "ts": 1700000004
+      },
+      "expected_canonical": "{\"id\":\"cmd-6\",\"target\":\"plug-01\",\"tier\":\"premium\",\"ts\":1700000004}",
+      "expected_signature": "834904d1c2a76ce13765b684c24c742ea6469ffa9d8b31b66f69a2eb2600b8da"
+    }
+  ]
+}
