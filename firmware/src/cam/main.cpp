@@ -30,6 +30,7 @@
 #include "log_forward.h"
 #include "mqtt_link.h"
 #include "node_config.h"
+#include "tls_transport.h"
 #include "ota_service.h"
 #include "server_url_allow.h"
 #include "sha256.h"
@@ -47,6 +48,7 @@ static sp_device::NvsKvStore kv;
 static sp_device::NodeConfig cfg;
 static sp_device::WifiProvisioner provisioner(kv);
 static WiFiClient wifi_client;
+static WiFiClientSecure wifi_client_secure;
 static sp_device::MqttLink* mqtt = nullptr;
 static sp_device::OtaService* ota = nullptr;
 
@@ -273,10 +275,13 @@ void setup() {
 
     server_url = kv.get_string("server_url", "http://sporeprint.local:8000");
 
-    mqtt = new sp_device::MqttLink(wifi_client, cfg.node_id.c_str(), "camera",
+    sp_device::MqttTransport xport =
+        sp_device::select_mqtt_transport(cfg, kv, wifi_client,
+                                         wifi_client_secure);
+    mqtt = new sp_device::MqttLink(*xport.client, cfg.node_id.c_str(), "camera",
                                    SPOREPRINT_FW_VERSION);
     mqtt->on_command(on_command, nullptr);
-    mqtt->begin(cfg.broker_host.c_str(), (uint16_t)cfg.broker_port,
+    mqtt->begin(cfg.broker_host.c_str(), xport.port,
                 cfg.mqtt_user.c_str(), cfg.mqtt_pass.c_str());
 
     sp_device::logfwd::attach(mqtt);

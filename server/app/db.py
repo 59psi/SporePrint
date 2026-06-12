@@ -228,8 +228,21 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
     ip_address TEXT,
     status TEXT DEFAULT 'unknown',
     config TEXT,
+    roles TEXT,
     created_at REAL DEFAULT (unixepoch('now'))
 );
+
+-- Firmware log batches forwarded over MQTT (v4.2 — sporeprint/<id>/logs).
+-- Size-capped by retention trim in the ingest path.
+CREATE TABLE IF NOT EXISTS node_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL,
+    ts_ms INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    msg TEXT NOT NULL,
+    received_at REAL DEFAULT (unixepoch('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_node_logs_node ON node_logs(node_id, id);
 
 -- Weather readings (outdoor conditions for automation)
 CREATE TABLE IF NOT EXISTS weather_readings (
@@ -439,6 +452,11 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(automation_firings)", "error",
             "ALTER TABLE automation_firings ADD COLUMN error TEXT",
+        )
+        # v4.2: combined-node role routing (firmware v2 heartbeats).
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "roles",
+            "ALTER TABLE hardware_nodes ADD COLUMN roles TEXT",
         )
         await db.commit()
 

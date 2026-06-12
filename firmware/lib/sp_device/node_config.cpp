@@ -35,6 +35,7 @@ NodeConfig NodeConfig::load(sp::KvStore& kv) {
                                  &p)) {
         c.personality = p;
     }
+    c.tls_enabled = kv.get_bool("tls_en", false);
     c.hx711_enabled = kv.get_bool("hx711_en", false);
     c.reed_enabled = kv.get_bool("reed_en", false);
     c.mhz19_enabled = kv.get_bool("mhz19_en", false);
@@ -55,6 +56,7 @@ void NodeConfig::save(sp::KvStore& kv) const {
     kv.set_string("ntp_host", ntp_host);
     kv.set_string("paired_pi_host", paired_pi_host);
     kv.set_string("personality", sp::personality_str(personality));
+    kv.set_bool("tls_en", tls_enabled);
     kv.set_bool("hx711_en", hx711_enabled);
     kv.set_bool("reed_en", reed_enabled);
     kv.set_bool("mhz19_en", mhz19_enabled);

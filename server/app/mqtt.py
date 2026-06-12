@@ -174,18 +174,30 @@ async def _handle_message(sio, topic: str, payload: dict):
 
     elif msg_type == "status":
         if len(parts) == 4 and parts[3] == "heartbeat":
+            # v4.2: node_type + roles update on every heartbeat. The old
+            # upsert never refreshed node_type on conflict, so rows decayed
+            # to whatever the first insert guessed (usually 'unknown') and
+            # type-based command routing quietly broke. v2 firmware always
+            # sends `type` (the provisioned personality) and `roles` (the
+            # full capability list for combined nodes).
+            roles = payload.get("roles")
+            roles_json = json.dumps(roles) if isinstance(roles, list) else None
             async with get_db() as db:
                 await db.execute(
-                    """INSERT INTO hardware_nodes (node_id, node_type, firmware_version, last_seen, ip_address, status)
-                       VALUES (?, ?, ?, ?, ?, 'online')
+                    """INSERT INTO hardware_nodes (node_id, node_type, firmware_version, last_seen, ip_address, status, roles)
+                       VALUES (?, ?, ?, ?, ?, 'online', ?)
                        ON CONFLICT(node_id) DO UPDATE SET
+                         node_type=CASE WHEN excluded.node_type != 'unknown'
+                                        THEN excluded.node_type
+                                        ELSE hardware_nodes.node_type END,
                          firmware_version=excluded.firmware_version,
                          last_seen=excluded.last_seen,
                          ip_address=excluded.ip_address,
-                         status='online'""",
+                         status='online',
+                         roles=COALESCE(excluded.roles, hardware_nodes.roles)""",
                     (node_id, payload.get("type", "unknown"),
                      payload.get("firmware_version"), time.time(),
-                     payload.get("ip")),
+                     payload.get("ip"), roles_json),
                 )
                 await db.commit()
         else:
@@ -216,6 +228,60 @@ async def _handle_message(sio, topic: str, payload: dict):
         log.warning("Alert from node=%s kind=%s", node_id, alert_kind)
         await sio.emit("alert", {"node_id": node_id, **payload})
         await forward_event("alert", {"node_id": node_id, **payload})
+
+    elif msg_type == "logs":
+        # v4.2 — firmware log batches ({entries:[{ts_ms,level,msg}],dropped?}).
+        # Previously published by nodes and consumed by nobody.
+        entries = payload.get("entries")
+        if isinstance(entries, list) and entries:
+            async with get_db() as db:
+                for e in entries[:64]:  # batch sanity cap
+                    if not isinstance(e, dict):
+                        continue
+                    msg = str(e.get("msg", ""))[:300]
+                    await db.execute(
+                        "INSERT INTO node_logs (node_id, ts_ms, level, msg) "
+                        "VALUES (?, ?, ?, ?)",
+                        (node_id, int(e.get("ts_ms", 0) or 0),
+                         int(e.get("level", 1) or 1), msg),
+                    )
+                # Retention: keep the newest ~10k rows per node.
+                await db.execute(
+                    """DELETE FROM node_logs WHERE node_id = ? AND id NOT IN
+                       (SELECT id FROM node_logs WHERE node_id = ?
+                        ORDER BY id DESC LIMIT 10000)""",
+                    (node_id, node_id),
+                )
+                await db.commit()
+            dropped = payload.get("dropped")
+            if dropped:
+                log.warning("node %s dropped %s log entries on-device",
+                            node_id, dropped)
+            await sio.emit("node_log", {"node_id": node_id,
+                                        "count": len(entries)})
+
+    elif msg_type == "coredump":
+        # v4.2 — {seq,total,size,b64_data} chunks; reassembled to
+        # data/coredumps/. A completed dump means the node panicked on its
+        # previous run — surface it as an alert event.
+        if len(parts) == 4 and parts[3] == "chunk":
+            from .hardware.coredumps import ingest_chunk
+            written = ingest_chunk(node_id, payload)
+            if written is not None:
+                evt = {"node_id": node_id, "type": "coredump",
+                       "message": "Node panicked last boot — coredump saved",
+                       "filename": written.name}
+                await sio.emit("alert", evt)
+                await forward_event("alert", evt)
+
+    elif msg_type == "ota":
+        # v4.2 — node firmware OTA lifecycle visibility (start/success/
+        # error from ArduinoOTA). Forwarded as a node_ota event so remote
+        # operators can see node updates; this is visibility only — pushing
+        # images stays a LAN operation.
+        evt = {"node_id": node_id, **payload}
+        await sio.emit("node_ota", evt)
+        await forward_event("node_ota", evt)
 
     # Handle smart plug messages (Shelly / Tasmota)
     if topic.startswith("shellies/") or topic.startswith("tasmota/"):

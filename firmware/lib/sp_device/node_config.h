@@ -94,6 +94,7 @@ struct NodeConfig {
     std::string ntp_host;      // default pool.ntp.org (Pi-as-NTP for airgap)
     std::string paired_pi_host;
     sp::Personality personality = sp::Personality::Climate;
+    bool tls_enabled = false;  // Secure MQTT: pin the Pi CA, broker :8883
     bool hx711_enabled = false;
     bool reed_enabled = false;
     bool mhz19_enabled = false;

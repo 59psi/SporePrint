@@ -121,6 +121,10 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
         page += text_field("Command signing key (HMAC)", "hmac_key", "",
                            "password",
                            "from the Pi's provision tool; empty = warn mode");
+        page += "<label><input type='checkbox' name='tls' value='1'";
+        if (current.tls_enabled) page += " checked";
+        page += "> Secure MQTT (TLS \u2014 pins the Pi's certificate)"
+                "</label><br><br>";
         page += text_field("NTP server", "ntp_host",
                            String(current.ntp_host.c_str()), "text",
                            "set to the Pi's address for airgapped rooms");
@@ -143,6 +147,7 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
         if (portal.arg("ota_pass").length()) cfg.ota_pass = portal.arg("ota_pass").c_str();
         if (portal.arg("hmac_key").length()) cfg.hmac_key = portal.arg("hmac_key").c_str();
         if (portal.arg("ntp_host").length()) cfg.ntp_host = portal.arg("ntp_host").c_str();
+        cfg.tls_enabled = portal.arg("tls") == "1";
         cfg.save(kv_);
         portal.send(200, "text/html",
                     "<html><body style='font-family:sans-serif;max-width:420px;"
