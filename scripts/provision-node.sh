@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scripts/provision-node.sh — generate + deploy the MQTT HMAC key that
-# closes Sentinel finding C-1 (firmware MQTT commands bypass HMAC signing).
+# scripts/provision-node.sh — generate (or reuse) the MQTT command-signing
+# key shared by the Pi server and every ESP32 node.
 #
 # Usage:
 #   ./scripts/provision-node.sh [--rotate]
@@ -9,25 +9,24 @@
 #   1. Generates a 64-char (256-bit) hex key, or reuses the existing one
 #      from server/.env unless --rotate is passed.
 #   2. Writes it to server/.env as SPOREPRINT_MQTT_HMAC_KEY.
-#   3. Prints flashing instructions for each ESP32 node. The key must be
-#      written into NVS under the `hmac_key` namespace before the node
-#      starts enforcing signed commands.
+#   3. Prints the node-side provisioning steps.
 #
-# Why this is a separate script from setup.sh:
-#   * Key rotation is an operational event, not a one-time setup.
-#   * The firmware migration path (warn + accept when unprovisioned) means
-#     the Pi can enable signing before every node has the key, with a
-#     visible Serial warning driving the operator toward provisioning.
-#   * Keeping it out of setup.sh makes the upgrade path explicit for
-#     existing v3.4.8 deployments.
+# v2 firmware note: nodes take the key through the CAPTIVE PORTAL
+# ("Command signing key" field) — there is no build-flag path anymore.
+# The v1 flow (SPOREPRINT_PROVISION_HMAC=<key> pio run …) baked the key in
+# at compile time through a preprocessor path that corrupted it; v2 stores
+# what you type, verifies against the shared golden vectors, and an empty
+# field means warn-and-accept mode (the node logs a warning on every
+# unsigned command it honours).
 #
 # Security notes:
 #   * The key is the master secret for firmware command authenticity. Treat
 #     like an SSH private key — chmod 600 on server/.env, never commit.
 #   * A compromise of this key = attacker-controlled commands for every
 #     node paired with the Pi. Rotate on any suspicion of broker leak.
-#   * Future work: per-node keys instead of shared key; auto-rotation on
-#     cloud pair.
+#   * Rotation = re-run with --rotate, restart the Pi server, then update
+#     each node via its portal (factory-reset hold 10 s → rejoin
+#     SporePrint-Setup → paste the new key) or re-provision in place.
 
 set -euo pipefail
 
@@ -39,13 +38,12 @@ for arg in "$@"; do
   case "$arg" in
     --rotate) ROTATE=1 ;;
     -h|--help)
-      sed -n '2,31p' "$0"
+      sed -n '2,30p' "$0"
       exit 0
       ;;
   esac
 done
 
-# Load current key if present
 CURRENT_KEY=""
 if [ -f "$ENV_FILE" ] && grep -q '^SPOREPRINT_MQTT_HMAC_KEY=' "$ENV_FILE"; then
   CURRENT_KEY=$(grep '^SPOREPRINT_MQTT_HMAC_KEY=' "$ENV_FILE" | head -1 | cut -d= -f2-)
@@ -64,7 +62,6 @@ else
     chmod 600 "$ENV_FILE"
   fi
   if grep -q '^SPOREPRINT_MQTT_HMAC_KEY=' "$ENV_FILE"; then
-    # Replace in place
     tmp=$(mktemp)
     grep -v '^SPOREPRINT_MQTT_HMAC_KEY=' "$ENV_FILE" > "$tmp"
     echo "SPOREPRINT_MQTT_HMAC_KEY=$KEY" >> "$tmp"
@@ -79,37 +76,25 @@ fi
 echo ""
 echo "── Next steps ─────────────────────────────────────────────────────"
 echo ""
-echo "1. Restart the Pi server so the new key takes effect:"
+echo "1. Restart the Pi server so the key takes effect:"
 echo "   sudo systemctl restart sporeprint     # or docker compose restart server"
 echo ""
-echo "2. For EACH ESP32 node in your stack (relay, climate, lighting, cam),"
-echo "   bake the key into its NVS by re-flashing with the build flag:"
+echo "2. For EACH ESP32 node, enter the key in the node's captive portal:"
 echo ""
-echo "      cd firmware"
-echo "      SPOREPRINT_PROVISION_HMAC=$KEY pio run -e relay_node -t upload"
-echo "      SPOREPRINT_PROVISION_HMAC=$KEY pio run -e climate_node -t upload"
-echo "      SPOREPRINT_PROVISION_HMAC=$KEY pio run -e lighting_node -t upload"
-echo "      SPOREPRINT_PROVISION_HMAC=$KEY pio run -e cam_node -t upload"
+echo "   New node: power it, join the 'SporePrint-Setup' WiFi AP, open"
+echo "   http://192.168.4.1/, paste the key into 'Command signing key'."
 echo ""
-echo "   The firmware checks the build-flag on boot: if NVS has no"
-echo "   hmac_key AND the build flag is set, it writes the flag value into"
-echo "   NVS. Subsequent boots read from NVS normally — safe to re-flash"
-echo "   without the flag after first boot."
+echo "   Already-provisioned node: hold the factory-reset button 10 s"
+echo "   (BOOT on dev boards, GPIO 13 on the cam), then provision via the"
+echo "   portal as above. WiFi + broker settings re-enter with it."
 echo ""
-echo "   On first successful store you will see on Serial:"
-echo "      [CFG] hmac_key stored from build flag (64 chars)"
-echo ""
-echo "   v3.5.0 will add a Pi-mediated provisioning flow so re-flashing"
-echo "   is not required for key rotation. Until then, rotation means"
-echo "   re-running this script with --rotate + re-flashing every node."
-echo ""
-echo "3. Until every node has the key, nodes without it will log a WARNING"
-echo "   on every accepted unsigned command:"
-echo "      [SEC] WARNING: hmac_key not provisioned — accepting unsigned command"
+echo "3. Until a node has the key, it logs a WARNING on every accepted"
+echo "   unsigned command:"
+echo "      [SEC] hmac_key not provisioned — accepting unsigned cmd/..."
 echo ""
 echo "4. Verify by sending a test command from the Pi and watching Serial:"
-echo "   A signed frame logs:       [RELAY] Ch0 (fae): ON PWM=200"
-echo "   A bad signature logs:      [SEC] Rejecting command on ... signature mismatch"
+echo "   A signed frame logs:       [CH] fae: ON pwm=200"
+echo "   A bad signature logs:      [SEC] Rejecting cmd/...: signature mismatch"
 echo ""
 echo "Key: $KEY"
 echo ""
