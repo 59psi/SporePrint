@@ -1,0 +1,17 @@
+# 8 MB flash layout — ESP32-S3-DevKitC-1 (N8R8/N16R8) node builds.
+#
+# The 4 MB table (partitions.csv) stays byte-identical for esp32dev/esp32cam
+# fleet continuity — OTA cannot repartition. This table is S3-only:
+#   app slots   3 MB each — headroom for TLS + the full sensor matrix
+#               without a future repartition
+#   spiffs      ~1.86 MB
+#   coredump    128 KB — S3 dumps (more RAM) overflow the 4 MB table's 64 KB
+#               and ESP-IDF truncates oversize dumps
+#
+# Name,     Type, SubType,  Offset,   Size,
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x300000,
+app1,       app,  ota_1,    0x310000, 0x300000,
+spiffs,     data, spiffs,   0x610000, 0x1D0000,
+coredump,   data, coredump, 0x7E0000, 0x20000,

@@ -1,8 +1,9 @@
 {
-  "name": "sp_testing",
-  "description": "Scripted HAL mocks for native tests \u2014 host-only",
+  "name": "sp_device",
+  "description": "Arduino/ESP32 adapters + device services for the v2 node",
   "version": "2.0.0",
   "dependencies": {
+    "sp_core": "*",
     "sp_drivers": "*"
   },
   "build": {
