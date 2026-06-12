@@ -177,5 +177,14 @@ module sensor_bracket() {
 }
 
 // ── Render (print-friendly orientation) ───────────────────────
-// Lay flat: arm horizontal, clips pointing up
-sensor_bracket();
+// Lay flat: arm horizontal, clips pointing up.
+// Wordmark engraved on the platform top, inside the retention rails.
+difference() {
+    sensor_bracket();
+    translate([total_clip_w / 2,
+               -clip_outer_d / 2 - arm_length - platform_l / 2 + 5,
+               platform_thick - 0.4])
+        linear_extrude(0.5)
+            text("SporePrint", size = 3.5, halign = "center",
+                 valign = "center", font = "Liberation Sans");
+}

@@ -15,6 +15,8 @@
 // github.com/sporeprint — open-source mushroom cultivation platform
 
 // ── Parameters (adjust for your PSU brick) ────────────────────
+// Default fits generic 12V 5A bricks (~50x110x30mm).
+// Mean Well GST60A12-P1J (125 x 50 x 31.5mm): set psu_l=125, psu_h=32.
 psu_w         = 50;    // mm — PSU width
 psu_l         = 110;   // mm — PSU length
 psu_h         = 30;    // mm — PSU height (thickness)
@@ -176,4 +178,13 @@ module power_supply_mount() {
 }
 
 // ── Render ─────────────────────────────────────────────────────
-power_supply_mount();
+// Wordmark engraved into the outer right side wall, mid-span (flat
+// region between the rounded corners).
+difference() {
+    power_supply_mount();
+    translate([cradle_w - 0.4, cradle_l / 2, 3.5])
+        rotate([90, 0, 90])
+            linear_extrude(0.5)
+                text("SporePrint", size = 3.5, halign = "center",
+                     font = "Liberation Sans");
+}

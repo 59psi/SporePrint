@@ -1,4 +1,4 @@
-// SporePrint Camera Mount (ESP32-CAM / ESP32-S3 CAM)
+// SporePrint Camera Mount (ESP32-CAM AI-Thinker)
 // Adjustable-angle mount, wall or shelf mountable
 //
 // Mounting options:
@@ -7,7 +7,7 @@
 //   - Suction cup mount (for glass door/smooth surfaces)
 //
 // Print settings: PLA, 0.2mm layer height, supports needed for pivot cylinders
-// Designed for: 27x40mm ESP32-CAM / ESP32-S3 CAM boards
+// Designed for: 27x40mm ESP32-CAM (AI-Thinker) — the board the cam firmware targets
 //
 // Customization: adjust parameters at top of file
 //
@@ -160,9 +160,17 @@ module friction_washer() {
 // ── Render ──────────────────────────────────────────────────────
 cam_cradle();
 
-// Arm placed beside cradle for printing
-translate([cradle_outer_w + 15, arm_width / 2, 0])
-    mount_arm();
+// Arm placed beside cradle for printing, wordmark engraved along its
+// top face (clear of the screw hole near y=5 and the pivot end).
+difference() {
+    translate([cradle_outer_w + 15, arm_width / 2, 0])
+        mount_arm();
+    translate([cradle_outer_w + 15, arm_width / 2 + 30, wall - 0.4])
+        linear_extrude(0.5)
+            rotate([0, 0, 90])
+                text("SporePrint", size = 3, halign = "center",
+                     font = "Liberation Sans");
+}
 
 // Friction washers (print 2)
 translate([cradle_outer_w + 15 + arm_width + 10, 5, 0])

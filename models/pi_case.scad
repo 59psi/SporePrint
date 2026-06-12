@@ -194,6 +194,13 @@ module pi_case_lid() {
 // ── Render ─────────────────────────────────────────────────────
 pi_case_base();
 
-// Lid placed beside the base for printing
-translate([outer_w + 10, 0, 0])
-    pi_case_lid();
+// Lid placed beside the base for printing, with engraved wordmark on the
+// front strip (clear of the vent grid at y>=12 and fan holes at y~11.3).
+difference() {
+    translate([outer_w + 10, 0, 0])
+        pi_case_lid();
+    translate([outer_w + 10 + outer_w / 2, 4.5, wall - 0.4])
+        linear_extrude(0.5)
+            text("SporePrint", size = 4.5, halign = "center",
+                 font = "Liberation Sans");
+}

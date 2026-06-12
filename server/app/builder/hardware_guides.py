@@ -7,11 +7,12 @@ from .models import CapabilityGroup, Component, WiringConnection, HardwareTier
 _RPI = Component(
     name="Raspberry Pi 5 (4GB)",
     role="Server — runs SporePrint backend, MQTT broker, and web UI",
-    price_approx="$75",
+    price_approx="$110",
     url="https://www.amazon.com/s?k=raspberry+pi+5+4gb",
     category="controller",
-    notes="2GB model works but 4GB recommended. Needs microSD card (32GB+), USB-C power supply (5V 5A). "
-          "Alternative: Raspberry Pi 4 (4GB) ~$55 — still available, cheaper. "
+    notes="Memory-shortage pricing (3rd hike Apr 2026): CanaKit/PiShop $110 board-only. "
+          "Needs microSD card (32GB+), USB-C power supply (5V 5A). "
+          "Alternative: Raspberry Pi 4 (4GB) ~$100 — no longer meaningfully cheaper. "
           "Also: canakit.com, thepihut.com, pishop.us. Check rpilocator.com for real-time stock.",
 )
 
@@ -37,24 +38,29 @@ _RPI_PSU = Component(
 )
 
 _ESP32 = Component(
-    name="ESP32-S3 DevKit",
+    name="ESP32-WROOM-32 DevKit",
     role="Microcontroller for sensor/actuator nodes",
     price_approx="$8",
-    url="https://www.amazon.com/s?k=esp32-s3+devkit",
+    url="https://www.amazon.com/s?k=esp32+wroom+32+devkit+38+pin",
     category="controller",
-    notes="USB-C, more GPIO, better WiFi. Runs the same firmware as classic ESP32. "
-          "Alternative: ESP32-WROOM-32 DevKit (~$6) — classic, widely available, works identically. "
-          "Also: digikey.com, aliexpress.com (search ESP32-S3-DevKitC-1). Official: espressif.com/devkits",
+    notes="Classic 38-pin ESP32 dev board — the board the shipped firmware targets "
+          "(platformio env: esp32dev) and the GPIO map in every wiring diagram. "
+          "HiLetgo/Hosyond/AITRIP all fine; 3-packs (~$16-18) are the best value for multi-node tiers. "
+          "NOTE: ESP32-S3 boards are NOT flashable with the current firmware envs — S3 support is planned. "
+          "Also: digikey.com, aliexpress.com. Official: espressif.com/devkits",
 )
 
 _SHT31 = Component(
     name="SHT31-D Sensor Breakout",
     role="Temperature + humidity sensor (I2C, 0x44)",
-    price_approx="$7",
-    url="https://www.amazon.com/s?k=sht31+sensor+breakout",
+    price_approx="$14",
+    url="https://www.adafruit.com/product/2857",
     category="sensor",
-    notes="Accuracy: +/-0.3C, +/-2% RH. I2C address 0x44. "
-          "Also: adafruit.com/product/2857, dfrobot.com. Multiple Amazon sellers (HiLetgo, Adafruit).",
+    notes="Accuracy: +/-0.3C, +/-2% RH. I2C address 0x44. Adafruit $13.95, in stock — "
+          "the sensor the shipped climate firmware drives (SHT3x protocol). "
+          "SHT45/SHT41 (SHT4x protocol) are planned upgrades pending a firmware driver — "
+          "NOT drop-ins despite the shared 0x44 address. "
+          "Also: dfrobot.com, HiLetgo on Amazon (~$8, slower shipping QC lottery).",
 )
 
 _BH1750 = Component(
@@ -70,16 +76,16 @@ _BH1750 = Component(
 _SCD41 = Component(
     name="SCD41 CO2 Sensor Breakout",
     role="CO2, temperature, humidity sensor (I2C, 0x62)",
-    price_approx="$46",
-    url="https://shop.pimoroni.com/en-us/products/scd41-co2-sensor-breakout",
+    price_approx="$50",
+    url="https://www.adafruit.com/product/5190",
     category="sensor",
     notes="True NDIR CO2 sensor. 400-5000ppm range. Needs 5min warm-up. I2C 0x62. "
-          "Same pinout as SCD40 — drop-in replacement with better accuracy. "
-          "Pimoroni PIM587 is the most reliable source (in stock, ~$46). "
-          "Premium alternative: SparkFun Qwiic SCD41 ~$75 (plug-and-play). "
-          "Budget alternative: MH-Z19B (~$15, UART interface, different wiring). "
-          "Also: DigiKey (Sensirion SEK-SCD41), Newark, Amazon (generic Sensirion modules). "
-          "Avoid Adafruit 5190 — historically long backorders.",
+          "Adafruit 5190 ($49.95) is in stock as of 2026-06 — the old backorder advice is stale. "
+          "Same pinout as SCD40 — drop-in with better accuracy. "
+          "Alternative: Pimoroni PIM587 (~$46, ships from UK, also in stock). "
+          "Premium alternative: SparkFun Qwiic SCD41 ~$75. "
+          "NOTE: UART sensors (MH-Z19B/C) have no firmware driver today — not drop-ins. "
+          "Also: DigiKey (Sensirion SEK-SCD41), Newark.",
 )
 
 _IRLZ44N = Component(
@@ -113,17 +119,18 @@ _10K_RESISTOR = Component(
 )
 
 _ESP32_CAM = Component(
-    name="Freenove ESP32-S3 WROOM CAM",
+    name="ESP32-CAM (AI-Thinker, OV2640)",
     role="Camera node — captures images for contamination detection + growth tracking",
-    price_approx="$20",
-    url="https://www.amazon.com/Freenove-ESP32-S3-WROOM-Dual-core-Microcontroller-Wireless/dp/B0F48DV38M",
+    price_approx="$10",
+    url="https://www.amazon.com/s?k=esp32-cam+ai-thinker",
     category="controller",
-    notes="USB-C, no separate programmer needed. Ships with OV2640 (2MP) — more than adequate "
-          "for contamination detection at 15-30cm range. "
-          "Premium OV5640 (5MP) upgrade: XIAO ESP32S3 Sense (~$14) + OV5640 add-on module (~$20) = ~$34 total, "
-          "or Waveshare ESP32-S3-CAM-OV5640 (waveshare.com, ~$25). "
-          "Budget alternative: ESP32-CAM AI-Thinker (OV2640) (~$8) — needs UART programmer. "
-          "Also: seeedstudio.com (XIAO ESP32S3 Sense), walmart.com, ebay.com.",
+    notes="The board the cam firmware targets (platformio env: esp32cam, AI-Thinker pin map). "
+          "OV2640 (2MP) is more than adequate for contamination detection at 15-30cm range. "
+          "Single-unit listings are drying up — HiLetgo 2-packs with CH340 programmer (~$18.50) are "
+          "the best buy and cover the Tier 3 dual-camera build. "
+          "NOTE: ESP32-S3 camera boards (Freenove, XIAO Sense, Waveshare) use a different chip + "
+          "camera pin map and are NOT supported by the shipped firmware. "
+          "Also: aliexpress.com, ebay.com.",
 )
 
 _FTDI = Component(
@@ -132,8 +139,8 @@ _FTDI = Component(
     price_approx="$4",
     url="https://www.amazon.com/s?k=cp2102+usb+uart+programmer",
     category="misc",
-    notes="Only needed if using classic ESP32-CAM AI-Thinker. "
-          "ESP32-S3 CAM has built-in USB — no programmer needed. "
+    notes="Required for the AI-Thinker ESP32-CAM (no onboard USB). Skip if you bought a "
+          "cam 2-pack that bundles the programmer. "
           "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
@@ -158,7 +165,7 @@ TIER_BARE_BONES = HardwareTier(
     id="bare_bones",
     name="Bare Bones",
     tagline="Monitor your grow. Smart plug for humidifier.",
-    estimated_cost="~$135",
+    estimated_cost="~$180",
     best_for=(
         "First-time mushroom cultivators who want reliable monitoring and basic humidity "
         "control without committing to full automation. Ideal for a single grow tent or "
@@ -267,7 +274,8 @@ TIER_BARE_BONES = HardwareTier(
     wiring_diagram="See docs/wiring-tier1-bare-bones.svg for full wiring diagram with color-coded signal, I2C, power, and ground lines.",
     firmware_targets=["climate_node"],
     setup_steps=[
-        "Set up Raspberry Pi: install Raspberry Pi OS, run setup.sh",
+        "Set up Raspberry Pi: install Raspberry Pi OS (set hostname to 'sporeprint' in Raspberry Pi "
+        "Imager's advanced options — ESP32 nodes find the MQTT broker at sporeprint.local), run setup.sh",
         "Wire SHT31-D and BH1750 to ESP32 per diagram above (shared I2C bus)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash climate_node firmware: cd firmware && pio run -t upload -e climate_node",
@@ -296,7 +304,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$240",
+    estimated_cost="~$350",
     best_for=(
         "Serious hobbyists producing 2-10 flushes per year and experimenting with multiple "
         "species. This is the sweet spot for most home growers: full climate sensing, "
@@ -356,7 +364,7 @@ TIER_RECOMMENDED = HardwareTier(
         CapabilityGroup(
             title="Vision & AI",
             items=[
-                "ESP32-S3 WROOM CAM (OV2640, 2MP) with built-in flash LED",
+                "ESP32-CAM AI-Thinker (OV2640, 2MP) with built-in flash LED",
                 "Auto-capture every 15 minutes for timelapse",
                 "Local CNN contamination pre-filter (runs on Pi, no cloud required)",
                 "Claude Vision analysis on demand — detailed growth stage + issue reports",
@@ -470,7 +478,9 @@ TIER_RECOMMENDED = HardwareTier(
     wiring_diagram="See docs/wiring-tier2-recommended.svg for full wiring diagram with all 4 ESP32 nodes, MOSFET circuits, and I2C bus layout.",
     firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
     setup_steps=[
-        "Set up Raspberry Pi: install Raspberry Pi OS (64-bit), enable SSH, connect to WiFi",
+        "Set up Raspberry Pi: install Raspberry Pi OS (64-bit) — set hostname to 'sporeprint' in "
+        "Raspberry Pi Imager's advanced options (nodes find the MQTT broker at sporeprint.local) — "
+        "enable SSH, connect to WiFi",
         "Clone SporePrint: git clone https://github.com/59psi/SporePrint.git && cd SporePrint",
         "Copy .env.example to .env, set SPOREPRINT_WEATHER_LAT and _LON for your location",
         "Wire climate node: SHT31-D + SCD41 + BH1750 on shared I2C bus (SDA=GPIO21, SCL=GPIO22) per diagram",
@@ -478,7 +488,8 @@ TIER_RECOMMENDED = HardwareTier(
         "Wire lighting node: same MOSFET pattern — white LED strip on GPIO 25, blue on GPIO 26",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash all 4 firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
-        "Flash ESP32-S3 CAM: connect via USB-C, flash cam_node firmware (no programmer needed)",
+        "Flash the ESP32-CAM via the USB-UART programmer (hold GPIO 0 → GND while flashing; 2-pack "
+        "bundles include the programmer)",
         "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
         "SENSOR PLACEMENT — Climate node (SHT31 + SCD41 + BH1750): Mount the sensor board inside the "
         "ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
@@ -523,7 +534,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$415+",
+    estimated_cost="~$540",
     best_for=(
         "Advanced growers running multiple shelves or chambers, commercial-adjacent "
         "operations, and researchers tuning parameters for yield optimization. Ideal "
@@ -551,8 +562,8 @@ TIER_ALL = HardwareTier(
         "Full 4-spectrum LED lighting (white, blue, red, far-red) for all species",
         "4 smart plugs: humidifier, dehumidifier, heater, Peltier cooler",
         "2 cameras (front + top-down views)",
-        "Door reed switch — pauses humidity when closet opens",
-        "Load cell for automated harvest weight tracking",
+        "Door reed switch — pauses humidity when closet opens (firmware support planned)",
+        "Load cell for automated harvest weight tracking (firmware support planned)",
         "Peristaltic pump for automated misting between flushes",
         "Weather-predictive automation",
     ],
@@ -563,7 +574,7 @@ TIER_ALL = HardwareTier(
                 "2x climate nodes — different shelves OR primary + backup on same shelf",
                 "Per-shelf temperature, humidity, CO2, and light readings",
                 "Cross-sensor validation — alerts if readings diverge (flags drift/failure)",
-                "Door reed switch — pauses humidity automation when chamber opens",
+                "Door reed switch — pauses humidity automation when chamber opens (firmware planned)",
                 "Automatic sensor fallback if one climate node drops offline",
             ],
         ),
@@ -591,9 +602,9 @@ TIER_ALL = HardwareTier(
             title="Advanced automation",
             items=[
                 "Peristaltic dosing pump for automated misting between flushes",
-                "Load cell (5kg HX711) — automatic harvest weight logging",
+                "Load cell (5kg HX711) — automatic harvest weight logging (firmware planned)",
                 "Weather-predictive automation — adjusts fans based on forecast",
-                "Door-open detection suspends humidity to prevent pooling",
+                "Door-open detection suspends humidity to prevent pooling (firmware planned)",
                 "Multi-zone rules — different setpoints per shelf",
             ],
         ),
@@ -635,14 +646,16 @@ TIER_ALL = HardwareTier(
         Component(**{**_1N4007.model_dump(), "quantity": 8}),
         Component(**{**_10K_RESISTOR.model_dump(), "quantity": 8}),
         Component(
-            name="Noctua NF-A8 5V PWM Fan (80mm)",
+            name="Noctua NF-A8 PWM Fan (80mm, 12V)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
-            price_approx="$14",
-            url="https://www.amazon.com/s?k=noctua+nf-a8+5v+pwm",
+            price_approx="$17",
+            url="https://www.amazon.com/s?k=noctua+nf-a8+pwm",
             category="actuator",
-            notes="Alternative: Arctic P8 PWM (~$8). "
-                  "Also: newegg.com, walmart.com, noctua.at/buy. Alternative: Arctic P8 PWM (~$8).",
+            notes="12V variant — this tier powers fans from the 12V 10A PSU rail; do NOT buy the "
+                  "5V NF-A8 variant for this build. "
+                  "Alternative: Arctic P8 PWM PST (~$10 — spec the PST variant; the plain P8 PWM "
+                  "listing is discontinued). Also: newegg.com, walmart.com, noctua.at/buy.",
         ),
         Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
         Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
@@ -651,7 +664,7 @@ TIER_ALL = HardwareTier(
                   "Alternatives: ledworker.com (China direct, 3-5 day shipping). Amazon 'far red led' search returns 30W fixtures, not strips — avoid for this build. "
                   "If unavailable, omit — far-red is optional morphology tuning, not required for fruiting."),
         Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view. Also: seeedstudio.com (XIAO ESP32S3 Sense with OV5640), walmart.com, ebay.com"}),
+        Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view. A HiLetgo 2-pack with CH340 programmer (~$18.50) covers both. ESP32-S3 camera boards are NOT supported by the shipped firmware."}),
         _FTDI,
         _tasmota_plug("Humidifier"),
         _tasmota_plug("Dehumidifier"),
@@ -659,22 +672,25 @@ TIER_ALL = HardwareTier(
         _tasmota_plug("Peltier cooler"),
         Component(
             name="HX711 Load Cell Amplifier + 5kg Load Cell",
-            role="Automated harvest weight tracking",
+            role="Automated harvest weight tracking (firmware support planned)",
             price_approx="$8",
             url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
-            notes="Wire to relay node aux channel (GPIO 14). HX711 uses 2 GPIO pins (DOUT + SCK). "
+            notes="Wire DOUT to GPIO 32, SCK to GPIO 33 on the relay node. "
+                  "NOTE: relay firmware does not read the HX711 yet — support is planned; wiring it "
+                  "now means the rig is ready when it ships. "
                   "Place under grow block to track water loss and harvest weight. "
                   "Widely available. Also: sparkfun.com, adafruit.com. Multiple Amazon sellers.",
         ),
         Component(
             name="Reed Switch (magnetic, normally open)",
-            role="Door sensor — pauses humidity when closet opens",
+            role="Door sensor — pauses humidity when closet opens (firmware support planned)",
             price_approx="$3",
             url="https://www.amazon.com/s?k=magnetic+reed+switch+normally+open",
             category="sensor",
-            notes="Mount on closet door frame. Wire to any ESP32 GPIO with internal pull-up. "
-                  "Magnet on door, switch on frame. "
+            notes="Mount on closet door frame. Wire to GPIO 35 with internal pull-up; magnet on door, "
+                  "switch on frame. NOTE: relay firmware does not read the reed switch yet — support "
+                  "is planned. "
                   "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
@@ -706,7 +722,9 @@ TIER_ALL = HardwareTier(
     wiring_diagram="See docs/wiring-tier3-all-the-things.svg for full wiring diagram with all 5 ESP32 nodes, load cell, reed switch, pump, and 4-channel lighting.",
     firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
     setup_steps=[
-        "Set up Raspberry Pi: install Raspberry Pi OS (64-bit), enable SSH, connect to WiFi",
+        "Set up Raspberry Pi: install Raspberry Pi OS (64-bit) — set hostname to 'sporeprint' in "
+        "Raspberry Pi Imager's advanced options (nodes find the MQTT broker at sporeprint.local) — "
+        "enable SSH, connect to WiFi",
         "Clone SporePrint: git clone https://github.com/59psi/SporePrint.git && cd SporePrint",
         "Copy .env.example to .env, set SPOREPRINT_WEATHER_LAT and _LON for your location (enables predictive automation)",
         "Wire climate node #1: SHT31-D + SCD41 + BH1750 on shared I2C bus (SDA=GPIO21, SCL=GPIO22) per diagram",
@@ -716,7 +734,7 @@ TIER_ALL = HardwareTier(
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash all firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
         "Flash climate node #2 with different node_id: set MQTT node_id to 'climate-02' before flashing",
-        "Flash both ESP32-S3 CAMs via USB-C: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
+        "Flash both ESP32-CAMs via the USB-UART programmer: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
         "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
         "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each sensor board inside "
         "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
@@ -742,8 +760,8 @@ TIER_ALL = HardwareTier(
         "down for overall colonization progress. Use cam_mount.scad — suction cup on glass door or zip "
         "tie to shelf rail. Distance: 15-30cm from substrate for good detail without fish-eye distortion. "
         "The camera has a built-in flash LED (GPIO 4) — use it for consistent photos since ambient light varies",
-        "Wire HX711 load cell to relay node spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33) — place cell under grow block for harvest weight tracking",
-        "Mount reed switch on closet door frame — wire one leg to any ESP32 GPIO (set INPUT_PULLUP), other leg to GND",
+        "Wire HX711 load cell to relay node spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33) — place cell under grow block. Firmware support is planned; wiring now means it lights up on the next firmware update",
+        "Mount reed switch on closet door frame — wire one leg to GPIO 35 (INPUT_PULLUP), other leg to GND. Firmware support is planned",
         "Connect peristaltic pump to relay node aux channel (GPIO 14) via IRLZ44N + flyback diode — run food-safe silicone tubing to misting nozzle",
         "Power all 12V devices (fans, LED strips, pump) from the 12V 10A PSU. ESP32s powered via USB",
         "SMART PLUG PLACEMENT — All 4 Athom Tasmota plugs go into accessible outlets OUTSIDE the chamber. "

@@ -6,6 +6,15 @@ Kept in lockstep with the Pi server + cloud repo via `scripts/bump.sh`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.6] - 2026-06-11
+
+### Changed
+- No firmware code changes in this release. The hardware guides, enclosure
+  models, and wiring diagrams were updated to match the boards the firmware
+  actually targets (ESP32-WROOM-32 via `esp32dev`, AI-Thinker ESP32-CAM via
+  `esp32cam`) — see the repo CHANGELOG. A ground-up firmware revision with
+  broader sensor support is planned next.
+
 ## [4.1.5] - 2026-05-03
 
 ### Added

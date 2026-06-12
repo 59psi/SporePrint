@@ -57,14 +57,14 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="20" y="156" width="600" height="340" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="44" y="182" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Climate Node</text>
-  <text x="44" y="200" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 DevKit | USB-C 5V | 3 I2C sensors on shared bus</text>
+  <text x="44" y="200" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-WROOM-32 DevKit | micro-USB 5V | 3 I2C sensors on shared bus</text>
 
-  <!-- ESP32-S3 Climate -->
+  <!-- ESP32 Climate -->
   <rect x="44" y="216" width="180" height="220" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="134" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32-S3</text>
+  <text x="134" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
   <text x="134" y="258" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Climate Hub</text>
   <rect x="84" y="268" width="100" height="22" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="134" y="283" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-C (5V power)</text>
+  <text x="134" y="283" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB (5V power)</text>
 
   <!-- Pin header (right side) -->
   <rect x="210" y="302" width="12" height="124" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
@@ -169,13 +169,13 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="700" y="156" width="680" height="340" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="724" y="182" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Relay Node</text>
-  <text x="724" y="200" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 DevKit | USB-C 5V | 4 MOSFET channels driving 12V fans</text>
+  <text x="724" y="200" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-WROOM-32 DevKit | micro-USB 5V | 4 MOSFET channels driving 12V fans</text>
 
-  <!-- ESP32-S3 Relay -->
+  <!-- ESP32 Relay -->
   <rect x="724" y="216" width="130" height="74" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="789" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32-S3</text>
+  <text x="789" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
   <text x="789" y="258" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Relay Node</text>
-  <text x="789" y="278" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-C 5V</text>
+  <text x="789" y="278" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB 5V</text>
 
   <!-- Pin list on right side of ESP32 -->
   <circle cx="862" cy="236" r="4" fill="#22c55e"/>
@@ -267,13 +267,13 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="20" y="536" width="600" height="200" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="44" y="562" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Lighting Node</text>
-  <text x="44" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 DevKit | USB-C 5V | 2 MOSFET channels, 10-bit PWM dimming</text>
+  <text x="44" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-WROOM-32 DevKit | micro-USB 5V | 2 MOSFET channels, 10-bit PWM dimming</text>
 
-  <!-- ESP32-S3 Lighting -->
+  <!-- ESP32 Lighting -->
   <rect x="44" y="596" width="130" height="64" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="109" y="620" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32-S3</text>
+  <text x="109" y="620" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
   <text x="109" y="640" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Lighting Node</text>
-  <text x="109" y="656" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-C 5V</text>
+  <text x="109" y="656" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB 5V</text>
 
   <!-- Channel 0: White -->
   <rect x="210" y="596" width="200" height="36" rx="4" fill="#0a0a0f" stroke="#22c55e" stroke-width="0.5"/>
@@ -313,10 +313,10 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="700" y="536" width="300" height="120" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="724" y="562" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Camera Node</text>
-  <text x="724" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV2640/OV5640 | USB-C 5V</text>
+  <text x="724" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-CAM | OV2640 | micro-USB 5V</text>
 
   <rect x="724" y="596" width="260" height="46" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="740" y="614" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone module: USB-C power only.</text>
+  <text x="740" y="614" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone module: 5V via ESP32-CAM-MB (micro-USB).</text>
   <text x="740" y="634" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">No GPIO wiring. Captures every 15min via WiFi.</text>
 
 
@@ -405,7 +405,7 @@
   <text x="810" y="832" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">Same MOSFET circuit as relay, with LED strip</text>
   <text x="810" y="852" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">instead of fan. CH0: White (GPIO 25), CH1: Blue (GPIO 26).</text>
   <text x="810" y="876" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Camera Node:</text>
-  <text x="810" y="898" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">No wiring -- USB-C power only. Standalone WiFi module.</text>
+  <text x="810" y="898" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">No GPIO wiring -- 5V via ESP32-CAM-MB (micro-USB). Standalone WiFi module.</text>
   <text x="810" y="922" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Smart Plugs:</text>
   <text x="810" y="944" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">No wiring -- WiFi only. Plug in appliance and configure via MQTT.</text>
 
