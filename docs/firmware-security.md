@@ -1,29 +1,41 @@
-# Firmware security — OTA signing, secure boot, flash encryption
+# Firmware security — command signing, TLS, provisioning, OTA
 
-Context: Sentinel findings **H-2** (OTA has password but no firmware
-signing) and **H-3** (NVS unencrypted) from `analysis/02-security.md`.
-
-This document is the operator-facing guide. v3.4.9 landed the minimum
-password-strength enforcement (OTA refuses <12-char passwords) and the
-documented upgrade path; the full **flash encryption + secure boot v2 +
-signed OTA** stack is an opt-in operator choice per node because it has
-consequences that cannot be reversed.
+The v2 security model for the unified node image (`node_esp32` /
+`node_esp32s3`) and the camera image (`cam`). The opt-in secure-boot /
+flash-encryption stack at the bottom is unchanged from v3.4.9 — eFuse
+procedures don't move.
 
 ## Threat model
 
+LAN-resident attacker: anything that can reach the Pi's MQTT broker or
+sniff WiFi. The Pi is the trust root; the cloud reaches nodes only through
+the Pi's signed-command relay. Physical access is out of scope without the
+secure-boot/flash-encryption opt-in below.
+
 | Attacker capability | Defense |
 |---|---|
-| Brute-force the OTA password over LAN | L-6 → 12-char minimum + refusal of default `"sporeprint"` |
-| Flash arbitrary firmware once OTA password is known | **Secure boot v2** — device rejects unsigned firmware |
-| Extract WiFi/MQTT/OTA creds from a stolen node | **Flash encryption** — NVS unreadable without the device's key |
-| Roll back to an older (known-vulnerable) firmware | **Anti-rollback** (eFuse counter) |
-| Physical bus tap to read JTAG | **Secure boot v2** — disables JTAG unless re-enabled with secret |
+| Publish actuator commands with broker access | **HMAC-SHA256 signed frames** — canonical-JSON signature + ±30 s replay window; key provisioned via the captive portal (no compile-time path) |
+| Impersonate the broker / rogue AP | **Opt-in TLS (8883)** with the Pi's CA pinned trust-on-first-use at provision time |
+| Redirect camera uploads to an attacker host | `server_url` allow-list — RFC1918 applies to genuine IPv4 literals only ("10.attacker.com" is rejected) |
+| Brute-force the OTA password over LAN | 12-char minimum, no default — OTA stays disabled until provisioned |
+| Replay a captured command later | `ts` outside ±30 s rejected; commands rejected entirely until NTP syncs (point NTP at the Pi for airgapped rooms) |
+| Flash arbitrary firmware once OTA password is known | **Secure boot v2** (opt-in, below) |
+| Extract creds from a stolen node | **Flash encryption** (opt-in, below) |
 
-v3.4.9 defaults enable defense #1 only. The rest are opt-in with real
-consequences (below). The v3.4.9 C-1 fix (MQTT HMAC verification)
-provides compensating protection against the most likely exploit path
-(attacker-with-broker-creds drives a relay) without requiring flash
-encryption.
+Migration posture: a node with no signing key accepts commands but logs
+`[SEC] hmac_key not provisioned — accepting unsigned cmd/...` on every
+one — an unprovisioned fleet is loud, never silent. The canonical-form
+contract is pinned by shared golden vectors
+(`server/tests/fixtures/signing_vectors.json`, byte-identical copy under
+`firmware/test/fixtures/`) asserted by the firmware's native suite, the
+Pi's pytest suite, and CI fixture-parity checks.
+
+Failure containment: channel outputs force OFF at the top of boot; the
+watchdog arms only after provisioning (the setup portal can never be
+killed by it); switch channels carry a 30-minute max-on cutoff that an
+explicit duration cannot exceed; empty command payloads are rejected,
+never defaulted to ON; panic coredumps persist in flash and upload to the
+Pi next boot.
 
 ## Enabling secure boot v2 + flash encryption (per-project, one-time)
 
@@ -70,7 +82,7 @@ partition layout but with ota_data secured.
 ### Step 3 — first flash
 
 ```bash
-pio run -e relay_node -t upload
+pio run -e node_esp32 -t upload
 # The first boot automatically:
 #   1. Burns BLK2 eFuse with the public-key digest (permanent).
 #   2. Burns FLASH_CRYPT_CNT eFuse (permanent).
@@ -82,7 +94,7 @@ Subsequent `pio run -t upload` will fail because the bootloader no
 longer accepts unsigned images. Flash via:
 
 ```bash
-pio run -e relay_node -t signedupload    # applies the key automatically
+pio run -e node_esp32 -t signedupload    # applies the key automatically
 ```
 
 ### Step 4 — signed OTA
@@ -96,8 +108,8 @@ just needs to be signed with the same `.pem`:
 espsecure.py sign_data \
     --keyfile firmware/secure_boot_signing_key.pem \
     --version 2 \
-    --output firmware/.pio/build/relay_node/firmware.signed.bin \
-    firmware/.pio/build/relay_node/firmware.bin
+    --output firmware/.pio/build/node_esp32/firmware.signed.bin \
+    firmware/.pio/build/node_esp32/firmware.bin
 ```
 
 Or just flash via `pio run -t signedupload` and PlatformIO handles it.
@@ -115,7 +127,7 @@ setup, so a bad build can't permanently lock out newer firmware:
 Each signed build then needs an incrementing `secure_version` in the
 app header — `bump.sh` can set this from `VERSION.txt`.
 
-## Current v3.4.9 defaults (no operator action required)
+## Current defaults (no operator action required)
 
 - **OTA password minimum 12 chars** — `ota_manager.cpp` refuses to
   enable OTA if the NVS-stored password is shorter, empty, or the

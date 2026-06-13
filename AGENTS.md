@@ -6,7 +6,7 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 
 **When**: Modifying or adding ESP32 firmware code under `firmware/`.
 
-**Context**: PlatformIO monorepo. Shared libraries in `lib/sporeprint_common/` (WiFi, MQTT, OTA, NVS, heartbeat, offline buffer). Each node type is a build target (`climate_node`, `relay_node`, `lighting_node`, `cam_node`). ESP32-WROOM-32 for most nodes, ESP32-CAM (AI-Thinker) for camera.
+**Context**: PlatformIO monorepo (v2). Native-safe libraries `lib/sp_core` (HMAC canonicalizer, channel state machine, buffers) + `lib/sp_drivers` (sensors over injected HAL) are host-tested via `pio test -e native`; `lib/sp_device` is the Arduino layer (portal, MQTT link, OTA, TLS). Two images: the unified node (`node_esp32` / `node_esp32s3` — personality picked at provisioning) and the camera (`cam`, AI-Thinker). Board pin maps live in `boards/`.
 
 **Key constraints**:
 - Non-blocking: use `yield()` not `delay()` in loops

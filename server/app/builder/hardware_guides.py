@@ -43,10 +43,9 @@ _ESP32 = Component(
     price_approx="$8",
     url="https://www.amazon.com/s?k=esp32+wroom+32+devkit+38+pin",
     category="controller",
-    notes="Classic 38-pin ESP32 dev board — the board the shipped firmware targets "
-          "(platformio env: esp32dev) and the GPIO map in every wiring diagram. "
+    notes="Classic 38-pin ESP32 dev board — the canonical node board — firmware env node_esp32 — and the GPIO map in every wiring diagram. "
           "HiLetgo/Hosyond/AITRIP all fine; 3-packs (~$16-18) are the best value for multi-node tiers. "
-          "NOTE: ESP32-S3 boards are NOT flashable with the current firmware envs — S3 support is planned. "
+          "ESP32-S3-DevKitC-1 is also supported (firmware env: node_esp32s3) — bench verification pending; WROOM-32 stays the canonical pick. "
           "Also: digikey.com, aliexpress.com. Official: espressif.com/devkits",
 )
 
@@ -58,8 +57,7 @@ _SHT31 = Component(
     category="sensor",
     notes="Accuracy: +/-0.3C, +/-2% RH. I2C address 0x44. Adafruit $13.95, in stock — "
           "the sensor the shipped climate firmware drives (SHT3x protocol). "
-          "SHT45/SHT41 (SHT4x protocol) are planned upgrades pending a firmware driver — "
-          "NOT drop-ins despite the shared 0x44 address. "
+          "SHT45/SHT41 (SHT4x protocol) are fully supported too — the firmware autodetects which family is on the bus, so any of them is a drop-in. "
           "Also: dfrobot.com, HiLetgo on Amazon (~$8, slower shipping QC lottery).",
 )
 
@@ -84,7 +82,7 @@ _SCD41 = Component(
           "Same pinout as SCD40 — drop-in with better accuracy. "
           "Alternative: Pimoroni PIM587 (~$46, ships from UK, also in stock). "
           "Premium alternative: SparkFun Qwiic SCD41 ~$75. "
-          "NOTE: UART sensors (MH-Z19B/C) have no firmware driver today — not drop-ins. "
+          "Monitoring-tier alternate: MH-Z19C (UART) — supported via the node's MH-Z19 config flag; SCD30 also autodetects. "
           "Also: DigiKey (Sensirion SEK-SCD41), Newark.",
 )
 
@@ -124,7 +122,7 @@ _ESP32_CAM = Component(
     price_approx="$10",
     url="https://www.amazon.com/s?k=esp32-cam+ai-thinker",
     category="controller",
-    notes="The board the cam firmware targets (platformio env: esp32cam, AI-Thinker pin map). "
+    notes="The board the cam firmware targets (platformio env: cam, AI-Thinker pin map). "
           "OV2640 (2MP) is more than adequate for contamination detection at 15-30cm range. "
           "Single-unit listings are drying up — HiLetgo 2-packs with CH340 programmer (~$18.50) are "
           "the best buy and cover the Tier 3 dual-camera build. "
@@ -272,14 +270,14 @@ TIER_BARE_BONES = HardwareTier(
         WiringConnection(from_device="ESP32", from_pin="GPIO 22 (SCL)", to_device="BH1750", to_pin="SCL", note="shared I2C bus"),
     ],
     wiring_diagram="See docs/wiring-tier1-bare-bones.svg for full wiring diagram with color-coded signal, I2C, power, and ground lines.",
-    firmware_targets=["climate_node"],
+    firmware_targets=["node_esp32"],
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS (set hostname to 'sporeprint' in Raspberry Pi "
         "Imager's advanced options — ESP32 nodes find the MQTT broker at sporeprint.local), run setup.sh",
         "Wire SHT31-D and BH1750 to ESP32 per diagram above (shared I2C bus)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
-        "Flash climate_node firmware: cd firmware && pio run -t upload -e climate_node",
-        "ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
+        "Flash the node firmware: cd firmware && pio run -t upload -e node_esp32 (use -e node_esp32s3 for an ESP32-S3 board)",
+        "ESP32 creates the 'SporePrint-Setup' WiFi AP on first boot — connect and enter WiFi credentials, the Pi's address, the node personality (climate/relay/lighting), and optionally an OTA password, the command signing key, and the Secure MQTT (TLS) toggle",
         "SENSOR PLACEMENT — Climate node (SHT31 + BH1750): Mount the sensor board inside the "
         "ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
         "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
@@ -476,7 +474,7 @@ TIER_RECOMMENDED = HardwareTier(
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 26", to_device="IRLZ44N Gate", to_pin="via 100R", note="Blue 450nm strip"),
     ],
     wiring_diagram="See docs/wiring-tier2-recommended.svg for full wiring diagram with all 4 ESP32 nodes, MOSFET circuits, and I2C bus layout.",
-    firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
+    firmware_targets=["node_esp32", "cam"],
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS (64-bit) — set hostname to 'sporeprint' in "
         "Raspberry Pi Imager's advanced options (nodes find the MQTT broker at sporeprint.local) — "
@@ -487,10 +485,10 @@ TIER_RECOMMENDED = HardwareTier(
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
         "Wire lighting node: same MOSFET pattern — white LED strip on GPIO 25, blue on GPIO 26",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
-        "Flash all 4 firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
+        "Flash each node: cd firmware && pio run -t upload -e node_esp32 — one unified image covers climate/relay/lighting (pick the personality in the node's setup portal); the camera flashes with -e cam",
         "Flash the ESP32-CAM via the USB-UART programmer (hold GPIO 0 → GND while flashing; 2-pack "
         "bundles include the programmer)",
-        "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
+        "Each ESP32 creates the 'SporePrint-Setup' WiFi AP on first boot — connect and enter WiFi credentials, the Pi's address, the node personality (climate/relay/lighting), and optionally an OTA password, the command signing key, and the Secure MQTT (TLS) toggle",
         "SENSOR PLACEMENT — Climate node (SHT31 + SCD41 + BH1750): Mount the sensor board inside the "
         "ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
         "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
@@ -562,8 +560,8 @@ TIER_ALL = HardwareTier(
         "Full 4-spectrum LED lighting (white, blue, red, far-red) for all species",
         "4 smart plugs: humidifier, dehumidifier, heater, Peltier cooler",
         "2 cameras (front + top-down views)",
-        "Door reed switch — pauses humidity when closet opens (firmware support planned)",
-        "Load cell for automated harvest weight tracking (firmware support planned)",
+        "Door reed switch — door-open telemetry + alerts (automation suspension via rules)",
+        "Load cell — live raw weight telemetry for harvest tracking",
         "Peristaltic pump for automated misting between flushes",
         "Weather-predictive automation",
     ],
@@ -574,7 +572,7 @@ TIER_ALL = HardwareTier(
                 "2x climate nodes — different shelves OR primary + backup on same shelf",
                 "Per-shelf temperature, humidity, CO2, and light readings",
                 "Cross-sensor validation — alerts if readings diverge (flags drift/failure)",
-                "Door reed switch — pauses humidity automation when chamber opens (firmware planned)",
+                "Door reed switch — debounced open/close events feed alerts + rules",
                 "Automatic sensor fallback if one climate node drops offline",
             ],
         ),
@@ -602,9 +600,9 @@ TIER_ALL = HardwareTier(
             title="Advanced automation",
             items=[
                 "Peristaltic dosing pump for automated misting between flushes",
-                "Load cell (5kg HX711) — automatic harvest weight logging (firmware planned)",
+                "Load cell (5kg HX711) — raw weight in telemetry for harvest logging",
                 "Weather-predictive automation — adjusts fans based on forecast",
-                "Door-open detection suspends humidity to prevent pooling (firmware planned)",
+                "Door-open detection — alert events; pair with a rule to pause humidity",
                 "Multi-zone rules — different setpoints per shelf",
             ],
         ),
@@ -672,25 +670,25 @@ TIER_ALL = HardwareTier(
         _tasmota_plug("Peltier cooler"),
         Component(
             name="HX711 Load Cell Amplifier + 5kg Load Cell",
-            role="Automated harvest weight tracking (firmware support planned)",
+            role="Automated harvest weight tracking (enable the scale flag at provisioning)",
             price_approx="$8",
             url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
             notes="Wire DOUT to GPIO 32, SCK to GPIO 33 on the relay node. "
-                  "NOTE: relay firmware does not read the HX711 yet — support is planned; wiring it "
-                  "now means the rig is ready when it ships. "
+                  "Enable the scale option when provisioning the node; raw counts ride in telemetry. "
                   "Place under grow block to track water loss and harvest weight. "
                   "Widely available. Also: sparkfun.com, adafruit.com. Multiple Amazon sellers.",
         ),
         Component(
             name="Reed Switch (magnetic, normally open)",
-            role="Door sensor — pauses humidity when closet opens (firmware support planned)",
+            role="Door sensor — door-open telemetry + alerts",
             price_approx="$3",
             url="https://www.amazon.com/s?k=magnetic+reed+switch+normally+open",
             category="sensor",
-            notes="Mount on closet door frame. Wire to GPIO 35 with internal pull-up; magnet on door, "
-                  "switch on frame. NOTE: relay firmware does not read the reed switch yet — support "
-                  "is planned. "
+            notes="Mount on the door frame: one leg to GPIO 35, the other to GND, with an "
+                  "EXTERNAL 10K pull-up from GPIO 35 to 3V3 — GPIO 34-39 have no internal "
+                  "pulls (a 10K is already in the parts kit). Magnet on door, switch on "
+                  "frame; enable the door-sensor option in the node's setup portal. "
                   "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
@@ -720,7 +718,7 @@ TIER_ALL = HardwareTier(
         WiringConnection(from_device="Any ESP32 GPIO", from_pin="GPIO (INPUT_PULLUP)", to_device="Reed Switch", to_pin="One leg to GPIO, other to GND"),
     ],
     wiring_diagram="See docs/wiring-tier3-all-the-things.svg for full wiring diagram with all 5 ESP32 nodes, load cell, reed switch, pump, and 4-channel lighting.",
-    firmware_targets=["climate_node", "relay_node", "lighting_node", "cam_node"],
+    firmware_targets=["node_esp32", "cam"],
     setup_steps=[
         "Set up Raspberry Pi: install Raspberry Pi OS (64-bit) — set hostname to 'sporeprint' in "
         "Raspberry Pi Imager's advanced options (nodes find the MQTT broker at sporeprint.local) — "
@@ -735,7 +733,7 @@ TIER_ALL = HardwareTier(
         "Flash all firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
         "Flash climate node #2 with different node_id: set MQTT node_id to 'climate-02' before flashing",
         "Flash both ESP32-CAMs via the USB-UART programmer: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
-        "Each ESP32 creates 'SporePrint-Setup' WiFi AP on first boot — connect and enter your WiFi credentials",
+        "Each ESP32 creates the 'SporePrint-Setup' WiFi AP on first boot — connect and enter WiFi credentials, the Pi's address, the node personality (climate/relay/lighting), and optionally an OTA password, the command signing key, and the Secure MQTT (TLS) toggle",
         "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each sensor board inside "
         "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
         "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
@@ -760,8 +758,8 @@ TIER_ALL = HardwareTier(
         "down for overall colonization progress. Use cam_mount.scad — suction cup on glass door or zip "
         "tie to shelf rail. Distance: 15-30cm from substrate for good detail without fish-eye distortion. "
         "The camera has a built-in flash LED (GPIO 4) — use it for consistent photos since ambient light varies",
-        "Wire HX711 load cell to relay node spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33) — place cell under grow block. Firmware support is planned; wiring now means it lights up on the next firmware update",
-        "Mount reed switch on closet door frame — wire one leg to GPIO 35 (INPUT_PULLUP), other leg to GND. Firmware support is planned",
+        "Wire HX711 load cell to the node's spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33), place the cell under the grow block, and enable the scale option in the node's setup portal",
+        "Mount reed switch on the door frame — one leg to GPIO 35, the other to GND, with an EXTERNAL 10K pull-up from GPIO 35 to 3V3 (GPIO 34-39 have no internal pulls). Enable the door-sensor option in the node's setup portal",
         "Connect peristaltic pump to relay node aux channel (GPIO 14) via IRLZ44N + flyback diode — run food-safe silicone tubing to misting nozzle",
         "Power all 12V devices (fans, LED strips, pump) from the 12V 10A PSU. ESP32s powered via USB",
         "SMART PLUG PLACEMENT — All 4 Athom Tasmota plugs go into accessible outlets OUTSIDE the chamber. "

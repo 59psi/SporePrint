@@ -226,7 +226,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="4.1.6", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="4.2.0", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -351,7 +351,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "4.1.6"}
+    return {"status": "ok", "version": "4.2.0"}
 
 
 # Track Socket.IO clients for health reporting

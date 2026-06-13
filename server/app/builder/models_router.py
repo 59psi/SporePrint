@@ -13,22 +13,28 @@ _DOCS_DIR = Path("/docs") if Path("/docs").exists() else _REPO_ROOT / "docs"
 _FIRMWARE_DIR = Path("/firmware") if Path("/firmware").exists() else _REPO_ROOT / "firmware"
 
 # Allow-list of firmware roots we expose — prevents traversal via /api/builder/firmware/..
-_FIRMWARE_ROOTS = ("src/climate_node", "src/relay_node", "src/lighting_node",
-                   "src/cam_node", "lib/sporeprint_common")
+# v4.2 layout: one unified node image + a camera image, with the shared
+# code split into native-safe libraries (sp_core/sp_drivers) and the
+# Arduino adapter layer (sp_device).
+_FIRMWARE_ROOTS = ("src/node", "src/cam", "boards",
+                   "lib/sp_core", "lib/sp_drivers", "lib/sp_device")
 
-# Map of bundleable node slug → (source root, human label, is_library).
-#   is_library=False → per-node bundle; includes shared lib + platformio.ini
-#   is_library=True  → just the shared library + platformio.ini (no node source)
-# The "sporeprint_common" bundle is for users who already have their own
-# custom node firmware and only want to pick up library updates. The "full"
-# bundle is the entire firmware tree in one archive.
+# Map of bundleable slug → (source root, human label, is_library).
+#   is_library=False → image bundle; includes the shared libs, boards/ and
+#                      platformio.ini
+#   is_library=True  → just that library + platformio.ini
+# Legacy v1 slugs (climate_node/relay_node/lighting_node) alias to the
+# unified node bundle so older docs and bookmarks keep working.
 _BUNDLE_NODES: dict[str, tuple[str, str, bool]] = {
-    "climate_node":     ("src/climate_node",       "Climate node",    False),
-    "relay_node":       ("src/relay_node",         "Relay node",      False),
-    "lighting_node":    ("src/lighting_node",      "Lighting node",   False),
-    "cam_node":         ("src/cam_node",           "Camera node",     False),
-    "sporeprint_common": ("lib/sporeprint_common", "Shared library",  True),
-    "full":             ("",                        "All firmware",    False),
+    "node":          ("src/node",        "Unified node",   False),
+    "cam":           ("src/cam",         "Camera node",    False),
+    "climate_node":  ("src/node",        "Unified node",   False),
+    "relay_node":    ("src/node",        "Unified node",   False),
+    "lighting_node": ("src/node",        "Unified node",   False),
+    "cam_node":      ("src/cam",         "Camera node",    False),
+    "sp_core":       ("lib/sp_core",     "Core library",   True),
+    "sp_drivers":    ("lib/sp_drivers",  "Driver library", True),
+    "full":          ("",                "All firmware",   False),
 }
 _BUNDLE_SUFFIXES = {".cpp", ".h", ".hpp", ".ino", ".ini", ".md", ".txt"}
 
@@ -158,15 +164,17 @@ async def list_firmware():
 
 
 def _build_node_bundle(node: str) -> bytes:
-    """Build an in-memory ZIP for a node, the shared library, or full firmware.
+    """Build an in-memory ZIP for an image, a library, or the full firmware.
 
-    - `full`               → the entire firmware/ tree (all 4 nodes + lib + platformio.ini)
-    - `sporeprint_common`  → just the shared library + platformio.ini
-    - <node>               → the node's src + shared library + platformio.ini
+    - `full`            → the entire firmware/ tree (both images + libs)
+    - sp_core/sp_drivers → just that library + platformio.ini
+    - node/cam (+v1 aliases) → the image's src + all libs + boards/ +
+      partition tables + platformio.ini — self-contained, no git clone
     """
     if node not in _BUNDLE_NODES:
         raise HTTPException(404, "Unknown node")
     node_rel, _label, is_library = _BUNDLE_NODES[node]
+    env = "cam" if node_rel == "src/cam" else "node_esp32"
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -179,24 +187,27 @@ def _build_node_bundle(node: str) -> bytes:
                 arc = f"{arc_prefix}/{f.relative_to(src_root)}"
                 zf.write(f, arc)
 
-        pio = _FIRMWARE_DIR / "platformio.ini"
+        def add_build_files() -> None:
+            for name in ("platformio.ini", "partitions.csv",
+                         "partitions_8mb.csv", "VERSION.txt"):
+                p = _FIRMWARE_DIR / name
+                if p.is_file():
+                    zf.write(p, f"firmware/{name}")
 
         if node == "full":
-            # Pack everything — all node source, shared lib, platformio.ini
             for root_rel in _FIRMWARE_ROOTS:
                 add_tree(_FIRMWARE_DIR / root_rel, f"firmware/{root_rel}")
-            if pio.is_file():
-                zf.write(pio, "firmware/platformio.ini")
+            add_build_files()
             readme = (
                 "# SporePrint — full firmware bundle\n\n"
-                "Contains every node's source plus the shared library. Unzip, then\n"
-                "flash each node from the `firmware/` directory:\n\n"
+                "Contains both images (unified node + camera), the shared\n"
+                "libraries, and board profiles. Unzip, then flash from the\n"
+                "`firmware/` directory:\n\n"
                 "```bash\n"
                 "cd firmware\n"
-                "pio run -t upload -e climate_node\n"
-                "pio run -t upload -e relay_node\n"
-                "pio run -t upload -e lighting_node\n"
-                "pio run -t upload -e cam_node\n"
+                "pio run -t upload -e node_esp32      # WROOM-32 node\n"
+                "pio run -t upload -e node_esp32s3    # ESP32-S3 node\n"
+                "pio run -t upload -e cam             # AI-Thinker camera\n"
                 "```\n\n"
                 "Full source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
             )
@@ -207,40 +218,39 @@ def _build_node_bundle(node: str) -> bytes:
                 raise HTTPException(404, "Source not found")
 
             if is_library:
-                # Library-only bundle — no node src, just the lib and platformio.ini
                 add_tree(root, f"firmware/{node_rel}")
-                if pio.is_file():
-                    zf.write(pio, "firmware/platformio.ini")
+                add_build_files()
                 readme = (
-                    f"# SporePrint — {node} (shared library)\n\n"
-                    f"Drop this library into an existing SporePrint firmware tree to update\n"
-                    f"only the shared code — your custom node source is untouched.\n\n"
+                    f"# SporePrint — {node} library\n\n"
+                    f"Drop this library into an existing SporePrint firmware\n"
+                    f"tree to update only the shared code:\n\n"
                     f"```bash\n"
-                    f"# Assuming you have your own firmware/ with src/<node>/ customizations:\n"
                     f"unzip sporeprint-{node}.zip\n"
-                    f"cp -R firmware/lib/sporeprint_common <your-firmware>/lib/\n"
-                    f"cd <your-firmware>\n"
-                    f"pio run -t upload -e <your_node>\n"
+                    f"cp -R firmware/{node_rel} <your-firmware>/lib/\n"
                     f"```\n"
                 )
                 zf.writestr(f"firmware/{node_rel}/README.md", readme)
             else:
-                # Per-node bundle — node src + shared library + platformio.ini
+                # Image bundle — src + every library + board profiles, so
+                # the ZIP builds standalone.
                 add_tree(root, f"firmware/{node_rel}")
-                add_tree(_FIRMWARE_DIR / "lib/sporeprint_common",
-                         "firmware/lib/sporeprint_common")
-                if pio.is_file():
-                    zf.write(pio, "firmware/platformio.ini")
+                for lib_rel in ("lib/sp_core", "lib/sp_drivers",
+                                "lib/sp_device"):
+                    add_tree(_FIRMWARE_DIR / lib_rel, f"firmware/{lib_rel}")
+                add_tree(_FIRMWARE_DIR / "boards", "firmware/boards")
+                add_build_files()
                 readme = (
                     f"# SporePrint — {node} firmware\n\n"
                     f"Unzip this archive and flash with PlatformIO:\n\n"
                     f"```bash\n"
                     f"cd firmware\n"
-                    f"pio run -t upload -e {node}\n"
+                    f"pio run -t upload -e {env}\n"
                     f"```\n\n"
+                    f"On first boot the node opens the 'SporePrint-Setup'\n"
+                    f"WiFi portal for provisioning.\n\n"
                     f"Full source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
                 )
-                zf.writestr(f"firmware/src/{node}/README.md", readme)
+                zf.writestr(f"firmware/{node_rel}/README.md", readme)
 
     return buf.getvalue()
 

@@ -38,7 +38,8 @@ def _sign_cmd_payload(payload: dict) -> dict:
 
     The canonical body is the JSON with keys sorted and no whitespace
     between separators, minus the `signature` field itself. Mirrors
-    sporeprint/firmware/lib/sporeprint_common/frame_verify.cpp#canonicalize.
+    sporeprint/firmware/lib/sp_core/canonical_json.cpp (raw-token transform;
+    golden vectors in tests/fixtures/signing_vectors.json pin the contract).
 
     If `settings.mqtt_hmac_key` is unset, the payload ships unsigned —
     matches the firmware's migration-period "warn and accept" behavior so

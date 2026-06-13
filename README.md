@@ -193,17 +193,22 @@ docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 ### ESP32 Firmware
 
 Once the Pi is running, open the Builder page (`http://<pi-ip>:3001/builder`)
-and scroll to **ESP32 Firmware**. Each node (`climate_node`, `relay_node`,
-`lighting_node`, `cam_node`) has a **ZIP** button that downloads a
-self-contained PlatformIO project. Unzip, then flash with:
+and scroll to **ESP32 Firmware**. Two images cover everything: the
+**unified node** (climate / relay / lighting — pick the personality in the
+node's setup portal) and the **camera**. The ZIP buttons download
+self-contained PlatformIO projects. Unzip, then flash with:
 
 ```bash
 cd firmware
-pio run -t upload -e climate_node   # or relay_node / lighting_node / cam_node
+pio run -t upload -e node_esp32      # WROOM-32 node (use node_esp32s3 for an ESP32-S3)
+pio run -t upload -e cam             # AI-Thinker ESP32-CAM
 ```
 
-Or clone the repo and flash from `firmware/` directly — the ZIP bundle is
-equivalent to `firmware/src/<node>/ + firmware/lib/sporeprint_common/ +
+On first boot each node opens the `SporePrint-Setup` WiFi portal for
+provisioning (WiFi, Pi address, personality, optional OTA password /
+command-signing key / Secure MQTT). Or clone the repo and flash from
+`firmware/` directly — the ZIP bundle is equivalent to
+`firmware/src/<image>/ + firmware/lib/ + firmware/boards/ +
 firmware/platformio.ini`.
 
 ### Prerequisites
@@ -351,13 +356,14 @@ ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST/WS──> React U
 
 ```
 SporePrint/
-├── firmware/                  # ESP32 PlatformIO monorepo
-│   ├── lib/sporeprint_common/ # Shared: WiFi, MQTT, OTA, heartbeat, offline buffer, health reporter
+├── firmware/                  # ESP32 PlatformIO monorepo (v2)
+│   ├── lib/sp_core/           # Native-safe core: HMAC canonicalizer, channel state machine, buffers
+│   ├── lib/sp_drivers/        # Native-safe sensor drivers over injected HAL (SHT3x/4x, SCD4x/30, BH1750, MH-Z19, HX711, reed)
+│   ├── lib/sp_device/         # Arduino layer: provisioning portal, MQTT link, OTA, TLS, NVS
+│   ├── boards/                # Pin profiles: esp32dev, esp32-s3-devkitc-1, esp32cam
 │   └── src/
-│       ├── climate_node/      # SHT31, SCD40, BH1750 sensors
-│       ├── relay_node/        # IRLZ44N SSR control (4ch PWM)
-│       ├── lighting_node/     # Multi-channel LED (white, blue, red, far-red)
-│       └── cam_node/          # ESP32-CAM MJPEG + frame POST
+│       ├── node/              # Unified node image (personality: climate / relay / lighting)
+│       └── cam/               # ESP32-CAM image (OV2640 captures → frame POST)
 ├── server/                    # Python FastAPI backend (17 modules)
 │   ├── tests/                 # pytest + pytest-asyncio
 │   └── app/
@@ -510,7 +516,7 @@ The built-in Hardware Builder provides complete shopping lists with purchase lin
 
 ### Firmware
 
-ESP32 firmware is a PlatformIO monorepo under `firmware/`. Shared libraries (`lib/sporeprint_common/`) handle WiFi, MQTT, OTA updates, heartbeat, offline message buffering, and health reporting. Each node type is a separate build target.
+ESP32 firmware is a PlatformIO monorepo under `firmware/` (v2). The host-testable libraries `lib/sp_core` (HMAC command verification, channel safety state machine, byte-capped offline buffer) and `lib/sp_drivers` (autodetecting sensor drivers) sit under the Arduino layer `lib/sp_device` (provisioning portal, MQTT link, OTA, opt-in TLS). One unified node image covers climate/relay/lighting via a provisioning-time personality; the camera is its own image. `pio test -e native` runs the full host suite, including byte-for-byte signing parity with the server.
 
 ---
 

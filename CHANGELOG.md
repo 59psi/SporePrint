@@ -5,6 +5,48 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-06-12
+
+### Added
+- **Firmware v2** — see `firmware/CHANGELOG.md` for the full entry: one
+  unified node image + a camera image, portal-based provisioning,
+  autodetecting sensors (incl. SHT4x family, SCD30, MH-Z19C, HX711, reed
+  switch), opt-in TLS MQTT, a 69-case host-native test suite, and the v1
+  defect class fixes (WDT-vs-portal boot brick, publish truncation,
+  HMAC key corruption).
+- Pi server consumes the firmware observability topics nothing ever read:
+  node log batches land in a retained `node_logs` table (+
+  `GET /api/hardware/nodes/{id}/logs`), coredump chunks reassemble to
+  `data/coredumps/` with an alert on completion (+ list/download
+  endpoints), and node OTA lifecycle events forward as `node_ota`.
+- `GET /api/provision/ca` serves the broker CA for the firmware's
+  trust-on-first-use TLS pinning; `setup.sh` generates the local CA +
+  server certificate and mosquitto gains an 8883 TLS listener.
+- Hardware guides + builder data updated to v2 reality: the SHT4x family,
+  SCD30, and MH-Z19C flip from "needs firmware driver" to supported;
+  Tier 3's load cell and reed switch are live features; the ESP32-S3
+  DevKitC-1 gains a build target (bench verification pending); the reed
+  wiring now documents the required EXTERNAL 10K pull-up (GPIO 34-39
+  have no internal pulls — the old instructions were physically
+  impossible).
+
+### Changed
+- Heartbeat ingestion refreshes `node_type` on every heartbeat and stores
+  the v2 `roles` list; cloud command routing consults roles so a combined
+  sensors+relay node receives climate-targeted commands. (The old upsert
+  never updated the type — rows decayed to 'unknown' and type-routed
+  commands quietly failed.)
+- Firmware bundle downloads serve the v2 images (unified node + camera);
+  v1 bundle slugs alias to the unified node so old links keep working.
+- `docs/firmware-security.md` rewritten for the v2 model (command
+  signing, TLS TOFU, provisioning, watchdog policy); the secure-boot /
+  flash-encryption opt-in walkthrough is unchanged.
+
+### Fixed
+- docker-compose bound the MQTT broker to the host loopback — LAN nodes
+  could never reach 1883 at all. The broker now listens on the LAN
+  (credentials + ACL unchanged) alongside the new TLS listener.
+
 ## [4.1.6] - 2026-06-11
 
 ### Changed
