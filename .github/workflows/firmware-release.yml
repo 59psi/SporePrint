@@ -1,0 +1,132 @@
+# Cuts a public GitHub Release with per-image firmware .zip artifacts when a
+# tag matching `firmware-v*` is pushed (e.g. firmware-v4.2.0).
+#
+# This is the PUBLIC firmware release: it lives in the open-source repo so
+# growers can download the built binaries directly. Firmware is built from
+# this repo's own firmware/ directory — no submodule checkout needed.
+#
+# Untrusted-input safety: the workflow_dispatch `tag` input is moved into an
+# env var before any shell use, never interpolated directly into a run:
+# string. github.ref_name is bounded by the firmware-v* trigger filter and
+# follows the same env-var pattern.
+
+name: Firmware Release
+
+on:
+  push:
+    tags:
+      - "firmware-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. firmware-v4.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [node_esp32, node_esp32s3, cam]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build ${{ matrix.env }}
+        working-directory: firmware
+        env:
+          BUILD_ENV: ${{ matrix.env }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        # Export SPOREPRINT_FW_VERSION from the firmware-vX.Y.Z tag so the
+        # released binaries heartbeat a real version (nodes built without it
+        # report an empty string and OTA-drift detection is blind).
+        run: |
+          TAG="${INPUT_TAG:-$GH_REF_NAME}"
+          export SPOREPRINT_FW_VERSION="${TAG#firmware-v}"
+          echo "Building $BUILD_ENV as firmware version $SPOREPRINT_FW_VERSION"
+          pio run -e "$BUILD_ENV"
+
+      - name: Package binaries
+        working-directory: firmware
+        env:
+          BUILD_ENV: ${{ matrix.env }}
+        run: |
+          mkdir -p ../firmware-dist
+          OUT="../firmware-dist/${BUILD_ENV}.zip"
+          cd ".pio/build/${BUILD_ENV}"
+          zip -j "../../../firmware-dist/${BUILD_ENV}.zip" \
+            firmware.bin bootloader.bin partitions.bin 2>/dev/null || \
+            zip -j "../../../firmware-dist/${BUILD_ENV}.zip" firmware.bin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}
+          path: firmware-dist/${{ matrix.env }}.zip
+          retention-days: 90
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          path: firmware-dist
+          merge-multiple: true
+
+      - name: Resolve tag
+        id: tag
+        env:
+          GH_REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            printf 'tag=%s\n' "$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            printf 'tag=%s\n' "$GH_REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Firmware ${{ steps.tag.outputs.tag }}
+          body: |
+            ESP32 firmware for SporePrint chambers (v2).
+
+            **Two images cover everything:**
+            - `node_esp32.zip` — unified node, ESP32-WROOM-32 (climate /
+              relay / lighting; pick the personality in the setup portal).
+            - `node_esp32s3.zip` — unified node, ESP32-S3-DevKitC-1
+              (bench verification pending; WROOM-32 is canonical).
+            - `cam.zip` — camera image, AI-Thinker ESP32-CAM (OV2640).
+
+            Each archive contains the built `.bin` files. Flash with
+            esptool, the PlatformIO `-t upload` flow, or the on-Pi OTA
+            pipeline. On first boot a node opens the `SporePrint-Setup`
+            WiFi portal for provisioning.
+
+            Source + build instructions:
+            https://github.com/59psi/SporePrint/tree/main/firmware
+          files: firmware-dist/*.zip
+          fail_on_unmatched_files: true
