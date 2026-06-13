@@ -41,16 +41,20 @@ services:
 
   mqtt:
     image: eclipse-mosquitto:2
-    # Broker is LAN-internal — firmware nodes connect from inside the local
-    # network with credentials. Bind only to the host's LAN interface; never
-    # expose the broker to the public internet.
+    # Broker is LAN-scoped — firmware nodes connect from the local network
+    # with credentials (+ TLS on 8883). v4.2 fix: 1883 was previously bound
+    # to the host loopback, so LAN nodes could never reach the broker at
+    # all. Never expose either port to the public internet (router/firewall
+    # responsibility — the Pi sits on RFC1918 space).
     ports:
-      - "127.0.0.1:1883:1883"
+      - "1883:1883"
+      - "8883:8883"
       - "127.0.0.1:9001:9001"
     volumes:
       - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./config/mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
       - ./config/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - ./config/mosquitto/certs:/mosquitto/certs:ro
       - ./data/mosquitto:/mosquitto/data
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/version' -C 1 -W 2 >/dev/null 2>&1"]

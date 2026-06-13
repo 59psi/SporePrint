@@ -42,8 +42,8 @@ async def _build_system_context() -> str:
     # GPIO allocation reference (known assignments)
     context_parts.append("""## Known GPIO Allocations
 - Climate Node: I2C (SDA=21, SCL=22), SHT31 0x44, SCD41 0x62, BH1750 0x23
-- Relay Node: GPIO 25 (fae), 26 (exhaust), 27 (circulation), 14 (aux) — all IRLZ44N
-- Lighting Node: GPIO 25 (white), 26 (blue), 27 (red), 14 (far_red) — all IRLZ44N
+- Relay personality: GPIO 25 (fae), 26 (exhaust), 27 (circulation), 14 (aux) — all IRLZ44N
+- Lighting personality: GPIO 25 (white), 26 (blue), 27 (red), 14 (far_red) — all IRLZ44N
 - Camera Node: ESP32-S3 CAM (USB-C, OV5640) or classic AI-Thinker (OV2640)
 
 ## MQTT Topic Convention
@@ -91,7 +91,7 @@ ASCII diagram showing ESP32 GPIO connections, voltage levels, required passive c
 
 ## 3. Firmware Changes
 Complete PlatformIO code snippets: sensor driver initialization, MQTT topics, command handler,
-NVS configuration keys. Match existing code style from sporeprint_common library.
+NVS configuration keys. Match existing code style from the sp_core/sp_device libraries.
 
 ## 4. MQTT Integration
 New topics, payload formats, QoS levels. Follow existing convention.

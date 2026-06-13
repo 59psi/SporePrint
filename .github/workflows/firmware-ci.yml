@@ -1,28 +1,33 @@
 name: firmware-ci
 
-# v3.4.9 Risk 15 — build-clean CI for every push that touches firmware/.
-# Catches platform-pin regressions, library API drift (like the v3.4.7
-# ledcAttach/ledcAttachPin issue), and syntax errors same-day.
-#
-# Runs all four node environments. No hardware required — this only
-# proves the binaries link, not that they boot correctly. HIL testing
-# remains a manual step per release.
+# v2 firmware CI — every push/PR touching firmware/ runs:
+#   1. The native host test suite (`pio test -e native`): canonicalizer
+#      byte-parity against test/fixtures/signing_vectors.json (the same
+#      golden file the server's Python suite asserts on), HMAC verify,
+#      buffer/channel/clamp/wrap suites, driver mock-bus suites, and the
+#      cam URL allowlist.
+#   2. A build matrix for all three shipped images (node_esp32,
+#      node_esp32s3, cam) — catches platform-pin regressions, library API
+#      drift, and link breaks same-day. No hardware required; HIL testing
+#      remains a manual step per release.
 #
 # Security: no step consumes untrusted event input (issue titles, PR
-# bodies, head refs, commit messages) — only VERSION.txt which is
-# committed by the operator via scripts/bump.sh. Safe against the
+# bodies, head refs, commit messages) — only VERSION.txt, which is
+# committed by the operator via the release tooling. Safe against the
 # workflow-injection class.
 
 on:
   push:
-    branches: [main]
     paths:
       - 'firmware/**'
+      - 'server/tests/fixtures/signing_vectors.json'
       - '.github/workflows/firmware-ci.yml'
   pull_request:
     paths:
       - 'firmware/**'
+      - 'server/tests/fixtures/signing_vectors.json'
       - '.github/workflows/firmware-ci.yml'
+  workflow_dispatch: {}
 
 concurrency:
   group: firmware-ci-${{ github.ref }}
@@ -32,13 +37,59 @@ permissions:
   contents: read
 
 jobs:
+  native-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-native-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install platformio
+
+      - name: Native test suite
+        working-directory: firmware
+        run: pio test -e native
+
+      - name: Golden-fixture parity (firmware copy vs server copy)
+        run: |
+          diff -q firmware/test/fixtures/signing_vectors.json \
+                  server/tests/fixtures/signing_vectors.json
+          echo "signing vectors byte-identical"
+
+      - name: Arduino-free core check
+        # lib/sp_core + lib/sp_drivers must stay host-compilable: no
+        # Arduino.h, no Arduino String. The native build proves it
+        # compiles; this grep catches an include hiding behind an #ifdef.
+        run: |
+          if grep -rn "include [<\"]Arduino.h" firmware/lib/sp_core firmware/lib/sp_drivers; then
+            echo "ERROR: Arduino.h leaked into a native-safe library" >&2
+            exit 1
+          fi
+          echo "sp_core + sp_drivers are Arduino-free"
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        env: [relay_node, climate_node, lighting_node, cam_node]
+        env: [node_esp32, node_esp32s3, cam]
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +128,6 @@ jobs:
         env:
           FW_ENV: ${{ matrix.env }}
           SPOREPRINT_FW_VERSION: ${{ steps.fwver.outputs.version }}
-          SPOREPRINT_PROVISION_HMAC: ''
         run: |
           pio run -e "$FW_ENV"
 

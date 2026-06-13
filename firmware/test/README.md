@@ -1,52 +1,37 @@
 # Firmware tests
 
-v3.4.9 opens this directory with a placeholder `native` PlatformIO
-environment + scaffold. The aim:
+Host-native test suites — no ESP32, no Arduino. Run with:
 
-1. **Native-host tests** run without an ESP32 — pure-C++ unit tests of
-   the logic that doesn't touch hardware. Build with:
-   ```
-   pio test -e native
-   ```
-2. **Unity** is the Arduino-native test framework; installed
-   automatically when the `test_framework = unity` line in
-   `platformio.ini` is the default.
+```
+pio test -e native
+```
 
-## What belongs here
+## What's covered (v2)
 
-Priority order (highest-consequence first):
+| Suite | Proves |
+|---|---|
+| `test_core_canonical` | Byte-for-byte canonicalizer parity against every golden signing vector, plus fail-closed edges (non-ASCII, dup keys, escaped keys, depth, trailing garbage) |
+| `test_core_hmac` | SHA-256/HMAC standard vectors, full `verify_frame` against the golden vectors, exact ±30 s replay-window edges, every rejection path, constant-time compare |
+| `test_core_buffer` | Byte-capped FIFO semantics — eviction order, oversize rejection, flush backpressure (the v1 entry-count buffer could OOM the heap) |
+| `test_core_channel` | Actuator state machine — empty-payload rejection, clamps, duration vs max-on dominance, millis-wrap boundaries, dim ramps, channel naming, command routing, scenes |
+| `test_drivers_i2c` | Sensirion transport CRC (datasheet vector 0xBEEF→0x92), SHT3x/SHT4x/SCD4x/SCD30/BH1750 against transaction-scripted mock buses — including autodetect probe ORDER (SHT4x-first at 0x44 with the SHT3x soft-reset between) |
+| `test_drivers_misc` | MH-Z19C UART state machine (trickle, resync, checksum-fail ≠ 0 ppm, timeout), HX711 bit-exact 25-pulse reads + sign extension, reed debounce |
+| `test_cam_url` | `server_url` allow-list incl. the closed "10.attacker.com" hole |
 
-1. **`frame_verify::canonicalize`** — HMAC body canonicalization. The
-   byte-for-byte match with the Python `json.dumps(sort_keys=True,
-   separators=(",", ":"))` is load-bearing; drift silently breaks every
-   signed command. A single round-trip test catches future refactors.
-2. **`OfflineBuffer::buffer`** + flush — FIFO eviction at
-   `BUFFER_MAX_ENTRIES = 1000`; ordering preserved; flush is no-op when
-   MQTT is disconnected.
-3. **Relay duration clamp** — extract the clamp block from
-   `relay_node/main.cpp` into a pure function `clamp_duration_sec(int)`
-   and unit-test the bounds ([1, 3600], negative → ignored, zero →
-   ignored).
-4. **`climate_node::clampULong`** — already a pure helper; assert bounds
-   and the `below-min` / `above-max` / `in-range` paths.
-5. **`millis()`-wrap compare** — model two timestamps across the
-   UINT32_MAX boundary and assert `(long)(now - deadline) >= 0` vs the
-   buggy `now >= deadline`.
+`test/fixtures/signing_vectors.json` is a **byte-identical copy** of
+`server/tests/fixtures/signing_vectors.json` — the same golden file the
+Pi and cloud Python suites assert. CI (`firmware-ci.yml`) diffs the copies
+and fails on drift; it also greps `lib/sp_core` + `lib/sp_drivers` for
+Arduino includes so the host-testable layers stay host-testable.
 
-## Current state
+## Architecture that makes this possible
 
-The `native` env builds a stub test that ensures the harness is wired.
-The five tests above are the v3.5.0 target; tracking issue links go
-here as they're added.
+- `lib/sp_core` and `lib/sp_drivers` compile with no Arduino headers.
+- Hardware enters through the `sp_hal` interfaces (I2cBus / UartPort /
+  GpioPin / Clock); `lib/sp_testing/mock_hal.h` provides scripted mocks
+  whose transaction scripts double as protocol assertions.
+- HMAC is injected (`mbedTLS` could bind on-device; the vendored
+  `sha256_host` is the verified default everywhere).
 
-## Why so little today
-
-The Arduino core's coupling to `Arduino.h` / `String` / `Serial` makes
-host-compile tests require mock headers. We have `frame_verify::canonicalize`
-isolated enough that it can be tested without the full Arduino mock, but
-`OfflineBuffer` depends on `MqttManager` which depends on `PubSubClient`,
-and a proper mock harness is a larger yak.
-
-v3.4.9's posture: framework in place, real tests follow. The v3.4.9
-archaeology-sweep commit message calls this out explicitly so it doesn't
-become another piece of "declared but never used" infrastructure.
+Hardware-in-the-loop testing remains a manual per-release step — see the
+bench checklist in the release notes.

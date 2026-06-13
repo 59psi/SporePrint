@@ -210,13 +210,21 @@ async def _resolve_node_id_by_type(node_type: str) -> str | None:
     have exactly one of each kind; we pick the most-recently-seen if
     multiple are registered. Returns None when no matching node exists,
     in which case the command is rejected upstream.
+
+    v4.2: combined firmware-v2 nodes report a single `node_type` (their
+    actuator personality) plus a `roles` JSON list of every capability —
+    e.g. a sensors+relay node has node_type='relay', roles=["climate",
+    "relay"]. The roles match makes climate-targeted commands reach it.
     """
     from ..db import get_db
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT node_id FROM hardware_nodes WHERE node_type = ? "
-            "ORDER BY last_seen DESC LIMIT 1",
-            (node_type,),
+            """SELECT node_id FROM hardware_nodes
+               WHERE node_type = ?
+                  OR EXISTS (SELECT 1 FROM json_each(hardware_nodes.roles)
+                             WHERE json_each.value = ?)
+               ORDER BY last_seen DESC LIMIT 1""",
+            (node_type, node_type),
         )
         row = await cursor.fetchone()
     if not row:

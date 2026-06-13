@@ -1,0 +1,14 @@
+{
+  "name": "sp_drivers",
+  "description": "SporePrint sensor drivers over injected HAL interfaces \u2014 native-safe",
+  "version": "2.0.0",
+  "dependencies": {
+    "sp_core": "*"
+  },
+  "build": {
+    "flags": [
+      "-std=gnu++17",
+      "-I."
+    ]
+  }
+}

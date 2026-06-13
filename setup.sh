@@ -130,6 +130,43 @@ fi
 
 chmod 600 .env 2>/dev/null || true
 
+# ── Broker TLS certificates (v4.2) ─────────────────────────────
+# Generates a local CA + a server certificate for mosquitto's 8883
+# listener. Nodes pin the CA via trust-on-first-use: they fetch it once
+# from /api/provision/ca at provision time (the portal's "Secure MQTT"
+# toggle) and verify the broker against it from then on. Plaintext 1883
+# stays available — TLS is opt-in per node.
+
+header "Broker TLS certificates..."
+
+CERT_DIR="config/mosquitto/certs"
+if [ -f "$CERT_DIR/server.crt" ]; then
+    info "Certificates already present — skipping (delete $CERT_DIR to regenerate)"
+elif command -v openssl &>/dev/null; then
+    mkdir -p "$CERT_DIR"
+    HOST_NAME="$(hostname -s 2>/dev/null || echo sporeprint)"
+    # Local CA (10 years — LAN-internal trust root, rotated by deleting the dir).
+    openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
+        -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
+        -subj "/CN=SporePrint Local CA" 2>/dev/null
+    # Server cert: covers the mDNS name, the bare hostname, and any IP via
+    # the nodes' CA-pinning (hostname verification is against the SANs).
+    openssl req -newkey rsa:2048 -nodes \
+        -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.csr" \
+        -subj "/CN=sporeprint.local" 2>/dev/null
+    openssl x509 -req -in "$CERT_DIR/server.csr" \
+        -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
+        -days 1825 -out "$CERT_DIR/server.crt" \
+        -extfile <(printf "subjectAltName=DNS:sporeprint.local,DNS:%s.local,DNS:%s,DNS:localhost" \
+                   "$HOST_NAME" "$HOST_NAME") 2>/dev/null
+    rm -f "$CERT_DIR/server.csr" "$CERT_DIR/ca.srl"
+    chmod 600 "$CERT_DIR/ca.key" "$CERT_DIR/server.key"
+    info "CA + server certificate generated in $CERT_DIR"
+else
+    warn "openssl not available — TLS MQTT (8883) disabled until certs exist."
+    warn "Plaintext 1883 keeps working; re-run setup.sh after installing openssl."
+fi
+
 # ── Python environment ─────────────────────────────────────────
 
 header "Setting up Python environment..."

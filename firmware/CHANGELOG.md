@@ -1,10 +1,71 @@
 # Firmware Changelog
 
-ESP32 firmware for SporePrint nodes (relay / climate / lighting / cam).
+ESP32 firmware for SporePrint nodes (unified node + camera images).
 Kept in lockstep with the Pi server + cloud repo via `scripts/bump.sh`.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [4.2.0] - 2026-06-12
+
+### Added
+- **Ground-up v2 rewrite.** One unified node image (`node_esp32` /
+  `node_esp32s3`) replaces the climate/relay/lighting trio — the channel
+  personality is chosen in the setup portal and the I²C sensor set
+  autodetects at boot (SHT3x + SHT4x at 0x44/0x45, SCD4x, SCD30, BH1750;
+  MH-Z19C / HX711 / reed switch by config flag). The camera (`cam`,
+  AI-Thinker) is its own image. The MQTT contract is byte-compatible with
+  v1; heartbeats gain additive `type` / `roles` / `fw_image` fields.
+- Captive portal v2 collects everything provisioning needs: WiFi, the
+  Pi's address, MQTT credentials, node id, personality, OTA password,
+  the command signing key, NTP host, and a Secure MQTT (TLS) toggle.
+- Opt-in TLS MQTT: the node pins the Pi's CA (one fetch of
+  /api/provision/ca at provision time, trust-on-first-use) and connects
+  on 8883 via WiFiClientSecure. A failed CA fetch falls back to plaintext
+  loudly — never TLS-without-verification.
+- Host-native test suite (`pio test -e native`): 69 cases including
+  byte-for-byte canonicalizer + signature parity against the shared
+  golden vectors, driver protocol suites on transaction-scripted mock
+  buses, actuator safety state-machine coverage, and the cam URL
+  allow-list.
+- NVS migration: first boot copies a v1 node's provisioning out of its
+  per-role namespace into the unified store (sanitizing v1's
+  quote-corrupted HMAC keys) so an OTA to v2 never de-provisions a node.
+
+### Changed
+- Command verification is a raw-token canonicalizer over the exact wire
+  bytes — number/string lexemes are never re-serialized, which is what
+  makes the Python parity byte-exact (including nested objects and float
+  timestamps the v1 canonicalizer could not handle).
+- The watchdog arms only after provisioning completes (v1 armed a 10 s
+  panic WDT before the captive portal, making first-boot setup
+  effectively impossible) and is petted from exactly one place per loop.
+- MQTT publishes stream directly into the client (no intermediate
+  buffer), so log batches and coredump chunks arrive parseable — v1
+  truncated both at 512 bytes.
+- The offline telemetry buffer is byte-capped (16 KB, evict-oldest with
+  drop counters) instead of entry-capped (1000 entries could exceed free
+  heap during a long broker outage).
+- `calibrate_co2` performs a real SCD4x forced recalibration against a
+  target ppm; the v1 boolean form (which enabled automatic
+  self-calibration — wrong for chambers that never see fresh air) is
+  refused with an explanatory log. ASC/ABC auto-baselines are disabled on
+  SCD4x, SCD30, and MH-Z19C for the same reason.
+- Camera factory reset moves GPIO 0 → GPIO 13 (v1 shared GPIO 0 with the
+  camera XCLK); a failed camera init now boots degraded with MQTT health
+  reporting instead of restart-looping before the portal could appear.
+
+### Fixed
+- v1's build-flag HMAC provisioning corrupted keys via a preprocessor
+  double-stringify (provisioned nodes rejected every signed command;
+  unprovisioned builds wrote a poisoned 2-character key that silently
+  enabled strict mode). The path is deleted — keys travel through the
+  portal.
+- `server_url` validation requires a genuine dotted-quad IPv4 before any
+  RFC1918 allowance — "10.attacker.com" no longer passes.
+- Release builds carry a real firmware version (the release workflow
+  exports SPOREPRINT_FW_VERSION from the tag; v1 release binaries
+  heartbeated an empty string).
 
 ## [4.1.6] - 2026-06-11
 
@@ -17,80 +78,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.1.5] - 2026-05-03
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.1.4] - 2026-05-03
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.1.3] - 2026-05-02
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.1.2] - 2026-05-02
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.1.1] - 2026-05-02
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.1.0] - 2026-05-02
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.0.7] - 2026-05-02
 
-### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+Lockstep version bump only — no firmware changes.
 
 ## [4.0.6] - 2026-05-02
 

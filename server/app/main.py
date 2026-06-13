@@ -226,7 +226,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="4.1.6", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="4.2.0", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -297,6 +297,7 @@ from .chambers.router import router as chambers_router
 from .experiments.router import router as experiments_router
 from .labels.router import router as labels_router
 from .settings_router import router as settings_router
+from .provision import router as provision_router
 from .integrations import router as integrations_router
 from .integrations import actions_router as integrations_actions_router
 from .integrations._registry import (
@@ -326,6 +327,7 @@ app.include_router(chambers_router, prefix="/api/chambers", tags=["chambers"])
 app.include_router(experiments_router, prefix="/api/experiments", tags=["experiments"])
 app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+app.include_router(provision_router, prefix="/api/provision", tags=["provision"])
 app.include_router(integrations_router, prefix="/api/integrations", tags=["integrations"])
 # v4.1.2 — vendor write-action dispatcher. Same /api/integrations
 # prefix; routes are /{slug}/actions and /{slug}/actions/{action}.
@@ -349,7 +351,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "4.1.6"}
+    return {"status": "ok", "version": "4.2.0"}
 
 
 # Track Socket.IO clients for health reporting

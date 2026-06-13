@@ -75,7 +75,7 @@ _PUBLIC_PATHS = frozenset({
     "/api/health",
     "/api/cloud/pair",
     "/api/cloud/pairing-code",
-    # v3.4.9 L-9 — cam_node posts JPEGs here but has no slot for
+    # v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
     # SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
     # distribution channel from the Pi to each ESP32). The endpoint's
     # existing defenses already gate abuse:
