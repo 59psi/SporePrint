@@ -5,16 +5,55 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.6] - 2026-06-11
+
+### Changed
+- Hardware guides refreshed (June 2026 audit): the ESP32-WROOM-32 38-pin
+  DevKit is the documented node board — it matches the firmware build targets
+  (`esp32dev`) and the GPIO map in every wiring diagram. ESP32-S3 boards are
+  explicitly marked unsupported until S3 build envs ship. The AI-Thinker
+  ESP32-CAM is the documented camera board (matches the `esp32cam` build
+  target and pin map).
+- SCD41 sourcing notes updated — Adafruit 5190 is in stock again; the old
+  "avoid Adafruit" advice removed. SHT31-D notes clarify that SHT4x-family
+  sensors share the I²C address but not the command set, and are not
+  drop-ins until a driver ships.
+- Prices re-baselined across all tiers (including 2026 Raspberry Pi shortage
+  pricing). Tier cost estimates recomputed: ~$180 / ~$350 / ~$540.
+- Tier 3 load cell and reed switch rows now say "firmware support planned" —
+  the relay firmware does not read them yet.
+- Wiring diagrams: node labels corrected to ESP32-WROOM-32 / micro-USB
+  (previously ESP32-S3 / USB-C); camera labels corrected to ESP32-CAM
+  (OV2640). No pin assignments changed.
+- `models/esp32_case.scad` defaults now fit the ESP32-WROOM-32 38-pin DevKit
+  (28x52mm, micro-USB cable cutout); ESP32-S3 dimensions remain available via
+  parameters. `cam_mount.scad` and `power_supply_mount.scad` notes updated
+  (incl. Mean Well GST60A12 sizing parameters).
+- `models/sensor_mount.scad` redesigned as a three-bay enclosure sized for
+  the canonical Adafruit breakouts (SHT31-D, SCD41, BH1750) with wire
+  pass-through notches for the I2C daisy chain and engraved bay labels —
+  the previous two-bay version could not physically fit the SHT31-D or
+  SCD41 boards it was documented for.
+- Every printable model now carries an engraved SporePrint wordmark
+  (previously only the relay mount was branded). All 8 models render
+  clean — the earlier non-manifold warnings on cam_mount, fan_duct, and
+  relay_board_mount are resolved.
+
+### Fixed
+- `sensor_mount.scad` lid ventilation holes were subtracted from a
+  zero-size cube — a geometric no-op — so printed lids had no vents at
+  all despite airflow over the sensors being critical for accurate CO2
+  readings. The vents are now a real cut through the lid plate.
+- Setup steps now instruct setting the Pi hostname to `sporeprint` (Raspberry
+  Pi Imager advanced options) so ESP32 nodes can reach the MQTT broker at
+  `sporeprint.local` out of the box.
+
 ## [4.1.5] - 2026-05-03
 
 ### Added
-- TODO: fill in or delete
-
-### Changed
-- TODO: fill in or delete
-
-### Fixed
-- TODO: fill in or delete
+- Pi-side integration health sweeper + state-snapshot pusher (#38).
+- Session events for vendor integration rule fires — the timeline now shows
+  which vendor device was driven and how (#37).
 
 ## [4.1.4] - 2026-05-03
 

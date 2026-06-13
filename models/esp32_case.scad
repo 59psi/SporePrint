@@ -1,6 +1,7 @@
-// SporePrint ESP32-S3 DevKit Case
-// Fits ESP32-S3-DevKitC-1 (25.5x70mm, USB-C)
-// Also fits classic ESP32-WROOM-32 DevKit (28x52mm) by adjusting parameters
+// SporePrint ESP32 DevKit Case
+// Fits the classic ESP32-WROOM-32 38-pin DevKit (28x52mm, micro-USB) —
+// the board the SporePrint firmware targets (platformio env: esp32dev).
+// Also fits ESP32-S3-DevKitC-1 (25.5x70mm, USB-C) by adjusting parameters.
 //
 // Mounting options:
 //   - M3 screw holes (for permanent mounting via external tabs)
@@ -8,22 +9,24 @@
 //   - Suction cup mount (for glass/smooth surfaces)
 //
 // Print settings: PLA, 0.2mm layer height, no supports needed
-// Designed for: ESP32-S3-DevKitC-1 (25.5x70mm) — primary recommendation
-//   To fit classic ESP32-WROOM: set board_w=28, board_l=52
+// Designed for: ESP32-WROOM-32 38-pin DevKit (28x52mm) — primary
+//   To fit ESP32-S3-DevKitC-1: set board_w=25.5, board_l=70, usb_w=10, usb_h=4.5
+//   (2026-06 audit: defaults flipped from S3 to WROOM-32 to match the
+//   canonical BOM — the S3 was never flashable with the shipped firmware.)
 //
 // Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
 // ── Parameters (customize for your board) ──────────────────────
-// ESP32-S3-DevKitC-1 dimensions (default)
-// For classic ESP32-WROOM-32: set board_w=28, board_l=52
-board_w   = 25.5; // mm — ESP32-S3-DevKitC-1 PCB width
-board_l   = 70;   // mm — ESP32-S3-DevKitC-1 PCB length
+// ESP32-WROOM-32 38-pin DevKit dimensions (default)
+// For ESP32-S3-DevKitC-1: set board_w=25.5, board_l=70, usb_w=10, usb_h=4.5
+board_w   = 28;   // mm — WROOM-32 38-pin DevKit PCB width
+board_l   = 52;   // mm — WROOM-32 38-pin DevKit PCB length
 board_h   = 10;   // mm — max component height above PCB
 wall      = 2;    // mm — wall thickness
-usb_w     = 9;    // mm — USB-C connector cutout width (narrower than micro-USB)
-usb_h     = 4;    // mm — USB-C connector cutout height
+usb_w     = 11;   // mm — micro-USB cutout width (clears the cable plug shell)
+usb_h     = 7;    // mm — micro-USB cutout height (clears the cable plug shell)
 pcb_thick = 1.6;  // mm — PCB thickness
 tolerance = 0.3;  // mm — fit tolerance
 lid_lip   = 1.5;  // mm — snap-fit lip depth
@@ -143,6 +146,13 @@ module esp32_case_lid() {
 // ── Render ──────────────────────────────────────────────────────
 esp32_case_base();
 
-// Lid placed beside the base for printing
-translate([outer_w + 10, 0, 0])
-    esp32_case_lid();
+// Lid placed beside the base for printing, with engraved wordmark on the
+// clear front strip (vent field sits toward the antenna end).
+difference() {
+    translate([outer_w + 10, 0, 0])
+        esp32_case_lid();
+    translate([outer_w + 10 + outer_w / 2, 8, wall - 0.4])
+        linear_extrude(0.5)
+            text("SporePrint", size = 4, halign = "center",
+                 font = "Liberation Sans");
+}

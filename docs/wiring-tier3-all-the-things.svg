@@ -56,14 +56,14 @@
   <rect x="20" y="166" width="570" height="320" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="44" y="192" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Climate Node 1 (Shelf A)</text>
   <text x="320" y="192" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">from Tier 2</text>
-  <text x="44" y="212" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 | USB-C 5V | SHT31 + SCD41 + BH1750 on shared I2C</text>
+  <text x="44" y="212" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32 | micro-USB 5V | SHT31 + SCD41 + BH1750 on shared I2C</text>
 
-  <!-- ESP32-S3 Climate 1 -->
+  <!-- ESP32 Climate 1 -->
   <rect x="44" y="228" width="170" height="192" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="129" y="252" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32-S3</text>
+  <text x="129" y="252" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
   <text x="129" y="272" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Climate #1</text>
   <rect x="74" y="282" width="110" height="22" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="129" y="297" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-C (5V)</text>
+  <text x="129" y="297" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB (5V)</text>
 
   <!-- Pin header -->
   <rect x="200" y="316" width="12" height="94" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
@@ -124,11 +124,11 @@
   <text x="44" y="536" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Climate Node 2 (Shelf B)</text>
   <g><rect x="290" y="522" width="88" height="20" rx="4" fill="#2e1065" stroke="#a78bfa" stroke-width="0.5"/>
   <text x="334" y="536" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">NEW IN TIER 3</text></g>
-  <text x="44" y="558" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 | USB-C 5V | Identical sensor stack: SHT31 + SCD41 + BH1750</text>
+  <text x="44" y="558" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32 | micro-USB 5V | Identical sensor stack: SHT31 + SCD41 + BH1750</text>
 
   <rect x="44" y="572" width="150" height="40" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-  <text x="119" y="592" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32-S3 #2</text>
-  <text x="119" y="608" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate #2 | USB-C 5V</text>
+  <text x="119" y="592" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32 #2</text>
+  <text x="119" y="608" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate #2 | micro-USB 5V</text>
 
   <text x="212" y="592" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Same 12-wire I2C bus pattern as Climate Node 1.</text>
   <text x="212" y="610" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Separate shelf. Same sensor addresses (different ESP32).</text>
@@ -140,13 +140,13 @@
   <rect x="620" y="166" width="960" height="400" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="644" y="192" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Relay Node</text>
   <text x="800" y="192" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">from Tier 2 + new peripherals</text>
-  <text x="644" y="212" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 | USB-C 5V | 4 MOSFET channels + HX711 load cell + reed switch</text>
+  <text x="644" y="212" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32 | micro-USB 5V | 4 MOSFET channels + HX711 load cell + reed switch</text>
 
-  <!-- ESP32-S3 Relay -->
+  <!-- ESP32 Relay -->
   <rect x="644" y="228" width="140" height="110" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="714" y="252" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32-S3</text>
+  <text x="714" y="252" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
   <text x="714" y="272" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Relay Node</text>
-  <text x="714" y="292" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-C 5V</text>
+  <text x="714" y="292" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB 5V</text>
 
   <!-- Relay pin list -->
   <rect x="792" y="228" width="12" height="104" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
@@ -216,11 +216,11 @@
   <rect x="20" y="648" width="570" height="260" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="44" y="674" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Lighting Node (4 channels)</text>
   <text x="320" y="674" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Tier 2 base + 2 new channels</text>
-  <text x="44" y="694" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 | USB-C 5V | 4 MOSFET channels, 10-bit PWM</text>
+  <text x="44" y="694" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32 | micro-USB 5V | 4 MOSFET channels, 10-bit PWM</text>
 
   <!-- ESP32 Lighting -->
   <rect x="44" y="712" width="130" height="56" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="109" y="736" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32-S3</text>
+  <text x="109" y="736" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32</text>
   <text x="109" y="756" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Lighting Node</text>
 
   <!-- Tier 2 channels -->
@@ -276,7 +276,7 @@
   <rect x="1200" y="440" width="370" height="88" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
   <text x="1224" y="466" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Camera Node 1</text>
   <text x="1380" y="466" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">from Tier 2</text>
-  <text x="1224" y="488" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV2640/OV5640 | USB-C 5V</text>
+  <text x="1224" y="488" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-CAM | OV2640 | micro-USB 5V</text>
   <text x="1224" y="508" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone. No GPIO wiring. Shelf A angle.</text>
   <g><rect x="1224" y="512" width="100" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="1274" y="525" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to Pi</text></g>
@@ -287,7 +287,7 @@
   <text x="1224" y="572" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Camera Node 2</text>
   <g><rect x="1380" y="558" width="100" height="22" rx="4" fill="#2e1065" stroke="#a78bfa" stroke-width="0.5"/>
   <text x="1430" y="573" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">NEW IN TIER 3</text></g>
-  <text x="1224" y="594" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM | OV2640/OV5640 | USB-C 5V</text>
+  <text x="1224" y="594" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-CAM | OV2640 | micro-USB 5V</text>
   <text x="1224" y="614" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone. No GPIO wiring. Shelf B angle.</text>
   <g><rect x="1224" y="618" width="100" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="1274" y="631" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi to Pi</text></g>
@@ -370,7 +370,7 @@
   <text x="800" y="1026" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">CH3: Far-Red 730nm (GPIO 14) -- same MOSFET circuit</text>
 
   <text x="800" y="1054" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Camera Node 2 (NEW):</text>
-  <text x="800" y="1074" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-S3 CAM. Standalone USB-C. No GPIO wiring. Shelf B.</text>
+  <text x="800" y="1074" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-CAM. Standalone 5V via ESP32-CAM-MB (micro-USB). No GPIO wiring. Shelf B.</text>
 
   <text x="800" y="1102" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Smart Plugs (2 NEW):</text>
   <text x="800" y="1122" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">Plug 3: Dehumidifier, Plug 4: Aux Appliance</text>

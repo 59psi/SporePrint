@@ -169,4 +169,13 @@ module fan_duct() {
 }
 
 // ── Render ─────────────────────────────────────────────────────
-fan_duct();
+// Wordmark engraved into the front edge of the square fan flange
+// (the only flat face — the rest is the transition cone + collar).
+difference() {
+    fan_duct();
+    translate([0, -fan_size / 2 + 0.4, 0.5])
+        rotate([90, 0, 0])
+            linear_extrude(0.5)
+                text("SporePrint", size = 2, halign = "center",
+                     font = "Liberation Sans");
+}
