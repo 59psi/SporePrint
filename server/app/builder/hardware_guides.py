@@ -351,7 +351,7 @@ TIER_RECOMMENDED = HardwareTier(
             ],
         ),
         CapabilityGroup(
-            title="Lighting (2 PWM channels)",
+            title="Lighting (4 PWM channels)",
             items=[
                 "6500K cool white LED strip — colonization and general fruiting light",
                 "450nm blue LED strip — Cordyceps fruiting, pinning trigger",
@@ -472,6 +472,13 @@ TIER_RECOMMENDED = HardwareTier(
         # Lighting node
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 25", to_device="IRLZ44N Gate", to_pin="via 100R", note="White 6500K strip"),
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 26", to_device="IRLZ44N Gate", to_pin="via 100R", note="Blue 450nm strip"),
+        # The lighting personality drives FOUR PWM channels — white/blue/red/
+        # far_red on SP_CHANNEL_PINS {25, 26, 27, 14} (firmware
+        # lib/sp_core/personality.h). The red and far-red strips are sold in
+        # the All-the-Things tier but had no wiring row, so a builder had
+        # nowhere to land them.
+        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 27", to_device="IRLZ44N Gate", to_pin="via 100R", note="Red 660nm strip"),
+        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 14", to_device="IRLZ44N Gate", to_pin="via 100R", note="Far-red 730nm strip"),
     ],
     wiring_diagram="See docs/wiring-tier2-recommended.svg for full wiring diagram with all 4 ESP32 nodes, MOSFET circuits, and I2C bus layout.",
     firmware_targets=["node_esp32", "cam"],
@@ -483,7 +490,7 @@ TIER_RECOMMENDED = HardwareTier(
         "Copy .env.example to .env, set SPOREPRINT_WEATHER_LAT and _LON for your location",
         "Wire climate node: SHT31-D + SCD41 + BH1750 on shared I2C bus (SDA=GPIO21, SCL=GPIO22) per diagram",
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
-        "Wire lighting node: same MOSFET pattern — white LED strip on GPIO 25, blue on GPIO 26",
+        "Wire lighting node: same MOSFET pattern — white 6500K on GPIO 25, blue 450nm on GPIO 26, red 660nm on GPIO 27, far-red 730nm on GPIO 14 (the firmware's lighting personality drives all four PWM channels)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash each node: cd firmware && pio run -t upload -e node_esp32 — one unified image covers climate/relay/lighting (pick the personality in the node's setup portal); the camera flashes with -e cam",
         "Flash the ESP32-CAM via the USB-UART programmer (hold GPIO 0 → GND while flashing; 2-pack "
