@@ -606,7 +606,9 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
         topic = f"sporeprint/{action.target}/cmd/config"
 
     condition_met = json.dumps({
-        "readings": {k: readings.get(k) for k in ["temp_f", "humidity", "co2_ppm", "lux"] if k in readings}
+        "readings": {k: readings.get(k) for k in
+                     ["temp_f", "humidity", "co2_ppm", "lux", "weight_g", "door_open"]
+                     if k in readings}
     })
     action_taken = json.dumps(payload)
 
