@@ -3,7 +3,13 @@ import time
 from ..db import get_db
 from ..retention.service import RAW_RETENTION_DAYS
 
-SENSOR_FIELDS = ["temp_f", "temp_c", "humidity", "co2_ppm", "lux", "dew_point_f"]
+SENSOR_FIELDS = [
+    "temp_f", "temp_c", "humidity", "co2_ppm", "lux", "dew_point_f",
+    # v4.2 sensor-completeness: HX711 load-cell weight + reed-switch door
+    # state, both already on the wire (firmware/src/node/main.cpp), just
+    # never persisted to telemetry history until now.
+    "weight_g", "door_open",
+]
 
 
 async def store_reading(node_id: str, sensor: str, value: float, timestamp: float, session_id: int | None = None):
@@ -19,7 +25,15 @@ async def store_bulk_readings(node_id: str, readings: dict, timestamp: float, se
     rows = []
     for field in SENSOR_FIELDS:
         if field in readings:
-            rows.append((timestamp, node_id, field, readings[field], session_id))
+            value = readings[field]
+            if isinstance(value, bool):
+                # door_open arrives as a JSON true/false over MQTT, but
+                # telemetry_readings.value is REAL NOT NULL. Store the
+                # established boolean-sensor convention (see
+                # integrations/wemo/driver.py and integrations/kasa/driver.py,
+                # which store actuator_state as float(state) the same way).
+                value = 1.0 if value else 0.0
+            rows.append((timestamp, node_id, field, value, session_id))
     if not rows:
         return
     async with get_db() as db:

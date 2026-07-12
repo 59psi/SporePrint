@@ -561,7 +561,7 @@ TIER_ALL = HardwareTier(
         "4 smart plugs: humidifier, dehumidifier, heater, Peltier cooler",
         "2 cameras (front + top-down views)",
         "Door reed switch — door-open telemetry + alerts (automation suspension via rules)",
-        "Load cell — live raw weight telemetry for harvest tracking",
+        "Load cell — weight in grams for harvest tracking (once tared + calibrated)",
         "Peristaltic pump for automated misting between flushes",
         "Weather-predictive automation",
     ],
@@ -600,7 +600,7 @@ TIER_ALL = HardwareTier(
             title="Advanced automation",
             items=[
                 "Peristaltic dosing pump for automated misting between flushes",
-                "Load cell (5kg HX711) — raw weight in telemetry for harvest logging",
+                "Load cell (5kg HX711) — calibrated weight in grams for harvest logging",
                 "Weather-predictive automation — adjusts fans based on forecast",
                 "Door-open detection — alert events; pair with a rule to pause humidity",
                 "Multi-zone rules — different setpoints per shelf",
@@ -675,7 +675,8 @@ TIER_ALL = HardwareTier(
             url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
             notes="Wire DOUT to GPIO 32, SCK to GPIO 33 on the relay node. "
-                  "Enable the scale option when provisioning the node; raw counts ride in telemetry. "
+                  "Enable the scale option when provisioning the node, then run the tare + scale "
+                  "calibration once; weight_g rides in telemetry in grams after that. "
                   "Place under grow block to track water loss and harvest weight. "
                   "Widely available. Also: sparkfun.com, adafruit.com. Multiple Amazon sellers.",
         ),
