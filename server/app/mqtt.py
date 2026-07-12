@@ -216,6 +216,21 @@ async def _handle_message(sio, topic: str, payload: dict):
     elif msg_type == "health":
         # Component-level health from ESP32 nodes
         await sio.emit("component_health", {"node_id": node_id, **payload})
+        # v4.2: the health doc is the only place a node enumerates the channel
+        # names it answers to (an object keyed by name). Persist those names —
+        # the node routes `cmd/<channel>` by exact match and drops anything it
+        # doesn't recognise, so an automation rule naming a channel that isn't
+        # here is a silent no-op. See automation.service.validate_action_channel.
+        channels = payload.get("channels")
+        if isinstance(channels, dict) and channels:
+            async with get_db() as db:
+                await db.execute(
+                    """INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen)
+                       VALUES (?, 'unknown', ?, ?)
+                       ON CONFLICT(node_id) DO UPDATE SET channels=excluded.channels""",
+                    (node_id, json.dumps(sorted(channels)), time.time()),
+                )
+                await db.commit()
         try:
             await forward_component_health(node_id, payload)
         except Exception as e:

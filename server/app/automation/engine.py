@@ -8,6 +8,7 @@ from ..mqtt import mqtt_publish
 from ..notifications.service import co2_alert, temperature_alert
 from ..sessions.service import get_active_session
 from ..species.service import get_profile
+from .service import validate_action_channel
 from .models import (
     AutomationRule,
     ConditionType,
@@ -599,6 +600,14 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
         payload["vendor_slug"] = action.vendor_slug
         payload["vendor_action"] = action.vendor_action
         payload["vendor_params"] = action.vendor_params
+
+    # Rules written before channel validation existed (or straight into the DB)
+    # can still name a channel the node drops. MQTT accepts any topic, so the
+    # publish "succeeds" and we'd log a fired row for an actuator that never
+    # moved. We don't refuse — the node may just be offline, and a live rule is
+    # not ours to veto mid-grow — but the audit trail should not read clean.
+    if channel_error := await validate_action_channel(action):
+        log.warning("Rule '%s' fires into an unknown channel: %s", rule.name, channel_error)
 
     if action.channel:
         topic = f"sporeprint/{action.target}/cmd/{action.channel}"

@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
     status TEXT DEFAULT 'unknown',
     config TEXT,
     roles TEXT,
+    channels TEXT,
     created_at REAL DEFAULT (unixepoch('now'))
 );
 
@@ -457,6 +458,13 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(hardware_nodes)", "roles",
             "ALTER TABLE hardware_nodes ADD COLUMN roles TEXT",
+        )
+        # v4.2: JSON array of channel names the node answers to, harvested from
+        # its health doc. Automation rules are validated against this — see
+        # automation.service.validate_action_channel.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "channels",
+            "ALTER TABLE hardware_nodes ADD COLUMN channels TEXT",
         )
         await db.commit()
 
