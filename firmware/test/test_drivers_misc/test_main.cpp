@@ -36,10 +36,40 @@ void test_mhz19_begin_sends_abc_off() {
     MockUart uart;
     MockClock clock;
     sp::Mhz19 mhz(uart, clock);
-    mhz.begin();
+    mhz.begin(false);
     TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
     TEST_ASSERT_EQUAL_UINT8(0x79, uart.tx[2]);  // ABC toggle command
     TEST_ASSERT_EQUAL_UINT8(0x00, uart.tx[3]);  // OFF — never auto-baseline
+    // A bare begin() must stay OFF — the default argument can't drift.
+    uart.tx.clear();
+    mhz.begin();
+    TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
+    TEST_ASSERT_EQUAL_UINT8(0x00, uart.tx[3]);
+}
+
+void test_mhz19_begin_abc_on_when_asked() {
+    MockUart uart;
+    MockClock clock;
+    sp::Mhz19 mhz(uart, clock);
+    mhz.begin(true);
+    TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
+    TEST_ASSERT_EQUAL_UINT8(0x79, uart.tx[2]);
+    TEST_ASSERT_EQUAL_UINT8(0xA0, uart.tx[3]);  // ON — caller opted in
+    uint8_t frame[9];
+    for (int i = 0; i < 9; ++i) frame[i] = uart.tx[i];
+    TEST_ASSERT_EQUAL_UINT8(sp::Mhz19::checksum(frame), uart.tx[8]);
+}
+
+void test_mhz19_calibrate_zero_frame() {
+    // Datasheet zero-point frame, byte-for-byte: FF 01 87 00 00 00 00 00 78.
+    MockUart uart;
+    MockClock clock;
+    sp::Mhz19 mhz(uart, clock);
+    mhz.calibrate_zero();
+    const uint8_t expected[9] = {0xFF, 0x01, 0x87, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x78};
+    TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, uart.tx.data(), 9);
 }
 
 void test_mhz19_read_roundtrip_trickled() {
@@ -152,6 +182,23 @@ void test_hx711_sign_extends_negative() {
     TEST_ASSERT_EQUAL_INT32((int32_t)0xFF800001, hx.read_raw());
 }
 
+void test_hx711_to_grams_math_and_uncalibrated_guard() {
+    // (raw − tare) / scale: (152300 − 148000) / 21.5 counts/g = 200.0 g.
+    float grams = 0.0f;
+    TEST_ASSERT_TRUE(sp::Hx711::to_grams(152300, 148000, 21.5f, &grams));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 200.0f, grams);
+
+    // Negative deltas stay signed (mass removed after taring).
+    TEST_ASSERT_TRUE(sp::Hx711::to_grams(147785, 148000, 21.5f, &grams));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, -10.0f, grams);
+
+    // scale == 0 = uncalibrated: refuse, leave *grams untouched — the
+    // node app publishes scale_raw instead of a garbage weight_g.
+    grams = 123.0f;
+    TEST_ASSERT_FALSE(sp::Hx711::to_grams(152300, 148000, 0.0f, &grams));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 123.0f, grams);
+}
+
 // ── reed switch ────────────────────────────────────────────────
 
 void test_reed_debounce() {
@@ -191,6 +238,8 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_mhz19_checksum);
     RUN_TEST(test_mhz19_begin_sends_abc_off);
+    RUN_TEST(test_mhz19_begin_abc_on_when_asked);
+    RUN_TEST(test_mhz19_calibrate_zero_frame);
     RUN_TEST(test_mhz19_read_roundtrip_trickled);
     RUN_TEST(test_mhz19_resyncs_on_noise);
     RUN_TEST(test_mhz19_bad_checksum_is_fail_not_zero);
@@ -198,6 +247,7 @@ int main(int, char**) {
     RUN_TEST(test_hx711_ready_is_single_pin_read);
     RUN_TEST(test_hx711_reads_24_bits_with_gain_pulse);
     RUN_TEST(test_hx711_sign_extends_negative);
+    RUN_TEST(test_hx711_to_grams_math_and_uncalibrated_guard);
     RUN_TEST(test_reed_debounce);
     return UNITY_END();
 }

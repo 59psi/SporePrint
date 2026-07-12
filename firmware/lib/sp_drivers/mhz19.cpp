@@ -11,6 +11,7 @@ constexpr uint8_t kStart = 0xFF;
 constexpr uint8_t kSensorNum = 0x01;
 constexpr uint8_t kCmdReadCo2 = 0x86;
 constexpr uint8_t kCmdAbcToggle = 0x79;  // b3: 0xA0 = on, 0x00 = off
+constexpr uint8_t kCmdZeroCal = 0x87;    // zero-point cal (400 ppm baseline)
 constexpr uint32_t kReplyDeadlineMs = 100;
 }  // namespace
 
@@ -26,8 +27,17 @@ void Mhz19::send_frame(uint8_t cmd, uint8_t b3) {
     uart_.write(frame, sizeof(frame));
 }
 
-void Mhz19::begin() {
-    send_frame(kCmdAbcToggle, 0x00);  // ABC off — chamber air is never 400 ppm
+void Mhz19::begin(bool abc_enabled) {
+    // Datasheet cmd 0x79, b3 0xA0 = ABC on / 0x00 = off. Off is the
+    // correct chamber posture — auto-baseline assumes weekly 400 ppm air.
+    send_frame(kCmdAbcToggle, abc_enabled ? 0xA0 : 0x00);
+}
+
+void Mhz19::calibrate_zero() {
+    // Datasheet cmd 0x87 (frame FF 01 87 00 00 00 00 00 78): latch the
+    // current reading as the 400 ppm zero point. The operator owns the
+    // fresh-air precondition; there is no reply to wait for.
+    send_frame(kCmdZeroCal, 0x00);
 }
 
 bool Mhz19::request_read() {

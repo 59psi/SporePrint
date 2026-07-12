@@ -276,6 +276,32 @@ void test_scd30_stretch_timeout_is_read_fail() {
     TEST_ASSERT_EQUAL_UINT32(1, scd.health().fails);
 }
 
+void test_scd30_frc_success_and_failure() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd30 scd(bus, clock);
+
+    // FRC frame for 800 ppm: cmd 0x5204 + arg 0x0320 + CRC over the arg —
+    // computed with the real helper so the script can't drift.
+    const uint8_t arg[2] = {0x03, 0x20};
+    const uint8_t arg_crc = sp::crc8_sensirion(arg, 2);
+
+    // Success is a single in-place write: continuous mode keeps running
+    // through an SCD30 FRC (no stop/restart dance, unlike the SCD4x).
+    bus.expect_write(0x61, {0x52, 0x04, 0x03, 0x20, arg_crc});
+    TEST_ASSERT_TRUE(scd.recalibrate(800));
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+    // The >3 ms post-write command gap was honoured.
+    TEST_ASSERT_TRUE(clock.total_delayed_ms >= 3);
+
+    // Failure: the write NACKs.
+    bus.expect_write_nack(0x61);
+    TEST_ASSERT_FALSE(scd.recalibrate(800));
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("frc failed", scd.health().last_error);
+}
+
 void test_scd30_out_of_range_rejected() {
     MockI2cBus bus;
     MockClock clock;
@@ -406,6 +432,7 @@ int main(int, char**) {
     RUN_TEST(test_scd30_float_decode);
     RUN_TEST(test_scd30_read_measurement_floats);
     RUN_TEST(test_scd30_stretch_timeout_is_read_fail);
+    RUN_TEST(test_scd30_frc_success_and_failure);
     RUN_TEST(test_scd30_out_of_range_rejected);
     RUN_TEST(test_bh1750_lux_conversion);
     RUN_TEST(test_autodetect_sht4x_wins_at_0x44);

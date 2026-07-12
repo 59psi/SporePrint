@@ -8,8 +8,10 @@
 // Protocol: fixed 9-byte frames, 0xFF start, checksum = (0xFF − sum of
 // bytes 1..7) + 1. Replies are accumulated NON-BLOCKING across update()
 // calls against a millis deadline; a checksum-invalid reply is a sensor
-// fail, never 0 ppm. ABC (auto baseline correction) is turned off at
-// begin() — same chamber-never-sees-400ppm poisoning as Sensirion ASC.
+// fail, never 0 ppm. ABC (auto baseline correction) is caller-controlled
+// at begin() and defaults OFF — same chamber-never-sees-400ppm poisoning
+// as Sensirion ASC. Calibration is operator-driven zero-point cal (0x87)
+// with the sensor sitting in fresh ~400 ppm air.
 //
 // Native-safe; host-tested against a scripted UART.
 
@@ -25,9 +27,16 @@ class Mhz19 {
 public:
     Mhz19(UartPort& uart, Clock& clock) : uart_(uart), clock_(clock) {}
 
-    // Send the ABC-off frame. Fire-and-forget (the sensor doesn't ack it
-    // in a way worth blocking on).
-    void begin();
+    // Send the ABC on/off frame (default off — the chamber posture).
+    // Fire-and-forget (the sensor doesn't ack it in a way worth blocking
+    // on).
+    void begin(bool abc_enabled = false);
+
+    // Zero-point calibration (datasheet cmd 0x87): the sensor latches its
+    // CURRENT reading as the 400 ppm baseline — only send with the sensor
+    // in fresh air after ≥20 min of runtime. Fire-and-forget, like
+    // begin().
+    void calibrate_zero();
 
     // Kick off a CO₂ read if idle. Returns true if a request went out.
     bool request_read();
