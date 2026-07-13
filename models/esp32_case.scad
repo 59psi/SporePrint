@@ -1,7 +1,25 @@
 // SporePrint ESP32 DevKit Case
-// Fits the classic ESP32-WROOM-32 38-pin DevKit (28x52mm, micro-USB) —
-// the board the SporePrint firmware targets (platformio env: esp32dev).
-// Also fits ESP32-S3-DevKitC-1 (25.5x70mm, USB-C) by adjusting parameters.
+// Fits the classic ESP32-WROOM-32 38-pin DevKitC — the canonical SporePrint
+// node board (firmware env: node_esp32). PCB outline 55 x 28 mm; the USB
+// connector sits centred on one short end.
+//
+// USB: the cutout is sized to clear BOTH plug styles this board ships with —
+//   micro-USB (older / cheapest singles) and USB-C (e.g. HiLetgo
+//   B0CNYK7WT2, the 3-pack the BOM points at for multi-node tiers). One
+//   generous 13 x 7.5 mm opening passes either connector plus its cable
+//   overmould, so you don't re-print when you swap board revisions.
+//
+// Board-width note: the reference DevKitC is 28 mm wide. Some 38-pin clones
+// are the narrow 25.4 mm layout — those rattle in the 28 mm cavity; set
+// board_w = 25.4 to snug them.
+//
+// ESP32-S3-DevKitC-1 (firmware env: node_esp32s3, also supported): it is a
+// DIFFERENT footprint — ~70 x 28 mm (15 mm LONGER than the WROOM-32) with
+// TWO USB-C ports side by side on the end (UART bridge + native USB). It
+// does NOT fit the defaults. Set board_l = 72 and widen the USB cutout to
+// usb_w = 20 so both ports clear (or orient the board so both sit in the
+// opening). 2026-06 audit flipped the defaults from S3 to WROOM-32 to match
+// the canonical BOM; the S3 remains a parameter change, not the default.
 //
 // Mounting options:
 //   - M3 screw holes (for permanent mounting via external tabs)
@@ -9,24 +27,20 @@
 //   - Suction cup mount (for glass/smooth surfaces)
 //
 // Print settings: PLA, 0.2mm layer height, no supports needed
-// Designed for: ESP32-WROOM-32 38-pin DevKit (28x52mm) — primary
-//   To fit ESP32-S3-DevKitC-1: set board_w=25.5, board_l=70, usb_w=10, usb_h=4.5
-//   (2026-06 audit: defaults flipped from S3 to WROOM-32 to match the
-//   canonical BOM — the S3 was never flashable with the shipped firmware.)
 //
 // Customization: adjust parameters at top of file
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
 // ── Parameters (customize for your board) ──────────────────────
-// ESP32-WROOM-32 38-pin DevKit dimensions (default)
-// For ESP32-S3-DevKitC-1: set board_w=25.5, board_l=70, usb_w=10, usb_h=4.5
-board_w   = 28;   // mm — WROOM-32 38-pin DevKit PCB width
-board_l   = 52;   // mm — WROOM-32 38-pin DevKit PCB length
+// ESP32-WROOM-32 38-pin DevKitC dimensions (default).
+// For ESP32-S3-DevKitC-1: set board_l=72, usb_w=20 (two USB-C ports).
+board_w   = 28;   // mm — WROOM-32 38-pin DevKitC PCB width (25.4 for narrow clones)
+board_l   = 55;   // mm — WROOM-32 38-pin DevKitC PCB length
 board_h   = 10;   // mm — max component height above PCB
 wall      = 2;    // mm — wall thickness
-usb_w     = 11;   // mm — micro-USB cutout width (clears the cable plug shell)
-usb_h     = 7;    // mm — micro-USB cutout height (clears the cable plug shell)
+usb_w     = 13;   // mm — USB cutout width (clears micro-USB AND USB-C plug shells)
+usb_h     = 7.5;  // mm — USB cutout height (clears either plug shell)
 pcb_thick = 1.6;  // mm — PCB thickness
 tolerance = 0.3;  // mm — fit tolerance
 lid_lip   = 1.5;  // mm — snap-fit lip depth

@@ -5,6 +5,49 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`models/hx711_scale.scad`** — two-part harvest scale (base + platform)
+  for the Tier 3 "HX711 + 5kg Load Cell" BOM line. Sized to the TAL220 5 kg
+  straight-bar cell (80 × 12.7 × 12.7 mm, M5 fixed end / M4 load end, 15 mm
+  hole pitch, verified against the HTC Sensor datasheet) with an HX711 bay
+  (38 × 22 mm) and a wire channel to the relay node. Fixed end bolts to the
+  base riser, free end lifts the platform; the base doubles as an overload
+  stop. PLA, no supports.
+- **`models/pump_bracket.scad`** — twin half-pipe saddle clamp for the Tier 3
+  peristaltic dosing pump (Adafruit 1150 Kamoer, 27 mm barrel / 72 mm long,
+  verified against the product page). Over-barrel capture-tie slots; base M3
+  + zip-tie mounting. PLA or PETG, no supports.
+- **`models/README.md`** — enumerates all 10 models with the part each fits,
+  its verified dimensions, tier, and print settings.
+- `models/sensor_mount.scad` gains an **`scd30 = true`** variant that widens
+  bay 2 for the SCD30 (Adafruit 4867, 51 × 25.4 mm) — the in-stock SCD41
+  alternate that is too long for the default 3-bay layout.
+
+### Fixed
+- **`models/sensor_mount.scad`** — the 2026-06 "three-bay redesign" still did
+  not fit its boards. Re-verified every footprint against the vendor pages
+  and corrected: the SHT31-D (18.0 × 12.7) and BH1750 (25.3 × 17.7) bay
+  widths were transposed so the BH1750 never fit; all three bays shared one
+  23.5 mm depth so only the SCD41 seated; the four "M3 holes" opened out
+  through the wall as scallops; and the side zip-tie slots missed the body
+  entirely. Bays are now per-board in width AND depth, and mounting moved to
+  real end ears (M3 + zip tie). Chimney venting preserved.
+- **`models/sensor_bracket.scad`** — its platform was hard-coded 40 × 50 mm,
+  far too small to carry the sensor_mount enclosure it exists for. It now
+  `use <sensor_mount.scad>` and derives the platform + tie-down holes from
+  the shared footprint (tracks the `scd30` variant), so the two parts bolt
+  together by the enclosure's end ears.
+
+### Changed
+- **`models/esp32_case.scad`** — board length corrected to the 55 mm
+  ESP32-WROOM-32 DevKitC outline (was 52 mm); USB cutout widened to clear
+  **both** micro-USB and USB-C plug shells (the BOM's best-value board,
+  HiLetgo B0CNYK7WT2, is USB-C); header env name corrected to `node_esp32`
+  (was the stale `esp32dev`); ESP32-S3-DevKitC-1 note updated to its real
+  ~70 × 28 mm dual-USB-C footprint.
+
 ## [4.2.0] - 2026-06-12
 
 ### Added
