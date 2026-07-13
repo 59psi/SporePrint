@@ -40,11 +40,11 @@ _RPI_PSU = Component(
 _ESP32 = Component(
     name="ESP32-WROOM-32 DevKit",
     role="Microcontroller for sensor/actuator nodes",
-    price_approx="$8",
+    price_approx="$10",
     url="https://www.amazon.com/s?k=esp32+wroom+32+devkit+38+pin",
     category="controller",
     notes="Classic 38-pin ESP32 dev board — the canonical node board — firmware env node_esp32 — and the GPIO map in every wiring diagram. "
-          "HiLetgo/Hosyond/AITRIP all fine; 3-packs (~$16-18) are the best value for multi-node tiers. "
+          "Cheapest live single is ~$9.99; 3-packs (~$18, HiLetgo B0CNYK7WT2) are the best value for multi-node tiers. "
           "ESP32-S3-DevKitC-1 is also supported (firmware env: node_esp32s3) — bench verification pending; WROOM-32 stays the canonical pick. "
           "Also: digikey.com, aliexpress.com. Official: espressif.com/devkits",
 )
@@ -64,11 +64,11 @@ _SHT31 = Component(
 _BH1750 = Component(
     name="BH1750 Light Sensor Breakout",
     role="Ambient light level sensor (I2C, 0x23)",
-    price_approx="$4",
-    url="https://www.amazon.com/s?k=bh1750+light+sensor",
+    price_approx="$5",
+    url="https://www.adafruit.com/product/4681",
     category="sensor",
-    notes="Measures 1-65535 lux. I2C address 0x23. "
-          "Also: adafruit.com/product/4681, dfrobot.com/product-531.html, thepihut.com",
+    notes="Measures 1-65535 lux. I2C address 0x23. Adafruit 4681 ($4.50, in stock). "
+          "Also: dfrobot.com/product-531.html, thepihut.com, HiLetgo on Amazon.",
 )
 
 _SCD41 = Component(
@@ -117,29 +117,20 @@ _10K_RESISTOR = Component(
 )
 
 _ESP32_CAM = Component(
-    name="ESP32-CAM (AI-Thinker, OV2640)",
+    name="ESP32-CAM (AI-Thinker, OV2640) — 2-pack with CH340 programmer",
+    price_approx="$18.50",
     role="Camera node — captures images for contamination detection + growth tracking",
-    price_approx="$10",
-    url="https://www.amazon.com/s?k=esp32-cam+ai-thinker",
+    url="https://www.amazon.com/dp/B07RXPHYNM",
     category="controller",
     notes="The board the cam firmware targets (platformio env: cam, AI-Thinker pin map). "
           "OV2640 (2MP) is more than adequate for contamination detection at 15-30cm range. "
-          "Single-unit listings are drying up — HiLetgo 2-packs with CH340 programmer (~$18.50) are "
-          "the best buy and cover the Tier 3 dual-camera build. "
+          "2026-07: the single-unit market has collapsed — no in-stock single near $10 — so the "
+          "HiLetgo 2-pack (~$18.50) is the primary SKU. It bundles the CH340 programmer the "
+          "AI-Thinker board needs (no onboard USB), so no separate programmer line item, and the "
+          "spare board covers the Tier 3 dual-camera build. "
           "NOTE: ESP32-S3 camera boards (Freenove, XIAO Sense, Waveshare) use a different chip + "
           "camera pin map and are NOT supported by the shipped firmware. "
           "Also: aliexpress.com, ebay.com.",
-)
-
-_FTDI = Component(
-    name="USB-to-UART Programmer (CP2102/CH340)",
-    role="Flash firmware to ESP32-CAM (no built-in USB)",
-    price_approx="$4",
-    url="https://www.amazon.com/s?k=cp2102+usb+uart+programmer",
-    category="misc",
-    notes="Required for the AI-Thinker ESP32-CAM (no onboard USB). Skip if you bought a "
-          "cam 2-pack that bundles the programmer. "
-          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 
@@ -302,7 +293,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$350",
+    estimated_cost="~$390",
     best_for=(
         "Serious hobbyists producing 2-10 flushes per year and experimenting with multiple "
         "species. This is the sweet spot for most home growers: full climate sensing, "
@@ -409,13 +400,14 @@ TIER_RECOMMENDED = HardwareTier(
             name="Noctua NF-A8 PWM Fan (80mm)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
-            price_approx="$17",
-            url="https://www.amazon.com/s?k=noctua+nf-a8+pwm",
+            price_approx="$18",
+            url="https://www.amazon.com/dp/B00NEMG62M",
             category="actuator",
-            notes="Quiet, PWM controllable, 12V. Pairs with the 12V PSU the build already has for LEDs. "
+            notes="Quiet, PWM controllable, 12V ($17.95, sold by Noctua). Pairs with the 12V PSU the build already has for LEDs. "
                   "5V variant (NF-A8 5V PWM, ~$26) is also available if you only want a 5V rail — "
                   "see Amazon B0FSCRGT6Y or noctua.at/en/products/fan/nf-a8-5v-pwm. "
-                  "Budget alternative: Arctic P8 PWM (~$8). "
+                  "Budget alternative: Arctic P8 PWM PST (~$10) — buy ASIN B07XR1KLLK specifically; the "
+                  "other P8 listing (B07WWKF96F) has a suppressed buybox and only resells from $16+. "
                   "Also: newegg.com, walmart.com, noctua.at/buy.",
         ),
         Component(
@@ -428,13 +420,18 @@ TIER_RECOMMENDED = HardwareTier(
                   "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
-            name="12V LED Strip - Blue (450nm), 1m",
+            name="12V LED Strip - Blue (450nm)",
             role="Cordyceps fruiting + pinning trigger",
-            price_approx="$8",
-            url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m",
+            price_approx="$36",
+            url="https://www.superlightingled.com/450nm-660nm-730nm-trispectrum-tunable-red-blue-led-horticulture-grow-light-strip-p-7120.html",
             category="actuator",
-            notes="Critical for Cordyceps militaris. Also benefits pinning in other species. "
-                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
+            notes="Critical for Cordyceps militaris — the WAVELENGTH is the point. Also benefits pinning in other species. "
+                  "Buy from a horticulture supplier, not Amazon: an Amazon 'blue led strip 450nm' search returns "
+                  "ZERO true-450nm products — generic decorative blue 5050 emits ~465-470nm, which will not drive "
+                  "Cordyceps. (Same failure mode as the far-red search returning 30W fixtures.) "
+                  "This SuperLightingLED strip is 450+660+730nm tri-spectrum; this tier's lighting node is "
+                  "2-channel (white + blue), so only its 450nm segment is driven — the red/far-red segments sit "
+                  "idle until you move to the All the Things 4-channel lighting build, which drives all three.",
         ),
         Component(
             name="12V Power Supply (5A, 60W)",
@@ -446,7 +443,6 @@ TIER_RECOMMENDED = HardwareTier(
                   "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         _ESP32_CAM,
-        _FTDI,
         _tasmota_plug("Humidifier on/off"),
         _tasmota_plug("Heater or cooler on/off"),
         Component(
@@ -539,7 +535,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$540",
+    estimated_cost="~$555",
     best_for=(
         "Advanced growers running multiple shelves or chambers, commercial-adjacent "
         "operations, and researchers tuning parameters for yield optimization. Ideal "
@@ -654,23 +650,22 @@ TIER_ALL = HardwareTier(
             name="Noctua NF-A8 PWM Fan (80mm, 12V)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
-            price_approx="$17",
-            url="https://www.amazon.com/s?k=noctua+nf-a8+pwm",
+            price_approx="$18",
+            url="https://www.amazon.com/dp/B00NEMG62M",
             category="actuator",
-            notes="12V variant — this tier powers fans from the 12V 10A PSU rail; do NOT buy the "
-                  "5V NF-A8 variant for this build. "
-                  "Alternative: Arctic P8 PWM PST (~$10 — spec the PST variant; the plain P8 PWM "
-                  "listing is discontinued). Also: newegg.com, walmart.com, noctua.at/buy.",
+            notes="12V variant ($17.95, sold by Noctua) — this tier powers fans from the 12V 10A PSU rail; "
+                  "do NOT buy the 5V NF-A8 variant for this build. "
+                  "Alternative: Arctic P8 PWM PST (~$10) — buy ASIN B07XR1KLLK specifically; the other P8 "
+                  "listing (B07WWKF96F) has a suppressed buybox and only resells from $16+. "
+                  "Also: newegg.com, walmart.com, noctua.at/buy.",
         ),
-        Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/s?k=12v+red+led+strip+660nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$18", url="https://www.superlightingled.com/far-red-light-730nm-led-strip-c-1_352_675.html", category="actuator", notes="Specialty item — 12V flexible 730nm strips. SuperLightingLED carries 2835/5050 SMD variants and a tri-spectrum 450+660+730nm option that can replace 3 separate strips. "
-                  "Alternatives: ledworker.com (China direct, 3-5 day shipping). Amazon 'far red led' search returns 30W fixtures, not strips — avoid for this build. "
-                  "If unavailable, omit — far-red is optional morphology tuning, not required for fruiting."),
+        Component(name="12V LED Strip - Cool White (6500K), 5m roll", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+5m", category="actuator", notes="5m rolls are the real unit of sale (~$10-14); cut to length. Widely available. Amazon, AliExpress, eBay."),
+        Component(name="12V LED Strip - Tri-spectrum (450 + 660 + 730nm)", role="Cordyceps + pinning + fruiting + morphology — blue, red, and far-red channels in one strip", price_approx="$36", url="https://www.superlightingled.com/450nm-660nm-730nm-trispectrum-tunable-red-blue-led-horticulture-grow-light-strip-p-7120.html", category="actuator", notes="One strip drives all three specialty lighting channels — it replaces the separate blue/red/far-red strips this tier used to list, at roughly the same total cost, and unlike them it is actually purchasable. "
+                  "Buy wavelength-spec'd strips from a horticulture supplier, never Amazon: 'blue 450nm' returns zero true-450nm strips (generic blue is ~465-470nm — wrong for Cordyceps), 'red 660nm' returns only $35+/5m rolls, and 'far red' returns 30W fixtures rather than strips. "
+                  "Alternatives: dedicated SuperLightingLED 730nm strips (p-7066 from $12, p-6959 $43.98/5m); ledworker.com (China direct, 3-5 day shipping). "
+                  "Far-red is optional morphology tuning, not required for fruiting."),
         Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view. A HiLetgo 2-pack with CH340 programmer (~$18.50) covers both. ESP32-S3 camera boards are NOT supported by the shipped firmware."}),
-        _FTDI,
+        Component(**{**_ESP32_CAM.model_dump(), "notes": "Front view + top-down view — the 2-pack is exactly this tier's two cameras, and it bundles the CH340 programmer both boards need. ESP32-S3 camera boards are NOT supported by the shipped firmware."}),
         _tasmota_plug("Humidifier"),
         _tasmota_plug("Dehumidifier"),
         _tasmota_plug("Space heater"),
@@ -678,7 +673,7 @@ TIER_ALL = HardwareTier(
         Component(
             name="HX711 Load Cell Amplifier + 5kg Load Cell",
             role="Automated harvest weight tracking (enable the scale flag at provisioning)",
-            price_approx="$8",
+            price_approx="$7",
             url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
             notes="Wire DOUT to GPIO 32, SCK to GPIO 33 on the relay node. "
@@ -690,10 +685,11 @@ TIER_ALL = HardwareTier(
         Component(
             name="Reed Switch (magnetic, normally open)",
             role="Door sensor — door-open telemetry + alerts",
-            price_approx="$3",
+            price_approx="$9",
             url="https://www.amazon.com/s?k=magnetic+reed+switch+normally+open",
             category="sensor",
-            notes="Mount on the door frame: one leg to GPIO 35, the other to GND, with an "
+            notes="Sold as 2-4pc wired alarm-contact sets (~$9), not as bare singles — one set covers "
+                  "several doors. Mount on the door frame: one leg to GPIO 35, the other to GND, with an "
                   "EXTERNAL 10K pull-up from GPIO 35 to 3V3 — GPIO 34-39 have no internal "
                   "pulls (a 10K is already in the parts kit). Magnet on door, switch on "
                   "frame; enable the door-sensor option in the node's setup portal. "
