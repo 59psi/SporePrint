@@ -342,10 +342,12 @@ TIER_RECOMMENDED = HardwareTier(
             ],
         ),
         CapabilityGroup(
-            title="Lighting (4 PWM channels)",
+            title="Lighting (2 of the node's 4 PWM channels)",
             items=[
                 "6500K cool white LED strip — colonization and general fruiting light",
                 "450nm blue LED strip — Cordyceps fruiting, pinning trigger",
+                "Two spare PWM channels (red 660nm / far-red 730nm) on the same node — "
+                "add strips later without re-flashing; All the Things ships them populated",
                 "Scene presets: colonization (dark), fruiting (white), cordyceps blue",
                 "Schedulable photoperiods per species profile",
             ],
@@ -466,15 +468,13 @@ TIER_RECOMMENDED = HardwareTier(
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 27", to_device="IRLZ44N #3 Gate", to_pin="via 100R resistor", note="Circulation fan"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 14", to_device="IRLZ44N #4 Gate", to_pin="via 100R resistor", note="Aux channel"),
         # Lighting node
+        # The lighting personality always exposes FOUR PWM channels — white/blue/
+        # red/far_red on SP_CHANNEL_PINS {25, 26, 27, 14} (firmware
+        # lib/sp_core/personality.h). This tier buys only the white + blue strips,
+        # so channels 3 and 4 stay unpopulated; All the Things lands strips on
+        # them (see TIER_ALL.wiring, which extends this list).
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 25", to_device="IRLZ44N Gate", to_pin="via 100R", note="White 6500K strip"),
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 26", to_device="IRLZ44N Gate", to_pin="via 100R", note="Blue 450nm strip"),
-        # The lighting personality drives FOUR PWM channels — white/blue/red/
-        # far_red on SP_CHANNEL_PINS {25, 26, 27, 14} (firmware
-        # lib/sp_core/personality.h). The red and far-red strips are sold in
-        # the All-the-Things tier but had no wiring row, so a builder had
-        # nowhere to land them.
-        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 27", to_device="IRLZ44N Gate", to_pin="via 100R", note="Red 660nm strip"),
-        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 14", to_device="IRLZ44N Gate", to_pin="via 100R", note="Far-red 730nm strip"),
     ],
     wiring_diagram="See docs/wiring-tier2-recommended.svg for full wiring diagram with all 4 ESP32 nodes, MOSFET circuits, and I2C bus layout.",
     firmware_targets=["node_esp32", "cam"],
@@ -718,8 +718,20 @@ TIER_ALL = HardwareTier(
     wiring=[
         *TIER_RECOMMENDED.wiring,
         WiringConnection(from_device="ESP32 (Climate #2)", from_pin="GPIO 21/22", to_device="SHT31-D #2 / SCD41 #2 / BH1750 #2", to_pin="Shared I2C", note="Second shelf"),
+        # This tier populates the lighting node's remaining two PWM channels. Both
+        # land on the ONE tri-spectrum strip — it carries separate 450/660/730nm
+        # leads, so blue (GPIO 26, wired above) and these two share a strip.
+        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 27", to_device="IRLZ44N Gate", to_pin="via 100R", note="Red 660nm lead (tri-spectrum strip)"),
+        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 14", to_device="IRLZ44N Gate", to_pin="via 100R", note="Far-red 730nm lead (tri-spectrum strip)"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 14 (aux)", to_device="Peristaltic Pump", to_pin="Via IRLZ44N + flyback diode"),
-        WiringConnection(from_device="Any ESP32 GPIO", from_pin="GPIO (INPUT_PULLUP)", to_device="Reed Switch", to_pin="One leg to GPIO, other to GND"),
+        # HX711 had no wiring row at all — the pins lived only in the component
+        # notes and the SVG, so the rendered wiring table simply omitted the scale.
+        WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 32", to_device="HX711", to_pin="DOUT", note="Load cell amplifier — data"),
+        WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 33", to_device="HX711", to_pin="SCK", note="Load cell amplifier — clock"),
+        # GPIO 34-39 are input-only with NO internal pull-ups, so the old
+        # "INPUT_PULLUP" note was not physically realisable. An external 10K to
+        # 3V3 is required — as the component notes and the SVG both already said.
+        WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 35", to_device="Reed Switch", to_pin="One leg to GPIO 35, other to GND", note="EXTERNAL 10K pull-up GPIO 35 → 3V3 (no internal pull on 34-39)"),
     ],
     wiring_diagram="See docs/wiring-tier3-all-the-things.svg for full wiring diagram with all 5 ESP32 nodes, load cell, reed switch, pump, and 4-channel lighting.",
     firmware_targets=["node_esp32", "cam"],
