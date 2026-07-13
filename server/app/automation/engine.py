@@ -469,6 +469,10 @@ async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int,
     """
     try:
         await asyncio.sleep(delay_seconds)
+        # Same transport split as _fire_rule: a plug target's OFF must go out
+        # on the vendor's own topic tree — publishing it to sporeprint/plug-*
+        # reaches nothing, which for THIS path means a stuck-on heater.
+        plug = await is_plug_target(target)
         topic = (
             f"sporeprint/{target}/cmd/{channel}"
             if channel else f"sporeprint/{target}/cmd/config"
@@ -480,9 +484,12 @@ async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int,
             while True:
                 attempt += 1
                 try:
-                    published = await mqtt_publish(
-                        topic, {"state": "off", "reason": "safety_max_on_seconds"}
-                    )
+                    if plug:
+                        published = await send_plug_command(target, "off")
+                    else:
+                        published = await mqtt_publish(
+                            topic, {"state": "off", "reason": "safety_max_on_seconds"}
+                        )
                 except Exception as pub_err:
                     log.warning(
                         "safety_auto_off publish attempt %d for %s:%s raised %s — retrying",

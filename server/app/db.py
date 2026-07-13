@@ -230,6 +230,8 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
     config TEXT,
     roles TEXT,
     channels TEXT,
+    reset_reason INTEGER,
+    mqtt_reconnects INTEGER,
     created_at REAL DEFAULT (unixepoch('now'))
 );
 
@@ -465,6 +467,17 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(hardware_nodes)", "channels",
             "ALTER TABLE hardware_nodes ADD COLUMN channels TEXT",
+        )
+        # v4.2: heartbeat diagnostics that were emitted-but-dropped. ESP32
+        # esp_reset_reason() enum; a node in a panic/brownout reboot loop is
+        # invisible without it.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "reset_reason",
+            "ALTER TABLE hardware_nodes ADD COLUMN reset_reason INTEGER",
+        )
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "mqtt_reconnects",
+            "ALTER TABLE hardware_nodes ADD COLUMN mqtt_reconnects INTEGER",
         )
         await db.commit()
 

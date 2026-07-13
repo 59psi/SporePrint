@@ -126,6 +126,18 @@ async def test_unregistered_plug_falls_back_to_shelly_convention(mock_mqtt, mock
     assert mock_mqtt_raw == [("shellies/cooler/relay/0/command", "on")]
 
 
+async def test_safety_auto_off_routes_plug_targets_to_plug_topic(mock_mqtt, mock_mqtt_raw):
+    """The fire-risk watchdog's OFF must reach the plug too — a stuck-on
+    heater whose OFF goes to sporeprint/plug-* stays on."""
+    from app.automation.engine import _safety_auto_off
+
+    await _register_plug("plug-heater", "tasmota", "tasmota/heater")
+    await _safety_auto_off("plug-heater", None, 0, "heater-guard")
+
+    assert [t for t, _ in mock_mqtt] == []
+    assert ("tasmota/heater/cmnd/POWER", "OFF") in mock_mqtt_raw
+
+
 async def test_plug_firing_is_recorded_as_sent(mock_mqtt, mock_mqtt_raw):
     """The audit row must reflect the plug transport, not claim a failure."""
     await _fire_rule(
