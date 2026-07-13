@@ -330,6 +330,12 @@ Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 
 ---
 
+## Build one
+
+- **[Hardware Build Guide](docs/hardware-build-guide.md)** — step-by-step, parts to first telemetry. Start here.
+- Wiring diagrams: [Bare Bones](docs/wiring-tier1-bare-bones.svg) · [Recommended](docs/wiring-tier2-recommended.svg) · [All the Things](docs/wiring-tier3-all-the-things.svg) · [Whole system](docs/wiring-overall-system.svg)
+- Printable enclosures: [`models/`](models/)
+
 ## Architecture
 
 - [Architecture Overview](docs/architecture-overview.svg) — three-layer Pi system (web UI → server → ESP32)

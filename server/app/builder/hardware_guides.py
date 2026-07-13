@@ -750,9 +750,9 @@ TIER_ALL = HardwareTier(
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
         "Wire lighting node: same MOSFET pattern — white (GPIO 25), blue (GPIO 26), red (GPIO 27), far-red (GPIO 14)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
-        "Flash all firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
-        "Flash climate node #2 with different node_id: set MQTT node_id to 'climate-02' before flashing",
-        "Flash both ESP32-CAMs via the USB-UART programmer: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
+        "Flash all five nodes: cd firmware && pio run -t upload -e node_esp32 — ONE unified image covers climate/relay/lighting; you pick the personality per node in its setup portal, so the same binary goes on all four node boards (use -e node_esp32s3 for an S3 board)",
+        "Flash both ESP32-CAMs with -e cam via the USB-UART programmer (hold GPIO 0 → GND while flashing; the 2-pack bundles the programmer)",
+        "Node identity is set at PROVISIONING, not at flash time: in each node's setup portal give the second climate node the id 'climate-02' and the top-down camera 'cam-02'",
         "Each ESP32 creates the 'SporePrint-Setup' WiFi AP on first boot — connect and enter WiFi credentials, the Pi's address, the node personality (climate/relay/lighting), and optionally an OTA password, the command signing key, and the Secure MQTT (TLS) toggle",
         "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each sensor board inside "
         "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
@@ -771,14 +771,14 @@ TIER_ALL = HardwareTier(
         "inspection and ensure good ventilation — MOSFETs generate heat under load. Use the zip tie "
         "channels on the relay board for cable management — bundle the 12V wires neatly",
         "Connect fans to relay node: FAE fan to channel 0 (GPIO 25), exhaust to channel 1 (GPIO 26), circulation to channel 2 (GPIO 27)",
-        "Connect LED strips to lighting node: white to ch 0, blue to ch 1, red (660nm) to ch 2 (GPIO 27), far-red (730nm) to ch 3 (GPIO 14)",
+        "Connect LED strips to lighting node: the white strip to ch 0 (GPIO 25). The tri-spectrum strip carries three separate leads — blue 450nm to ch 1 (GPIO 26), red 660nm to ch 2 (GPIO 27), far-red 730nm to ch 3 (GPIO 14). One physical strip, three channels",
         "CAMERA PLACEMENT: Use BOTH recommended positions for full coverage — (1) FRONT-FACING camera "
         "(default node_id) at substrate level, angled slightly upward to capture pin formation and "
         "fruiting body development. (2) TOP-DOWN camera (cam-02) above the substrate looking straight "
         "down for overall colonization progress. Use cam_mount.scad — suction cup on glass door or zip "
         "tie to shelf rail. Distance: 15-30cm from substrate for good detail without fish-eye distortion. "
         "The camera has a built-in flash LED (GPIO 4) — use it for consistent photos since ambient light varies",
-        "Wire HX711 load cell to the node's spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33), place the cell under the grow block, and enable the scale option in the node's setup portal",
+        "Wire the HX711 to the RELAY node's spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33), place the load cell under the grow block, enable the scale option in that node's setup portal, then tare and calibrate once (send {\"tare\":true}, then {\"calibrate_scale\":<known grams>}) — after that weight_g rides in telemetry in grams",
         "Mount reed switch on the door frame — one leg to GPIO 35, the other to GND, with an EXTERNAL 10K pull-up from GPIO 35 to 3V3 (GPIO 34-39 have no internal pulls). Enable the door-sensor option in the node's setup portal",
         "Connect peristaltic pump to relay node aux channel (GPIO 14) via IRLZ44N + flyback diode — run food-safe silicone tubing to misting nozzle",
         "Power all 12V devices (fans, LED strips, pump) from the 12V 10A PSU. ESP32s powered via USB",
