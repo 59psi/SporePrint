@@ -489,7 +489,7 @@ TIER_RECOMMENDED = HardwareTier(
         "Copy .env.example to .env, set SPOREPRINT_WEATHER_LAT and _LON for your location",
         "Wire climate node: SHT31-D + SCD41 + BH1750 on shared I2C bus (SDA=GPIO21, SCL=GPIO22) per diagram",
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
-        "Wire lighting node: same MOSFET pattern — white 6500K on GPIO 25, blue 450nm on GPIO 26, red 660nm on GPIO 27, far-red 730nm on GPIO 14 (the firmware's lighting personality drives all four PWM channels)",
+        "Wire lighting node: same MOSFET pattern — white 6500K on GPIO 25, blue 450nm on GPIO 26. The firmware's lighting personality also exposes GPIO 27 + GPIO 14 (red 660nm / far-red 730nm) — leave them unpopulated for now; add strips there later without re-flashing (All the Things ships them wired)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash each node: cd firmware && pio run -t upload -e node_esp32 — one unified image covers climate/relay/lighting (pick the personality in the node's setup portal); the camera flashes with -e cam",
         "Flash the ESP32-CAM via the USB-UART programmer (hold GPIO 0 → GND while flashing; 2-pack "
