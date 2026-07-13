@@ -2,7 +2,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 
 from ..config import settings
 from .service import (
@@ -23,11 +23,18 @@ router = APIRouter()
 # firmware actually uses and reject traversal payloads like `../etc/passwd`.
 _NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+_ACCEPTED_MEDIA = ("image/jpeg", "image/png", "image/webp")
 
 
 @router.post("/frame")
 async def ingest_frame(
-    file: UploadFile = File(...),
+    request: Request,
+    # Optional, NOT required. The ESP32-CAM firmware POSTs the JPEG as a raw
+    # `image/jpeg` body (esp_http_client has no multipart encoder), so a
+    # required File(...) made FastAPI reject every camera frame with a 422
+    # before this function ever ran — the vision pipeline had never ingested a
+    # single firmware frame. Multipart stays supported for the web UI + tests.
+    file: UploadFile | None = File(None),
     x_node_id: str = Header("cam-01"),
     x_timestamp: str = Header(default=""),
     x_resolution: str = Header(default=""),
@@ -36,8 +43,17 @@ async def ingest_frame(
     if not _NODE_ID_RE.match(x_node_id):
         raise HTTPException(400, "Invalid X-Node-Id (alphanumeric, _, -, max 32 chars)")
 
-    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+    if file is not None:
+        media_type = (file.content_type or "").split(";")[0].strip().lower()
+        content = await file.read()
+    else:
+        media_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        content = await request.body()
+
+    if media_type not in _ACCEPTED_MEDIA:
         raise HTTPException(415, "Only JPEG, PNG, and WebP images are accepted")
+    if not content:
+        raise HTTPException(400, "Empty frame body")
 
     try:
         ts = float(x_timestamp) if x_timestamp else time.time()
@@ -52,7 +68,6 @@ async def ingest_frame(
     if not file_path.is_relative_to(storage):
         raise HTTPException(400, "Invalid frame path")
 
-    content = await file.read()
     if len(content) > _MAX_UPLOAD_BYTES:
         raise HTTPException(413, "File too large (max 20MB)")
     file_path.write_bytes(content)

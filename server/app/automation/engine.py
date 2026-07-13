@@ -9,6 +9,7 @@ from ..notifications.service import co2_alert, temperature_alert
 from ..sessions.service import get_active_session
 from ..species.service import get_profile
 from .service import validate_action_channel
+from .smart_plugs import is_plug_target, send_plug_command
 from .models import (
     AutomationRule,
     ConditionType,
@@ -609,8 +610,18 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     if channel_error := await validate_action_channel(action):
         log.warning("Rule '%s' fires into an unknown channel: %s", rule.name, channel_error)
 
+    # Command routing. The firmware's cmd_router dispatches on the EXACT topic
+    # suffix (firmware lib/sp_core/cmd_router.h), so the suffix is the contract:
+    #   cmd/<channel> — switch/dim a named channel
+    #   cmd/scene     — apply a lighting scene
+    #   cmd/config    — read/publish intervals, calibration
+    # `scene` used to fall to cmd/config, whose handler reads only the interval
+    # and calibration keys and ignores `scene` entirely — so every seeded
+    # "Light Scene" rule published, logged status='sent', and did nothing.
     if action.channel:
         topic = f"sporeprint/{action.target}/cmd/{action.channel}"
+    elif action.scene:
+        topic = f"sporeprint/{action.target}/cmd/scene"
     else:
         topic = f"sporeprint/{action.target}/cmd/config"
 
@@ -678,6 +689,16 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
                 action.vendor_params or {},
             )
             status = "sent"
+        elif await is_plug_target(action.target):
+            # Smart plugs do NOT speak the sporeprint/<node>/cmd/* protocol —
+            # Shelly listens on shellies/<id>/relay/0/command and Tasmota on
+            # tasmota/<id>/cmnd/POWER. Publishing to sporeprint/plug-*/cmd/*
+            # reached no subscriber at all, so every seeded humidifier / heater
+            # / cooler rule fired into the void while logging status='sent'.
+            published = await send_plug_command(action.target, action.state)
+            status = "sent" if published else "failed"
+            if not published:
+                error = "plug command not published (client disconnected?)"
         else:
             published = await mqtt_publish(topic, payload)
             status = "sent" if published else "failed"

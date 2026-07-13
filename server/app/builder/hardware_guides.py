@@ -82,7 +82,10 @@ _SCD41 = Component(
           "Same pinout as SCD40 — drop-in with better accuracy. "
           "Alternative: Pimoroni PIM587 (~$46, ships from UK, also in stock). "
           "Premium alternative: SparkFun Qwiic SCD41 ~$75. "
-          "Monitoring-tier alternate: MH-Z19C (UART) — supported via the node's MH-Z19 config flag; SCD30 also autodetects. "
+          "Monitoring-tier alternate: MH-Z19C (UART) — supported via the node's MH-Z19 config flag. "
+          "SCD30 (Adafruit 4867) also autodetects and is the in-stock alternate now that Pimoroni's SCD41 is out — "
+          "but it is an ELECTRICAL drop-in only: at 51 x 25.4 mm it does NOT fit the 3-bay sensor mount "
+          "(models/sensor_mount.scad bay 2 is 26 x 23.5 mm, sized for the SCD41). Mount it separately or widen the bay. "
           "Also: DigiKey (Sensirion SEK-SCD41), Newark.",
 )
 
