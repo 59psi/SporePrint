@@ -85,15 +85,23 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     AutomationRule(
         name="Scheduled FAE Cycle",
-        description="Periodic FAE fan activation every 20 minutes during fruiting phases",
+        description="Periodic FAE — period and duration come from the species' grow profile",
         priority=5,
         applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.SCHEDULE,
-            schedule=ScheduleCondition(interval_min=20),
+            # The profile already states how often each phase wants fresh air
+            # (fae_interval_min: 20 for oyster fruiting, 30 for primordia…).
+            # This was hardcoded to 20 for every species and every phase, so the
+            # numbers in the grow profile were decorative. interval_min stays as
+            # the fallback for a profile that doesn't specify one.
+            schedule=ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20),
         ),
-        action=RuleAction(target="relay-01", channel="fae", state="on", pwm=180, duration_sec=300),
-        cooldown_seconds=1200,
+        action=RuleAction(
+            target="relay-01", channel="fae", state="on", pwm=180,
+            duration_profile_ref="fae_duration_sec", duration_sec=300,
+        ),
+        cooldown_seconds=600,
         log_to_session=True,
     ),
 
@@ -165,30 +173,53 @@ BUILTIN_RULES: list[AutomationRule] = [
         log_to_session=False,
     ),
 
-    # ─── Light Sync ─────────────────────────────────────────────
+    # ─── Photoperiod ────────────────────────────────────────────
+    # These two rules ARE the light cycle. The window comes from the species'
+    # light_hours_on for the active phase, so a 12/12 species runs 12/12 and a
+    # 16/8 species runs 16/8 from the same pair of rules.
+    #
+    # Previously both light rules were `interval_min=60` re-assertions of a
+    # fixed scene, which meant the profile's light_hours_on/off were never read:
+    # fruiting lights were simply ON forever, and there was no dark period at
+    # all. Photoperiod is not cosmetic for mushrooms — it's a fruiting trigger.
     AutomationRule(
-        name="Light Scene — Fruiting",
-        description="Switch to fruiting light scene when entering fruiting phase",
+        name="Photoperiod — Lights On",
+        description="Lights on during the species' light window for this phase",
         priority=3,
-        applies_to_phases=["fruiting"],
+        applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.SCHEDULE,
-            schedule=ScheduleCondition(interval_min=60),
+            schedule=ScheduleCondition(photoperiod="on", photoperiod_start="06:00"),
         ),
         action=RuleAction(target="light-01", scene="fruiting_standard"),
-        cooldown_seconds=3600,
+        cooldown_seconds=1800,
+        log_to_session=True,
+    ),
+    AutomationRule(
+        name="Photoperiod — Lights Off",
+        description="Lights off outside the species' light window (the dark period)",
+        priority=3,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(photoperiod="off", photoperiod_start="06:00"),
+        ),
+        action=RuleAction(target="light-01", scene="colonization_dark", state="off"),
+        cooldown_seconds=1800,
         log_to_session=True,
     ),
     AutomationRule(
         name="Light Scene — Colonization Dark",
-        description="Ensure lights off during colonization",
+        description="Ensure lights off during colonization (profile: light_hours_on = 0)",
         priority=3,
         applies_to_phases=["substrate_colonization", "grain_colonization"],
         condition=RuleCondition(
             type=ConditionType.SCHEDULE,
-            schedule=ScheduleCondition(interval_min=60),
+            # photoperiod="off" with light_hours_on=0 is always true — the
+            # window never opens for a dark phase. Same mechanism, no special case.
+            schedule=ScheduleCondition(photoperiod="off"),
         ),
-        action=RuleAction(target="light-01", scene="colonization_dark"),
+        action=RuleAction(target="light-01", scene="colonization_dark", state="off"),
         cooldown_seconds=3600,
         log_to_session=True,
     ),

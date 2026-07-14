@@ -257,8 +257,9 @@ async def evaluate_rules(
             if now - last < rule.cooldown_seconds:
                 continue
 
-            if _evaluate_condition(rule.condition, readings, phase_params):
-                await _fire_rule(rule, readings, session, sio)
+            if _evaluate_condition(rule.condition, readings, phase_params,
+                                   last if last else None):
+                await _fire_rule(rule, readings, session, sio, phase_params)
                 async with _state_lock:
                     _last_fired[rule.id] = now
 
@@ -326,15 +327,18 @@ def _evaluate_condition(
     condition: RuleCondition,
     readings: dict,
     phase_params=None,
+    last_fired: float | None = None,
 ) -> bool:
     if condition.type == ConditionType.THRESHOLD:
         return _eval_threshold(condition.threshold, readings, phase_params)
     elif condition.type == ConditionType.SCHEDULE:
-        return _eval_schedule(condition.schedule)
+        # phase_params carries the species' light window + FAE period; last_fired
+        # makes interval schedules elapsed-based. Neither used to reach here.
+        return _eval_schedule(condition.schedule, phase_params, last_fired)
     elif condition.type == ConditionType.COMPOUND:
         compound = condition.compound
         results = [
-            _evaluate_condition(c, readings, phase_params)
+            _evaluate_condition(c, readings, phase_params, last_fired)
             for c in compound.conditions
         ]
         if compound.op.value == "AND":
@@ -377,15 +381,122 @@ def _eval_threshold(
     return op_fn(actual, target)
 
 
-def _eval_schedule(schedule) -> bool:
+def _cron_field_matches(field: str, value: int) -> bool:
+    """One cron field against one time component. Supports *, */n, a-b, a,b, n."""
+    for part in field.split(","):
+        if part == "*":
+            return True
+        step = 1
+        if "/" in part:
+            part, step_s = part.split("/", 1)
+            if not step_s.isdigit() or int(step_s) < 1:
+                return False
+            step = int(step_s)
+        if part == "*":
+            if value % step == 0:
+                return True
+            continue
+        if "-" in part:
+            lo_s, hi_s = part.split("-", 1)
+            if not (lo_s.isdigit() and hi_s.isdigit()):
+                return False
+            lo, hi = int(lo_s), int(hi_s)
+        elif part.isdigit():
+            lo = hi = int(part)
+        else:
+            return False
+        if lo <= value <= hi and (value - lo) % step == 0:
+            return True
+    return False
+
+
+def _eval_cron(expr: str, now: time.struct_time) -> bool:
+    """5-field cron: minute hour day-of-month month day-of-week (0/7 = Sunday).
+
+    Hand-rolled rather than pulling in a dependency, but it is REAL: the `cron`
+    field was declared on ScheduleCondition — and documented with an example —
+    while nothing ever read it, so every cron rule a user wrote silently never
+    fired. A schedule that cannot be evaluated must not quietly evaluate false.
+    """
+    fields = expr.split()
+    if len(fields) != 5:
+        log.warning("Ignoring malformed cron %r (need 5 fields, got %d)", expr, len(fields))
+        return False
+    minute, hour, dom, month, dow = fields
+    # cron dow: 0 and 7 are both Sunday; struct_time tm_wday is Mon=0..Sun=6.
+    cron_dow = (now.tm_wday + 1) % 7
+    return (
+        _cron_field_matches(minute, now.tm_min)
+        and _cron_field_matches(hour, now.tm_hour)
+        and _cron_field_matches(dom, now.tm_mday)
+        and _cron_field_matches(month, now.tm_mon)
+        and (_cron_field_matches(dow, cron_dow) or (cron_dow == 0 and _cron_field_matches(dow, 7)))
+    )
+
+
+def _eval_photoperiod(schedule, phase_params) -> bool:
+    """Is the species' light window open (or closed) right now?
+
+    The grow profile already states light_hours_on / light_hours_off per phase.
+    Nothing read them: the seeded light rules just re-asserted a fixed scene
+    every 60 minutes, so "12/12" species ran their lights 24/7 and dark
+    colonization phases were never actually dark.
+    """
+    if phase_params is None:
+        return False
+    hours_on = getattr(phase_params, "light_hours_on", None)
+    if hours_on is None:
+        return False
+
+    want_on = schedule.photoperiod == "on"
+    if hours_on <= 0:      # fully dark phase — the window never opens
+        return not want_on
+    if hours_on >= 24:     # continuous light — it never closes
+        return want_on
+
+    try:
+        start_h, start_m = map(int, schedule.photoperiod_start.split(":"))
+    except (ValueError, AttributeError):
+        log.warning("Bad photoperiod_start %r — defaulting to 06:00", schedule.photoperiod_start)
+        start_h, start_m = 6, 0
+
+    now = time.localtime()
+    current = now.tm_hour * 60 + now.tm_min
+    start = start_h * 60 + start_m
+    end = (start + int(hours_on * 60)) % (24 * 60)
+
+    inside = start <= current < end if start <= end else (current >= start or current < end)
+    return inside if want_on else not inside
+
+
+def _eval_schedule(schedule, phase_params=None, last_fired: float | None = None) -> bool:
     if schedule is None:
         return False
 
     now = time.localtime()
 
-    if schedule.interval_min:
-        total_min = now.tm_hour * 60 + now.tm_min
-        return total_min % schedule.interval_min == 0
+    if schedule.photoperiod:
+        return _eval_photoperiod(schedule, phase_params)
+
+    if schedule.cron:
+        return _eval_cron(schedule.cron, now)
+
+    # Species-driven period (e.g. fae_interval_min) wins over the literal.
+    interval = None
+    if schedule.profile_interval_ref and phase_params is not None:
+        interval = getattr(phase_params, schedule.profile_interval_ref, None)
+    if interval is None:
+        interval = schedule.interval_min
+
+    if interval:
+        # Elapsed-since-last-fire, not wall-clock modulo. The old
+        # `(hour*60+min) % interval == 0` only matched if an evaluation landed
+        # exactly on a matching minute — rules are evaluated when telemetry
+        # arrives (~60s, and it drifts), so a single late frame skipped the
+        # whole cycle and the FAE fan simply never ran that round.
+        if last_fired is None:
+            return True
+        return (time.time() - last_fired) >= interval * 60
 
     if schedule.time_range:
         start_h, start_m = map(int, schedule.time_range[0].split(":"))
@@ -589,15 +700,25 @@ async def rehydrate_safety_watchdogs() -> int:
     return rehydrated
 
 
-async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=None):
+async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=None,
+                     phase_params=None):
     action = rule.action
     log.info("Firing rule '%s' → %s:%s %s", rule.name, action.target, action.channel, action.state)
+
+    # A species-driven duration (e.g. fae_duration_sec) resolves against the
+    # active phase, so one rule serves every species instead of hardcoding a
+    # number the grow profile already specifies.
+    duration_sec = action.duration_sec
+    if action.duration_profile_ref and phase_params is not None:
+        profile_duration = getattr(phase_params, action.duration_profile_ref, None)
+        if profile_duration is not None:
+            duration_sec = int(profile_duration)
 
     payload = {"state": action.state}
     if action.pwm is not None:
         payload["pwm"] = action.pwm
-    if action.duration_sec is not None:
-        payload["duration_sec"] = action.duration_sec
+    if duration_sec is not None:
+        payload["duration_sec"] = duration_sec
     if action.ramp_sec is not None:
         payload["ramp_sec"] = action.ramp_sec
     if action.scene:
