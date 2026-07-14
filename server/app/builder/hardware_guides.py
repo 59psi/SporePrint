@@ -85,8 +85,8 @@ _SCD41 = Component(
           "Monitoring-tier alternate: MH-Z19C (UART) — supported via the node's MH-Z19 config flag; "
           "wire its TX to GPIO 16 and RX to GPIO 17 (ESP32 UART2 — the node's RX16/TX17), 5V supply, common GND. "
           "SCD30 (Adafruit 4867) also autodetects and is the in-stock alternate now that Pimoroni's SCD41 is out — "
-          "but it is an ELECTRICAL drop-in only: at 51 x 25.4 mm it does NOT fit the 3-bay sensor mount "
-          "(models/sensor_mount.scad bay 2 is 26 x 23.5 mm, sized for the SCD41). Mount it separately or widen the bay. "
+          "but it is an ELECTRICAL drop-in only: at 51 x 25.4 mm it does NOT fit the default 3-bay sensor mount "
+          "(sized for the SCD41). Print the SCD30 variant instead: openscad -D scd30=true -o scd30_mount.stl models/sensor_mount.scad. "
           "Also: DigiKey (Sensirion SEK-SCD41), Newark.",
 )
 

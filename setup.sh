@@ -111,21 +111,39 @@ if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
     sed -i.bak "s|^SPOREPRINT_MQTT_PASSWORD=.*|SPOREPRINT_MQTT_PASSWORD=$MQTT_SERVER_PASS|" .env
     rm -f .env.bak
 
+    # sp-3p is the credential you configure INTO Shelly/Tasmota smart plugs
+    # (Tasmota: Configuration → MQTT → User/Password). The broker refuses
+    # anonymous clients, so a plug configured with only Host+Port never
+    # connects — and Mosquitto refuses silently.
+    MQTT_3P_PASS=$(_gen_secret)
+    if grep -q '^SPOREPRINT_MQTT_3P_PASSWORD=' .env 2>/dev/null; then
+        sed -i.bak "s|^SPOREPRINT_MQTT_3P_PASSWORD=.*|SPOREPRINT_MQTT_3P_PASSWORD=$MQTT_3P_PASS|" .env
+        rm -f .env.bak
+    else
+        echo "SPOREPRINT_MQTT_3P_PASSWORD=$MQTT_3P_PASS" >> .env
+    fi
+
     if command -v mosquitto_passwd &>/dev/null; then
         : > config/mosquitto/passwd
         mosquitto_passwd -b config/mosquitto/passwd server "$MQTT_SERVER_PASS"
+        mosquitto_passwd -b config/mosquitto/passwd sp-3p "$MQTT_3P_PASS"
         chmod 600 config/mosquitto/passwd
-        info "Mosquitto 'server' user provisioned"
+        info "Mosquitto 'server' + 'sp-3p' (smart plug) users provisioned"
     elif command -v docker &>/dev/null; then
         : > config/mosquitto/passwd
         docker run --rm -v "$PWD/config/mosquitto:/work" eclipse-mosquitto:2 \
             mosquitto_passwd -b /work/passwd server "$MQTT_SERVER_PASS"
+        docker run --rm -v "$PWD/config/mosquitto:/work" eclipse-mosquitto:2 \
+            mosquitto_passwd -b /work/passwd sp-3p "$MQTT_3P_PASS"
         chmod 600 config/mosquitto/passwd
-        info "Mosquitto 'server' user provisioned via docker"
+        info "Mosquitto 'server' + 'sp-3p' (smart plug) users provisioned via docker"
     else
         warn "mosquitto_passwd not available — run it manually after install:"
         warn "  mosquitto_passwd -b config/mosquitto/passwd server '$MQTT_SERVER_PASS'"
+        warn "  mosquitto_passwd -b config/mosquitto/passwd sp-3p '$MQTT_3P_PASS'"
     fi
+    info "Smart plugs authenticate as sp-3p — password stored in .env (SPOREPRINT_MQTT_3P_PASSWORD)"
+    info "ESP32 nodes each need their own broker user: ./scripts/add-node-mqtt-user.sh <node_id>"
 fi
 
 chmod 600 .env 2>/dev/null || true

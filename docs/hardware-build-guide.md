@@ -47,8 +47,8 @@ Three traps that will cost you money or a rebuild:
    flash. The 2-pack the BOM specifies bundles one — buy that, not a bare single.
 3. **The SCD30 does not fit the printed sensor mount.** It is an *electrical*
    drop-in for the SCD41 (the firmware autodetects it), but at 51 × 25.4 mm it
-   will not go in the 26 × 23.5 mm bay. Use the SCD41, or print the SCD30 variant
-   of `sensor_mount.scad`.
+   will not go in the SCD41-sized bay. Use the SCD41, or print the SCD30 variant:
+   `openscad -D scd30=true -o scd30_mount.stl models/sensor_mount.scad`.
 
 ---
 
@@ -63,7 +63,11 @@ PLA, 0.2 mm layers, no supports needed.
 | `relay_board_mount.scad` | MOSFET board | Mount OUTSIDE the chamber. |
 | `cam_mount.scad` | ESP32-CAM | Suction cup or zip tie. |
 | `pi_case.scad` | Raspberry Pi | |
+| `hx711_scale.scad` | HX711 + 5 kg load cell | Two-part harvest scale (base + platform). All the Things. |
+| `pump_bracket.scad` | Peristaltic pump | Saddle clamp. All the Things. |
 | `fan_duct.scad`, `power_supply_mount.scad`, `sensor_bracket.scad` | | |
+
+See `models/README.md` for the full list.
 
 ---
 
@@ -81,8 +85,13 @@ talks to it.
    ```bash
    git clone https://github.com/59psi/SporePrint.git && cd SporePrint
    cp .env.example .env          # set SPOREPRINT_WEATHER_LAT / _LON
+   ./setup.sh                    # generates secrets, broker credentials, TLS certs
    docker compose up -d
    ```
+   `setup.sh` matters: the MQTT broker **refuses anonymous connections**, and
+   this is what creates the credentials — the server's own account and the
+   `sp-3p` account your smart plugs will use (password lands in `.env` as
+   `SPOREPRINT_MQTT_3P_PASSWORD`).
 4. Open `http://sporeprint.local:3001`. You should get the dashboard, with no
    nodes yet. **Do not continue until this loads.**
 
@@ -185,9 +194,18 @@ ZIP per node. No git clone needed.)
 
 ## 8. Provision each node
 
-On first boot every node raises a WiFi access point called **`SporePrint-Setup`**.
+**First, create the node's broker credential on the Pi** — the broker refuses
+anonymous clients, and each node gets its own account whose username **is** its
+node ID (that's how the broker scopes each node to its own topics):
 
-Connect to it, and a captive portal opens. Set:
+```bash
+./scripts/add-node-mqtt-user.sh climate-01     # once per node
+```
+
+It prints the username + password to enter in the portal below.
+
+Then: on first boot every node raises a WiFi access point called
+**`SporePrint-Setup`**. Connect to it, and a captive portal opens. Set:
 
 1. **WiFi** credentials.
 2. **Pi address** — `sporeprint.local` if you set the hostname in step 3.
@@ -196,10 +214,12 @@ Connect to it, and a captive portal opens. Set:
 4. **Node ID** — accept the default, except: the second climate node must be
    `climate-02` and the top-down camera `cam-02`. **Identity is set here, not at
    flash time.**
-5. **Optional peripherals** — the scale (HX711) and door sensor (reed) are
+5. **MQTT username + password** — from `add-node-mqtt-user.sh` above. The
+   username must equal the Node ID.
+6. **Optional peripherals** — the scale (HX711) and door sensor (reed) are
    **config-flag** devices. Unlike the I²C sensors they are never autodetected.
    If you wired one and don't tick the box here, it will silently never report.
-6. Optionally: OTA password, command-signing key, TLS.
+7. Optionally: OTA password, command-signing key, TLS.
 
 The node reboots and appears on your dashboard within about 30 seconds.
 
@@ -211,8 +231,14 @@ The Athom plugs run Tasmota and talk MQTT directly — they don't touch an ESP32
 
 1. Power the plug. It raises an AP named `tasmota-XXXX`.
 2. Connect, open `192.168.4.1`, enter your WiFi credentials.
-3. In the Tasmota web UI: **Configuration → MQTT → Host** = your Pi's IP,
-   **Port** = 1883.
+3. In the Tasmota web UI: **Configuration → MQTT** →
+   - **Host** = your Pi's IP, **Port** = 1883
+   - **User** = `sp-3p`
+   - **Password** = the `SPOREPRINT_MQTT_3P_PASSWORD` value in the Pi's `.env`
+     (created by `setup.sh`).
+   Without the credentials the broker refuses the plug — **silently**. A plug
+   configured with only Host + Port looks fine in Tasmota and never appears in
+   SporePrint.
 4. Assign its role in SporePrint (humidifier / dehumidifier / heater / cooler).
 
 Plugs live **outside** the chamber. Humidifier inside (or piped in), heater
@@ -299,7 +325,8 @@ Work down this list. Each step proves the one before it.
 
 | Symptom | Cause |
 |---|---|
-| Node never appears | Pi hostname isn't `sporeprint`, or the node has the wrong broker address. Check the setup portal. |
+| Node never appears | Pi hostname isn't `sporeprint`, the node has the wrong broker address, **or its broker credential is missing/wrong** — run `./scripts/add-node-mqtt-user.sh <node_id>` and re-enter it in the portal. The broker refuses bad credentials *silently*. |
+| Plug configured but never appears | You entered Host + Port without the MQTT **User/Password** (`sp-3p` / `SPOREPRINT_MQTT_3P_PASSWORD` from `.env`). Tasmota shows no error; the broker just refuses it. |
 | Sensor missing from telemetry | I²C: check SDA/SCL aren't swapped and the part has 3V3. Scale/door/MH-Z19: you didn't tick its box in the setup portal — these are never autodetected. |
 | CO₂ reads a flat 400 ppm | Still warming up (5 min), or it needs a forced recalibration in fresh outdoor air. |
 | Fan twitches on at boot | Missing 10 kΩ gate pull-down. |
