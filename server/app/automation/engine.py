@@ -5,7 +5,7 @@ import time
 
 from ..db import get_db
 from ..mqtt import mqtt_publish
-from ..notifications.service import co2_alert, temperature_alert
+from ..notifications.service import co2_alert, temperature_alert, notify_warning, notify_critical
 from ..sessions.service import get_active_session
 from ..species.service import get_profile
 from .service import validate_action_channel
@@ -46,9 +46,39 @@ _safety_tasks: dict[str, asyncio.Task] = {}
 _state_lock = asyncio.Lock()
 _safety_tasks_lock = asyncio.Lock()
 
-# How much a reading must exceed the species ceiling before we page the operator.
-_TEMP_SAFETY_MARGIN_F = 5.0
-_CO2_SAFETY_MARGIN_PPM = 1000
+# Two-tier alert bands, per the product spec: "first a WARNING range, then an
+# EMERGENCY range." Nominal is the species' [min,max] for the phase. A reading
+# just outside it is a WARNING (act soon); a reading past the emergency margin
+# is an EMERGENCY (act now — contamination/loss territory). Widths are sensible
+# defaults; a species can tighten them later via optional PhaseParams overrides
+# without touching this code.
+_TEMP_WARN_MARGIN_F = 2.0
+_TEMP_EMERG_MARGIN_F = 5.0
+_HUMIDITY_WARN_MARGIN = 3.0
+_HUMIDITY_EMERG_MARGIN = 8.0
+_CO2_WARN_MARGIN_PPM = 500
+_CO2_EMERG_MARGIN_PPM = 1000
+
+# Back-compat: the old single-tier names, still referenced by tests.
+_TEMP_SAFETY_MARGIN_F = _TEMP_EMERG_MARGIN_F
+_CO2_SAFETY_MARGIN_PPM = _CO2_EMERG_MARGIN_PPM
+
+
+def _band_severity(value, lo, hi, warn_margin, emerg_margin):
+    """Classify a reading against a nominal [lo,hi] band. Returns
+    (severity, direction) where severity ∈ {None, "warning", "emergency"} and
+    direction ∈ {"high","low",None}. `lo` may be None for a ceiling-only band."""
+    if hi is not None:
+        if value > hi + emerg_margin:
+            return "emergency", "high"
+        if value > hi + warn_margin:
+            return "warning", "high"
+    if lo is not None:
+        if value < lo - emerg_margin:
+            return "emergency", "low"
+        if value < lo - warn_margin:
+            return "warning", "low"
+    return None, None
 
 
 def _override_key(target: str, channel: str | None) -> str:
@@ -378,48 +408,79 @@ async def _check_safety_thresholds(node_id: str, phase_params, readings: dict, s
     # Late import — forward_event lives in cloud/service.py which imports us transitively.
     from ..cloud.service import forward_event
 
+    sid = session.get("id") if session else None
+
+    async def _emit(param: str, severity: str, direction: str, value: float, threshold: float):
+        # Local ntfy: warning tier is deduped/low-priority, emergency is critical.
+        title = f"{param.title()} {severity.upper()}"
+        msg = f"{param} {value} ({direction}); threshold {threshold}"
+        try:
+            if severity == "emergency":
+                await notify_critical(title, msg, tags=[param])
+            else:
+                await notify_warning(title, msg, dedup_key=f"{node_id}:{param}:{direction}")
+        except Exception as e:
+            log.warning("local %s alert failed: %s", param, e)
+        # Cloud escalation: `<param>_alert` is the existing emergency event the
+        # cloud escalation matcher knows; `<param>_warning` is the new lower tier.
+        event_type = f"{param}_alert" if severity == "emergency" else f"{param}_warning"
+        try:
+            await forward_event(event_type, {
+                "node_id": node_id, "value": value, "direction": direction,
+                "threshold": threshold, "severity": severity, "session_id": sid,
+            })
+        except Exception as e:
+            log.warning("forward_event(%s) failed: %s", event_type, e)
+
     temp = readings.get("temp_f")
     if isinstance(temp, (int, float)):
-        direction = None
-        if temp > phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F:
-            direction = "high"
-        elif temp < phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F:
-            direction = "low"
-        if direction:
-            try:
-                await temperature_alert(float(temp), direction)
-            except Exception as e:
-                log.warning("temperature_alert failed: %s", e)
-            try:
-                await forward_event("temperature_alert", {
-                    "node_id": node_id,
-                    "temp_f": float(temp),
-                    "direction": direction,
-                    "threshold_f": (
-                        phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F if direction == "high"
-                        else phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F
-                    ),
-                    "session_id": session.get("id") if session else None,
-                })
-            except Exception as e:
-                log.warning("forward_event(temperature_alert) failed: %s", e)
+        sev, direction = _band_severity(
+            temp, phase_params.temp_min_f, phase_params.temp_max_f,
+            _TEMP_WARN_MARGIN_F, _TEMP_EMERG_MARGIN_F,
+        )
+        if sev:
+            margin = _TEMP_EMERG_MARGIN_F if sev == "emergency" else _TEMP_WARN_MARGIN_F
+            threshold = (phase_params.temp_max_f + margin if direction == "high"
+                         else phase_params.temp_min_f - margin)
+            await _emit("temperature", sev, direction, float(temp), threshold)
 
+    humidity = readings.get("humidity")
+    if isinstance(humidity, (int, float)):
+        sev, direction = _band_severity(
+            humidity, phase_params.humidity_min, phase_params.humidity_max,
+            _HUMIDITY_WARN_MARGIN, _HUMIDITY_EMERG_MARGIN,
+        )
+        if sev:
+            margin = _HUMIDITY_EMERG_MARGIN if sev == "emergency" else _HUMIDITY_WARN_MARGIN
+            threshold = (phase_params.humidity_max + margin if direction == "high"
+                         else phase_params.humidity_min - margin)
+            await _emit("humidity", sev, direction, float(humidity), threshold)
+
+    # CO2 alerts only where CO2 is actively managed. During colonization
+    # (fae_mode="none") high CO2 is intended, not an emergency — the species'
+    # own ceiling is high there, but we don't page the operator for it.
     co2 = readings.get("co2_ppm")
-    if isinstance(co2, (int, float)):
-        if co2 > phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM:
+    if isinstance(co2, (int, float)) and getattr(phase_params, "fae_mode", None) != "none":
+        sev, direction = _band_severity(
+            co2, None, phase_params.co2_max_ppm,
+            _CO2_WARN_MARGIN_PPM, _CO2_EMERG_MARGIN_PPM,
+        )
+        if sev == "emergency":
             try:
                 await co2_alert(int(co2))
             except Exception as e:
                 log.warning("co2_alert failed: %s", e)
+            threshold = phase_params.co2_max_ppm + _CO2_EMERG_MARGIN_PPM
             try:
                 await forward_event("co2_alert", {
-                    "node_id": node_id,
-                    "co2_ppm": int(co2),
-                    "threshold_ppm": phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM,
-                    "session_id": session.get("id") if session else None,
+                    "node_id": node_id, "co2_ppm": int(co2), "value": float(co2),
+                    "threshold_ppm": threshold, "severity": "emergency", "session_id": sid,
                 })
             except Exception as e:
                 log.warning("forward_event(co2_alert) failed: %s", e)
+        elif sev == "warning":
+            await _emit("co2", "warning", "high", float(co2),
+                        phase_params.co2_max_ppm + _CO2_WARN_MARGIN_PPM)
 
 
 def _evaluate_condition(
