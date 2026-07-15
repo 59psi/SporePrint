@@ -90,7 +90,7 @@ class SpeciesProfile(BaseModel):
     id: str
     common_name: str
     scientific_name: str
-    category: str  # "gourmet" | "medicinal" | "active"
+    category: str  # "gourmet" | "medicinal" | "active" | "novelty"
     # Some profiles are useful REFERENCE but not chamber-cultivable (chaga is a
     # sclerotium on a living birch over ~10 years; pestalotiopsis is an endophyte
     # with no fruit body). False ⇒ excluded from automation-enabled sessions and

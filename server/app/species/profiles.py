@@ -856,14 +856,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=500, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(3, 5),
                 notes="COLD SHOCK required. Aggressive FAE. CO2 must be <500ppm.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="low",
+                co2_max_ppm=700, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="CRITICAL: >700ppm CO2 = etiolation (leggy stems, tiny caps). Heavy spore load near maturity.",
@@ -1047,7 +1047,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
                 temp_min_f=55, temp_max_f=65,
                 temp_swing_required=True, temp_swing_delta_f=8.0,
                 humidity_min=90, humidity_max=95,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=500, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 light_lux_target=300,
                 fae_mode="continuous", expected_duration_days=(5, 10),
@@ -1055,7 +1055,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="low",
+                co2_max_ppm=600, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="CO2 >600ppm → coral/branching deformities instead of pom-pom. Vision should detect.",
@@ -1453,12 +1453,13 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=38, temp_max_f=50, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="low",
+                co2_max_ppm=5000, co2_min_ppm=2000, co2_tolerance="high",
                 light_hours_on=4, light_hours_off=20, light_spectrum="daylight_6500k",
                 light_lux_target=50,
                 fae_mode="passive", expected_duration_days=(10, 18),
-                notes="For white enoki: low light + high CO2 + collar restricts cap growth → long thin stems. "
-                      "Wild form (brown caps): normal light + FAE.",
+                notes="Configured for commercial long-white enoki: CO2 held HIGH (2000-5000ppm) "
+                      "+ low light + collar restricts cap growth → long thin stems. For the wild "
+                      "brown-cap form, lower co2_max_ppm and raise FAE.",
             ),
         },
         flush_count_typical=2,
@@ -2735,7 +2736,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         pinning_trigger_description="Very temperature-sensitive. Fluctuations cause aborts. Terrarium approach recommended.",
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
-                temp_min_f=64, temp_max_f=77, humidity_min=85, humidity_max=100,
+                temp_min_f=68, temp_max_f=82, humidity_min=85, humidity_max=100,
                 co2_max_ppm=5000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
@@ -4248,7 +4249,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         tags=["intermediate", "novelty", "not-edible", "materials", "amadou", "mycelium-composite", "fiber"],
         edible=False,
         safety_warning="NOT EDIBLE — woody and indigestible. Grown for material use (amadou felt, mycelium composites) and as a traditional tinder fungus.",
-        tldr="The fiber/material species. Two routes with very different confidence levels. The MYCELIUM route is peer-reviewed and reliable: 14 days at 25F in the dark on hardwood or hemp shives, then harvest the mat for composites (it is 3D-printable). The FRUITING route — growing a conk to process into amadou felt — rests only on two Chinese patents that contradict each other on timing. Grow it for material, not for a mushroom.",
+        tldr="The fiber/material species. Two routes with very different confidence levels. The MYCELIUM route is peer-reviewed and reliable: 14 days at 25C in the dark on hardwood or hemp shives, then harvest the mat for composites (it is 3D-printable). The FRUITING route — growing a conk to process into amadou felt — rests only on two Chinese patents that contradict each other on timing. Grow it for material, not for a mushroom.",
         flavor_profile="NOT EDIBLE. Historically the tinder fungus (Otzi carried it); its trama layer is processed into amadou, a felt-like leather substitute used for hats and fly-fishing patches.",
         tek_guide=[
             TekStep(step_number=1, title="Choose Your Product", description="Decide up front: mycelial MATERIAL (well-documented, ~2-3 weeks) or a fruiting CONK for amadou (poorly documented, months, contradictory sources). These are different grows.", duration="n/a", tips=["For a first attempt, do the material route — it is the one with peer-reviewed protocols", "The conk route is genuinely experimental"], common_mistakes=["Chasing a conk when the material route is what actually works"]),
