@@ -9,6 +9,7 @@ from .service import (
     analyze_frame_claude,
     analyze_frame_local,
     apply_user_label,
+    evaluate_growth_trend,
     get_active_session_id,
     get_frame_by_id,
     get_frames,
@@ -122,6 +123,18 @@ async def trigger_claude_analysis(frame_id: int):
         await update_analysis_claude(frame_id, result)
 
     return result
+
+
+@router.post("/growth-trend")
+async def growth_trend(session_id: int | None = None, node_id: str | None = None):
+    """Compare recent fruiting frames and alert if growth has plateaued.
+
+    This is the "fruiting has slowed → time to harvest" signal. It only acts
+    during fruiting phases and needs at least two frames in the window; the
+    growth delta itself is computed by Claude vision (the local CNN cannot
+    measure change across time).
+    """
+    return await evaluate_growth_trend(session_id=session_id, node_id=node_id)
 
 
 @router.post("/frames/{frame_id}/label")

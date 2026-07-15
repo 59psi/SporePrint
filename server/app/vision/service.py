@@ -9,7 +9,7 @@ import anthropic
 
 from ..config import settings
 from ..db import get_db
-from ..notifications.service import contamination_alert
+from ..notifications.service import contamination_alert, harvest_ready
 
 log = logging.getLogger(__name__)
 
@@ -300,3 +300,141 @@ async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> b
         )
         await db.commit()
         return True
+
+
+# ─── Fruiting growth-rate tracking → "time to harvest" alert ────────────
+# Contamination detection is per-frame. Ripeness, though, is a RATE: a fruit
+# body grows fast, then plateaus, and the plateau is the harvest signal (veil
+# about to break / spore drop imminent). The local CNN is a stub and cannot
+# measure growth across time; the reliable path is Claude comparing the earliest
+# and latest frames in a window and reporting the delta. We are explicit about
+# that — this is a Claude-vision feature, not a local-CNN one.
+
+# Phases where a growth-slowing signal is meaningful (fruit bodies are forming).
+_FRUITING_PHASES = frozenset({"primordia_induction", "fruiting"})
+
+# "slow"/"stalled" growth after visible fruiting = ripe. See _GROWTH_PROMPT.
+_HARVEST_GROWTH_RATES = frozenset({"slow", "stalled", "plateaued"})
+
+_GROWTH_PROMPT = """You are a mycologist comparing two timestamped photos of the SAME mushroom grow, an earlier one and a later one, to judge how fast the fruit bodies are still growing. Fruit bodies grow fast then plateau; the plateau is the harvest signal. Respond with JSON only:
+- growth_observed: boolean (are there fruit bodies that changed at all?)
+- growth_rate: "rapid" | "moderate" | "slow" | "stalled"
+- size_change_pct: approximate % size increase of the largest cluster, earlier→later
+- recommend_harvest: boolean (true if growth has plateaued / veils are opening)
+- summary: one sentence."""
+
+
+def _growth_indicates_harvest(trend: dict | None) -> bool:
+    """Pure decision: does this growth trend mean 'harvest now'?
+
+    Kept separate from the Claude call so the alerting path is testable without
+    an API key. A slow/stalled rate OR an explicit recommend_harvest both count.
+    """
+    if not isinstance(trend, dict):
+        return False
+    if trend.get("recommend_harvest") is True:
+        return True
+    return str(trend.get("growth_rate", "")).lower() in _HARVEST_GROWTH_RATES
+
+
+async def _claude_growth_delta(earlier: dict, later: dict, species_name: str) -> dict:
+    """Ask Claude for the growth delta between two frames. Isolated for testing."""
+    if not settings.claude_api_key:
+        return {"error": "Claude API key not configured"}
+    client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
+
+    def _img_block(frame: dict) -> dict:
+        data = base64.standard_b64encode(Path(frame["file_path"]).read_bytes()).decode("utf-8")
+        return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}
+
+    span_hours = abs(later["timestamp"] - earlier["timestamp"]) / 3600.0
+    with _ai_timing_span("pi.vision.growth", species=species_name, span_hours=round(span_hours, 1)):
+        message = await client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=512,
+            system=_GROWTH_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"EARLIER photo ({species_name}):"},
+                    _img_block(earlier),
+                    {"type": "text",
+                     "text": f"LATER photo, {span_hours:.1f}h after the earlier one:"},
+                    _img_block(later),
+                    {"type": "text", "text": "Compare growth. Respond with JSON only."},
+                ],
+            }],
+        )
+    return parse_claude_json(message.content[0].text)
+
+
+async def evaluate_growth_trend(session_id: int | None = None,
+                                node_id: str | None = None,
+                                frame_window: int = 6) -> dict:
+    """Compare recent frames for a fruiting session and alert if growth slowed.
+
+    Returns a status dict. Fires `harvest_ready` (local ntfy) + a cloud
+    `harvest_ready` event when the growth trend indicates the fruit is ripe.
+    """
+    if session_id is None:
+        session_id = await get_active_session_id()
+    if session_id is None:
+        return {"status": "no_active_session"}
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT s.name, s.current_phase, sp.data AS profile_data "
+            "FROM sessions s LEFT JOIN species_profiles sp ON s.species_profile_id = sp.id "
+            "WHERE s.id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+    if not row:
+        return {"status": "session_not_found"}
+    session = dict(row)
+    phase = session.get("current_phase", "")
+    if phase not in _FRUITING_PHASES:
+        # No fruit bodies yet — a growth-slowing signal would be meaningless.
+        return {"status": "not_fruiting", "phase": phase}
+
+    profile = json.loads(session["profile_data"]) if session.get("profile_data") else {}
+    species_name = profile.get("common_name", "your grow")
+    session_name = session.get("name", f"Session {session_id}")
+
+    frames = await get_frames(session_id=session_id, node_id=node_id, limit=frame_window)
+    if len(frames) < 2:
+        return {"status": "insufficient_frames", "frame_count": len(frames)}
+
+    # get_frames is newest-first: frames[0] is latest, frames[-1] the oldest in
+    # the window. Compare across the widest available span.
+    later, earlier = frames[0], frames[-1]
+    trend = await _claude_growth_delta(earlier, later, species_name)
+    if isinstance(trend, dict) and trend.get("error"):
+        return {"status": "analysis_error", "error": trend["error"]}
+
+    result = {
+        "status": "evaluated",
+        "session_id": session_id,
+        "span_frames": len(frames),
+        "trend": trend,
+        "harvest_recommended": _growth_indicates_harvest(trend),
+    }
+
+    if result["harvest_recommended"]:
+        try:
+            await harvest_ready(species_name, session_name)
+        except Exception as e:
+            log.warning("harvest_ready alert failed: %s", e)
+        try:
+            from ..cloud.service import forward_event
+            await forward_event("harvest_ready", {
+                "node_id": node_id,
+                "session_id": session_id,
+                "species": species_name,
+                "reason": "fruiting_slowed",
+                "growth_rate": trend.get("growth_rate") if isinstance(trend, dict) else None,
+            })
+        except Exception as e:
+            log.warning("forward_event(harvest_ready) failed: %s", e)
+
+    return result
