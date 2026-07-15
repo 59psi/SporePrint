@@ -27,7 +27,7 @@ class Scd30 {
 public:
     static constexpr uint8_t kAddr = 0x61;
 
-    Scd30(I2cBus& bus, Clock& clock) : xport_(bus, clock, kAddr) {}
+    Scd30(I2cBus& bus, Clock& clock) : xport_(bus, clock, kAddr), clock_(clock) {}
 
     // Firmware-version read — CRC-valid reply = present.
     bool probe();
@@ -40,6 +40,12 @@ public:
     // Read the measurement triple (call only when data_ready()).
     bool read(float* co2_ppm, float* temp_c, float* rh);
 
+    // Forced recalibration against a reference ppm (datasheet 0x5204,
+    // valid 400–2000 ppm). Unlike the SCD4x there is no stop/FRC/restart
+    // dance — the SCD30 takes FRC while measuring continuously, and the
+    // ack IS the result (no status word to read back).
+    bool recalibrate(uint16_t reference_ppm);
+
     const DriverHealth& health() const { return health_; }
 
     // Exposed for tests: assemble a big-endian IEEE-754 float from words.
@@ -47,6 +53,7 @@ public:
 
 private:
     SensirionTransport xport_;
+    Clock& clock_;
     DriverHealth health_;
 };
 

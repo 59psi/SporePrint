@@ -5,9 +5,11 @@ import time
 
 from ..db import get_db
 from ..mqtt import mqtt_publish
-from ..notifications.service import co2_alert, temperature_alert
+from ..notifications.service import co2_alert, temperature_alert, notify_warning, notify_critical
 from ..sessions.service import get_active_session
 from ..species.service import get_profile
+from .service import validate_action_channel
+from .smart_plugs import is_plug_target, send_plug_command, target_is_present
 from .models import (
     AutomationRule,
     ConditionType,
@@ -44,13 +46,110 @@ _safety_tasks: dict[str, asyncio.Task] = {}
 _state_lock = asyncio.Lock()
 _safety_tasks_lock = asyncio.Lock()
 
-# How much a reading must exceed the species ceiling before we page the operator.
-_TEMP_SAFETY_MARGIN_F = 5.0
-_CO2_SAFETY_MARGIN_PPM = 1000
+# Two-tier alert bands, per the product spec: "first a WARNING range, then an
+# EMERGENCY range." Nominal is the species' [min,max] for the phase. A reading
+# just outside it is a WARNING (act soon); a reading past the emergency margin
+# is an EMERGENCY (act now — contamination/loss territory). Widths are sensible
+# defaults; a species can tighten them later via optional PhaseParams overrides
+# without touching this code.
+_TEMP_WARN_MARGIN_F = 2.0
+_TEMP_EMERG_MARGIN_F = 5.0
+_HUMIDITY_WARN_MARGIN = 3.0
+_HUMIDITY_EMERG_MARGIN = 8.0
+_CO2_WARN_MARGIN_PPM = 500
+_CO2_EMERG_MARGIN_PPM = 1000
+
+# Back-compat: the old single-tier names, still referenced by tests.
+_TEMP_SAFETY_MARGIN_F = _TEMP_EMERG_MARGIN_F
+_CO2_SAFETY_MARGIN_PPM = _CO2_EMERG_MARGIN_PPM
+
+
+def _band_severity(value, lo, hi, warn_margin, emerg_margin):
+    """Classify a reading against a nominal [lo,hi] band. Returns
+    (severity, direction) where severity ∈ {None, "warning", "emergency"} and
+    direction ∈ {"high","low",None}. `lo` may be None for a ceiling-only band."""
+    if hi is not None:
+        if value > hi + emerg_margin:
+            return "emergency", "high"
+        if value > hi + warn_margin:
+            return "warning", "high"
+    if lo is not None:
+        if value < lo - emerg_margin:
+            return "emergency", "low"
+        if value < lo - warn_margin:
+            return "warning", "low"
+    return None, None
 
 
 def _override_key(target: str, channel: str | None) -> str:
     return f"{target}:{channel or '*'}"
+
+
+# Channels whose whole job is to exchange chamber air with ambient. Driving any
+# of these vents CO2 (and humidity, and heat). fae_mode="none" phases must not
+# actuate them — see the guard in evaluate_rules.
+_AIR_EXCHANGE_CHANNELS = {"fae", "exhaust"}
+
+
+def _is_air_exchange_action(action) -> bool:
+    return action.channel in _AIR_EXCHANGE_CHANNELS
+
+
+# Cold storage is preservation, not cultivation: hold the fridge cold, and do
+# nothing else. Species-agnostic — a colonized jar in the fridge doesn't care
+# what it will eventually grow. Built lazily to avoid importing the species
+# model at engine import time.
+_COLD_STORAGE_PARAMS = None
+
+
+def _cold_storage_params():
+    global _COLD_STORAGE_PARAMS
+    if _COLD_STORAGE_PARAMS is None:
+        from ..species.models import PhaseParams
+        _COLD_STORAGE_PARAMS = PhaseParams(
+            temp_min_f=35, temp_max_f=40,
+            humidity_min=80, humidity_max=95,   # incidental; not actively driven
+            co2_max_ppm=100000, co2_tolerance="high",  # never vent a sealed fridge
+            light_hours_on=0, light_hours_off=24, light_spectrum="none",
+            fae_mode="none",                     # no fresh air — it's a fridge
+            expected_duration_days=(0, 365),
+            notes="Cold storage — hold at fridge temperature. No light, FAE, or CO2 control.",
+        )
+    return _COLD_STORAGE_PARAMS
+
+
+# Substrate containers the chamber's sensors cannot see into, and whose interior
+# CO2/humidity the chamber's actuators cannot change. Running a CO2 or humidity
+# rule against the chamber does nothing for a sealed vessel — the sensor reads
+# room air, the fan moves room air, the substrate stays sealed. Grow bags are
+# sealed during colonization and OPENED to fruit; jars/agar stay sealed (they
+# go to cold storage, they don't fruit in-chamber).
+_ALWAYS_SEALED_CONTAINERS = {"jar", "grain_jar", "agar_plate", "agar"}
+_SEALED_UNTIL_FRUITING = {"grow_bag", "bag"}
+_FRUITING_PHASES = {"primordia_induction", "fruiting"}
+
+
+def _container_is_sealed(container_type: str | None, phase: str) -> bool:
+    if not container_type:
+        return False  # unknown → assume open (monotub/tray); don't over-gate
+    ct = container_type.lower()
+    if ct in _ALWAYS_SEALED_CONTAINERS:
+        return True
+    if ct in _SEALED_UNTIL_FRUITING:
+        return phase not in _FRUITING_PHASES  # the bag is opened to fruit
+    return False  # monotub, tray, open, anything else → the substrate is in the sensed air
+
+
+# Rules whose actuation only makes sense when the substrate is in the sensed
+# volume. If the container is sealed, these are no-ops that just churn actuators.
+_CHAMBER_ENV_CHANNELS = {"fae", "exhaust", "circulation", "aux"}
+
+
+def _acts_on_chamber_environment(action) -> bool:
+    if action.channel in _CHAMBER_ENV_CHANNELS:
+        return True
+    # humidifier / dehumidifier plugs also act on chamber air, not the vessel
+    return action.target in ("plug-humidifier", "plug-dehumidifier")
 
 
 async def _load_overrides_from_db():
@@ -223,15 +322,30 @@ async def evaluate_rules(
         return
 
     species_profile = await get_profile(session["species_profile_id"])
+    # Reference-only species (chaga on a birch, an endophyte in liquid culture)
+    # have no chamber setpoints to drive. Don't evaluate any rule against them —
+    # the profile exists for its prose, not as a grow target.
+    if species_profile is not None and not getattr(species_profile, "chamber_cultivable", True):
+        return
     current_phase = session["current_phase"]
+    container_type = session.get("container_type")
 
     phase_params = None
-    if species_profile and current_phase in [p.value for p in species_profile.phases]:
+    if current_phase == "cold_storage":
+        # Species-agnostic: hold the fridge cold, drive nothing else.
+        phase_params = _cold_storage_params()
+    elif species_profile and current_phase in [p.value for p in species_profile.phases]:
         from ..species.models import GrowPhase
         try:
             phase_params = species_profile.phases[GrowPhase(current_phase)]
         except (ValueError, KeyError):
             pass
+
+    # If the substrate is in a sealed vessel the chamber can't sense or affect,
+    # the chamber-environment rules (CO2/FAE/humidity/circulation/mist) are
+    # no-ops. Skip them wholesale rather than churn actuators against a sealed
+    # bag — the UI surfaces "sealed container: environmental control paused".
+    container_sealed = _container_is_sealed(container_type, current_phase)
 
     # Proactive safety alerts — fire regardless of rule state. These are the
     # "closet is on fire" alerts the operator must hear about even if no rule
@@ -247,6 +361,28 @@ async def evaluate_rules(
             if rule.applies_to_species and session["species_profile_id"] not in rule.applies_to_species:
                 continue
 
+            # Honour the species profile's fae_mode. It is set on every phase
+            # (49 times) and, until now, read NOWHERE — so a phase declaring
+            # fae_mode="none" (every colonization phase) still got its FAE and
+            # exhaust fans driven by the CO2 rules, venting the 5000-15000ppm
+            # the mycelium needs. The profile said "no fresh air this phase" in
+            # a field the engine ignored. It doesn't any more.
+            # Sealed vessel: the chamber can't reach the substrate, so
+            # environmental actuation is a no-op. (Temperature still applies —
+            # a fridge/heater warms the whole chamber including the vessel.)
+            if container_sealed and _acts_on_chamber_environment(rule.action):
+                continue
+
+            if _is_air_exchange_action(rule.action) and phase_params is not None:
+                if getattr(phase_params, "fae_mode", None) == "none":
+                    continue
+
+            # Capability-aware fallback: a rule that should only run when a
+            # preferred actuator is ABSENT (e.g. vent with fans only if there's
+            # no dehumidifier). Goes silent the moment the real device is paired.
+            if rule.requires_absent_target and await target_is_present(rule.requires_absent_target):
+                continue
+
             if is_overridden(rule.action.target, rule.action.channel):
                 continue
 
@@ -255,8 +391,9 @@ async def evaluate_rules(
             if now - last < rule.cooldown_seconds:
                 continue
 
-            if _evaluate_condition(rule.condition, readings, phase_params):
-                await _fire_rule(rule, readings, session, sio)
+            if _evaluate_condition(rule.condition, readings, phase_params,
+                                   last if last else None):
+                await _fire_rule(rule, readings, session, sio, phase_params)
                 async with _state_lock:
                     _last_fired[rule.id] = now
 
@@ -276,63 +413,97 @@ async def _check_safety_thresholds(node_id: str, phase_params, readings: dict, s
     # Late import — forward_event lives in cloud/service.py which imports us transitively.
     from ..cloud.service import forward_event
 
+    sid = session.get("id") if session else None
+
+    async def _emit(param: str, severity: str, direction: str, value: float, threshold: float):
+        # Local ntfy: warning tier is deduped/low-priority, emergency is critical.
+        title = f"{param.title()} {severity.upper()}"
+        msg = f"{param} {value} ({direction}); threshold {threshold}"
+        try:
+            if severity == "emergency":
+                await notify_critical(title, msg, tags=[param])
+            else:
+                await notify_warning(title, msg, dedup_key=f"{node_id}:{param}:{direction}")
+        except Exception as e:
+            log.warning("local %s alert failed: %s", param, e)
+        # Cloud escalation: `<param>_alert` is the existing emergency event the
+        # cloud escalation matcher knows; `<param>_warning` is the new lower tier.
+        event_type = f"{param}_alert" if severity == "emergency" else f"{param}_warning"
+        try:
+            await forward_event(event_type, {
+                "node_id": node_id, "value": value, "direction": direction,
+                "threshold": threshold, "severity": severity, "session_id": sid,
+            })
+        except Exception as e:
+            log.warning("forward_event(%s) failed: %s", event_type, e)
+
     temp = readings.get("temp_f")
     if isinstance(temp, (int, float)):
-        direction = None
-        if temp > phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F:
-            direction = "high"
-        elif temp < phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F:
-            direction = "low"
-        if direction:
-            try:
-                await temperature_alert(float(temp), direction)
-            except Exception as e:
-                log.warning("temperature_alert failed: %s", e)
-            try:
-                await forward_event("temperature_alert", {
-                    "node_id": node_id,
-                    "temp_f": float(temp),
-                    "direction": direction,
-                    "threshold_f": (
-                        phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F if direction == "high"
-                        else phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F
-                    ),
-                    "session_id": session.get("id") if session else None,
-                })
-            except Exception as e:
-                log.warning("forward_event(temperature_alert) failed: %s", e)
+        sev, direction = _band_severity(
+            temp, phase_params.temp_min_f, phase_params.temp_max_f,
+            _TEMP_WARN_MARGIN_F, _TEMP_EMERG_MARGIN_F,
+        )
+        if sev:
+            margin = _TEMP_EMERG_MARGIN_F if sev == "emergency" else _TEMP_WARN_MARGIN_F
+            threshold = (phase_params.temp_max_f + margin if direction == "high"
+                         else phase_params.temp_min_f - margin)
+            await _emit("temperature", sev, direction, float(temp), threshold)
 
+    humidity = readings.get("humidity")
+    if isinstance(humidity, (int, float)):
+        sev, direction = _band_severity(
+            humidity, phase_params.humidity_min, phase_params.humidity_max,
+            _HUMIDITY_WARN_MARGIN, _HUMIDITY_EMERG_MARGIN,
+        )
+        if sev:
+            margin = _HUMIDITY_EMERG_MARGIN if sev == "emergency" else _HUMIDITY_WARN_MARGIN
+            threshold = (phase_params.humidity_max + margin if direction == "high"
+                         else phase_params.humidity_min - margin)
+            await _emit("humidity", sev, direction, float(humidity), threshold)
+
+    # CO2 alerts only where CO2 is actively managed. During colonization
+    # (fae_mode="none") high CO2 is intended, not an emergency — the species'
+    # own ceiling is high there, but we don't page the operator for it.
     co2 = readings.get("co2_ppm")
-    if isinstance(co2, (int, float)):
-        if co2 > phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM:
+    if isinstance(co2, (int, float)) and getattr(phase_params, "fae_mode", None) != "none":
+        sev, direction = _band_severity(
+            co2, None, phase_params.co2_max_ppm,
+            _CO2_WARN_MARGIN_PPM, _CO2_EMERG_MARGIN_PPM,
+        )
+        if sev == "emergency":
             try:
                 await co2_alert(int(co2))
             except Exception as e:
                 log.warning("co2_alert failed: %s", e)
+            threshold = phase_params.co2_max_ppm + _CO2_EMERG_MARGIN_PPM
             try:
                 await forward_event("co2_alert", {
-                    "node_id": node_id,
-                    "co2_ppm": int(co2),
-                    "threshold_ppm": phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM,
-                    "session_id": session.get("id") if session else None,
+                    "node_id": node_id, "co2_ppm": int(co2), "value": float(co2),
+                    "threshold_ppm": threshold, "severity": "emergency", "session_id": sid,
                 })
             except Exception as e:
                 log.warning("forward_event(co2_alert) failed: %s", e)
+        elif sev == "warning":
+            await _emit("co2", "warning", "high", float(co2),
+                        phase_params.co2_max_ppm + _CO2_WARN_MARGIN_PPM)
 
 
 def _evaluate_condition(
     condition: RuleCondition,
     readings: dict,
     phase_params=None,
+    last_fired: float | None = None,
 ) -> bool:
     if condition.type == ConditionType.THRESHOLD:
         return _eval_threshold(condition.threshold, readings, phase_params)
     elif condition.type == ConditionType.SCHEDULE:
-        return _eval_schedule(condition.schedule)
+        # phase_params carries the species' light window + FAE period; last_fired
+        # makes interval schedules elapsed-based. Neither used to reach here.
+        return _eval_schedule(condition.schedule, phase_params, last_fired)
     elif condition.type == ConditionType.COMPOUND:
         compound = condition.compound
         results = [
-            _evaluate_condition(c, readings, phase_params)
+            _evaluate_condition(c, readings, phase_params, last_fired)
             for c in compound.conditions
         ]
         if compound.op.value == "AND":
@@ -375,15 +546,122 @@ def _eval_threshold(
     return op_fn(actual, target)
 
 
-def _eval_schedule(schedule) -> bool:
+def _cron_field_matches(field: str, value: int) -> bool:
+    """One cron field against one time component. Supports *, */n, a-b, a,b, n."""
+    for part in field.split(","):
+        if part == "*":
+            return True
+        step = 1
+        if "/" in part:
+            part, step_s = part.split("/", 1)
+            if not step_s.isdigit() or int(step_s) < 1:
+                return False
+            step = int(step_s)
+        if part == "*":
+            if value % step == 0:
+                return True
+            continue
+        if "-" in part:
+            lo_s, hi_s = part.split("-", 1)
+            if not (lo_s.isdigit() and hi_s.isdigit()):
+                return False
+            lo, hi = int(lo_s), int(hi_s)
+        elif part.isdigit():
+            lo = hi = int(part)
+        else:
+            return False
+        if lo <= value <= hi and (value - lo) % step == 0:
+            return True
+    return False
+
+
+def _eval_cron(expr: str, now: time.struct_time) -> bool:
+    """5-field cron: minute hour day-of-month month day-of-week (0/7 = Sunday).
+
+    Hand-rolled rather than pulling in a dependency, but it is REAL: the `cron`
+    field was declared on ScheduleCondition — and documented with an example —
+    while nothing ever read it, so every cron rule a user wrote silently never
+    fired. A schedule that cannot be evaluated must not quietly evaluate false.
+    """
+    fields = expr.split()
+    if len(fields) != 5:
+        log.warning("Ignoring malformed cron %r (need 5 fields, got %d)", expr, len(fields))
+        return False
+    minute, hour, dom, month, dow = fields
+    # cron dow: 0 and 7 are both Sunday; struct_time tm_wday is Mon=0..Sun=6.
+    cron_dow = (now.tm_wday + 1) % 7
+    return (
+        _cron_field_matches(minute, now.tm_min)
+        and _cron_field_matches(hour, now.tm_hour)
+        and _cron_field_matches(dom, now.tm_mday)
+        and _cron_field_matches(month, now.tm_mon)
+        and (_cron_field_matches(dow, cron_dow) or (cron_dow == 0 and _cron_field_matches(dow, 7)))
+    )
+
+
+def _eval_photoperiod(schedule, phase_params) -> bool:
+    """Is the species' light window open (or closed) right now?
+
+    The grow profile already states light_hours_on / light_hours_off per phase.
+    Nothing read them: the seeded light rules just re-asserted a fixed scene
+    every 60 minutes, so "12/12" species ran their lights 24/7 and dark
+    colonization phases were never actually dark.
+    """
+    if phase_params is None:
+        return False
+    hours_on = getattr(phase_params, "light_hours_on", None)
+    if hours_on is None:
+        return False
+
+    want_on = schedule.photoperiod == "on"
+    if hours_on <= 0:      # fully dark phase — the window never opens
+        return not want_on
+    if hours_on >= 24:     # continuous light — it never closes
+        return want_on
+
+    try:
+        start_h, start_m = map(int, schedule.photoperiod_start.split(":"))
+    except (ValueError, AttributeError):
+        log.warning("Bad photoperiod_start %r — defaulting to 06:00", schedule.photoperiod_start)
+        start_h, start_m = 6, 0
+
+    now = time.localtime()
+    current = now.tm_hour * 60 + now.tm_min
+    start = start_h * 60 + start_m
+    end = (start + int(hours_on * 60)) % (24 * 60)
+
+    inside = start <= current < end if start <= end else (current >= start or current < end)
+    return inside if want_on else not inside
+
+
+def _eval_schedule(schedule, phase_params=None, last_fired: float | None = None) -> bool:
     if schedule is None:
         return False
 
     now = time.localtime()
 
-    if schedule.interval_min:
-        total_min = now.tm_hour * 60 + now.tm_min
-        return total_min % schedule.interval_min == 0
+    if schedule.photoperiod:
+        return _eval_photoperiod(schedule, phase_params)
+
+    if schedule.cron:
+        return _eval_cron(schedule.cron, now)
+
+    # Species-driven period (e.g. fae_interval_min) wins over the literal.
+    interval = None
+    if schedule.profile_interval_ref and phase_params is not None:
+        interval = getattr(phase_params, schedule.profile_interval_ref, None)
+    if interval is None:
+        interval = schedule.interval_min
+
+    if interval:
+        # Elapsed-since-last-fire, not wall-clock modulo. The old
+        # `(hour*60+min) % interval == 0` only matched if an evaluation landed
+        # exactly on a matching minute — rules are evaluated when telemetry
+        # arrives (~60s, and it drifts), so a single late frame skipped the
+        # whole cycle and the FAE fan simply never ran that round.
+        if last_fired is None:
+            return True
+        return (time.time() - last_fired) >= interval * 60
 
     if schedule.time_range:
         start_h, start_m = map(int, schedule.time_range[0].split(":"))
@@ -467,6 +745,10 @@ async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int,
     """
     try:
         await asyncio.sleep(delay_seconds)
+        # Same transport split as _fire_rule: a plug target's OFF must go out
+        # on the vendor's own topic tree — publishing it to sporeprint/plug-*
+        # reaches nothing, which for THIS path means a stuck-on heater.
+        plug = await is_plug_target(target)
         topic = (
             f"sporeprint/{target}/cmd/{channel}"
             if channel else f"sporeprint/{target}/cmd/config"
@@ -478,9 +760,12 @@ async def _safety_auto_off(target: str, channel: str | None, delay_seconds: int,
             while True:
                 attempt += 1
                 try:
-                    published = await mqtt_publish(
-                        topic, {"state": "off", "reason": "safety_max_on_seconds"}
-                    )
+                    if plug:
+                        published = await send_plug_command(target, "off")
+                    else:
+                        published = await mqtt_publish(
+                            topic, {"state": "off", "reason": "safety_max_on_seconds"}
+                        )
                 except Exception as pub_err:
                     log.warning(
                         "safety_auto_off publish attempt %d for %s:%s raised %s — retrying",
@@ -580,15 +865,25 @@ async def rehydrate_safety_watchdogs() -> int:
     return rehydrated
 
 
-async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=None):
+async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=None,
+                     phase_params=None):
     action = rule.action
     log.info("Firing rule '%s' → %s:%s %s", rule.name, action.target, action.channel, action.state)
+
+    # A species-driven duration (e.g. fae_duration_sec) resolves against the
+    # active phase, so one rule serves every species instead of hardcoding a
+    # number the grow profile already specifies.
+    duration_sec = action.duration_sec
+    if action.duration_profile_ref and phase_params is not None:
+        profile_duration = getattr(phase_params, action.duration_profile_ref, None)
+        if profile_duration is not None:
+            duration_sec = int(profile_duration)
 
     payload = {"state": action.state}
     if action.pwm is not None:
         payload["pwm"] = action.pwm
-    if action.duration_sec is not None:
-        payload["duration_sec"] = action.duration_sec
+    if duration_sec is not None:
+        payload["duration_sec"] = duration_sec
     if action.ramp_sec is not None:
         payload["ramp_sec"] = action.ramp_sec
     if action.scene:
@@ -600,13 +895,33 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
         payload["vendor_action"] = action.vendor_action
         payload["vendor_params"] = action.vendor_params
 
+    # Rules written before channel validation existed (or straight into the DB)
+    # can still name a channel the node drops. MQTT accepts any topic, so the
+    # publish "succeeds" and we'd log a fired row for an actuator that never
+    # moved. We don't refuse — the node may just be offline, and a live rule is
+    # not ours to veto mid-grow — but the audit trail should not read clean.
+    if channel_error := await validate_action_channel(action):
+        log.warning("Rule '%s' fires into an unknown channel: %s", rule.name, channel_error)
+
+    # Command routing. The firmware's cmd_router dispatches on the EXACT topic
+    # suffix (firmware lib/sp_core/cmd_router.h), so the suffix is the contract:
+    #   cmd/<channel> — switch/dim a named channel
+    #   cmd/scene     — apply a lighting scene
+    #   cmd/config    — read/publish intervals, calibration
+    # `scene` used to fall to cmd/config, whose handler reads only the interval
+    # and calibration keys and ignores `scene` entirely — so every seeded
+    # "Light Scene" rule published, logged status='sent', and did nothing.
     if action.channel:
         topic = f"sporeprint/{action.target}/cmd/{action.channel}"
+    elif action.scene:
+        topic = f"sporeprint/{action.target}/cmd/scene"
     else:
         topic = f"sporeprint/{action.target}/cmd/config"
 
     condition_met = json.dumps({
-        "readings": {k: readings.get(k) for k in ["temp_f", "humidity", "co2_ppm", "lux"] if k in readings}
+        "readings": {k: readings.get(k) for k in
+                     ["temp_f", "humidity", "co2_ppm", "lux", "weight_g", "door_open"]
+                     if k in readings}
     })
     action_taken = json.dumps(payload)
 
@@ -667,6 +982,16 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
                 action.vendor_params or {},
             )
             status = "sent"
+        elif await is_plug_target(action.target):
+            # Smart plugs do NOT speak the sporeprint/<node>/cmd/* protocol —
+            # Shelly listens on shellies/<id>/relay/0/command and Tasmota on
+            # tasmota/<id>/cmnd/POWER. Publishing to sporeprint/plug-*/cmd/*
+            # reached no subscriber at all, so every seeded humidifier / heater
+            # / cooler rule fired into the void while logging status='sent'.
+            published = await send_plug_command(action.target, action.state)
+            status = "sent" if published else "failed"
+            if not published:
+                error = "plug command not published (client disconnected?)"
         else:
             published = await mqtt_publish(topic, payload)
             status = "sent" if published else "failed"

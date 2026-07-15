@@ -23,9 +23,29 @@ class ThresholdCondition(BaseModel):
 
 
 class ScheduleCondition(BaseModel):
-    cron: str | None = None  # cron expression, e.g. "*/20 * * * *"
-    interval_min: int | None = None  # every N minutes
+    """When a rule is allowed to fire.
+
+    ``photoperiod`` and ``profile_interval_ref`` make the SCHEDULE itself
+    species-driven, the way ``ThresholdCondition.profile_ref`` already does for
+    setpoints. The grow profile states how many hours of light a phase wants and
+    how often it wants fresh air; those numbers should drive the schedule rather
+    than be duplicated as literals in a rule that then ignores the species.
+    """
+
+    cron: str | None = None  # 5-field cron, e.g. "*/20 * * * *"
+    interval_min: int | None = None  # every N minutes since this rule last fired
     time_range: tuple[str, str] | None = None  # ("22:00", "06:00") for night
+
+    # Species-driven light cycle. "on" matches while the current phase's light
+    # window is open, "off" while it is closed. The window length is the
+    # profile's light_hours_on — so a 12/12 species gets a real 12/12 cycle, and
+    # a dark colonization phase (light_hours_on = 0) never opens it at all.
+    photoperiod: str | None = None  # "on" | "off"
+    photoperiod_start: str = "06:00"  # local clock time the light window opens
+
+    # Species-driven period: names a PhaseParams field holding minutes
+    # (e.g. "fae_interval_min"). Takes precedence over interval_min.
+    profile_interval_ref: str | None = None
 
 
 class CompoundCondition(BaseModel):
@@ -66,6 +86,10 @@ class RuleAction(BaseModel):
     ramp_sec: int | None = None
     scene: str | None = None  # for lighting node
 
+    # Species-driven duration: names a PhaseParams field holding seconds
+    # (e.g. "fae_duration_sec"). Resolved at fire time; overrides duration_sec.
+    duration_profile_ref: str | None = None
+
     # v4.1.4 — vendor write-action escape hatch. When set, the engine
     # routes through `app.integrations._actions.dispatch` instead of
     # MQTT. `vendor_slug` MUST be a registered integration; the
@@ -83,6 +107,12 @@ class AutomationRule(BaseModel):
     priority: int = 0
     applies_to_phases: list[str] | None = None  # None = all phases
     applies_to_species: list[str] | None = None  # None = all species
+    # Capability-aware fallback: fire this rule ONLY IF the named target is NOT
+    # present on this chamber. It's how "vent with the fans when there's no
+    # dehumidifier" degrades gracefully — the fan-evacuation rule sets this to
+    # the dehumidifier plug, so it goes silent the moment a real dehumidifier is
+    # paired, and the two never fight over the same excess-humidity event.
+    requires_absent_target: str | None = None
     condition: RuleCondition
     action: RuleAction
     cooldown_seconds: int = 60

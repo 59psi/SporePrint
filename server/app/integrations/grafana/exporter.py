@@ -68,6 +68,17 @@ _SENSOR_MAP: dict[str, tuple[str, str, str]] = {
         "Last dew-point reading from this node (converted to Celsius)",
         "C",
     ),
+    "weight_g": (
+        "sporeprint_node_weight_grams",
+        "Last calibrated load-cell reading from this node (HX711)",
+        "g",
+    ),
+    "door_open": (
+        # Stored 1.0/0.0 by store_bulk_readings — a gauge, not a counter.
+        "sporeprint_node_door_open",
+        "Door state from this node's reed switch (1 = open, 0 = closed)",
+        "bool",
+    ),
 }
 
 
@@ -98,7 +109,7 @@ async def _latest_per_sensor() -> list[dict[str, Any]]:
             """
             SELECT node_id, sensor, value, MAX(timestamp) AS timestamp
             FROM telemetry_readings
-            WHERE sensor IN ('temp_c','humidity','co2_ppm','lux','dew_point_f')
+            WHERE sensor IN ('temp_c','humidity','co2_ppm','lux','dew_point_f','weight_g','door_open')
             GROUP BY node_id, sensor
             """
         )

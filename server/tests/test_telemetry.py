@@ -33,6 +33,34 @@ async def test_store_bulk_readings():
     assert "bogus" not in sensors
 
 
+async def test_store_bulk_readings_weight_g():
+    # v4.2 sensor-completeness — HX711 load-cell weight now persists.
+    await store_bulk_readings("node-01", {"weight_g": 482.5}, 1000.0)
+    rows = await get_latest()
+    assert len(rows) == 1
+    assert rows[0]["sensor"] == "weight_g"
+    assert rows[0]["value"] == 482.5
+
+
+async def test_store_bulk_readings_door_open_true():
+    # v4.2 sensor-completeness — reed-switch door state now persists.
+    # door_open arrives as a JSON bool; telemetry_readings.value is REAL,
+    # so it's stored using the established 1.0/0.0 boolean-sensor convention.
+    await store_bulk_readings("node-01", {"door_open": True}, 1000.0)
+    rows = await get_latest()
+    assert len(rows) == 1
+    assert rows[0]["sensor"] == "door_open"
+    assert rows[0]["value"] == 1.0
+
+
+async def test_store_bulk_readings_door_open_false():
+    await store_bulk_readings("node-01", {"door_open": False}, 1000.0)
+    rows = await get_latest()
+    assert len(rows) == 1
+    assert rows[0]["sensor"] == "door_open"
+    assert rows[0]["value"] == 0.0
+
+
 async def test_get_history_raw():
     for i in range(10):
         await store_reading("node-01", "temp_f", 70.0 + i, 1000.0 + i)

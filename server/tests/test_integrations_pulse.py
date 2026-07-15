@@ -304,7 +304,7 @@ def test_type_map_covers_documented_pulse_types():
         "temperature": "temp_c",
         "humidity": "humidity",
         "vpd": "vpd_kpa",
-        "dew_point": "dew_point_c",
+        "dew_point": "dew_point_f",
         "light": "lux",
     }
 
@@ -362,7 +362,8 @@ async def test_poller_publishes_mapped_measurements():
     assert rows_by_sensor["temp_c"] == 22.5
     assert rows_by_sensor["humidity"] == 86.0
     assert rows_by_sensor["vpd_kpa"] == 0.45
-    assert rows_by_sensor["dew_point_c"] == 19.8
+    # 19.8°C converted at ingest — canonical firmware name + unit
+    assert rows_by_sensor["dew_point_f"] == pytest.approx(67.64)
     assert rows_by_sensor["lux"] == 12000
 
 

@@ -207,7 +207,7 @@
   <text x="1040" y="388" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700">Reed Switch (Door Sensor)</text>
   <g><rect x="1256" y="374" width="90" height="22" rx="4" fill="#2e1065" stroke="#a78bfa" stroke-width="0.5"/>
   <text x="1301" y="389" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">NEW IN TIER 3</text></g>
-  <text x="1040" y="416" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">GPIO 35 (INPUT_PULLUP) --> one leg. Other leg --> GND.</text>
+  <text x="1040" y="416" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">GPIO 35 --> one leg; other leg --> GND. EXTERNAL 10K to 3V3 (no internal pull on 34-39).</text>
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
@@ -250,15 +250,18 @@
   <text x="470" y="732" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">White LEDs</text>
   <line x1="384" y1="728" x2="420" y2="728" stroke="#22c55e" stroke-width="1.5"/>
 
-  <rect x="420" y="756" width="100" height="32" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
-  <text x="470" y="776" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Blue LEDs</text>
-  <line x1="384" y1="772" x2="420" y2="772" stroke="#22c55e" stroke-width="1.5"/>
+  <rect x="420" y="756" width="146" height="120" rx="4" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="493" y="770" text-anchor="middle" fill="#a78bfa" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="700">ONE tri-spectrum strip (3 leads)</text>
 
-  <rect x="466" y="800" width="100" height="32" rx="4" fill="#1e293b" stroke="#c4b5fd" stroke-width="1"/>
-  <text x="516" y="820" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Red LEDs</text>
+  <rect x="420" y="778" width="100" height="26" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="470" y="795" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Blue lead</text>
+  <line x1="384" y1="772" x2="420" y2="791" stroke="#22c55e" stroke-width="1.5"/>
 
-  <rect x="466" y="844" width="100" height="32" rx="4" fill="#1e293b" stroke="#c4b5fd" stroke-width="1"/>
-  <text x="516" y="864" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Far-Red LEDs</text>
+  <rect x="420" y="808" width="100" height="26" rx="4" fill="#1e293b" stroke="#c4b5fd" stroke-width="1"/>
+  <text x="470" y="825" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Red lead</text>
+
+  <rect x="420" y="838" width="100" height="26" rx="4" fill="#1e293b" stroke="#c4b5fd" stroke-width="1"/>
+  <text x="470" y="855" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Far-Red lead</text>
 
   <!-- +12V rail -->
   <line x1="520" y1="728" x2="556" y2="728" stroke="#ef4444" stroke-width="1.5"/>
@@ -361,7 +364,7 @@
   <text x="424" y="1084" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">4. Relay ESP32 GND --> HX711 GND</text>
 
   <text x="400" y="1108" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Reed Switch (NEW on Relay Node):</text>
-  <text x="400" y="1128" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">5. GPIO 35 (INPUT_PULLUP) --> one leg</text>
+  <text x="400" y="1128" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">5. GPIO 35 --> one leg (EXTERNAL 10K to 3V3 — no internal pull)</text>
   <text x="400" y="1148" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">6. Other leg --> GND</text>
 
   <!-- Col 3: Lighting + Camera + Plugs -->

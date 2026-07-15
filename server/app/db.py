@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     inoculation_method TEXT,
     spawn_source TEXT,
     current_phase TEXT NOT NULL DEFAULT 'substrate_colonization',
+    container_type TEXT DEFAULT 'monotub',
     tub_number TEXT,
     shelf_number INTEGER,
     shelf_side TEXT,
@@ -229,6 +230,9 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
     status TEXT DEFAULT 'unknown',
     config TEXT,
     roles TEXT,
+    channels TEXT,
+    reset_reason INTEGER,
+    mqtt_reconnects INTEGER,
     created_at REAL DEFAULT (unixepoch('now'))
 );
 
@@ -457,6 +461,30 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(hardware_nodes)", "roles",
             "ALTER TABLE hardware_nodes ADD COLUMN roles TEXT",
+        )
+        # v4.2: JSON array of channel names the node answers to, harvested from
+        # its health doc. Automation rules are validated against this — see
+        # automation.service.validate_action_channel.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "channels",
+            "ALTER TABLE hardware_nodes ADD COLUMN channels TEXT",
+        )
+        # v4.2: heartbeat diagnostics that were emitted-but-dropped. ESP32
+        # esp_reset_reason() enum; a node in a panic/brownout reboot loop is
+        # invisible without it.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "reset_reason",
+            "ALTER TABLE hardware_nodes ADD COLUMN reset_reason INTEGER",
+        )
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "mqtt_reconnects",
+            "ALTER TABLE hardware_nodes ADD COLUMN mqtt_reconnects INTEGER",
+        )
+        # v4.2: container type drives the colonization→(fruiting|cold-storage)
+        # fork and gates environmental control for sealed vessels.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(sessions)", "container_type",
+            "ALTER TABLE sessions ADD COLUMN container_type TEXT DEFAULT 'monotub'",
         )
         await db.commit()
 

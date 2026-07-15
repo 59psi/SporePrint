@@ -6,6 +6,46 @@ Kept in lockstep with the Pi server + cloud repo via `scripts/bump.sh`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **CO₂ calibration for every supported sensor.** `cmd/config
+  {"calibrate_co2": <ppm>}` now dispatches to whichever CO₂ sensor the
+  node actually has: SCD4x FRC (`0x362F`, unchanged), SCD30 FRC
+  (`0x5204`, applied in continuous mode — no stop/restart dance), or
+  MH-Z19C zero-point calibration (`0x87` — always targets 400 ppm fresh
+  air; the ppm argument is ignored and the log says so). Previously the
+  command was silently dropped on SCD30 / MH-Z19C nodes. The boolean v1
+  form is still refused with the explanatory log.
+- **HX711 tare + scale calibration → real grams.** `cmd/config
+  {"tare": true}` stores the current raw counts as the tare point;
+  `{"calibrate_scale": <known_grams>}` derives counts-per-gram from a
+  known mass (rejects non-positive / non-finite results). Both persist to
+  NVS (`hx711_tare`, plus `hx711_scale_m` as fixed-point
+  milli-counts-per-gram — KvStore has no float accessor). Calibrated
+  nodes publish `weight_g` (0.1 g resolution) in telemetry; uncalibrated
+  nodes keep publishing `scale_raw` so operators see counts during setup.
+- **Reed switch health reporting.** The reed appears in the node health
+  `sensors` block (debounced edges count as reads — an enabled-but-dead
+  switch shows `reads=0`) and in `expected_missing` when enabled but not
+  constructed, matching mhz19/hx711. BH1750 stays opportunistic
+  (autodetect posture) and is deliberately NOT in `expected_missing`.
+- Host tests for all of the above: SCD30 FRC framing + CRC + NACK
+  health-fail, MH-Z19C zero-cal / ABC-on / ABC-off frames byte-for-byte,
+  HX711 grams math including the uncalibrated (scale == 0) guard.
+
+### Changed
+
+- `Mhz19::begin()` takes `abc_enabled` (default `false`) instead of
+  hardcoding ABC off — the chamber posture is unchanged, but bench rigs
+  in ventilated rooms can now opt in to Winsen auto-baseline.
+
+### No pin changes
+
+No GPIO / I2C / PWM pin reassignments. Per `feedback_firmware_pin_changes`,
+no wiring diagrams, schematics, BOM, or setup guides need updating.
+
 ## [4.2.0] - 2026-06-12
 
 ### Added

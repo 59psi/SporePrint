@@ -9,6 +9,7 @@ constexpr uint16_t kCmdStartContinuous = 0x0010;  // arg = pressure (0 = off)
 constexpr uint16_t kCmdDataReady = 0x0202;
 constexpr uint16_t kCmdReadMeasurement = 0x0300;
 constexpr uint16_t kCmdSetAsc = 0x5306;           // arg 0 = off
+constexpr uint16_t kCmdForcedRecal = 0x5204;      // arg = reference ppm
 constexpr uint16_t kCmdFirmwareVersion = 0xD100;
 constexpr uint32_t kCmdGapMs = 3;  // datasheet: >3 ms between write and read
 }  // namespace
@@ -57,6 +58,19 @@ bool Scd30::read(float* co2_ppm, float* temp_c, float* rh) {
     *temp_c = temp;
     *rh = hum;
     health_.ok();
+    return true;
+}
+
+bool Scd30::recalibrate(uint16_t reference_ppm) {
+    // Set forced recalibration value (datasheet cmd 0x5204): the argument
+    // word is the reference CO₂ concentration in ppm. Applied in-place —
+    // continuous mode keeps running, so no stop/start dance and nothing to
+    // read back; the ack is the whole result.
+    if (!xport_.cmd_arg(kCmdForcedRecal, reference_ppm)) {
+        health_.fail("frc failed");
+        return false;
+    }
+    clock_.delay_ms(kCmdGapMs);  // same >3 ms post-write gap as every command
     return true;
 }
 

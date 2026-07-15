@@ -39,14 +39,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.GRAIN_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=100,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(10, 14),
                 notes="Optional. In-bag with micropore tape.",
             ),
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(7, 14),
                 notes="Keep dark. No FAE until fully colonized.",
@@ -61,7 +61,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -125,21 +125,21 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=79, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(14, 21),
                 notes="Slower than standard cubensis. Patience required.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=70, temp_max_f=74, humidity_min=92, humidity_max=97,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(10, 21),
                 notes="Aggressive FAE. Consider bubble wrap tek or fork tek for overlay.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=88, humidity_max=93,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(14, 21),
@@ -194,21 +194,21 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=79, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(21, 30),
                 notes="Extremely slow. 3-4 weeks minimum.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=70, temp_max_f=74, humidity_min=92, humidity_max=97,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(14, 28),
                 notes="May take 2-4 weeks. Multiple tek strategies may be needed.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=88, humidity_max=93,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(14, 21),
@@ -263,7 +263,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(10, 16),
                 notes="Faster than PE, slower than GT. Watch for enigma mutation.",
@@ -278,7 +278,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -332,7 +332,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=78, temp_max_f=84, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(10, 18),
                 notes="Prefers warmer temps than cubensis. Manure-based substrate essential.",
@@ -401,7 +401,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=82, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(7, 12),
                 notes="Fast colonizer. Slightly warmer than cubensis preferred.",
@@ -471,7 +471,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.GRAIN_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=82, humidity_min=0, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(60, 120),
                 notes="Sclerotia form in sealed jars over 2-4 months. No opening, no FAE. "
@@ -524,7 +524,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.GRAIN_COLONIZATION: PhaseParams(
                 temp_min_f=72, temp_max_f=80, humidity_min=0, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(60, 90),
                 notes="Sclerotia production in sealed jars. 2-3 months. "
@@ -584,7 +584,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=60, temp_max_f=75, humidity_min=80, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(60, 120),
                 notes="Wood-lover. Colonizes alder/hardwood chips. Very slow — 2-4 months. "
@@ -653,7 +653,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=82, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(14, 21),
                 notes="Subtropical species. Prefers warm colonization.",
@@ -731,14 +731,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
-                co2_max_ppm=500, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(3, 5),
                 notes="Cold shock triggers massive pinning. Very responsive.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=70, humidity_min=85, humidity_max=92,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="Widest temp range of any oyster. Harvest before caps flatten/edges upturn.",
@@ -831,7 +831,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="blue_oyster",
         common_name="Blue Oyster",
-        scientific_name="Pleurotus columbinus",
+        scientific_name="Pleurotus ostreatus var. columbinus",
         category="gourmet",
         substrate_types=["straw", "hardwood sawdust", "masters mix"],
         colonization_visual_description=(
@@ -856,14 +856,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=500, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(3, 5),
                 notes="COLD SHOCK required. Aggressive FAE. CO2 must be <500ppm.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=85, humidity_max=92,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="CRITICAL: >700ppm CO2 = etiolation (leggy stems, tiny caps). Heavy spore load near maturity.",
@@ -921,7 +921,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=85, humidity_min=85, humidity_max=95,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="CRITICAL: Dies below 40°F. Cannot be refrigerated. Process immediately post-harvest.",
@@ -977,7 +977,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=2000, co2_min_ppm=1000, co2_tolerance="high",
                 light_hours_on=4, light_hours_off=20, light_spectrum="daylight_6500k",
                 light_lux_target=200,
                 fae_mode="passive", expected_duration_days=(5, 7),
@@ -985,7 +985,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=58, temp_max_f=65, humidity_min=80, humidity_max=90,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -1038,7 +1038,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(14, 21),
                 notes="In-bag with filter patch. Fine mycelium is normal for this species.",
@@ -1047,7 +1047,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
                 temp_min_f=55, temp_max_f=65,
                 temp_swing_required=True, temp_swing_delta_f=8.0,
                 humidity_min=90, humidity_max=95,
-                co2_max_ppm=500, co2_tolerance="low",
+                co2_max_ppm=700, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 light_lux_target=300,
                 fae_mode="continuous", expected_duration_days=(5, 10),
@@ -1055,7 +1055,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=600, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="CO2 >600ppm → coral/branching deformities instead of pom-pom. Vision should detect.",
@@ -1108,14 +1108,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(30, 60),
                 notes="Very long colonization. 4-8 weeks. Patience critical.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=700, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(5, 10),
@@ -1184,7 +1184,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=64, temp_max_f=78, humidity_min=85, humidity_max=95,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="Wider temp range than pink oyster. Bright yellow color fades when overripe.",
@@ -1310,14 +1310,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 10),
                 notes="Cold shock beneficial. Remove block from bag, expose top surface.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 18),
@@ -1352,7 +1352,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="nameko",
         common_name="Nameko",
-        scientific_name="Pholiota nameko",
+        scientific_name="Pholiota microspora",
         category="gourmet",
         substrate_types=["supplemented hardwood", "hardwood sawdust", "logs"],
         colonization_visual_description=(
@@ -1420,7 +1420,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="enoki",
         common_name="Enoki",
-        scientific_name="Flammulina velutipes",
+        scientific_name="Flammulina filiformis",
         category="gourmet",
         substrate_types=["supplemented hardwood", "hardwood sawdust"],
         colonization_visual_description=(
@@ -1453,7 +1453,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=38, temp_max_f=50, humidity_min=85, humidity_max=95,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=4, light_hours_off=20, light_spectrum="daylight_6500k",
                 light_lux_target=50,
                 fae_mode="passive", expected_duration_days=(10, 18),
@@ -1488,7 +1488,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="wood_ear",
         common_name="Wood Ear",
-        scientific_name="Auricularia auricula-judae",
+        scientific_name="Auricularia heimuer",
         category="gourmet",
         substrate_types=["supplemented hardwood", "hardwood sawdust", "logs"],
         colonization_visual_description=(
@@ -1506,14 +1506,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=70, temp_max_f=82, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=15000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(14, 21),
                 notes="In-bag with filter patch. Likes warmth.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=82, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2500, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -1564,14 +1564,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(10, 18),
                 notes="Compost-based substrate. Apply casing layer after colonization.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(5, 10),
@@ -1579,7 +1579,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(5, 10),
@@ -1646,7 +1646,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 18),
@@ -1706,7 +1706,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=45, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -1714,7 +1714,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=50, temp_max_f=64, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -1774,7 +1774,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=73, temp_max_f=82, humidity_min=90, humidity_max=98,
-                co2_max_ppm=1500, co2_tolerance="high",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="passive", expected_duration_days=(10, 21),
                 notes="VERY high humidity required. Translucent white jelly fronds. "
@@ -1893,7 +1893,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(21, 42),
                 notes="Single large ruffled fruit body. Harvest when lobes are firm and white. "
@@ -1952,7 +1952,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=65, temp_max_f=80, humidity_min=80, humidity_max=95,
-                co2_max_ppm=1500, co2_tolerance="high",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="passive", expected_duration_days=(14, 28),
                 notes="Bright orange/yellow shelves. Harvest young — tender and chicken-like. "
@@ -1988,7 +1988,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="white_beech",
         common_name="White Beech / Bunashimeji",
-        scientific_name="Hypsizygus tessellatus",
+        scientific_name="Hypsizygus marmoreus",
         category="gourmet",
         substrate_types=["supplemented hardwood", "masters mix"],
         colonization_visual_description=(
@@ -2013,14 +2013,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=45, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="Needs significant cold shock. Remove from bag and top-fruit.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=50, temp_max_f=64, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 18),
@@ -2073,14 +2073,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=72, temp_max_f=78, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(14, 21),
                 notes="Compost-based substrate. Apply casing layer after full colonization.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=60, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2089,7 +2089,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=58, temp_max_f=65, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2149,7 +2149,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=60, temp_max_f=80, humidity_min=70, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=20000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(14, 30),
                 notes="Very forgiving. Can colonize non-sterile wood chips. "
@@ -2157,7 +2157,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=75, humidity_min=80, humidity_max=95,
-                co2_max_ppm=1500, co2_tolerance="high",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="passive", expected_duration_days=(7, 14),
                 notes="Large mushrooms. Harvest when caps still convex. "
@@ -2216,7 +2216,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=68, temp_max_f=75, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2224,7 +2224,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=78, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2275,14 +2275,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=20000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(30, 60),
                 notes="Very long colonization. 4-8 weeks. Oak-based substrate preferred.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=2500, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="Temperature drop from colonization triggers pinning. Good FAE required.",
@@ -2323,7 +2323,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="reishi",
         common_name="Reishi",
-        scientific_name="Ganoderma lucidum",
+        scientific_name="Ganoderma sichuanense",
         category="medicinal",
         substrate_types=["supplemented hardwood", "grain"],
         colonization_visual_description=(
@@ -2348,7 +2348,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=75, temp_max_f=85, humidity_min=85, humidity_max=95,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=5000, co2_min_ppm=1500, co2_tolerance="high",
                 light_hours_on=2, light_hours_off=22, light_spectrum="daylight_6500k",
                 fae_mode="none", expected_duration_days=(30, 60),
                 notes="ANTLER FORMATION: Keep CO2 >1500ppm intentionally. Restrict FAE. Minimal light.",
@@ -2416,7 +2416,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=60, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="blue_450nm",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2424,7 +2424,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=60, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=16, light_hours_off=8, light_spectrum="blue_450nm",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(30, 45),
@@ -2519,6 +2519,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         common_name="Chaga",
         scientific_name="Inonotus obliquus",
         category="medicinal",
+        chamber_cultivable=False,
+        cultivation_note="Chaga is a sclerotium (conk) on a LIVING birch, developing over 7-10 years. It is not cultivated to a fruit body in a chamber — this profile is reference only.",
         substrate_types=["supplemented birch hardwood", "birch sawdust"],
         colonization_visual_description=(
             "Very slow white-brown mycelium. In nature grows on birch trees over years. "
@@ -2570,7 +2572,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="meshima",
         common_name="Meshima / Sang Hwang",
-        scientific_name="Phellinus linteus",
+        scientific_name="Tropicoporus linteus",
         category="medicinal",
         substrate_types=["supplemented hardwood (mulberry)", "hardwood sawdust"],
         colonization_visual_description=(
@@ -2595,7 +2597,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=78, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(60, 120),
@@ -2779,6 +2781,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         common_name="Polyurethane-Eating Fungus",
         scientific_name="Pestalotiopsis microspora",
         category="novelty",
+        chamber_cultivable=False,
+        cultivation_note="An endophytic fungus studied for polyurethane degradation; it forms no fruiting body. Grown in liquid/plate culture for mycoremediation research, not fruited in a chamber.",
         substrate_types=["grain", "agar", "polyurethane plastic"],
         colonization_visual_description="Endophytic fungus. Grows as standard mycelium on grain/agar. Can survive without air or light.",
         contamination_risk_notes="Standard sterile technique. Requires plant host (English Ivy, Kudzu) for fruiting.",
@@ -2874,6 +2878,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         common_name="Giant Puffball",
         scientific_name="Calvatia gigantea",
         category="novelty",
+        chamber_cultivable=False,
+        cultivation_note="No reliable indoor cultivation protocol exists — Calvatia gigantea is foraged, not chamber-grown. Reference profile only.",
         substrate_types=["grass/garden soil", "compost"],
         colonization_visual_description="Underground mycelium network in soil/grass. Not visible during colonization.",
         contamination_risk_notes="Outdoor cultivation only. Cannot be reliably grown indoors. Propagated by spore slurry over grass/garden beds.",
@@ -2934,7 +2940,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=78, temp_max_f=84, humidity_min=90, humidity_max=95,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(5, 10),
@@ -2942,7 +2948,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=79, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -2990,7 +2996,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(12, 18),
@@ -2998,7 +3004,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3046,7 +3052,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 16),
@@ -3054,7 +3060,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3102,7 +3108,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(7, 12),
@@ -3110,7 +3116,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3158,7 +3164,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 16),
@@ -3166,7 +3172,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3214,7 +3220,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(21, 35),
@@ -3222,7 +3228,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3268,7 +3274,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 16),
@@ -3276,7 +3282,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3324,7 +3330,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=77, temp_max_f=84, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(7, 12),
@@ -3332,7 +3338,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=79, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3380,7 +3386,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 18),
@@ -3388,7 +3394,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3422,4 +3428,1256 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             "fruiting": "Search: Albino A+ cubensis mushroom fruiting white leucistic",
         },
     ),
+    SpeciesProfile(
+        id="hericium_coralloides",
+        common_name="Coral Tooth",
+        scientific_name="Hericium coralloides",
+        category="gourmet",
+        substrate_types=["supplemented hardwood sawdust", "masters mix"],
+        colonization_visual_description=(
+            "White mycelium on supplemented hardwood, fully colonizing a 900g bag in ~28 days at "
+            "22-25C, then ~10 days of maturation before opening. Fruits as a branched coral-like "
+            "structure of cascading spine clusters — not the single globose head of Lion's Mane."
+        ),
+        contamination_risk_notes=(
+            "Trichoderma during the 28-day colonization. Supplemented sawdust requires full "
+            "pressure sterilization (121C / 3h). Strain quality dominates outcome — wild isolates "
+            "vary widely in whether they fruit at all."
+        ),
+        pinning_trigger_description=(
+            "Drop from 22-25C colonization to 18-20C and raise RH to 95% after opening the bag. "
+            "Primordia appear ~10 days after conditions are set."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=72, temp_max_f=77, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(28, 38),
+                notes="22-25C dark. 28d colonization + ~10d maturation before opening. "
+                      "[CO2 inferred - not published for this species]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=64, temp_max_f=68, humidity_min=93, humidity_max=97,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=500,
+                fae_mode="continuous", expected_duration_days=(7, 12),
+                notes="18-20C at 95% RH after opening the bag. Primordia ~10 days in. "
+                      "[CO2 and light inferred from H. erinaceus - not published for coralloides]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=68, temp_max_f=73, humidity_min=85, humidity_max=92,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=500,
+                fae_mode="continuous", expected_duration_days=(10, 14),
+                notes="20-23C for maturation. Like all Hericium, high CO2 produces elongated, "
+                      "sparse spines instead of dense coral branching. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="249g fresh first flush per 900g bag (J Fungi 2025, strain SH001). Second flush produced; no BE% published.",
+        tags=["intermediate", "gourmet", "hericium", "cool-fruiting"],
+        tldr="Lion's Mane's branched cousin. Colonizes supplemented hardwood in ~28 days at 72-77F, then drop to 64-68F at 95% RH to pin. Fruits as a cascading coral of spine clusters. ~249g fresh per 900g bag. Strain quality matters more than technique — wild isolates vary widely in whether they fruit at all.",
+        flavor_profile="Sweet, seafood-like, close to Lion's Mane but with a more delicate texture from the finer branching. Excellent pan-seared.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Mix 60% hardwood sawdust, 20% cottonseed hulls, 18% wheat bran, 1% lime, 1% sugar. Hydrate to 60% moisture (pH ~5.0). Fill bags at ~900g wet. Pressure sterilize at 121C for 3 hours.", duration="4-5 hours", tips=["The 3-hour sterilization is not padding — this is a heavily supplemented substrate", "Lime brings pH to ~5.0, which Hericium prefers"], common_mistakes=["Cutting sterilization short — bran-heavy substrate will sour", "Over-hydrating past 60% — waterlogged bags breed bacteria"]),
+            TekStep(step_number=2, title="Inoculation and Colonization", description="Inoculate with grain spawn in a flow hood. Incubate at 72-77F in complete darkness for 28 days until fully colonized, then hold ~10 more days to let the block mature.", duration="28-38 days", tips=["Do not rush the 10-day maturation — it improves first-flush yield", "Dark colonization; light this early does nothing useful"], common_mistakes=["Opening the bag as soon as it looks white — mature the block first", "Using an unverified wild isolate and expecting it to fruit"]),
+            TekStep(step_number=3, title="Pinning", description="Open the bag, drop temperature to 64-68F, raise RH to 95%, and start continuous FAE with a 12/12 light cycle. Primordia appear about 10 days later.", duration="7-12 days", tips=["The temperature drop plus the 95% RH spike is the trigger — do both together", "Continuous FAE from the moment the bag opens"], common_mistakes=["Letting CO2 climb — you get long sparse spines instead of a dense coral", "Misting directly onto forming primordia"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 68-73F at 85-92% RH with continuous FAE. Harvest when spines are fully elongated but still pure white — any yellowing means it is past prime.", duration="10-14 days", tips=["White = prime. Yellow/brown spines are overripe and turn bitter", "Cut at the base with a clean blade rather than tearing the block"], common_mistakes=["Harvesting late — bitterness and poor shelf life", "Letting the block dry out between flushes"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="J Fungi 2025 Formula", ingredients={"hardwood sawdust": "60%", "cottonseed hulls": "20%", "wheat bran": "18%", "lime": "1%", "sugar": "1%"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=180, sterilization_temp_f=250, suitability="optimal", notes="Peer-reviewed formula (J Fungi 2025). 60% moisture, pH 5.0, 900g wet per bag."),
+            SubstrateRecipe(name="Masters Mix (50/50)", ingredients={"hardwood sawdust/pellets": "2.5 lbs", "soy hull pellets": "2.5 lbs"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=150, sterilization_temp_f=250, suitability="good", notes="Standard Hericium substrate. Not the tested formula, but works for the genus."),
+        ],
+        substrate_preference_ranking=["supplemented hardwood sawdust", "masters mix"],
+        contamination_risks=["Trichoderma during 28-day colonization", "Bacterial souring from under-sterilized bran-heavy substrate", "Strain failure — wild isolates frequently refuse to fruit at all"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Hericium_coralloides_2.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="hericium_americanum",
+        common_name="Bear's Head Tooth",
+        scientific_name="Hericium americanum",
+        category="gourmet",
+        substrate_types=["masters mix", "supplemented hardwood sawdust", "hardwood logs"],
+        colonization_visual_description=(
+            "White mycelium on supplemented hardwood, 12-30 days. Fruits as a structure "
+            "intermediate between Lion's Mane and Coral Tooth — branched, but with longer spines "
+            "hanging in clumps from the branch tips."
+        ),
+        contamination_risk_notes=(
+            "Standard supplemented-hardwood risks: Trichoderma, bacterial souring. "
+            "Slower and less aggressive than oysters — sterile technique matters."
+        ),
+        pinning_trigger_description=(
+            "Temperature drop into the 55-72F band with RH at 85-95% and continuous FAE. "
+            "Pins in 5-12 days. Tolerates cooler fruiting than H. erinaceus."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=77, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(12, 30),
+                notes="Dark. 12-30d depending on spawn rate and block size. [CO2 inferred]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=500,
+                fae_mode="continuous", expected_duration_days=(5, 12),
+                notes="Fruits cooler than H. erinaceus — down to 55F. "
+                      "[CO2/light inferred from H. erinaceus - not published for americanum]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=60, temp_max_f=72, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=500,
+                fae_mode="continuous", expected_duration_days=(12, 20),
+                notes="Inadequate FAE gives elongated, poorly-branched spines. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="No published yield or biological-efficiency figure exists for this species. Expect Lion's-Mane-comparable output from an equivalent block.",
+        tags=["intermediate", "gourmet", "hericium", "cold-tolerant"],
+        tldr="The third Hericium. Colonizes hardwood in 12-30 days at 70-77F, fruits cooler than Lion's Mane — as low as 55F — at 85-95% RH with continuous FAE. Long spines hanging from branch tips. Flavor is the classic Hericium seafood note. Data is vendor-sourced only; no peer-reviewed protocol exists.",
+        flavor_profile="Seafood-like — crab or lobster comparisons are standard. Texture close to scallops or cooked chicken breast when pan-seared.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Prepare masters mix (50/50 hardwood sawdust and soy hull pellets) or supplemented hardwood sawdust at field capacity. Pressure sterilize at 15 PSI for 2.5 hours.", duration="4 hours", tips=["Masters mix is the standard Hericium substrate", "Also inoculable into oak/beech/maple logs — expect 6-12 months to first fruiting"], common_mistakes=["Skipping pressure sterilization on a supplemented substrate", "Over-hydrating the block"]),
+            TekStep(step_number=2, title="Colonization", description="Inoculate with grain spawn at ~10% and incubate at 70-77F in the dark for 12-30 days until fully colonized.", duration="12-30 days", tips=["Less aggressive than oyster — keep sterile technique tight", "Full colonization before opening"], common_mistakes=["Opening early", "Warm colonization above 77F"]),
+            TekStep(step_number=3, title="Pinning", description="Open the block, drop to 55-65F, hold 90-95% RH with continuous FAE and 12/12 light. Pins form in 5-12 days.", duration="5-12 days", tips=["This species genuinely tolerates the cool end — 55F is fine", "Continuous FAE from opening"], common_mistakes=["High CO2 — the signature failure, giving straggly unbranched spines", "Direct misting on pins"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 60-72F at 85-95% RH. Harvest while spines are white and firm, before any yellowing.", duration="12-20 days", tips=["Harvest white — yellowing means bitter", "Cut cleanly at the base to protect the block for a second flush"], common_mistakes=["Late harvest", "Letting the block dry between flushes"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Masters Mix (50/50)", ingredients={"hardwood sawdust/pellets": "2.5 lbs", "soy hull pellets": "2.5 lbs"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=150, sterilization_temp_f=250, suitability="optimal", notes="Standard for the genus."),
+            SubstrateRecipe(name="Hardwood Logs", ingredients={"oak/beech/maple log": "1 log", "plug spawn": "as needed", "beeswax": "for sealing"}, water_liters_per_liter_substrate=0.0, spawn_rate_percent=5, sterilization_method="pasteurize_hot_water", sterilization_time_min=0, sterilization_temp_f=None, suitability="acceptable", notes="No sterilization — fresh-cut logs only. 6-12 months to first fruiting."),
+        ],
+        substrate_preference_ranking=["masters mix", "supplemented hardwood sawdust", "hardwood logs"],
+        contamination_risks=["Trichoderma during colonization", "Bacterial souring in over-hydrated blocks", "Elongated malformed spines from CO2 buildup (not contamination, but the usual failure)"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Hericium_americanum_51236.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="black_pearl_king",
+        common_name="Black Pearl King Oyster",
+        scientific_name="Pleurotus ostreatus x Pleurotus eryngii",
+        category="gourmet",
+        strain="Black Pearl King (hybrid cultivar)",
+        substrate_types=["masters mix", "supplemented hardwood sawdust", "hardwood pellets", "straw"],
+        colonization_visual_description=(
+            "Vigorous white mycelium — hybrid vigour shows. Grain colonizes in 4-7 days, bulk "
+            "blocks in 10-18 days. Break-and-shake grain at ~25% colonization."
+        ),
+        contamination_risk_notes=(
+            "Aggressive coloniser, so relatively forgiving. Wet or sour grain indicates bacterial "
+            "contamination from poor sterile technique. Trichoderma is the usual threat on "
+            "under-sterilized supplemented substrate."
+        ),
+        pinning_trigger_description=(
+            "A 5-10F temperature DROP from colonization into the fruiting band, plus RH to 85-95% "
+            "and CO2 down to 400-900 ppm. The CO2 setpoint then decides morphology: 700-900 ppm "
+            "grows thick king-trumpet-style stems, 400-600 ppm grows wide oyster-style caps."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=68, temp_max_f=72, humidity_min=70, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(4, 7),
+                notes="Fast. Break and shake at ~25% colonization to spread the spawn.",
+            ),
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=68, temp_max_f=72, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(10, 18),
+                notes="Dark. Fully colonize before dropping temperature.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=55, temp_max_f=65, humidity_min=85, humidity_max=95,
+                temp_swing_required=True, temp_swing_delta_f=8,
+                co2_max_ppm=900, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(3, 7),
+                notes="A 5-10F drop from colonization is the documented pinning trigger.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
+                co2_max_ppm=900, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(7, 18),
+                notes="CO2 is the morphology dial: 700-900 ppm = thick king-style stems; "
+                      "400-600 ppm = wide oyster-style caps. Cooler temps deepen cap colour.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-3 flushes. First flush ~20-30% of block weight, second ~10-15%. Hybrid vigour gives faster colonization than either parent.",
+        tags=["beginner", "fast", "hybrid", "co2-tunable", "high-yield"],
+        tldr="An ostreatus x eryngii hybrid that behaves like two mushrooms depending on how you drive it. Colonizes in 10-18 days at 68-72F, then a 5-10F drop pins it. Hold CO2 at 700-900 ppm for thick king-trumpet stems, or 400-600 ppm for wide oyster caps — same block, different crop. Will NOT breed true from spores; clone or use liquid culture.",
+        flavor_profile="Bold and earthy with a faint sweetness and a firm, resilient bite. The stems caramelize beautifully — treat them like king trumpet and sear thick coins.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Masters mix (50/50 hardwood sawdust and soy hulls) at 60-65% moisture gives the highest yield. Pressure sterilize at 15 PSI for 2.5+ hours. Plain hardwood pellets can be pasteurized instead; straw works but yields less.", duration="4-5 hours", tips=["Masters mix is worth the pressure-sterilization step here — it noticeably out-yields straw", "60-65% moisture: squeeze test, a few drops only"], common_mistakes=["Under-sterilizing supplemented substrate", "Using spores from a hybrid fruit — the offspring will not breed true"]),
+            TekStep(step_number=2, title="Grain and Bulk Colonization", description="Inoculate grain from liquid culture or a clone. Grain colonizes in 4-7 days; break and shake at ~25%. Spawn to bulk at 10-20% and colonize blocks at 68-72F in the dark for 10-18 days.", duration="14-25 days", tips=["Higher spawn rate (20%) speeds colonization and crowds out contaminants", "Hybrid vigour makes this faster than either parent species"], common_mistakes=["Spawning to bulk from under-colonized grain", "Skipping break-and-shake"]),
+            TekStep(step_number=3, title="Pinning", description="Open the block and drop temperature 5-10F into the 55-65F band. Raise RH to 85-95%, start continuous FAE, and set a 12/12 6500K light cycle. Pins in 3-7 days.", duration="3-7 days", tips=["The temperature drop is the trigger — do not skip it", "Decide your target morphology now and set CO2 accordingly"], common_mistakes=["Fruiting at colonization temperature — you get poor, uneven pinning", "Letting RH fall below 85% — caps crack"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 55-68F at 85-95% RH. Run CO2 at 700-900 ppm for thick stems, or 400-600 ppm for broad caps. Harvest just before the cap margins flatten out.", duration="7-18 days", tips=["Cooler temps plus adequate light give the deepest cap colour", "Harvest the whole cluster at once for an even next flush"], common_mistakes=["Cracked caps = humidity too low", "Pale caps = too warm or too little light", "All stem and no cap = CO2 too high; add FAE"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Masters Mix (50/50)", ingredients={"hardwood sawdust/pellets": "2.5 lbs", "soy hull pellets": "2.5 lbs"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=15, sterilization_method="pressure_sterilize", sterilization_time_min=150, sterilization_temp_f=250, suitability="optimal", notes="Highest yield. 60-65% final moisture."),
+            SubstrateRecipe(name="Hardwood Pellets", ingredients={"oak/beech/maple fuel pellets": "5 lbs"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=15, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="good", notes="Unsupplemented — pasteurization is sufficient. Lower yield than masters mix."),
+            SubstrateRecipe(name="Pasteurized Straw", ingredients={"chopped wheat straw": "5 lbs"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=20, sterilization_method="pasteurize_hot_water", sterilization_time_min=120, sterilization_temp_f=175, suitability="acceptable", notes="Cheapest route, lowest yield. Pasteurize 160-185F for 1-2 hours."),
+        ],
+        substrate_preference_ranking=["masters mix", "supplemented hardwood sawdust", "hardwood pellets", "straw"],
+        contamination_risks=["Trichoderma on under-sterilized supplemented substrate", "Bacterial contamination — wet, sour-smelling grain", "Cracked/pale caps from environmental error, not contamination"],
+        photo_references={
+            "fruiting": "Search: Black Pearl King oyster Pleurotus hybrid fruiting block",
+        },
+    ),
+    SpeciesProfile(
+        id="abalone_oyster",
+        common_name="Abalone Oyster",
+        scientific_name="Pleurotus cystidiosus",
+        category="gourmet",
+        substrate_types=["pasteurized straw", "supplemented hardwood sawdust", "masters mix"],
+        colonization_visual_description=(
+            "White mycelium, 12-16 days. Distinctive feature: forms black droplet-like "
+            "coremia (asexual spore structures) on the mycelial surface — this is NORMAL for "
+            "this species and is not contamination, though it is routinely mistaken for it."
+        ),
+        contamination_risk_notes=(
+            "The black coremia this species produces look alarming and get misdiagnosed as mold. "
+            "Genuine risks are the usual Pleurotus ones: Trichoderma, bacterial blotch in "
+            "stagnant humidity. Heat tolerance means fewer summer contamination stalls."
+        ),
+        pinning_trigger_description=(
+            "Drop CO2 sharply (5,000-20,000 ppm during spawn run down to 500-1,000 ppm), raise RH "
+            "to 95-100%, add 1,000-2,000 lux of light and FAE at 4-8 air changes/hour."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=85, humidity_min=90, humidity_max=95,
+                co2_max_ppm=20000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(12, 16),
+                notes="Stamets GGMM Ch.21: 75-85F, CO2 5,000-20,000ppm, FAE 1/hr. "
+                      "CONFLICT: vendor sources give ~68F instead. Black coremia are normal.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=70, temp_max_f=80, humidity_min=95, humidity_max=100,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=1500,
+                fae_mode="continuous", expected_duration_days=(4, 5),
+                notes="Stamets: CO2 500-1,000ppm, FAE 4-8/hr, 1,000-2,000 lux.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=70, temp_max_f=80, humidity_min=85, humidity_max=90,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=1500,
+                fae_mode="continuous", expected_duration_days=(4, 8),
+                notes="Stamets: <2,000ppm CO2, FAE 4-5/hr. CONFLICT: vendors give 59-64F fruiting. "
+                      "The warm range is used here because summer heat tolerance is this species' "
+                      "defining commercial trait.",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="No spawn-rate or biological-efficiency figure published in any source found. Expect oyster-class output. Its value is timing, not volume — it fruits through summer heat when Pearl and Blue oyster stall.",
+        tags=["intermediate", "heat-tolerant", "summer", "oyster"],
+        tldr="The summer oyster. Fruits at 70-80F when every other oyster has stalled out in the heat. Colonizes in 12-16 days, pins in 4-5, fruits in 4-8. Firm, dense, genuinely seafood-like — the best-textured oyster. Forms black droplet-like coremia on the mycelium, which is NORMAL and not contamination. Note: vendor sources give a much colder range than Stamets; see notes.",
+        flavor_profile="Mild and nutty with a real abalone/seafood note. Firm, dense, chewy — holds its texture in a stir-fry or stew far better than a pearl oyster. Milder than shiitake, less delicate than a standard oyster.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Pasteurized straw, supplemented hardwood sawdust, or masters mix all work. Pasteurize straw at 160-175F for 1-2 hours; pressure sterilize any supplemented substrate.", duration="2-5 hours", tips=["This is a forgiving Pleurotus — straw is entirely adequate", "Its heat tolerance means summer grows that would fail with other oysters are viable"], common_mistakes=["Over-wetting straw", "Assuming it needs the cold treatment other oysters like"]),
+            TekStep(step_number=2, title="Colonization", description="Spawn and colonize at 75-85F for 12-16 days in the dark. Black droplet-like coremia will appear on the mycelium — this is normal for the species.", duration="12-16 days", tips=["Do NOT throw out a block because of black droplets — that is this species' normal asexual structure", "Warm colonization is correct here, unlike most oysters"], common_mistakes=["Discarding healthy blocks after mistaking coremia for mold", "Colonizing too cold and stalling the run"]),
+            TekStep(step_number=3, title="Pinning", description="Introduce fruiting conditions: RH to 95-100%, CO2 down to 500-1,000 ppm with FAE at 4-8 air changes/hour, and 1,000-2,000 lux on a 12/12 cycle. Pins in 4-5 days.", duration="4-5 days", tips=["The CO2 crash from spawn-run levels is the main trigger", "This species wants more light than most oysters"], common_mistakes=["Insufficient FAE — the pins abort", "Dropping temperature expecting a cold-shock response; it does not need one"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 70-80F at 85-90% RH with CO2 under 2,000 ppm. Harvest when caps flatten but before margins begin to curl up.", duration="4-8 days", tips=["Fast cycle — 4-8 days from pin to harvest", "Firm flesh means it ships and stores better than most oysters"], common_mistakes=["Waiting too long and losing the firm texture", "Letting RH crash and cracking the caps"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Pasteurized Straw", ingredients={"chopped wheat straw": "5 lbs"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=15, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="good", notes="Standard oyster substrate. Cheap and adequate."),
+            SubstrateRecipe(name="Masters Mix (50/50)", ingredients={"hardwood sawdust/pellets": "2.5 lbs", "soy hull pellets": "2.5 lbs"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=12, sterilization_method="pressure_sterilize", sterilization_time_min=150, sterilization_temp_f=250, suitability="optimal", notes="Higher yield than straw. Requires pressure sterilization."),
+        ],
+        substrate_preference_ranking=["masters mix", "supplemented hardwood sawdust", "pasteurized straw"],
+        contamination_risks=["Black coremia mistaken for contamination — this is the #1 reported 'problem' and is not a problem at all", "Trichoderma on supplemented substrate", "Bacterial blotch in stagnant high humidity"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_cystidiosus.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="milky_mushroom",
+        common_name="Milky Mushroom",
+        scientific_name="Calocybe indica",
+        category="gourmet",
+        substrate_types=["pasteurized paddy straw", "wheat straw"],
+        colonization_visual_description=(
+            "Dense white mycelium through pasteurized straw at 25-35C, 15-28 days. Requires a "
+            "CASING LAYER after the spawn run — it will not fruit without one."
+        ),
+        contamination_risk_notes=(
+            "High temperatures suppress many common moulds but favour bacteria and thermophilic "
+            "competitors. The casing layer must be steam-sterilized or it becomes the contamination "
+            "vector. Coprinus (ink cap) is a frequent casing-borne competitor in straw culture."
+        ),
+        pinning_trigger_description=(
+            "Apply a 1.5-2.0cm steam-sterilized casing layer (clay loam pH 8.4 + sand, 1:1) once "
+            "the spawn run is complete. Casing is MANDATORY — this species does not pin without it. "
+            "Then hold 30-35C at >80% RH with ~1,600 lux diffuse light."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=77, temp_max_f=95, humidity_min=80, humidity_max=90,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(15, 28),
+                notes="25-35C. Sources conflict: 25-30C/15-20d vs 30-35C/24-28d — both recorded. "
+                      "Spawn rate 2%; use 21-day-old spawn. [CO2 inferred - none published]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=86, temp_max_f=95, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1500, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=1600,
+                fae_mode="scheduled", fae_interval_min=60, fae_duration_sec=300,
+                expected_duration_days=(8, 34),
+                notes="CASING REQUIRED: 1.5-2.0cm steam-sterilized clay loam (pH 8.4) + sand 1:1. "
+                      "Pinhead timing varies enormously (7.7-34 days) by casing material and strain. "
+                      "Mist walls/floor 3x daily, not the casing. [CO2 inferred - none published]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=86, temp_max_f=95, humidity_min=80, humidity_max=90,
+                co2_max_ppm=1500, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=1600,
+                fae_mode="scheduled", fae_interval_min=60, fae_duration_sec=300,
+                expected_duration_days=(15, 30),
+                notes="30-35C. Growth INHIBITED below 25C or above 38C — the window is narrow at "
+                      "the top. Thick white stems, milky-white caps. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-4 flushes over a 40-60 day cycle. Biological efficiency 140% baseline, up to 180% with optimized casing (sand+soil+biogas slurry 180.3%; vermicompost+sandy loam 176.3%). Among the highest-BE cultivated species.",
+        tags=["intermediate", "tropical", "heat-loving", "casing-required", "high-yield"],
+        tldr="The hot-climate crop. Fruits at 86-95F — temperatures that kill nearly everything else in this library — with biological efficiency of 140-180%, among the best of any cultivated mushroom. Colonize pasteurized paddy straw at 77-95F, then apply a MANDATORY 1.5-2cm sterilized clay-loam casing; it will not pin without one. 40-60 day cycle, 2-4 flushes. A mature Indian commercial crop.",
+        flavor_profile="Mild, milky, faintly sweet, with a firm meaty texture and an exceptionally long shelf life (its main commercial advantage in hot climates). Thick white stems stay crisp when cooked.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Chop paddy straw to 2-4cm. Soak 4-5 hours, then hot-water treat at 80C or steam for 45-60 minutes. Drain to 60-70% moisture.", duration="6-7 hours", tips=["Paddy straw is the traditional and best-tested substrate", "Supplements at 5% (neem cake, gram husk, cottonseed cake) measurably boost yield"], common_mistakes=["Leaving straw too wet — bacterial souring at these temperatures is fast", "Using straw pieces too long to pack evenly"]),
+            TekStep(step_number=2, title="Spawning and Colonization", description="Spawn at 2% by weight using 21-day-old sorghum or wheat grain spawn. Colonize at 77-95F for 15-28 days until the substrate is fully run.", duration="15-28 days", tips=["21-day-old spawn is specifically documented as giving the best yields — do not use very fresh or very old spawn", "This species genuinely wants heat; do not try to keep it cool"], common_mistakes=["Casing before the spawn run is complete", "Colonizing below 25F of its range — growth stalls"]),
+            TekStep(step_number=3, title="Casing (mandatory)", description="Apply a 1.5-2.0cm layer of steam-sterilized casing: clay loam (pH 8.4) + sand at 1:1, or garden soil + sand 1:1 with 12% CaCO3. This species will NOT fruit without a casing layer.", duration="1 hour + 8-34 days to pinheads", tips=["Casing choice drives yield hard: sand+soil+biogas slurry hit BE 180%, vermicompost+sandy loam 176%", "STERILIZE the casing — an unsterilized casing is a direct contamination route"], common_mistakes=["Skipping the casing and expecting pins — this is the single most common failure", "Using unsterilized garden soil", "Casing too thick — over 2cm delays or prevents pinning"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 86-95F at >80% RH with ~1,600 lux of diffuse light. Mist the walls and floor 3x daily — not the casing directly. Harvest when caps are fully open but still firm and milky white.", duration="15-30 days", tips=["Mist the room, not the beds — direct misting on the casing causes problems", "Do not let temperature fall below 77F or exceed 100F; both stop growth"], common_mistakes=["Direct misting onto the casing surface", "Letting the chamber drift out of the narrow 25-38C viable band"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Pasteurized Paddy Straw", ingredients={"paddy straw (2-4cm)": "5 kg dry", "neem/gram husk/cottonseed cake supplement": "5% by weight"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=2, sterilization_method="pasteurize_hot_water", sterilization_time_min=60, sterilization_temp_f=176, suitability="optimal", notes="Hot-water treat at 80C or steam 45-60 min. Final moisture 60-70%. Spawn at 2% using 21-day-old grain spawn."),
+        ],
+        substrate_preference_ranking=["pasteurized paddy straw", "wheat straw"],
+        contamination_risks=["Unsterilized casing layer — the primary contamination route for this species", "Bacterial souring of over-wet straw, accelerated by the high growing temperatures", "Coprinus (ink cap) competing in straw culture", "Thermophilic competitors that thrive in the same 30-35C band"],
+        photo_references={
+            "fruiting": "Search: Calocybe indica milky mushroom fruiting bed casing",
+        },
+    ),
+    SpeciesProfile(
+        id="lyophyllum_decastes",
+        common_name="Fried Chicken Mushroom",
+        scientific_name="Lyophyllum decastes",
+        category="gourmet",
+        substrate_types=["supplemented hardwood sawdust", "rice bran + bark compost"],
+        colonization_visual_description=(
+            "Slow white mycelium in bottle or bag culture — a long 55-60 day run at 23-25C. "
+            "Fruits in dense clusters of grey-brown caps on pale fibrous stems."
+        ),
+        contamination_risk_notes=(
+            "The 55-60 day colonization is a long exposure window — sterile technique and full "
+            "sterilization (120C / 3h) are essential. Any early contamination has two months to win."
+        ),
+        pinning_trigger_description=(
+            "Drop from 23-25C to 18C, raise RH to 95%, and SCRATCH the colonized substrate surface. "
+            "The mechanical scratch is part of the documented commercial trigger."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=73, temp_max_f=77, humidity_min=65, humidity_max=75,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(55, 60),
+                notes="23-25C dark, ~70% RH, 55-60 days. Long run. Japanese bottle culture: "
+                      "850mL bottle, 620g medium, ~15g spawn. [CO2 inferred - none published]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=63, temp_max_f=66, humidity_min=93, humidity_max=97,
+                temp_swing_required=True, temp_swing_delta_f=9,
+                co2_max_ppm=1200, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(10, 20),
+                notes="Drop to 18C, RH to 95%, and SCRATCH the substrate surface. The mechanical "
+                      "scratch is part of the commercial trigger. [CO2 inferred]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=60, temp_max_f=70, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1200, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(10, 20),
+                notes="15-21C. Dense clustered fruiting. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="No yield, biological-efficiency or flush-count figure is published in any English-language source. Japanese commercial bottle culture is single-flush by convention (bottles are recycled, not re-fruited).",
+        tags=["intermediate", "slow", "long-cycle", "japanese", "clustered"],
+        tldr="Japan's bottle-cultivated hatakeshimeji. A long 55-60 day colonization at 73-77F, then drop to ~64F, raise RH to 95% and physically SCRATCH the substrate surface to trigger pinning. Fruits in dense clusters. Tastes remarkably like fried chicken — the common name is earned. Protocol is stitched from Japanese patents; no canonical English source exists.",
+        flavor_profile="Savoury and deeply umami with a fibrous, meaty texture that genuinely resembles cooked poultry — hence the name. Holds structure well; excellent fried or braised.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Mix rice bran with agar-residue or bark compost at roughly 3:1, adjust to 58% moisture. Fill 850mL PP bottles with ~620g medium and drill a spawning hole nearly to the bottom. Autoclave at 120C for 3 hours.", duration="5-6 hours", tips=["The deep spawning hole is standard Japanese bottle practice — it seeds the full depth", "Formulations vary across patents; hardwood sawdust with bran also works"], common_mistakes=["Short sterilization — a 55-day run will punish any survivor", "Moisture above 58% in a bottle with no drainage"]),
+            TekStep(step_number=2, title="Long Colonization", description="Inoculate with ~15g spawn. Incubate in the dark at 73-77F at ~70% RH for 55-60 days. This is a genuinely long run — plan for it.", duration="55-60 days", tips=["Set expectations: this is nearly two months of colonization, closer to shiitake than oyster", "Keep ambient RH moderate (70%) during the run, not saturated"], common_mistakes=["Giving up or opening early", "Treating it like a fast species and fruiting it prematurely"]),
+            TekStep(step_number=3, title="Scratch and Induce", description="Once fully colonized, scratch the substrate surface, drop temperature to ~64F, and raise RH to 95% with continuous FAE and a 12/12 light cycle.", duration="10-20 days", tips=["The surface scratch is a documented part of the commercial trigger — do not skip it", "The 9F temperature drop and the scratch work together"], common_mistakes=["Skipping the scratch and getting weak, uneven pinning", "Insufficient temperature drop"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 60-70F at 85-95% RH with continuous FAE. Harvest the whole cluster when caps have opened but before margins flatten fully.", duration="10-20 days", tips=["Harvest as a full cluster — that is how it is sold and how it cooks best", "Firm, fibrous stems are the prize; do not trim them away"], common_mistakes=["Picking individual mushrooms out of the cluster", "Waiting until caps are fully flat and the texture softens"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Japanese Bottle Culture (rice bran + compost)", ingredients={"rice bran": "3 parts", "agar-residue / bark compost": "1 part"}, water_liters_per_liter_substrate=0.9, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=180, sterilization_temp_f=250, suitability="optimal", notes="58% moisture, 620g per 850mL bottle. Representative of the commercial protocol; patents vary."),
+            SubstrateRecipe(name="Supplemented Hardwood Sawdust", ingredients={"hardwood sawdust (beech/oak/chestnut)": "70%", "wheat bran": "20%", "corn cob": "8%", "gypsum": "2%"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=180, sterilization_temp_f=250, suitability="good", notes="Patent-derived alternative. Ratios differ substantially between patents."),
+        ],
+        substrate_preference_ranking=["rice bran + bark compost", "supplemented hardwood sawdust"],
+        contamination_risks=["Trichoderma over the very long 55-60 day colonization window", "Bacterial souring in over-moist bottle culture", "Any sterilization shortfall is amplified by the two-month run"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Lyophyllum_decastes_2010.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="ganoderma_tsugae",
+        common_name="Hemlock Reishi",
+        scientific_name="Ganoderma tsugae",
+        category="medicinal",
+        substrate_types=["conifer sawdust (hemlock/larch)", "conifer logs", "supplemented hardwood sawdust"],
+        colonization_visual_description=(
+            "White mycelium, slow. Bags run in weeks; logs take 5-6 months. Like all Ganoderma, "
+            "the growing tip is a soft white margin that later lacquers over into a red-brown "
+            "varnished surface."
+        ),
+        contamination_risk_notes=(
+            "Long colonization is the main exposure. Trichoderma from under-sterilization; "
+            "bacterial wet-rot from inadequate venting during pressure sterilization."
+        ),
+        pinning_trigger_description=(
+            "FAE and light. CO2 decides FORM, not whether it fruits: sealed/high-CO2 (>~2,000ppm) "
+            "produces the branching antler form; active FAE below ~2,000ppm produces the flat "
+            "lacquered conk. Choose deliberately."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=68, temp_max_f=82, humidity_min=60, humidity_max=80,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(45, 60),
+                notes="Grain/mother spawn 20-25C, 60-70% RH, 45-50d (PMC11766503). Logs: 22-25C, "
+                      "70-80% RH, dark, 5-6 MONTHS. Bag/block guides give 75-82F.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=70, temp_max_f=79, humidity_min=60, humidity_max=75,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=800,
+                fae_mode="continuous", expected_duration_days=(21, 30),
+                notes="RH 60-70% during primordia (PMC11766503). Sterilized larch log reached "
+                      "primordium at 27 days. Note the RH is LOWER here than at fruiting.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=70, temp_max_f=79, humidity_min=75, humidity_max=90,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=800,
+                fae_mode="continuous", expected_duration_days=(30, 45),
+                notes="RH 75-85% during fruitbody development. CO2 <~2,000ppm with active FAE = "
+                      "flat lacquered conk; sealed/high CO2 = antler form. The ~2,000ppm threshold "
+                      "is a commercial-consensus figure, NOT peer-reviewed.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="Larch-log trial: ~159-176g fresh per fruiting body; ~11.8kg fresh per 100 fruiting bodies (PMC11766503). Typically a single long fruiting rather than distinct flushes.",
+        tags=["intermediate", "medicinal", "slow", "long-cycle", "conifer", "co2-form-switch"],
+        tldr="The conifer reishi — a distinct species from the Ganoderma already in the library, and the best-documented of the group (2025 peer-reviewed larch-log trial). Colonize at 68-82F, fruit at 70-79F. CO2 chooses the form: hold under ~2,000ppm with FAE for the flat lacquered conk, or seal it up for the branching antler. Field & Forest say it grows on hemlock/conifer ONLY; other sources claim hardwood works — unresolved.",
+        flavor_profile="Not eaten as food — woody and intensely bitter. Prepared as a decoction, tea, or tincture, like all reishi.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Peer-reviewed formula: 80% sawdust, 15% wheat bran, 1.5% sucrose, 2% soybean meal, 1.5% CaO, at 55-60% moisture. Pressure sterilize. NOTE the substrate conflict: Field & Forest state this species needs hemlock/conifer and will not take hardwood; other sources disagree. If in doubt, use conifer.", duration="4-5 hours", tips=["Use conifer sawdust (hemlock, larch) if you can get it — that is the log-tested substrate", "Vent the pressure cooker properly to avoid bacterial wet-rot"], common_mistakes=["Assuming hardwood works because other reishi do — this is genuinely disputed for tsugae", "Under-sterilizing a supplemented substrate"]),
+            TekStep(step_number=2, title="Colonization", description="Incubate at 68-82F in the dark. Bags/blocks colonize over roughly 45-60 days; conifer logs take 5-6 months at 22-25C and 70-80% RH.", duration="45-60 days (bags) or 5-6 months (logs)", tips=["Plan for a long cycle — this is not an oyster", "Logs are slower but produced the peer-reviewed yield data"], common_mistakes=["Impatience — opening before full colonization", "Letting logs dry out during the multi-month run"]),
+            TekStep(step_number=3, title="Decide the Form, Then Fruit", description="Before fruiting, decide what you want. For the classic flat lacquered CONK: open up and run active FAE holding CO2 below ~2,000 ppm, with 12/12 light above 800 lux. For the branching ANTLER form: keep the block sealed or heavily restrict FAE so CO2 climbs above ~2,000 ppm.", duration="21-30 days to primordia", tips=["This is the single most controllable thing about reishi — same block, two completely different mushrooms", "Antlers are prized ornamentally; conks are the traditional medicinal form"], common_mistakes=["Drifting between the two and getting a malformed hybrid of both", "Assuming poor FAE is a failure — for antlers it is the goal"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 70-79F. RH 60-70% during primordia, rising to 75-85% during fruitbody development. Harvest when the white growing margin has fully lacquered over and the surface is uniformly varnished.", duration="30-45 days", tips=["The white margin is the growth zone — as long as it is white, it is still growing", "Harvest after the margin lacquers; slice and dry for tea or tincture"], common_mistakes=["Harvesting while the white margin is still active — it is not finished", "Expecting multiple flushes; this is essentially a single long fruiting"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Supplemented Conifer Sawdust (PMC11766503)", ingredients={"sawdust": "80%", "wheat bran": "15%", "soybean meal": "2%", "sucrose": "1.5%", "CaO": "1.5%"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=150, sterilization_temp_f=250, suitability="optimal", notes="Peer-reviewed formula, 55-60% moisture. Conifer sawdust per Field & Forest's host-specificity claim."),
+            SubstrateRecipe(name="Conifer Logs (hemlock/larch)", ingredients={"hemlock or larch log (18-20cm dia)": "1 log", "grain spawn": "as needed"}, water_liters_per_liter_substrate=0.0, spawn_rate_percent=5, sterilization_method="pasteurize_hot_water", sterilization_time_min=0, sterilization_temp_f=None, suitability="good", notes="5-6 month colonization. This is the substrate the 2025 yield data came from."),
+        ],
+        substrate_preference_ranking=["conifer sawdust (hemlock/larch)", "conifer logs", "supplemented hardwood sawdust"],
+        contamination_risks=["Trichoderma over the long colonization", "Bacterial wet-rot from poorly vented pressure sterilization", "Hardwood substrate may simply fail to colonize if the host-specificity claim is correct"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Ganoderma_tsugae_59661.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="artists_conk",
+        common_name="Artist's Conk",
+        scientific_name="Ganoderma applanatum",
+        category="medicinal",
+        substrate_types=["supplemented hardwood sawdust", "hardwood logs"],
+        colonization_visual_description=(
+            "White mycelium — and this is a documented misidentification trap: early G. applanatum "
+            "and Trichoderma both start white, and the difference only becomes obvious when "
+            "Trichoderma sporulates blue-green. Grain 20-35 days; blocks 2-4 MONTHS."
+        ),
+        contamination_risk_notes=(
+            "The 2-4 month block colonization is a very long exposure window. Trichoderma mimics "
+            "early mycelium. Bacterial blotch. Below 68F growth stalls entirely. Liquid culture "
+            "degrades in storage past 4-6 months."
+        ),
+        pinning_trigger_description=(
+            "FAE after opening the block. Primordia appear 4-12 weeks later, and the conk then "
+            "needs a further 3-4 months to mature. Elevated CO2 pushes growth into a stalked/antler "
+            "form rather than the flat bracket."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=77, temp_max_f=82, humidity_min=80, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(60, 120),
+                notes="Blocks take 2-4 MONTHS. Spawn rate 15-20% (higher than usual, to outcompete "
+                      "contaminants over the long run). Below 68F growth stops. "
+                      "SINGLE-SOURCE (Out-Grow). [CO2 inferred]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=57, temp_max_f=75, humidity_min=85, humidity_max=95,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=750,
+                fae_mode="continuous", expected_duration_days=(28, 84),
+                notes="Primordia 4-12 weeks after opening the block. FAE is critical — elevated CO2 "
+                      "gives a stalked/antler form instead of the flat bracket. SINGLE-SOURCE.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=57, temp_max_f=75, humidity_min=85, humidity_max=95,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=750,
+                fae_mode="continuous", expected_duration_days=(90, 120),
+                notes="The conk needs a further 3-4 MONTHS to mature. Total grain-to-harvest: "
+                      "9-14 months. SINGLE-SOURCE, and that source says indoor fruiting is not "
+                      "reliably documented at scale — outdoor logs are more dependable.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="No biological-efficiency figure exists in any source. Blocks reportedly re-fruit over multiple years with rest/rehydration, but this is unquantified. NOT a yield crop — grown for the conk itself.",
+        tags=["advanced", "medicinal", "very-slow", "long-cycle", "experimental", "not-edible"],
+        edible=False,
+        safety_warning="NOT EDIBLE as food — the conk is woody and indigestible. Used medicinally as a decoction/tea, and traditionally as an art surface (the white pore surface bruises brown when scratched, hence 'Artist's Conk').",
+        tldr="A 9-14 month project, not a crop. Colonization alone takes 2-4 months, primordia another 4-12 weeks, and the conk 3-4 months more to mature. All parameters here come from a SINGLE commercial source, which itself says indoor fruiting is not reliably documented and recommends outdoor logs. Grown for the conk — medicinally as tea, and as an art surface. Note: despite the brief's premise, it is NOT the species used for mycelium leather; that is G. lucidum.",
+        flavor_profile="NOT EDIBLE as food. Woody, indigestible. Used as a bitter medicinal decoction, and famously as a drawing surface — the white pore surface bruises permanently brown when marked.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="80% hardwood sawdust (oak/maple/beech) with 20% wheat bran, at field capacity. Pressure sterilize at 250F for 2.5-3 hours.", duration="4-5 hours", tips=["Use a high spawn rate (15-20%) — you need to win the race over a 2-4 month colonization", "Fresh liquid culture only; it degrades past 4-6 months in storage"], common_mistakes=["Standard 10% spawn rate — too slow for this long a run", "Under-sterilizing"]),
+            TekStep(step_number=2, title="Long Colonization", description="Incubate at 77-82F in the dark. Grain takes 20-35 days; blocks take 2-4 months. Do not let temperature fall below 68F — growth stops entirely.", duration="2-4 months", tips=["Watch for Trichoderma: it looks identical to young G. applanatum until it goes blue-green", "Keep it warm — sub-68F is a hard stall, not just a slowdown"], common_mistakes=["Mistaking early Trichoderma for healthy mycelium and letting it take the block", "Cold incubation"]),
+            TekStep(step_number=3, title="Fruiting Initiation", description="Open the block, drop to 57-75F, hold 85-95% RH with continuous FAE and 12/12 light. Primordia take 4-12 weeks to appear.", duration="4-12 weeks", tips=["Adequate FAE is what gives you a flat bracket instead of a stalked antler", "Patience: 12 weeks to a primordium is within the normal range here"], common_mistakes=["Concluding it has failed after a month — that is far too early", "High CO2 producing a stalked, non-bracket form"]),
+            TekStep(step_number=4, title="Conk Maturation and Harvest", description="The conk needs another 3-4 months to mature. Harvest when the bracket is fully formed and the underside is a smooth white pore surface. Total cycle from grain: 9-14 months.", duration="3-4 months", tips=["The white pore surface is the art surface — scratch it and the mark is permanent", "Dry hard and slice for medicinal decoction"], common_mistakes=["Harvesting an immature conk", "Damaging the pore surface in handling if you want to draw on it"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Supplemented Hardwood Sawdust", ingredients={"hardwood sawdust (oak/maple/beech)": "80%", "wheat bran": "20%"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=18, sterilization_method="pressure_sterilize", sterilization_time_min=165, sterilization_temp_f=250, suitability="good", notes="High spawn rate (15-20%) is deliberate — it must outcompete contaminants over a 2-4 month run."),
+            SubstrateRecipe(name="Hardwood Logs", ingredients={"hardwood log": "1 log", "plug or sawdust spawn": "as needed"}, water_liters_per_liter_substrate=0.0, spawn_rate_percent=5, sterilization_method="pasteurize_hot_water", sterilization_time_min=0, sterilization_temp_f=None, suitability="optimal", notes="The source's own recommendation: outdoor logs are MORE reliable than indoor blocks for this species."),
+        ],
+        substrate_preference_ranking=["hardwood logs", "supplemented hardwood sawdust"],
+        contamination_risks=["Trichoderma — visually indistinguishable from young G. applanatum mycelium until it sporulates", "Bacterial blotch", "Complete stall below 68F during colonization", "The 2-4 month colonization window magnifies every sterile-technique error"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Ganoderma_applanatum_01.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="birch_polypore",
+        common_name="Birch Polypore",
+        scientific_name="Fomitopsis betulina",
+        category="medicinal",
+        substrate_types=["birch sawdust", "birch chips", "birch logs"],
+        colonization_visual_description=(
+            "White mycelium on birch, ~28 days at 23C. Birch-obligate: it will not perform on other "
+            "hardwoods. Fruits as a smooth kidney-shaped bracket with a white pore surface."
+        ),
+        contamination_risk_notes=(
+            "Standard supplemented-sawdust risks. The bigger risk is not contamination but STRAIN "
+            "FAILURE — in the published trial only 1 of 4 tested strains fruited at all."
+        ),
+        pinning_trigger_description=(
+            "A discrete COLD SHOCK: drop to 2-4C (36-39F) for 48 HOURS, then return to 16-18C. "
+            "Pins appear 8-10 days after the shock. This is a real, documented shock event with a "
+            "duration, not an ambient temperature setting."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=72, temp_max_f=75, humidity_min=65, humidity_max=70,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(28, 28),
+                notes="23+/-1C, 65-70% RH, ~28 days. BIRCH ONLY — this species is effectively "
+                      "birch-obligate. [CO2 inferred]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=61, temp_max_f=64, humidity_min=80, humidity_max=85,
+                temp_swing_required=True, temp_swing_delta_f=38,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=10, light_hours_off=14, light_spectrum="daylight_6500k",
+                light_lux_target=225,
+                fae_mode="continuous", expected_duration_days=(8, 10),
+                notes="COLD SHOCK FIRST: 2-4C (36-39F) for 48 HOURS, then hold 16-18C. Pins appear "
+                      "8-10 days after the shock. The schema cannot express a timed shock event — "
+                      "temp_swing_delta_f=38 encodes the ~38F drop from 75F to 37F. See report SS5.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=61, temp_max_f=64, humidity_min=80, humidity_max=85,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=10, light_hours_off=14, light_spectrum="daylight_6500k",
+                light_lux_target=225,
+                fae_mode="continuous", expected_duration_days=(30, 45),
+                notes="16-18C, 80-85% RH, 200-250 lux on a 10h photoperiod, CO2 <1,000ppm with "
+                      "active FAE (a genuinely sourced ppm figure). Maturation 30-45 days.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="LOW YIELD: biological efficiency only 12-16%, against 50-100%+ for oyster or shiitake. Individual brackets 50-120g fresh. Only one flush is documented. Outdoor birch logs: 212-1,298g fresh per log over 18 months.",
+        tags=["advanced", "medicinal", "cold-shock", "birch-only", "low-yield", "experimental"],
+        edible=False,
+        safety_warning="Not eaten as food — bitter and corky. Traditionally used as a medicinal tea and, historically, as a razor strop and wound dressing. Otzi the Iceman carried it.",
+        tldr="Documented indoor fruiting, but be realistic: biological efficiency is only 12-16%, and in the published trial just 1 of 4 strains fruited at all. Strain choice is a hard gate. Birch-obligate — no other wood works. The pinning trigger is a genuine cold shock: 2-4C for 48 hours, then back to 16-18C, with pins 8-10 days later. Not a production crop; a serious hobbyist project.",
+        flavor_profile="Not a food mushroom — bitter, corky, tough. Used as a medicinal decoction. Historically a razor strop (hence 'razor strop fungus') and a wound dressing; found in Otzi the Iceman's kit.",
+        tek_guide=[
+            TekStep(step_number=1, title="Source a Fruiting Strain", description="Before anything else: obtain a strain with a documented fruiting record. In the published trial only 1 of 4 strains produced fruiting bodies. This is the single highest-leverage decision in the grow.", duration="varies", tips=["Ask the supplier directly whether their strain has fruited indoors", "A non-fruiting strain will colonize perfectly and then simply never pin"], common_mistakes=["Assuming any F. betulina culture will fruit — 75% of tested strains did not"]),
+            TekStep(step_number=2, title="Substrate Preparation", description="Fresh birch sawdust plus dry birch chips, mineral-supplemented (gypsum, dolomite), with 25-35% organic supplement (wheat/rye bran, ground corn, soy, millet), at 55-65% moisture. Pressure sterilize. Birch only — this species is effectively birch-obligate.", duration="4-5 hours", tips=["Betula pendula, B. pubescens, B. papyrifera all work", "Do not substitute oak or maple — host specificity here is real"], common_mistakes=["Using generic hardwood sawdust", "Moisture outside the 55-65% band"]),
+            TekStep(step_number=3, title="Colonization", description="Incubate at 72-75F at 65-70% RH for about 28 days until fully colonized.", duration="28 days", tips=["Note the relatively low ambient RH (65-70%) during the run", "Full colonization before the cold shock"], common_mistakes=["Cold-shocking an incompletely colonized block"]),
+            TekStep(step_number=4, title="Cold Shock", description="Drop the block to 36-39F (2-4C) for 48 hours. Then return it to 61-64F with 80-85% RH, continuous FAE holding CO2 under 1,000 ppm, and 200-250 lux on a 10-hour photoperiod. Pins appear 8-10 days after the shock ends.", duration="48h shock + 8-10 days", tips=["A domestic fridge is the obvious tool for the 48-hour shock", "Time it: 48 hours is the documented duration, not 'a few days'"], common_mistakes=["Treating this as an ambient cold range rather than a timed shock event", "Skipping the shock and waiting indefinitely for pins that never come"]),
+            TekStep(step_number=5, title="Fruiting and Harvest", description="Hold 61-64F, 80-85% RH, CO2 under 1,000 ppm. Brackets take 30-45 days to mature. Harvest at 50-120g fresh each.", duration="30-45 days", tips=["Slow maturation — 30-45 days is normal, not stalled", "Dry and slice for tea"], common_mistakes=["Expecting oyster-like yields — BE here is 12-16%", "Expecting a second flush; only one is documented"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Supplemented Birch Sawdust", ingredients={"fresh birch sawdust": "65%", "dry birch chips": "10%", "wheat/rye bran": "23%", "gypsum + dolomite": "2%"}, water_liters_per_liter_substrate=1.1, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=150, sterilization_temp_f=250, suitability="optimal", notes="55-65% moisture. BIRCH ONLY — host specificity is real for this species."),
+            SubstrateRecipe(name="Birch Logs (outdoor)", ingredients={"fresh birch log": "1 log", "plug spawn": "as needed"}, water_liters_per_liter_substrate=0.0, spawn_rate_percent=5, sterilization_method="pasteurize_hot_water", sterilization_time_min=0, sterilization_temp_f=None, suitability="good", notes="212-1,298g fresh per log over 18 months (Korean trial). Slower but higher total yield than indoor blocks."),
+        ],
+        substrate_preference_ranking=["birch sawdust", "birch logs", "birch chips"],
+        contamination_risks=["Trichoderma on supplemented sawdust", "STRAIN FAILURE — the dominant risk; 3 of 4 tested strains never fruited", "Non-birch substrate simply failing to colonize or fruit"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Piptoporus_betulinus_2010.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="antrodia_camphorata",
+        common_name="Niu-chang-chih",
+        scientific_name="Antrodia camphorata",
+        category="medicinal",
+        strain="disc/dish culture",
+        substrate_types=["grain-powder agar dish (adlay/wheat/brown rice)"],
+        colonization_visual_description=(
+            "Grows as a dense orange-red to cinnamon crust on a grain-powder agar dish, rather than "
+            "a conventional mushroom. Slow. The colour is characteristic and is part of how genuine "
+            "cultures are verified."
+        ),
+        contamination_risk_notes=(
+            "Slow growth over ~3 months in a nutrient-rich dish means high contamination exposure — "
+            "filtered air is specified in the protocol. SOURCING is a distinct risk: "
+            "misidentification and outright counterfeiting are documented problems for this species."
+        ),
+        pinning_trigger_description=(
+            "No conventional pinning. In disc culture the fruiting body develops directly on the "
+            "dish surface at 18-32C with low light (0-400 lux, at least 2h/day) and filtered air "
+            "exchange, over roughly 3 months."
+        ),
+        phases={
+            GrowPhase.AGAR: PhaseParams(
+                temp_min_f=64, temp_max_f=90, humidity_min=65, humidity_max=99,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=2, light_hours_off=22, light_spectrum="daylight_6500k",
+                light_lux_target=200,
+                fae_mode="scheduled", fae_interval_min=120, fae_duration_sec=300,
+                expected_duration_days=(90, 90),
+                notes="Disc culture (CN103270890A): grain-powder + agar dish, 18-32C, RH 65-99%, "
+                      "light 0-400 lux >=2h/day, filtered air. ~3 months to fruiting bodies at ~25C "
+                      "(PMC9610047). This single phase IS the whole grow. [CO2 inferred]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=64, temp_max_f=90, humidity_min=65, humidity_max=99,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=2, light_hours_off=22, light_spectrum="daylight_6500k",
+                light_lux_target=200,
+                fae_mode="scheduled", fae_interval_min=120, fae_duration_sec=300,
+                expected_duration_days=(90, 120),
+                notes="Fruiting bodies form on the dish surface — there is no separate colonization/ "
+                      "fruiting transition. Disc culture claims >2x the yield of traditional wood "
+                      "culture with lower contamination risk. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="Disc culture is claimed to more than double the yield of traditional wood culture. NOTE: metabolite potency ranks wild > solid-state > liquid fermentation — cultivated material is chemically inferior to wild-harvested, which is precisely why wild commands a premium.",
+        tags=["advanced", "medicinal", "dish-culture", "slow", "taiwan", "sourcing-risk"],
+        tldr="Only ONE of its four cultivation methods is chamber-viable: disc/dish culture on a grain-powder agar dish at 64-90F with low light and filtered air, producing fruiting bodies in about 3 months. Wood cultivation is off the table — it needs Cinnamomum kanehirae, a protected endangered Taiwanese endemic. Two honest caveats: cultivated material is chemically weaker than wild, and counterfeit/misidentified cultures are a documented problem in this market.",
+        flavor_profile="Intensely bitter — not a culinary mushroom under any circumstances. Consumed as a medicinal extract or decoction in Taiwan, where it is among the most expensive fungi in the world.",
+        tek_guide=[
+            TekStep(step_number=1, title="Verify Your Culture", description="Before investing three months, verify the culture is genuinely A. camphorata. Misidentification and counterfeiting are documented problems for this species given its price. Source from a reputable supplier and check for the characteristic orange-red/cinnamon growth.", duration="varies", tips=["The distinctive cinnamon-red colour is a first-pass check", "This is one of the most-counterfeited fungi in commerce — do not skip this step"], common_mistakes=["Buying a cheap 'A. camphorata' culture and growing something else for 3 months"]),
+            TekStep(step_number=2, title="Prepare the Dish Medium", description="Prepare a medium of fine grain powder (adlay, wheat, or brown rice) with agar, in dishes. Sterilize by autoclave at 1.2-1.4 kg/cm2 for 2 hours, or at normal pressure above 100C for 8-10 hours.", duration="2-10 hours", tips=["Adlay (Job's tears) is the traditional grain base", "Normal-pressure sterilization is a valid documented alternative if you lack an autoclave — it just takes 8-10 hours"], common_mistakes=["Under-sterilizing a rich grain medium for a 3-month culture"]),
+            TekStep(step_number=3, title="Disc Culture", description="Inoculate and hold at 64-90F (optimum ~77F) with RH 65-99%, low light of 0-400 lux for at least 2 hours daily, and filtered air exchange. Fruiting bodies develop on the dish surface over about 3 months.", duration="~90 days", tips=["Filtered air is specified in the protocol — this is not a sealed culture", "Low light is sufficient; this species does not want a bright chamber"], common_mistakes=["Expecting a conventional mushroom — this grows as a crust on the dish", "Total darkness; it wants at least 2 hours of light per day"]),
+            TekStep(step_number=4, title="Harvest", description="Harvest the fruiting body from the dish surface after ~3 months. Dry and use as a medicinal extract. Accept that potency will be below wild-harvested material.", duration="1 hour", tips=["Disc culture more than doubles the yield of traditional wood culture", "Extract rather than eat — it is intensely bitter"], common_mistakes=["Expecting wild-equivalent potency from cultivated material"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Grain-Powder Agar Dish (CN103270890A)", ingredients={"fine grain powder (adlay/wheat/brown rice)": "as base", "agar": "as gelling agent"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=120, sterilization_temp_f=250, suitability="optimal", notes="Patent protocol. Alternative: normal-pressure sterilization above 100C for 8-10 hours."),
+        ],
+        substrate_preference_ranking=["grain-powder agar dish (adlay/wheat/brown rice)"],
+        contamination_risks=["Long ~3-month culture in a rich medium — high exposure", "Counterfeit or misidentified cultures — a documented, species-specific commercial problem", "Wood cultivation is not an option: Cinnamomum kanehirae is a protected endangered species"],
+        photo_references={
+            "fruiting": "Search: Antrodia camphorata disc culture fruiting body",
+        },
+    ),
+    SpeciesProfile(
+        id="mycena_chlorophos",
+        common_name="Green Pepe / Night Light Mushroom",
+        scientific_name="Mycena chlorophos",
+        category="novelty",
+        substrate_types=["compost powder + rice bran", "hardwood chips"],
+        colonization_visual_description=(
+            "Slow mycelium on compost/bran at 27C over ~4 weeks. The mycelium glows, but faintly — "
+            "the real display is the fruiting body. Unusually, this species wants LIGHT during "
+            "colonization, not darkness."
+        ),
+        contamination_risk_notes=(
+            "Requires full autoclave sterilization (15 PSI / 90 min) — pasteurization is documented "
+            "as insufficient. Slow growth plus warm, wet, tropical conditions is a difficult "
+            "combination. Growers report frequent aborted flushes, mostly from temperature swings."
+        ),
+        pinning_trigger_description=(
+            "Drop from 27C to 21C, raise RH to 90%, apply a casing layer, and provide 300-800 lux of "
+            "light. LIGHT IS ESSENTIAL for primordium initiation — darkness suppresses pinning. "
+            "Fruit bodies follow ~3 weeks later."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=79, temp_max_f=82, humidity_min=75, humidity_max=85,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=24, light_hours_off=0, light_spectrum="daylight_6500k",
+                light_lux_target=300,
+                fae_mode="passive", expected_duration_days=(28, 28),
+                notes="27C, 80% RH, 4 weeks (Mycoscience 1996). Medium pH 4.0 — the schema has no "
+                      "pH field; see report SS5. Continuous light from inoculation is required. "
+                      "Autoclave only; pasteurization is insufficient. [CO2 inferred]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=70, temp_max_f=75, humidity_min=88, humidity_max=95,
+                temp_swing_required=True, temp_swing_delta_f=11,
+                co2_max_ppm=1500, co2_tolerance="moderate",
+                light_hours_on=24, light_hours_off=0, light_spectrum="daylight_6500k",
+                light_lux_target=550,
+                fae_mode="passive", expected_duration_days=(8, 21),
+                notes="Shift to 21C / 90% RH with 300-800 lux AFTER CASING. Light is ESSENTIAL for "
+                      "primordium initiation — darkness suppresses it. 8-10 days to visible caps.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=70, temp_max_f=75, humidity_min=90, humidity_max=100,
+                co2_max_ppm=1500, co2_tolerance="moderate",
+                light_hours_on=24, light_hours_off=0, light_spectrum="daylight_6500k",
+                light_lux_target=550,
+                fae_mode="passive", expected_duration_days=(14, 21),
+                notes="Peak glow is ~72 HOURS after primordium initiation — a narrow viewing "
+                      "window. The GILLS are the light source; stems have no light-emitting cells. "
+                      "View in complete darkness after 10+ min of eye adaptation. NOT EDIBLE.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="NOT EDIBLE — grown purely for bioluminescence. Small, delicate, translucent caps. The display window is narrow: peak glow is roughly 72 hours after primordia initiate, then fades.",
+        tags=["advanced", "novelty", "bioluminescent", "not-edible", "tropical", "display"],
+        edible=False,
+        safety_warning="WARNING: NOT SAFE FOR HUMAN CONSUMPTION. Grown for bioluminescence display only.",
+        tldr="The brightest bioluminescent mushroom, and the only one with a genuine peer-reviewed fruiting protocol. Colonize at 79-82F under CONTINUOUS LIGHT for 4 weeks (light is required, unusually), then case, drop to 70-75F, raise RH to 90% — light is essential for pinning; darkness suppresses it. Peak glow comes ~72 hours after primordia and then fades, so the viewing window is narrow. The GILLS glow, not the stem. High failure rate from temperature swings.",
+        flavor_profile="NOT EDIBLE. Grown solely for the green bioluminescent display. The gills emit around 520-530nm; view in complete darkness and allow 10+ minutes for your eyes to dark-adapt.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Compost powder with rice bran at 20% (fw/fw), adjusted to 70% moisture and an initial pH of 4.0. AUTOCLAVE at 15 PSI for 90 minutes — pasteurization is documented as insufficient for this species.", duration="3-4 hours", tips=["The acidic pH 4.0 start is part of the published protocol — do not neutralize it", "Full autoclave only; this is not a pasteurize-and-hope species"], common_mistakes=["Pasteurizing instead of autoclaving", "Ignoring the pH 4.0 specification"]),
+            TekStep(step_number=2, title="Colonization Under Light", description="Inoculate and hold at 79-82F (27C) with 80% RH for 4 weeks — under CONTINUOUS LIGHT of at least 300 lux from inoculation onward. This species is the opposite of most: it wants light during the spawn run.", duration="28 days", tips=["Light from day one — this is genuinely different from every other species in the library", "Hold temperature steady; swings are the #1 reported cause of failure"], common_mistakes=["Colonizing in the dark out of habit", "Letting the temperature drift — this species is intolerant of swings"]),
+            TekStep(step_number=3, title="Case and Induce", description="Apply a casing layer, drop temperature to 70-75F (21C), raise RH to 90%, and provide 300-800 lux. Light is ESSENTIAL for primordium initiation. Caps appear in 8-10 days.", duration="8-21 days", tips=["The casing plus the 11F temperature drop plus light together form the trigger", "Do not move it to darkness expecting the glow to encourage fruiting — darkness suppresses pinning"], common_mistakes=["Skipping the casing", "Keeping it dark for fruiting — this actively prevents primordia"]),
+            TekStep(step_number=4, title="The Glow Window", description="Peak bioluminescence occurs roughly 72 HOURS after primordia initiate, then declines. View in complete darkness, allowing 10+ minutes for full eye dark-adaptation. The gills are the light source; the stem does not glow.", duration="~72 hour peak", tips=["Set a reminder for ~3 days after you first see pins — that is the peak", "Total darkness. Even a phone screen ruins the adaptation"], common_mistakes=["Missing the narrow peak window", "Viewing with ambient light and concluding it does not glow", "Consuming — NOT EDIBLE"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Compost + Rice Bran (Mycoscience 1996)", ingredients={"compost powder": "80%", "rice bran": "20%"}, water_liters_per_liter_substrate=0.9, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=90, sterilization_temp_f=250, suitability="optimal", notes="Peer-reviewed formula. 70% moisture, initial pH 4.0. Autoclave required — pasteurization is insufficient."),
+        ],
+        substrate_preference_ranking=["compost powder + rice bran", "hardwood chips"],
+        contamination_risks=["Warm, wet, slow growth — a difficult contamination combination", "Pasteurization is inadequate; anything short of autoclave will likely fail", "Temperature instability causing aborted flushes (the dominant reported failure)", "NOT EDIBLE — do not consume"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Mycena_chlorophos.jpg",
+            "bioluminescence": "Search: Mycena chlorophos bioluminescent glow gills dark",
+        },
+    ),
+    SpeciesProfile(
+        id="fomes_fomentarius",
+        common_name="Tinder Conk / Amadou",
+        scientific_name="Fomes fomentarius",
+        category="novelty",
+        substrate_types=["hardwood sawdust", "hemp shives", "hardwood chips", "hardwood logs"],
+        colonization_visual_description=(
+            "White mycelium; spawn establishes in ~14 days at 25C in the dark. For MATERIAL use "
+            "the mycelium itself is the product — a dense mat grown into a mould. For a fruiting "
+            "conk, the bag stage runs ~50 days."
+        ),
+        contamination_risk_notes=(
+            "Standard hardwood risks. The fruiting route is long (~50 days to colonize) and poorly "
+            "documented; the mycelium/material route is short and well-established."
+        ),
+        pinning_trigger_description=(
+            "Fruiting: 22-26C, RH 85-95%, 300-500 lux, CO2 below ~3,000 ppm. Patents disagree on "
+            "timing (7 vs 25 days). For MATERIAL production you do not fruit at all — you harvest "
+            "the mycelial mat."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=77, temp_max_f=82, humidity_min=55, humidity_max=65,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(14, 50),
+                notes="MATERIAL route: 14 days at 25C dark (peer-reviewed, Fungal Bio & Biotech "
+                      "2022) — then harvest the mat, no fruiting. FRUITING route: 26-28C, pH 7.0-8.0, "
+                      "~50 days (Chinese patents, NOT peer-reviewed). The schema has no pH field.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=72, temp_max_f=79, humidity_min=85, humidity_max=95,
+                co2_max_ppm=3000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                light_lux_target=400,
+                fae_mode="continuous", expected_duration_days=(7, 25),
+                notes="22-26C, RH 85-95%, 300-500 lux, CO2 <0.3% (~3,000ppm). SOURCE CONFLICT: the "
+                      "two Chinese patents give ~7 vs ~25 days and neither is peer-reviewed. "
+                      "Fruiting-body production is NOT well established — the mycelium route is.",
+            ),
+        },
+        flush_count_typical=1,
+        yield_notes="NOT EDIBLE. Two entirely different products: (1) the MYCELIAL MAT, harvested at ~14-21 days for composite materials — this is the well-documented route; (2) the CONK, whose spongy trama layer is processed into amadou felt for hats, tinder and fly-fishing patches. No peer-reviewed fruiting-body yield figures exist.",
+        tags=["intermediate", "novelty", "not-edible", "materials", "amadou", "mycelium-composite", "fiber"],
+        edible=False,
+        safety_warning="NOT EDIBLE — woody and indigestible. Grown for material use (amadou felt, mycelium composites) and as a traditional tinder fungus.",
+        tldr="The fiber/material species. Two routes with very different confidence levels. The MYCELIUM route is peer-reviewed and reliable: 14 days at 25F in the dark on hardwood or hemp shives, then harvest the mat for composites (it is 3D-printable). The FRUITING route — growing a conk to process into amadou felt — rests only on two Chinese patents that contradict each other on timing. Grow it for material, not for a mushroom.",
+        flavor_profile="NOT EDIBLE. Historically the tinder fungus (Otzi carried it); its trama layer is processed into amadou, a felt-like leather substitute used for hats and fly-fishing patches.",
+        tek_guide=[
+            TekStep(step_number=1, title="Choose Your Product", description="Decide up front: mycelial MATERIAL (well-documented, ~2-3 weeks) or a fruiting CONK for amadou (poorly documented, months, contradictory sources). These are different grows.", duration="n/a", tips=["For a first attempt, do the material route — it is the one with peer-reviewed protocols", "The conk route is genuinely experimental"], common_mistakes=["Chasing a conk when the material route is what actually works"]),
+            TekStep(step_number=2, title="Material Route — Mycelial Mat", description="Inoculate hemp shives or hardwood substrate. Incubate spawn 14 days at 77F (25C) in the dark, then grow into a mould for roughly one more week until a contiguous mat forms.", duration="~21 days", tips=["Hemp shives and rapeseed straw are both peer-reviewed substrates for this species", "Keep it dark and do NOT trigger fruiting — the mat is the product"], common_mistakes=["Introducing FAE/light and pushing it toward fruiting", "Harvesting the mat before it becomes contiguous"]),
+            TekStep(step_number=3, title="Fruiting Route (experimental)", description="Colonize at 79-82F with medium moisture 55-65% and pH 7.0-8.0 for ~50 days, then fruit at 72-79F, RH 85-95%, 300-500 lux, CO2 below 3,000 ppm. Expect 7-25 days — the two source patents disagree.", duration="50 days + 7-25 days", tips=["Note the alkaline pH 7.0-8.0 — unusual, and the schema cannot record it", "Treat all timings here as approximate; the sourcing is weak"], common_mistakes=["Trusting the patent timings as reliable", "Expecting a routine, repeatable fruiting — it is not established"]),
+            TekStep(step_number=4, title="Amadou Processing (post-harvest)", description="If you did grow a conk: cut the spongy trama layer from between the hard crust and the pore layer, soak or boil it in potassium nitrate or sodium carbonate solution, then pound and stretch it into felt.", duration="days", tips=["This is post-harvest material work, entirely separate from cultivation", "The trama layer is the only usable part"], common_mistakes=["Trying to use the hard crust or pore layer", "Confusing amadou processing with mycelium-composite growing — they are unrelated techniques"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Hemp Shives (material route)", ingredients={"hemp shives": "as bulk", "spawn": "14-day colonized"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=15, sterilization_method="pressure_sterilize", sterilization_time_min=90, sterilization_temp_f=250, suitability="optimal", notes="Peer-reviewed composite substrate (Fungal Biology and Biotechnology 2022). 25C, dark, ~1 week in mould."),
+            SubstrateRecipe(name="Supplemented Hardwood (fruiting route)", ingredients={"hardwood chips": "100 parts", "wheat bran": "15-20 parts", "corn flour": "8-10 parts", "cottonseed meal": "4-6 parts", "sugar": "1-2 parts", "CaCO3": "1-2 parts"}, water_liters_per_liter_substrate=1.2, spawn_rate_percent=3, sterilization_method="pressure_sterilize", sterilization_time_min=120, sterilization_temp_f=250, suitability="acceptable", notes="From CN103503691A. pH 7.0-8.0. NOT peer-reviewed; timings contradict the companion patent."),
+        ],
+        substrate_preference_ranking=["hemp shives", "hardwood sawdust", "hardwood chips", "hardwood logs"],
+        contamination_risks=["Standard hardwood contamination over the long fruiting colonization", "The fruiting route's poor documentation means failures are hard to diagnose", "NOT EDIBLE — do not consume"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Fomes_fomentarius_2010.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="phanerochaete_chrysosporium",
+        common_name="White Rot Fungus",
+        scientific_name="Phanerochaete chrysosporium",
+        category="novelty",
+        substrate_types=["lignocellulosic waste", "straw", "sawdust", "liquid culture"],
+        colonization_visual_description=(
+            "Fast white mycelium — notably thermotolerant, thriving at temperatures (32-40C) that "
+            "stall most cultivated fungi. Produces no meaningful fruiting body; the mycelium and "
+            "its enzymes ARE the product."
+        ),
+        contamination_risk_notes=(
+            "Grows at 32-40C, which excludes many mesophilic competitors — an advantage. Bacterial "
+            "competitors still thrive at these temperatures. Standard sterile technique."
+        ),
+        pinning_trigger_description=(
+            "No pinning. This organism is cultivated for ligninolytic ENZYMES, not fruiting bodies. "
+            "The relevant 'trigger' is NITROGEN STARVATION: lignin peroxidase is a "
+            "nitrogen-starvation response, so a C:N ratio around 40-50:1 is what switches on the "
+            "ligninolytic secondary metabolism."
+        ),
+        phases={
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=86, temp_max_f=104, humidity_min=70, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(3, 14),
+                notes="Growth optimum ~32C (90F); lignin-degradation optimum 38C (100F) — the two "
+                      "optima are DECOUPLED. pH: growth ~4.5, degradation ~3.5 (also decoupled; the "
+                      "schema has no pH field). C:N 40-50:1 to trigger ligninolytic metabolism. "
+                      "Strictly aerobic. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=0,
+        yield_notes="NOT A FRUITING CROP — the harvest is mycelial biomass and ligninolytic enzymes (lignin peroxidase, manganese peroxidase). Benchmark: 1g mycelium/L degraded 90-100% of acid-insoluble Kraft lignin at 1g/L within a 2-3 day active window. Cryptic crust-like basidiocarps sometimes form at petri-dish edges, but they are not the point.",
+        tags=["novelty", "research", "not-edible", "mycoremediation", "thermotolerant", "biomass"],
+        edible=False,
+        safety_warning="WARNING: NOT SAFE FOR HUMAN CONSUMPTION. A research and bioremediation organism. High-density culture may warrant respiratory protection against spore/aerosol exposure.",
+        tldr="The actual mycoremediation workhorse — and not a mushroom at all. No fruiting phase, no flushes; you grow mycelium and enzymes. Unusually thermotolerant: grows best at 90F, but degrades lignin best at 100F — the two optima are decoupled, as are the pH optima (4.5 growth vs 3.5 degradation). The key insight: lignin peroxidase is a NITROGEN-STARVATION response, so you must run a high-carbon/low-nitrogen substrate (C:N 40-50:1) to switch the enzymes on. Feeding it well gives you biomass and no enzymes.",
+        flavor_profile="NOT EDIBLE — a research and bioremediation organism, not a food species.",
+        tek_guide=[
+            TekStep(step_number=1, title="Understand the Goal", description="This is not a mushroom grow. There is no pinning, no flush, no harvest of fruiting bodies. You are cultivating mycelium for its ligninolytic enzymes — the organism behind most serious mycoremediation work.", duration="n/a", tips=["Set expectations accordingly — success looks like biomass and enzyme activity, not mushrooms", "It is the best-characterized white-rot fungus in the literature"], common_mistakes=["Waiting for fruiting bodies that will never come", "Treating it like a gourmet species"]),
+            TekStep(step_number=2, title="Substrate — Starve It of Nitrogen", description="Prepare a lignocellulosic substrate (straw, sawdust) with a HIGH carbon to LOW nitrogen ratio, around 40-50:1. This matters more than anything else: lignin peroxidase production is a nitrogen-starvation response. A nitrogen-rich substrate gives you plenty of mycelium and almost no enzyme.", duration="2-4 hours", tips=["Resist the urge to supplement with bran — supplementation defeats the purpose here", "pH ~4.5 favours growth; ~3.5 favours degradation — pick per your goal"], common_mistakes=["Supplementing with nitrogen out of habit and shutting off the ligninolytic pathway", "Using a standard gourmet substrate recipe"]),
+            TekStep(step_number=3, title="Warm Aerobic Culture", description="Incubate at 86-104F. Growth peaks around 90F; lignin degradation peaks around 100F — choose based on what you want. Keep it strictly aerobic.", duration="3-14 days", tips=["Run at 90F to build biomass, then push to 100F to maximise degradation", "The thermotolerance is a genuine contamination advantage over mesophilic competitors"], common_mistakes=["Culturing at typical mushroom temperatures (70F) — well below its optimum", "Allowing anaerobic conditions"]),
+            TekStep(step_number=4, title="Application", description="Apply the colonized biomass to the target lignin or pollutant load. The active ligninolytic window is short — roughly 2-3 days at peak.", duration="2-3 days (active window)", tips=["The degradative window is narrow — time the application", "Benchmark: 90-100% of 1g/L Kraft lignin degraded in 2-3 days by 1g/L mycelium"], common_mistakes=["Missing the short active window", "Consuming — NOT EDIBLE"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Low-Nitrogen Lignocellulose", ingredients={"straw or sawdust": "bulk", "nitrogen supplement": "NONE - C:N 40-50:1 target"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=10, sterilization_method="pressure_sterilize", sterilization_time_min=90, sterilization_temp_f=250, suitability="optimal", notes="Deliberately UNSUPPLEMENTED. Nitrogen starvation is what triggers lignin peroxidase production. pH ~4.5 growth / ~3.5 degradation."),
+        ],
+        substrate_preference_ranking=["lignocellulosic waste", "straw", "sawdust", "liquid culture"],
+        contamination_risks=["Bacterial competitors, which also tolerate 32-40C", "Nitrogen-rich contamination inadvertently switching off the ligninolytic pathway", "NOT EDIBLE — research organism only"],
+        photo_references={
+            "colonization": "Search: Phanerochaete chrysosporium mycelium white rot culture",
+        },
+    ),
+    SpeciesProfile(
+        id="psilocybe_cyanescens",
+        common_name="Wavy Cap",
+        scientific_name="Psilocybe cyanescens",
+        category="active",
+        substrate_types=["hardwood chips (alder/maple)", "hardwood sawdust", "rye grain (spawn only)"],
+        colonization_visual_description=(
+            "White rhizomorphic mycelium runs fast on grain, then SLOWS markedly once transferred "
+            "to hardwood chips. Bruises blue readily. Wood colonization is the long pole."
+        ),
+        contamination_risk_notes=(
+            "The slow wood-colonization stage is a long exposure window. Trichoderma is the main "
+            "threat. Outdoor beds tolerate competitors that would destroy an indoor block; indoors "
+            "you need tighter sanitation."
+        ),
+        pinning_trigger_description=(
+            "A cold drop into the 50-65F band, high surface humidity, and FAE. In the wild this is "
+            "autumn cooling. NOTE: no controlled cold-shock delta or duration has ever been "
+            "published for this species — growers improvise, and the figure below is inferred."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=78, humidity_min=70, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 21),
+                notes="Rye grain spawn stage. Fast and unremarkable — the difficulty is downstream.",
+            ),
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(30, 60),
+                notes="Hardwood chips (alder/maple). Colonization SLOWS dramatically on wood. "
+                      "NOT bark mulch, NOT straw, NOT dung. [CO2 inferred - none published]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
+                temp_swing_required=True, temp_swing_delta_f=15,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(14, 28),
+                notes="Cold drop into 50-65F with a 1-2cm casing. NO published cold-shock delta or "
+                      "duration exists for this species — the 15F figure is INFERRED from wild "
+                      "autumn-cooling behaviour, not sourced. [CO2 inferred]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=50, temp_max_f=65, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(7, 21),
+                notes="50-65F, high RH, regular FAE. 2-3 flushes reported at 7-21 day intervals. "
+                      "[CO2 inferred]",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-3 flushes at 7-21 day intervals. No per-species yield figure has been published in any source. Indoor cultivation is confirmed possible (AOAC 2026) but is not high-yield or routine.",
+        tags=["advanced", "woodlover", "cold-fruiting", "hardwood", "slow"],
+        legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only.",
+        tldr="The classic woodlover, and genuinely harder than cubensis. Grain spawn runs fast, then colonization crawls once you move to hardwood chips (30-60 days) — and it must be hardwood chips, not bark, straw or dung. Fruits cold, at 50-65F, after a temperature drop. Indoor cultivation is confirmed in a 2026 peer-reviewed study, but no one has published a cold-shock delta or duration, so the trigger remains improvised. Outdoor beds are more forgiving.",
+        flavor_profile="Active species are not primarily consumed for flavor. Typically dried and consumed in capsules, tea, or food preparations. Fresh specimens have a mild earthy taste.",
+        tek_guide=[
+            TekStep(step_number=1, title="Grain Spawn", description="Run rye grain spawn as normal at 70-78F. This stage is fast and straightforward — colonize fully before moving to wood.", duration="10-21 days", tips=["Standard grain tek applies here", "Fully colonize before the wood transfer — the wood stage is slow enough already"], common_mistakes=["Transferring under-colonized grain to wood and losing the block"]),
+            TekStep(step_number=2, title="Transfer to Hardwood", description="Pasteurize hardwood chips (alder or maple are preferred). Mix with grain spawn. Colonize at 65-75F for 30-60 days. Growth slows dramatically on wood — this is normal.", duration="30-60 days", tips=["Alder and maple are the documented substrates", "Expect the pace to drop off a cliff versus the grain stage"], common_mistakes=["Using bark mulch, straw or dung — none of them work for this species", "Concluding the culture has died because wood colonization is slow"]),
+            TekStep(step_number=3, title="Case and Cold-Drop", description="Apply a thin (1-2cm) casing layer, then drop temperature into the 50-65F band with 90-95% RH and continuous FAE on a 12/12 light cycle.", duration="14-28 days", tips=["Cold is the trigger — this species will not fruit at cubensis temperatures", "Honest note: no one has published how big or how long the cold drop should be. Expect to experiment"], common_mistakes=["Fruiting warm — nothing happens", "Expecting a documented protocol for the cold shock; there isn't one"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 50-65F at 85-95% RH with continuous FAE. Expect 2-3 flushes at 7-21 day intervals. Harvest as veils tear; the caps are distinctively wavy and bruise blue.", duration="7-21 days per flush", tips=["The wavy cap margin is the identifying feature", "Handle gently — it bruises blue readily"], common_mistakes=["Letting the chamber warm up mid-flush", "Insufficient FAE"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Hardwood Chips (alder/maple)", ingredients={"alder or maple wood chips": "5 lbs", "grain spawn": "1 quart"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=20, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="optimal", notes="The only well-documented bulk substrate. NOT bark mulch, straw, dung or grain bulk."),
+        ],
+        substrate_preference_ranking=["hardwood chips (alder/maple)", "hardwood sawdust"],
+        contamination_risks=["Trichoderma during the long 30-60 day wood colonization", "Cobweb mould in the cool, humid fruiting conditions", "Bacterial issues from over-wet wood chips"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Psilocybe_cyanescens_JBB.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="psilocybe_subaeruginosa",
+        common_name="Subs",
+        scientific_name="Psilocybe subaeruginosa",
+        category="active",
+        substrate_types=["hardwood chips (eucalyptus preferred)", "hardwood sawdust", "rye grain (spawn only)"],
+        colonization_visual_description=(
+            "Vigorous white mycelium on grain, slower on hardwood chips. Bruises blue strongly. "
+            "Eucalyptus is the preferred wood in its native Australian/NZ range."
+        ),
+        contamination_risk_notes=(
+            "Long wood-colonization window. Trichoderma is the primary threat. High air exchange "
+            "during fruiting means more airborne contaminant exposure — filter your intake air."
+        ),
+        pinning_trigger_description=(
+            "A SUSTAINED DROP BELOW ~46F (8C) — the best-documented cold trigger of any woodlover "
+            "here. In the wild this pairs with heavy dew. Then hold 50-65F at 90%+ RH with high FAE."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=70, temp_max_f=78, humidity_min=70, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 21),
+                notes="Standard grain spawn stage.",
+            ),
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=65, temp_max_f=75, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(28, 56),
+                notes="Pasteurized hardwood chips; eucalyptus preferred. Several weeks. "
+                      "[CO2 inferred - none published]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=46, temp_max_f=58, humidity_min=90, humidity_max=95,
+                temp_swing_required=True, temp_swing_delta_f=20,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(14, 28),
+                notes="SUSTAINED drop below ~46F (8C) is the documented wild trigger — the "
+                      "clearest cold-shock figure of any species in this group. Casing 1-2cm. "
+                      "[CO2 inferred]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=50, temp_max_f=65, humidity_min=90, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(7, 21),
+                notes="50-65F, 90%+ RH, HIGH air exchange. 2-3 flushes at 7-21 day intervals. "
+                      "[CO2 inferred]",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="2-3 flushes at 7-21 day intervals. No per-species yield figure published. Outdoor patches, once established, fruit for several years (6-12 months to first flush).",
+        tags=["advanced", "woodlover", "cold-fruiting", "eucalyptus", "high-fae"],
+        legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only.",
+        tldr="The Australian woodlover, and the best-triggered of the group: fruiting keys on a SUSTAINED drop below 46F, which is a far more concrete cold-shock figure than anything published for P. cyanescens. Grain spawn, then pasteurized hardwood chips (eucalyptus preferred) for 4-8 weeks, then case and cold-drop. Wants high air exchange during fruiting. Indoor cultivation confirmed in a 2026 peer-reviewed study.",
+        flavor_profile="Active species are not primarily consumed for flavor. Typically dried and consumed in capsules, tea, or food preparations.",
+        tek_guide=[
+            TekStep(step_number=1, title="Grain Spawn", description="Colonize rye grain at 70-78F as normal.", duration="10-21 days", tips=["Standard grain tek", "Full colonization before the wood step"], common_mistakes=["Transferring under-colonized grain"]),
+            TekStep(step_number=2, title="Hardwood Chips", description="Pasteurize hardwood chips — eucalyptus if you can get it, otherwise general hardwood. Mix with spawn and colonize at 65-75F for 4-8 weeks.", duration="28-56 days", tips=["Eucalyptus is its native substrate and the preferred choice", "Patience — wood colonization is slow"], common_mistakes=["Using softwood or bark", "Over-wetting the chips"]),
+            TekStep(step_number=3, title="Case and Cold-Drop", description="Apply a 1-2cm casing, then drive the temperature down below 46F in a sustained drop — not a brief shock. Hold 90-95% RH with continuous, high-volume FAE.", duration="14-28 days", tips=["This is the clearest cold trigger of any woodlover — use it. Sustained, not brief", "Heavy dew accompanies it in the wild; keep surface humidity very high"], common_mistakes=["A brief cold shock instead of a sustained drop", "Skimping on FAE — this species wants a lot of it"]),
+            TekStep(step_number=4, title="Fruiting and Harvest", description="Hold 50-65F at 90%+ RH with high air exchange. Harvest as veils tear. Expect 2-3 flushes.", duration="7-21 days per flush", tips=["Bruises blue strongly — handle carefully if appearance matters", "High FAE throughout"], common_mistakes=["Letting temperature climb", "Inadequate air exchange producing leggy fruits"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Hardwood Chips (eucalyptus preferred)", ingredients={"eucalyptus or hardwood chips": "5 lbs", "grain spawn": "1 quart"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=20, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="optimal", notes="Eucalyptus is the native and preferred wood. General hardwood chips also work."),
+        ],
+        substrate_preference_ranking=["hardwood chips (eucalyptus preferred)", "hardwood sawdust"],
+        contamination_risks=["Trichoderma during the multi-week wood colonization", "Cobweb mould in cool, very humid fruiting conditions", "High FAE volumes pulling in airborne contaminants — filter intake air"],
+        photo_references={
+            "fruiting": "Search: Psilocybe subaeruginosa fruiting wood chips",
+        },
+    ),
+    SpeciesProfile(
+        id="psilocybe_galindoi",
+        common_name="Galindoi Truffle",
+        scientific_name="Psilocybe galindoi",
+        category="active",
+        substrate_types=["rye grain", "coco coir/vermiculite bulk"],
+        colonization_visual_description=(
+            "Wispy white mycelium producing sclerotia (truffles) — dense nuggets that form within "
+            "the substrate. The sclerotia are the harvest, not mushrooms. Same growth habit as "
+            "P. tampanensis."
+        ),
+        contamination_risk_notes=(
+            "The long sealed sclerotia period (2-5 months) means any initial contamination has "
+            "months to take hold, and you cannot inspect without breaking the seal. Sterile grain "
+            "prep is everything."
+        ),
+        pinning_trigger_description=(
+            "NO fruiting trigger needed for sclerotia — they form inside sealed jars during "
+            "colonization. Keep dark, keep sealed, wait. Mushrooms can optionally be fruited later "
+            "on a cased bulk substrate."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=77, temp_max_f=91, humidity_min=0, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(62, 140),
+                notes="Mycelium colonizes best at 21-25C; sclerotia form across 25-33C (77-91F), "
+                      "dark, sealed. First sclerotia ~62 days; 13-20 weeks is the ideal wait; growth "
+                      "continues 3-6 months. LOW confidence — vendor/grow-log sourcing only. "
+                      "[CO2 inferred]",
+            ),
+        },
+        flush_count_typical=0,
+        yield_notes="Harvest is sclerotia (truffles) from inside the jar. No rigorous yield study exists; a single grow log reports tampanensis (the closest comparable, already in the library) at 582.6g dried from a 66-quart tub. Treat all yield figures for this species as anecdotal.",
+        tags=["intermediate", "sclerotia", "truffles", "long-cycle"],
+        legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only. NOTE: in the Netherlands sclerotia are legally distinct from fruiting bodies and remain legally sold; this distinction does NOT apply in the US or most of the EU, where sclerotia are controlled identically to mushrooms.",
+        tldr="A sclerotia (truffle) producer that behaves almost exactly like the Philosopher's Stone already in the library. No fruiting trigger, no FAE, no light — seal grain jars, hold at 77-91F in the dark, and wait. First sclerotia around 62 days; 13-20 weeks is the sweet spot. Patience is the whole technique. Sourcing is vendor/grow-log only, so treat the numbers as soft.",
+        flavor_profile="Active species are not primarily consumed for flavor. Sclerotia are dense and nutty-bitter; typically eaten fresh or dried.",
+        tek_guide=[
+            TekStep(step_number=1, title="Grain Preparation", description="Prepare rye grain in quart jars. Simmer until hydrated but not split. Load with micropore-taped lids. Pressure sterilize at 15 PSI for 90 minutes.", duration="3-4 hours", tips=["Same prep as P. tampanensis — if you have run that, this is identical", "Dry the grain surface before loading"], common_mistakes=["Splitting the grain by overcooking", "Short sterilization ahead of a multi-month sealed run"]),
+            TekStep(step_number=2, title="Inoculation", description="Inoculate cooled jars with liquid culture using sterile technique. Seal and place in darkness.", duration="30 minutes", tips=["Liquid culture distributes more evenly than a spore syringe", "Sterile technique matters more than usual — you cannot intervene later"], common_mistakes=["Opening jars in a non-sterile environment"]),
+            TekStep(step_number=3, title="Sealed Sclerotia Formation", description="Hold sealed jars at 77-91F in complete darkness. Do not open, shake or disturb them. Sclerotia form as dense nuggets within the substrate. First sclerotia appear around 62 days; the ideal wait is 13-20 weeks, and growth continues for 3-6 months.", duration="62-140 days", tips=["Set a calendar reminder for four months out and genuinely forget the jars", "Warmer end of the range (up to 91F) favours sclerotia formation"], common_mistakes=["Opening to check — the entire technique depends on leaving them sealed", "Harvesting at 2 months and getting tiny, sparse sclerotia"]),
+            TekStep(step_number=4, title="Harvest", description="Open the jars and sift the substrate for sclerotia — dense brown-tan nuggets. Rinse gently, pat dry. Use fresh or dry for storage.", duration="1 hour", tips=["Longer incubation gives larger sclerotia", "Firm and dense is ripe; soft is immature"], common_mistakes=["Harvesting early", "Poor drying — fresh sclerotia spoil quickly"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Rye Grain (Sclerotia Production)", ingredients={"whole rye grain": "1 quart", "gypsum": "1 tablespoon"}, water_liters_per_liter_substrate=0.5, spawn_rate_percent=100, sterilization_method="pressure_sterilize", sterilization_time_min=90, sterilization_temp_f=250, suitability="optimal", notes="Same tek as P. tampanensis. Simmer to hydrate, do not soak."),
+        ],
+        substrate_preference_ranking=["rye grain", "coco coir/vermiculite bulk"],
+        contamination_risks=["Trichoderma over the 2-5 month sealed cycle", "Bacterial contamination from improperly sterilized grain", "Cannot be inspected during growth — contamination is only discovered at harvest"],
+        photo_references={
+            "colonization": "Search: Psilocybe galindoi sclerotia truffle formation grain",
+        },
+    ),
+    SpeciesProfile(
+        id="psilocybe_ovoideocystidiata",
+        common_name="Ovoids",
+        scientific_name="Psilocybe ovoideocystidiata",
+        category="active",
+        substrate_types=["hardwood chips (oak/hickory/maple)", "hardwood sawdust", "rye grain (spawn only)"],
+        colonization_visual_description=(
+            "White mycelium, 2-4 weeks on grain, then MONTHS on hardwood bulk. A riparian species — "
+            "in the wild it grows in flood-prone river-bottom wood debris."
+        ),
+        contamination_risk_notes=(
+            "Months-long wood colonization is a very long exposure window indoors. Outdoors, the "
+            "bed's own microbiology holds competitors in check; indoors it does not, which is a "
+            "large part of why indoor attempts struggle."
+        ),
+        pinning_trigger_description=(
+            "Fruits spring through early summer 'after winter dormancy', implying a genuine seasonal "
+            "cold period. NO ONE HAS QUANTIFIED THE DELTA OR DURATION. This is the core reason "
+            "indoor cultivation of this species is unreliable."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=60, temp_max_f=70, humidity_min=70, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(14, 28),
+                notes="Grain spawn, 2-4 weeks at 60-70F. The straightforward part.",
+            ),
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=60, temp_max_f=70, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(60, 120),
+                notes="Hardwood bulk colonization takes MONTHS. Oak/hickory/maple chips. "
+                      "[CO2 inferred - none published]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=50, temp_max_f=62, humidity_min=88, humidity_max=95,
+                temp_swing_required=True, temp_swing_delta_f=12,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(21, 60),
+                notes="Requires a seasonal cold/dormancy period that has NEVER been quantified. "
+                      "The 12F delta here is a guess, not a source. This is the reason indoor "
+                      "cultivation is unreliable for this species. [CO2 inferred]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=50, temp_max_f=70, humidity_min=85, humidity_max=95,
+                co2_max_ppm=1000, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="continuous", expected_duration_days=(14, 30),
+                notes="50-70F, 85-95% RH. Sources agree outdoor wood-chip beds substantially "
+                      "outperform indoor attempts. [CO2 inferred]",
+            ),
+        },
+        flush_count_typical=2,
+        yield_notes="No flush-count or yield data has been published. Sources consistently recommend outdoor wood-chip beds over indoor cultivation for this species.",
+        tags=["advanced", "woodlover", "outdoor-preferred", "riparian", "unreliable-indoors"],
+        legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only.",
+        tldr="Be realistic about this one: every source says it is an OUTDOOR wood-chip-bed species, not an indoor one. It is a riparian specialist tuned to seasonal flooding and a winter dormancy that nobody has ever quantified, which is exactly why indoor attempts are hit-and-miss. Grain colonizes in 2-4 weeks; hardwood bulk takes months. If you want this species, build an outdoor bed. The indoor parameters here are best-effort, not a reliable protocol.",
+        flavor_profile="Active species are not primarily consumed for flavor. Typically dried and consumed in capsules, tea, or food preparations.",
+        tek_guide=[
+            TekStep(step_number=1, title="Decide Indoor vs Outdoor", description="Every available source recommends outdoor wood-chip beds for this species. If you have any outdoor space, use it. Indoor chamber cultivation is documented as marginal and no reliable protocol exists.", duration="n/a", tips=["An outdoor hardwood-chip bed in a shaded, moist spot is the documented method", "Indoor is possible but expect inconsistency"], common_mistakes=["Committing months of indoor chamber time to a species that fruits far more readily in a garden bed"]),
+            TekStep(step_number=2, title="Grain Spawn", description="Colonize rye grain at 60-70F over 2-4 weeks.", duration="14-28 days", tips=["Cooler grain colonization than cubensis", "This stage is reliable"], common_mistakes=["Running it too warm"]),
+            TekStep(step_number=3, title="Hardwood Bulk", description="Mix spawn into pasteurized oak, hickory or maple chips. Colonization takes months, not weeks.", duration="60-120 days", tips=["Budget months, not weeks", "Keep the chips consistently moist — this is a flood-plain species"], common_mistakes=["Expecting a fast run", "Letting the chips dry out"]),
+            TekStep(step_number=4, title="Cold Period and Fruiting", description="Provide an extended cool/dormancy period, then fruit at 50-70F with 85-95% RH and continuous FAE. Be aware: the required cold delta and duration have never been published, so this step is genuinely experimental.", duration="21-60 days", tips=["Outdoor beds get this for free from the seasons — which is precisely why they work better", "Log what you try; there is no reference protocol to follow"], common_mistakes=["Expecting a documented trigger; there isn't one", "Giving up after a few weeks"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Hardwood Chips (outdoor bed preferred)", ingredients={"oak/hickory/maple chips": "as bulk", "grain spawn": "10-20% by volume"}, water_liters_per_liter_substrate=1.0, spawn_rate_percent=20, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="optimal", notes="For outdoor beds, pasteurization is optional — the bed's microbiology handles competitors. Indoors, pasteurize."),
+        ],
+        substrate_preference_ranking=["hardwood chips (oak/hickory/maple)", "hardwood sawdust"],
+        contamination_risks=["Months-long indoor wood colonization with a wide-open contamination window", "Indoors it lacks the competitor suppression an outdoor bed's microbiology provides", "Cobweb mould in cool humid conditions"],
+        photo_references={
+            "fruiting": "https://commons.wikimedia.org/wiki/File:Psilocybe_ovoideocystidiata_54428.jpg",
+        },
+    ),
+    SpeciesProfile(
+        id="panaeolus_cambodginiensis",
+        common_name="Goliath (Pan Cambodian)",
+        scientific_name="Panaeolus cambodginiensis",
+        category="active",
+        strain="Panaeolus cyanescens group",
+        substrate_types=["dung-based (manure)", "CVG", "rye grain (spawn only)"],
+        colonization_visual_description=(
+            "Fine white mycelium on grain, 10-15 days at 78-82F. Bruises blue-black strongly. "
+            "Reported as more contamination-resistant than P. cyanescens — 'more like growing "
+            "cubensis' — though this is grower consensus, not a controlled finding."
+        ),
+        contamination_risk_notes=(
+            "Reportedly more forgiving than P. cyanescens, which is notoriously contamination-prone. "
+            "Dung substrates carry inherent bacterial and competitor load — pasteurize properly."
+        ),
+        pinning_trigger_description=(
+            "Standard Panaeolus: FAE introduction with a casing layer, 12/12 light, and high surface "
+            "humidity. Warm-fruiting, unlike the woodlover Psilocybes — no cold shock is needed."
+        ),
+        phases={
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=78, temp_max_f=82, humidity_min=70, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 15),
+                notes="78-82F, 10-15 days on sterilized milo/rye grain. Reported more "
+                      "contamination-resistant than P. cyanescens. [CO2 inferred]",
+            ),
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=78, temp_max_f=84, humidity_min=85, humidity_max=95,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 18),
+                notes="Dung-based or CVG bulk. Warm. Keep dark until fully colonized. "
+                      "[CO2 inferred]",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=78, temp_max_f=84, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(5, 10),
+                notes="Warm-fruiting — NO cold shock, unlike the woodlover Psilocybes. Casing "
+                      "layer plus FAE and 12/12 light. [CO2 inferred from Panaeolus norms]",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=78, temp_max_f=84, humidity_min=85, humidity_max=92,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Warm and humid with strong FAE. Fragile fruits; bruise blue-black readily. "
+                      "[CO2 inferred]",
+            ),
+        },
+        flush_count_typical=3,
+        yield_notes="No controlled yield study exists. Grower consensus reports it as comparable to or slightly more forgiving than P. cyanescens, with similar potency. Treat all figures as anecdotal.",
+        tags=["intermediate", "dung-loving", "warm-fruiting", "taxonomically-ambiguous"],
+        legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only.",
+        tldr="A warm-fruiting dung-lover in the Panaeolus cyanescens group — and that group label matters: P. cambodginiensis, P. tropicalis and P. bisporus cannot be reliably separated without microscopy or DNA, so treat species-level claims sceptically. Reported as more contamination-resistant than the Pan Cyan already in the library, though growers disagree about this and no controlled study exists. Grain in 10-15 days at 78-82F, then dung/CVG bulk, casing, and warm fruiting with strong FAE. No cold shock needed.",
+        flavor_profile="Active species are not primarily consumed for flavor. Typically dried and consumed in capsules, tea, or food preparations.",
+        tek_guide=[
+            TekStep(step_number=1, title="Understand What You Have", description="This species sits inside the 'Panaeolus cyanescens group' — cambodginiensis, tropicalis and bisporus are not reliably separable without spore microscopy or DNA sequencing. Vendor labels in this group are frequently unreliable.", duration="n/a", tips=["If precise identity matters to you, sequence it — morphology will not settle it", "Cultivation-wise, they all behave broadly like Pan Cyan"], common_mistakes=["Trusting a vendor's species label in this group as definitive"]),
+            TekStep(step_number=2, title="Grain Spawn", description="Colonize sterilized milo or rye grain at 78-82F for 10-15 days.", duration="10-15 days", tips=["Warmer than most grain runs — this is a tropical species", "Reported to be more forgiving than P. cyanescens at this stage"], common_mistakes=["Running cool and stalling colonization"]),
+            TekStep(step_number=3, title="Bulk and Case", description="Spawn to a dung-based or CVG bulk substrate at 78-84F. Once colonized, apply a casing layer.", duration="10-18 days", tips=["Dung substrates suit Panaeolus well — this is a coprophilic genus", "Pasteurize dung thoroughly; it carries a heavy competitor load"], common_mistakes=["Under-pasteurizing manure", "Skipping the casing"]),
+            TekStep(step_number=4, title="Warm Fruiting", description="Fruit at 78-84F with 85-92% RH, 12/12 light and strong scheduled FAE. No cold shock — this species fruits warm.", duration="7-14 days per flush", tips=["Warm fruiting is the key difference from the woodlover Psilocybes", "Fruits are delicate and bruise blue-black on any handling"], common_mistakes=["Cold-shocking out of habit — unnecessary and counterproductive here", "Insufficient FAE"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="Dung-Based (Manure)", ingredients={"aged horse/cow manure": "5 quarts", "vermiculite": "2 quarts", "gypsum": "1 cup", "coco coir": "1 quart"}, water_liters_per_liter_substrate=0.9, spawn_rate_percent=15, sterilization_method="pasteurize_hot_water", sterilization_time_min=120, sterilization_temp_f=170, suitability="optimal", notes="Panaeolus is coprophilic — dung substrates suit it well. Pasteurize thoroughly."),
+            SubstrateRecipe(name="CVG", ingredients={"coco coir brick": "650g", "vermiculite": "2 quarts", "gypsum": "1 cup"}, water_liters_per_liter_substrate=0.8, spawn_rate_percent=15, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="good", notes="Lower contamination risk than manure, at some cost in yield."),
+        ],
+        substrate_preference_ranking=["dung-based (manure)", "CVG"],
+        contamination_risks=["Manure substrates carry a heavy bacterial and competitor load", "Warm, humid fruiting favours bacterial blotch", "Cobweb mould", "Trichoderma"],
+        photo_references={
+            "fruiting": "Search: Panaeolus cambodginiensis fruiting dung substrate",
+        },
+    ),
+
 ]

@@ -8,11 +8,12 @@ from datetime import datetime, timezone
 
 
 from ..db import get_db
+from ..species.service import get_profile
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
 
 _PHASE_ORDER = [
     "agar", "liquid_culture", "grain_colonization",
-    "substrate_colonization", "primordia_induction",
+    "substrate_colonization", "cold_storage", "primordia_induction",
     "fruiting", "rest", "complete",
 ]
 
@@ -23,12 +24,12 @@ async def create_session(data: SessionCreate) -> dict:
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
                substrate_prep_notes, inoculation_date, inoculation_method, spawn_source,
-               current_phase, tub_number, shelf_number, shelf_side, growth_form, pinning_tek,
+               current_phase, container_type, tub_number, shelf_number, shelf_side, growth_form, pinning_tek,
                chamber_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data.name, data.species_profile_id, data.substrate, data.substrate_volume,
              data.substrate_prep_notes, data.inoculation_date, data.inoculation_method,
-             data.spawn_source, data.current_phase, data.tub_number, data.shelf_number,
+             data.spawn_source, data.current_phase, data.container_type, data.tub_number, data.shelf_number,
              data.shelf_side, data.growth_form, data.pinning_tek, data.chamber_id),
         )
         session_id = cursor.lastrowid
@@ -131,6 +132,40 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
     return await get_session(session_id)
 
 
+_COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substrate_colonization"}
+_BAG_CONTAINERS = {"grow_bag", "bag"}
+
+
+def suggested_next_phase(current_phase: str, container_type: str | None,
+                         more_flushes_expected: bool = True) -> str:
+    """The product spec's forks, as a suggestion the UI offers on 'advance phase'.
+
+    Two forks:
+    1. After colonization: a GROW BAG goes on to fruit; colonized agar / LC /
+       grain is pulled and parked in the fridge until used.
+           grow bag       → primordia_induction
+           agar/LC/grain  → cold_storage
+    2. The flush loop: a bag gives 2-3 flushes. After a flush you REST, then go
+       back to FRUITING for the next one — until the bag is spent, then COMPLETE.
+           rest → fruiting   (if more flushes expected)
+           rest → complete   (bag is spent)
+    Everything else follows the ordinary linear order.
+    """
+    ct = (container_type or "").lower()
+    if current_phase in _COLONIZATION_PHASES:
+        return "primordia_induction" if ct in _BAG_CONTAINERS else "cold_storage"
+    if current_phase == "rest":
+        return "fruiting" if more_flushes_expected else "complete"
+    # Non-fork transitions follow the ordinary linear progression.
+    from ..species.models import GrowPhase
+    order = [p.value for p in GrowPhase]
+    try:
+        i = order.index(current_phase)
+        return order[i + 1] if i + 1 < len(order) else "complete"
+    except ValueError:
+        return "complete"
+
+
 async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
     now = time.time()
     async with get_db() as db:
@@ -202,6 +237,43 @@ async def add_harvest(session_id: int, data: HarvestCreate) -> dict:
         harvest_id = cursor.lastrowid
         cursor = await db.execute("SELECT * FROM harvests WHERE id = ?", (harvest_id,))
         return dict(await cursor.fetchone())
+
+
+async def flush_status(session_id: int) -> dict:
+    """How many flushes has this session yielded, and are more expected?
+
+    A grow bag typically gives 2-3 flushes: fruit → harvest → rest → re-fruit,
+    until it's spent. `expected` comes from the species' flush_count_typical.
+    The UI uses `more_expected` to decide whether REST loops back to FRUITING
+    (another flush) or advances to COMPLETE (bag is done).
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(DISTINCT flush_number) AS n, MAX(flush_number) AS latest "
+            "FROM harvests WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        harvested = row["n"] or 0
+        latest = row["latest"] or 0
+        cursor = await db.execute(
+            "SELECT species_profile_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        srow = await cursor.fetchone()
+
+    expected = None
+    if srow:
+        profile = await get_profile(srow["species_profile_id"])
+        if profile is not None:
+            expected = getattr(profile, "flush_count_typical", None)
+
+    more_expected = expected is None or harvested < expected
+    return {
+        "flushes_harvested": harvested,
+        "latest_flush": latest,
+        "expected_flushes": expected,
+        "more_expected": more_expected,
+    }
 
 
 async def get_active_session() -> dict | None:

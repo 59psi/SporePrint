@@ -100,18 +100,31 @@ def _mock_localtime(hour, minute):
     return time.struct_time((2026, 1, 1, hour, minute, 0, 0, 1, 0))
 
 
+# `interval_min` is ELAPSED-SINCE-LAST-FIRE, not wall-clock modulo.
+#
+# These two tests previously asserted the modulo behaviour — that is, they
+# asserted the bug. `(hour*60+min) % 20 == 0` only matched when an evaluation
+# happened to land on an exact 20-minute boundary, but rules are evaluated when
+# telemetry arrives (~60s, and it drifts). One late frame and the whole cycle
+# was skipped: the FAE fan simply never ran that round. "Every 20 minutes" now
+# means what it says. Full contract in tests/test_automation_scheduling.py.
 def test_schedule_interval_match():
     s = ScheduleCondition(interval_min=20)
+    now = time.time()
     with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(2, 0)  # 120 min, 120 % 20 == 0
-        assert _eval_schedule(s) is True
+        mock_time.localtime.return_value = _mock_localtime(2, 5)  # wall clock is irrelevant
+        mock_time.time.return_value = now
+        assert _eval_schedule(s, None, last_fired=now - 21 * 60) is True
 
 
 def test_schedule_interval_no_match():
     s = ScheduleCondition(interval_min=20)
+    now = time.time()
     with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(2, 5)  # 125 min, 125 % 20 != 0
-        assert _eval_schedule(s) is False
+        mock_time.localtime.return_value = _mock_localtime(2, 0)  # on a boundary…
+        mock_time.time.return_value = now
+        # …but only 5 minutes since it last fired, so it is not due.
+        assert _eval_schedule(s, None, last_fired=now - 5 * 60) is False
 
 
 def test_schedule_time_range_inside():

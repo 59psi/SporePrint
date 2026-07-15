@@ -214,12 +214,73 @@ static void handle_config_cmd(JsonDocument& doc) {
                    "[CMD] calibrate_co2:true is deprecated — send a target "
                    "ppm (e.g. {\"calibrate_co2\": 420}) with the chamber "
                    "open to fresh air");
-        } else if (doc["calibrate_co2"].is<uint16_t>() && scd4x != nullptr) {
+        } else if (doc["calibrate_co2"].is<uint16_t>()) {
+            // Dispatch to whichever CO₂ sensor this node actually has —
+            // the SCD4x-only gate silently dropped the command on SCD30
+            // and MH-Z19C nodes.
             uint16_t ppm = doc["calibrate_co2"].as<uint16_t>();
-            SP_LOG(LOG_INFO, "[CMD] SCD4x forced recalibration to %u ppm", ppm);
-            bool ok = scd4x->recalibrate(ppm);
-            SP_LOG(ok ? LOG_INFO : LOG_ERROR, "[CMD] FRC %s",
-                   ok ? "applied" : "FAILED (sensor needs >3 min runtime)");
+            if (scd4x != nullptr) {
+                SP_LOG(LOG_INFO, "[CMD] SCD4x forced recalibration to %u ppm",
+                       ppm);
+                bool ok = scd4x->recalibrate(ppm);
+                SP_LOG(ok ? LOG_INFO : LOG_ERROR, "[CMD] FRC %s",
+                       ok ? "applied" : "FAILED (sensor needs >3 min runtime)");
+            } else if (scd30 != nullptr) {
+                SP_LOG(LOG_INFO, "[CMD] SCD30 forced recalibration to %u ppm",
+                       ppm);
+                bool ok = scd30->recalibrate(ppm);
+                SP_LOG(ok ? LOG_INFO : LOG_ERROR, "[CMD] FRC %s",
+                       ok ? "applied" : "FAILED (bus write rejected)");
+            } else if (mhz19 != nullptr) {
+                // Winsen has no calibrate-to-target: zero-point cal latches
+                // the CURRENT reading as the 400 ppm baseline, so the ppm
+                // argument is ignored — open the chamber to fresh air first.
+                SP_LOG(LOG_INFO,
+                       "[CMD] MH-Z19C zero-point calibration (targets 400 ppm "
+                       "fresh air; %u ppm arg ignored)",
+                       ppm);
+                mhz19->calibrate_zero();
+            } else {
+                SP_LOG(LOG_WARN, "[CMD] calibrate_co2: no CO2 sensor present");
+            }
+        }
+    }
+    if (doc["tare"].is<bool>() && doc["tare"].as<bool>()) {
+        if (hx711 != nullptr && have_hx711) {
+            cfg.hx711_tare = hx711_raw;
+            cfg.save(kv);
+            SP_LOG(LOG_INFO, "[CMD] scale tared at %d counts",
+                   (int)cfg.hx711_tare);
+        } else {
+            SP_LOG(LOG_WARN, "[CMD] tare: no HX711 sample yet%s",
+                   hx711 == nullptr ? " (hx711 not enabled)" : "");
+        }
+    }
+    if (doc["calibrate_scale"].is<float>()) {
+        float known_g = doc["calibrate_scale"].as<float>();
+        if (hx711 == nullptr || !have_hx711) {
+            SP_LOG(LOG_WARN, "[CMD] calibrate_scale: no HX711 sample yet%s",
+                   hx711 == nullptr ? " (hx711 not enabled)" : "");
+        } else if (!(known_g > 0.0f)) {
+            SP_LOG(LOG_WARN, "[CMD] calibrate_scale: known mass must be > 0 g");
+        } else {
+            float scale = (float)(hx711_raw - cfg.hx711_tare) / known_g;
+            // Reject nonsense before persisting: a zero/negative delta means
+            // the mass isn't on the platter (or the cell is wired backwards).
+            if (!isfinite(scale) || scale <= 0.0f) {
+                SP_LOG(LOG_WARN,
+                       "[CMD] calibrate_scale: implausible %.3f counts/g — "
+                       "tare empty, then place the known mass",
+                       (double)scale);
+            } else {
+                cfg.hx711_scale = scale;
+                cfg.save(kv);
+                SP_LOG(LOG_INFO,
+                       "[CMD] scale calibrated: %.3f counts/g (%.1f g at %d "
+                       "counts, tare %d)",
+                       (double)scale, (double)known_g, (int)hx711_raw,
+                       (int)cfg.hx711_tare);
+            }
         }
     }
 }
@@ -411,7 +472,17 @@ static void publish_telemetry() {
     }
     if (have_co2) doc["co2_ppm"] = co2_ppm;
     if (have_lux) doc["lux"] = roundf(lux * 10.0f) / 10.0f;
-    if (have_hx711) doc["scale_raw"] = hx711_raw;  // tolerated-not-stored
+    if (have_hx711) {
+        float grams;
+        if (sp::Hx711::to_grams(hx711_raw, cfg.hx711_tare, cfg.hx711_scale,
+                                &grams)) {
+            doc["weight_g"] = roundf(grams * 10.0f) / 10.0f;
+        } else {
+            // Uncalibrated (scale == 0) — publish raw counts so the
+            // operator can watch the tare/calibrate flow move the needle.
+            doc["scale_raw"] = hx711_raw;  // tolerated-not-stored
+        }
+    }
     if (reed != nullptr) doc["door_open"] = !reed->is_closed();
 
     std::string topic = mqtt->topic("telemetry");
@@ -474,6 +545,7 @@ static void publish_health() {
     if (bh1750) add_sensor("bh1750", bh1750->health());
     if (mhz19) add_sensor("mhz19", mhz19->health());
     if (hx711) add_sensor("hx711", hx711->health());
+    if (reed) add_sensor("reed", reed->health());
 
     if (channel_count > 0) {
         JsonObject chans = doc["channels"].to<JsonObject>();
@@ -497,6 +569,7 @@ static void publish_health() {
     if (expects_climate && !sht3x && !sht4x) missing.add("temp_rh");
     if (cfg.mhz19_enabled && mhz19 == nullptr) missing.add("mhz19");
     if (cfg.hx711_enabled && hx711 == nullptr) missing.add("hx711");
+    if (cfg.reed_enabled && reed == nullptr) missing.add("reed");
 
     mqtt->publish(mqtt->topic("health").c_str(), doc);
 }
@@ -577,7 +650,7 @@ void setup() {
         co2_uart = new sp_device::ArduinoUart(Serial2);
         Serial2.begin(9600, SERIAL_8N1, SP_UART_CO2_RX, SP_UART_CO2_TX);
         mhz19 = new sp::Mhz19(*co2_uart, sys_clock);
-        mhz19->begin();  // ABC off
+        mhz19->begin(false);  // ABC off — chamber air is never 400 ppm
     }
     if (cfg.hx711_enabled) {
         hx711 = new sp::Hx711(hx_dout, hx_sck, sp_device::hx711_delay_us);

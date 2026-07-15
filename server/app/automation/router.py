@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from ..db import get_db
 from .models import AutomationRule, ManualOverride
 from .engine import set_override, get_overrides, clear_override as clear_override_engine
-from .service import deserialize_rule_row, serialize_rule_data
+from .service import deserialize_rule_row, serialize_rule_data, validate_action_channel
 from .smart_plugs import get_all_plugs, register_plug, send_plug_command
 
 router = APIRouter()
@@ -35,6 +35,8 @@ async def get_rule(rule_id: int):
 
 @router.post("/rules")
 async def create_rule(rule: AutomationRule):
+    if error := await validate_action_channel(rule.action):
+        raise HTTPException(422, error)
     async with get_db() as db:
         cursor = await db.execute(
             "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) VALUES (?, ?, ?, ?, ?)",
@@ -47,6 +49,8 @@ async def create_rule(rule: AutomationRule):
 
 @router.put("/rules/{rule_id}")
 async def update_rule(rule_id: int, rule: AutomationRule):
+    if error := await validate_action_channel(rule.action):
+        raise HTTPException(422, error)
     async with get_db() as db:
         result = await db.execute(
             "UPDATE automation_rules SET name=?, description=?, enabled=?, priority=?, rule_data=?, updated_at=unixepoch('now') WHERE id=?",

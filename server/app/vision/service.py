@@ -9,7 +9,7 @@ import anthropic
 
 from ..config import settings
 from ..db import get_db
-from ..notifications.service import contamination_alert
+from ..notifications.service import contamination_alert, notify_warning
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +123,7 @@ Provide a structured analysis in JSON format with these fields:
 - confidence: 0.0-1.0
 - contamination_detected: null or {{ type, confidence, description }}
 - growth_stage: description of current growth stage
+- growth_rate: "expanding" | "slowing" | "stalled" | "n/a" — is the fruit body still visibly growing, or has it plateaued? Cues that growth has slowed/stalled: caps flattening or upturning, veils breaking, spores dropping, no size change expected between frames at this stage. A stalled/slowing fruit is at or past its harvest window.
 - morphology_notes: observations about mycelium/fruit body morphology
 - harvest_readiness: "not_ready" | "approaching" | "ready" | "overdue" | "n/a"
 - recommendations: list of actionable recommendations
@@ -191,11 +192,123 @@ Provide a structured analysis in JSON format with these fields:
             except Exception as e:
                 log.warning("forward_event(contamination_alert) failed: %s", e)
 
+        await _maybe_harvest_alert(frame, result, species_name)
+
         return result
 
     except Exception as e:
         log.error("Claude vision analysis failed: %s", e)
         return {"error": str(e)}
+
+
+_FRUITING_PHASES = {"primordia_induction", "fruiting"}
+_HARVEST_READY = {"ready", "overdue"}
+_GROWTH_SLOWED = {"slowing", "stalled"}
+
+
+def harvest_signal(current_phase: str, recent_analyses: list[dict]) -> tuple[bool, str | None]:
+    """Should we tell the operator it's time to harvest? Pure + unit-testable.
+
+    The spec's ask: "alert when fruiting SLOWS so you know about when to harvest."
+    We only judge during a fruiting phase. `recent_analyses` is oldest→newest.
+    The camera can't measure growth to the millimetre, so the signal is the
+    model's per-frame stage read, corroborated across frames:
+      - the latest frame says the fruit is ready/overdue or its growth has
+        slowed/stalled, AND
+      - it isn't a one-off: the frame before it also showed a mature/slowing
+        read (a plateau), so we don't fire on a single noisy assessment.
+    A single frame with no history still fires on an unambiguous overdue.
+    """
+    if current_phase not in _FRUITING_PHASES or not recent_analyses:
+        return False, None
+
+    def _mature(a: dict) -> bool:
+        return (str(a.get("harvest_readiness", "")).lower() in _HARVEST_READY
+                or str(a.get("growth_rate", "")).lower() in _GROWTH_SLOWED)
+
+    latest = recent_analyses[-1]
+    if str(latest.get("harvest_readiness", "")).lower() == "overdue":
+        return True, "fruit body is overdue for harvest"
+    if _mature(latest):
+        # Corroborate against the prior frame to avoid a one-off false positive.
+        if len(recent_analyses) >= 2 and _mature(recent_analyses[-2]):
+            reason = ("growth has slowed and the fruit is at its harvest window"
+                      if str(latest.get("growth_rate", "")).lower() in _GROWTH_SLOWED
+                      else "fruit body is ready to harvest")
+            return True, reason
+    return False, None
+
+
+async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> None:
+    """Fire a deduped harvest alert when fruiting has slowed / the fruit is ready."""
+    if not isinstance(result, dict):
+        return
+    session_id = frame.get("session_id")
+    if not session_id:
+        return
+
+    async with get_db() as db:
+        srow = await (await db.execute(
+            "SELECT current_phase FROM sessions WHERE id = ?", (session_id,)
+        )).fetchone()
+        if not srow:
+            return
+        phase = srow["current_phase"]
+
+        # Pull the last few Claude analyses for this session (oldest→newest).
+        rows = await (await db.execute(
+            "SELECT analysis_claude FROM vision_frames "
+            "WHERE session_id = ? AND analysis_claude IS NOT NULL "
+            "ORDER BY timestamp DESC LIMIT 4",
+            (session_id,),
+        )).fetchall()
+    recent = []
+    for r in reversed(rows):
+        try:
+            recent.append(json.loads(r["analysis_claude"]))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    recent.append(result)  # the frame we just analysed (may not be persisted yet)
+
+    should, reason = harvest_signal(phase, recent)
+    if not should:
+        return
+
+    async with get_db() as db:
+        # Dedup: at most one harvest alert per session per 12h.
+        existing = await (await db.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'harvest_ready' "
+            "AND created_at > unixepoch('now') - 43200 LIMIT 1",
+            (session_id,),
+        )).fetchone()
+        if existing:
+            return
+        await db.execute(
+            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "harvest_ready", "vision", f"Harvest window: {reason}",
+             json.dumps({"reason": reason, "frame_id": frame.get("id")})),
+        )
+        await db.commit()
+
+    try:
+        await notify_warning(
+            f"Harvest window — {species_name}",
+            f"Vision: {reason}. Check the chamber.",
+            dedup_key=f"harvest:{session_id}",
+        )
+    except Exception as e:
+        log.warning("harvest notify failed: %s", e)
+    try:
+        from ..cloud.service import forward_event
+        await forward_event("harvest_ready", {
+            "node_id": frame.get("node_id"),
+            "session_id": session_id,
+            "species": species_name,
+            "reason": reason,
+            "frame_id": frame.get("id"),
+        })
+    except Exception as e:
+        log.warning("forward_event(harvest_ready) failed: %s", e)
 
 
 async def get_frames(

@@ -96,6 +96,8 @@ struct NodeConfig {
     sp::Personality personality = sp::Personality::Climate;
     bool tls_enabled = false;  // Secure MQTT: pin the Pi CA, broker :8883
     bool hx711_enabled = false;
+    int32_t hx711_tare = 0;    // raw counts with the scale empty
+    float hx711_scale = 0.0f;  // counts per gram; 0 = uncalibrated
     bool reed_enabled = false;
     bool mhz19_enabled = false;
     std::string migrated_from;  // legacy namespace name, "" if fresh

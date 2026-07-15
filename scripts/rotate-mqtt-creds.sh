@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# scripts/rotate-mqtt-creds.sh — rotate the three purpose-scoped Mosquitto
-# users introduced in v3.4.9 (sp-cmd, sp-telemetry, sp-3p).
+# scripts/rotate-mqtt-creds.sh — rotate the shared Mosquitto service accounts:
+# `server` (the Pi server's own credential — .env SPOREPRINT_MQTT_USERNAME/
+# PASSWORD, provisioned by setup.sh), sp-3p (the smart-plug account), and the
+# scoped tooling accounts sp-cmd / sp-telemetry.
 #
-# Per-node credentials are handled by setup.sh at first run. This script
-# is for the shared service accounts only. Safe to run at any time; the
-# Pi reconnects with the new password within the MQTT supervisor's 5s
-# backoff window.
+# Per-node credentials are created by scripts/add-node-mqtt-user.sh (one per
+# node, username = node_id) and rotated by re-running it. This script is for
+# the shared accounts only. Safe to run at any time; the Pi reconnects with
+# the new password within the MQTT supervisor's 5s backoff window. Rotating
+# sp-3p means re-entering the password in each plug's Tasmota MQTT config.
 #
 # Usage:
-#   ./scripts/rotate-mqtt-creds.sh [user1 user2 ...]  # default: all three
+#   ./scripts/rotate-mqtt-creds.sh [user1 user2 ...]  # default: all four
 
 set -euo pipefail
 
@@ -18,7 +21,7 @@ ENV_FILE="$ROOT/server/.env"
 
 targets=("$@")
 if [ "${#targets[@]}" -eq 0 ]; then
-  targets=(sp-cmd sp-telemetry sp-3p)
+  targets=(server sp-cmd sp-telemetry sp-3p)
 fi
 
 if ! command -v mosquitto_passwd >/dev/null 2>&1; then
@@ -36,7 +39,12 @@ for user in "${targets[@]}"; do
   # Rewrite the matching SPOREPRINT_MQTT_*_PASS env var.
   env_key=""
   case "$user" in
-    sp-cmd)       env_key="SPOREPRINT_MQTT_PASSWORD" ;;  # primary publisher
+    # The Pi server connects as `server` (setup.sh) — its password lives in
+    # SPOREPRINT_MQTT_PASSWORD. The old mapping rotated sp-cmd's password
+    # into that key while the username stayed `server`, which bricked the
+    # server's broker auth on every rotation.
+    server)       env_key="SPOREPRINT_MQTT_PASSWORD" ;;
+    sp-cmd)       env_key="SPOREPRINT_MQTT_CMD_PASSWORD" ;;
     sp-telemetry) env_key="SPOREPRINT_MQTT_TELEMETRY_PASSWORD" ;;
     sp-3p)        env_key="SPOREPRINT_MQTT_3P_PASSWORD" ;;
   esac

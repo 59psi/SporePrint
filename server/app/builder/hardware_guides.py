@@ -40,11 +40,11 @@ _RPI_PSU = Component(
 _ESP32 = Component(
     name="ESP32-WROOM-32 DevKit",
     role="Microcontroller for sensor/actuator nodes",
-    price_approx="$8",
+    price_approx="$10",
     url="https://www.amazon.com/s?k=esp32+wroom+32+devkit+38+pin",
     category="controller",
     notes="Classic 38-pin ESP32 dev board — the canonical node board — firmware env node_esp32 — and the GPIO map in every wiring diagram. "
-          "HiLetgo/Hosyond/AITRIP all fine; 3-packs (~$16-18) are the best value for multi-node tiers. "
+          "Cheapest live single is ~$9.99; 3-packs (~$18, HiLetgo B0CNYK7WT2) are the best value for multi-node tiers. "
           "ESP32-S3-DevKitC-1 is also supported (firmware env: node_esp32s3) — bench verification pending; WROOM-32 stays the canonical pick. "
           "Also: digikey.com, aliexpress.com. Official: espressif.com/devkits",
 )
@@ -64,11 +64,11 @@ _SHT31 = Component(
 _BH1750 = Component(
     name="BH1750 Light Sensor Breakout",
     role="Ambient light level sensor (I2C, 0x23)",
-    price_approx="$4",
-    url="https://www.amazon.com/s?k=bh1750+light+sensor",
+    price_approx="$5",
+    url="https://www.adafruit.com/product/4681",
     category="sensor",
-    notes="Measures 1-65535 lux. I2C address 0x23. "
-          "Also: adafruit.com/product/4681, dfrobot.com/product-531.html, thepihut.com",
+    notes="Measures 1-65535 lux. I2C address 0x23. Adafruit 4681 ($4.50, in stock). "
+          "Also: dfrobot.com/product-531.html, thepihut.com, HiLetgo on Amazon.",
 )
 
 _SCD41 = Component(
@@ -82,7 +82,11 @@ _SCD41 = Component(
           "Same pinout as SCD40 — drop-in with better accuracy. "
           "Alternative: Pimoroni PIM587 (~$46, ships from UK, also in stock). "
           "Premium alternative: SparkFun Qwiic SCD41 ~$75. "
-          "Monitoring-tier alternate: MH-Z19C (UART) — supported via the node's MH-Z19 config flag; SCD30 also autodetects. "
+          "Monitoring-tier alternate: MH-Z19C (UART) — supported via the node's MH-Z19 config flag; "
+          "wire its TX to GPIO 16 and RX to GPIO 17 (ESP32 UART2 — the node's RX16/TX17), 5V supply, common GND. "
+          "SCD30 (Adafruit 4867) also autodetects and is the in-stock alternate now that Pimoroni's SCD41 is out — "
+          "but it is an ELECTRICAL drop-in only: at 51 x 25.4 mm it does NOT fit the default 3-bay sensor mount "
+          "(sized for the SCD41). Print the SCD30 variant instead: openscad -D scd30=true -o scd30_mount.stl models/sensor_mount.scad. "
           "Also: DigiKey (Sensirion SEK-SCD41), Newark.",
 )
 
@@ -117,29 +121,20 @@ _10K_RESISTOR = Component(
 )
 
 _ESP32_CAM = Component(
-    name="ESP32-CAM (AI-Thinker, OV2640)",
+    name="ESP32-CAM (AI-Thinker, OV2640) — 2-pack with CH340 programmer",
+    price_approx="$18.50",
     role="Camera node — captures images for contamination detection + growth tracking",
-    price_approx="$10",
-    url="https://www.amazon.com/s?k=esp32-cam+ai-thinker",
+    url="https://www.amazon.com/dp/B07RXPHYNM",
     category="controller",
     notes="The board the cam firmware targets (platformio env: cam, AI-Thinker pin map). "
           "OV2640 (2MP) is more than adequate for contamination detection at 15-30cm range. "
-          "Single-unit listings are drying up — HiLetgo 2-packs with CH340 programmer (~$18.50) are "
-          "the best buy and cover the Tier 3 dual-camera build. "
+          "2026-07: the single-unit market has collapsed — no in-stock single near $10 — so the "
+          "HiLetgo 2-pack (~$18.50) is the primary SKU. It bundles the CH340 programmer the "
+          "AI-Thinker board needs (no onboard USB), so no separate programmer line item, and the "
+          "spare board covers the Tier 3 dual-camera build. "
           "NOTE: ESP32-S3 camera boards (Freenove, XIAO Sense, Waveshare) use a different chip + "
           "camera pin map and are NOT supported by the shipped firmware. "
           "Also: aliexpress.com, ebay.com.",
-)
-
-_FTDI = Component(
-    name="USB-to-UART Programmer (CP2102/CH340)",
-    role="Flash firmware to ESP32-CAM (no built-in USB)",
-    price_approx="$4",
-    url="https://www.amazon.com/s?k=cp2102+usb+uart+programmer",
-    category="misc",
-    notes="Required for the AI-Thinker ESP32-CAM (no onboard USB). Skip if you bought a "
-          "cam 2-pack that bundles the programmer. "
-          "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
 )
 
 
@@ -302,7 +297,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$350",
+    estimated_cost="~$390",
     best_for=(
         "Serious hobbyists producing 2-10 flushes per year and experimenting with multiple "
         "species. This is the sweet spot for most home growers: full climate sensing, "
@@ -351,10 +346,12 @@ TIER_RECOMMENDED = HardwareTier(
             ],
         ),
         CapabilityGroup(
-            title="Lighting (2 PWM channels)",
+            title="Lighting (2 of the node's 4 PWM channels)",
             items=[
                 "6500K cool white LED strip — colonization and general fruiting light",
                 "450nm blue LED strip — Cordyceps fruiting, pinning trigger",
+                "Two spare PWM channels (red 660nm / far-red 730nm) on the same node — "
+                "add strips later without re-flashing; All the Things ships them populated",
                 "Scene presets: colonization (dark), fruiting (white), cordyceps blue",
                 "Schedulable photoperiods per species profile",
             ],
@@ -409,13 +406,14 @@ TIER_RECOMMENDED = HardwareTier(
             name="Noctua NF-A8 PWM Fan (80mm)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
-            price_approx="$17",
-            url="https://www.amazon.com/s?k=noctua+nf-a8+pwm",
+            price_approx="$18",
+            url="https://www.amazon.com/dp/B00NEMG62M",
             category="actuator",
-            notes="Quiet, PWM controllable, 12V. Pairs with the 12V PSU the build already has for LEDs. "
+            notes="Quiet, PWM controllable, 12V ($17.95, sold by Noctua). Pairs with the 12V PSU the build already has for LEDs. "
                   "5V variant (NF-A8 5V PWM, ~$26) is also available if you only want a 5V rail — "
                   "see Amazon B0FSCRGT6Y or noctua.at/en/products/fan/nf-a8-5v-pwm. "
-                  "Budget alternative: Arctic P8 PWM (~$8). "
+                  "Budget alternative: Arctic P8 PWM PST (~$10) — buy ASIN B07XR1KLLK specifically; the "
+                  "other P8 listing (B07WWKF96F) has a suppressed buybox and only resells from $16+. "
                   "Also: newegg.com, walmart.com, noctua.at/buy.",
         ),
         Component(
@@ -428,13 +426,18 @@ TIER_RECOMMENDED = HardwareTier(
                   "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         Component(
-            name="12V LED Strip - Blue (450nm), 1m",
+            name="12V LED Strip - Blue (450nm)",
             role="Cordyceps fruiting + pinning trigger",
-            price_approx="$8",
-            url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m",
+            price_approx="$36",
+            url="https://www.superlightingled.com/450nm-660nm-730nm-trispectrum-tunable-red-blue-led-horticulture-grow-light-strip-p-7120.html",
             category="actuator",
-            notes="Critical for Cordyceps militaris. Also benefits pinning in other species. "
-                  "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
+            notes="Critical for Cordyceps militaris — the WAVELENGTH is the point. Also benefits pinning in other species. "
+                  "Buy from a horticulture supplier, not Amazon: an Amazon 'blue led strip 450nm' search returns "
+                  "ZERO true-450nm products — generic decorative blue 5050 emits ~465-470nm, which will not drive "
+                  "Cordyceps. (Same failure mode as the far-red search returning 30W fixtures.) "
+                  "This SuperLightingLED strip is 450+660+730nm tri-spectrum; this tier's lighting node is "
+                  "2-channel (white + blue), so only its 450nm segment is driven — the red/far-red segments sit "
+                  "idle until you move to the All the Things 4-channel lighting build, which drives all three.",
         ),
         Component(
             name="12V Power Supply (5A, 60W)",
@@ -446,7 +449,6 @@ TIER_RECOMMENDED = HardwareTier(
                   "Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser.",
         ),
         _ESP32_CAM,
-        _FTDI,
         _tasmota_plug("Humidifier on/off"),
         _tasmota_plug("Heater or cooler on/off"),
         Component(
@@ -470,6 +472,11 @@ TIER_RECOMMENDED = HardwareTier(
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 27", to_device="IRLZ44N #3 Gate", to_pin="via 100R resistor", note="Circulation fan"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 14", to_device="IRLZ44N #4 Gate", to_pin="via 100R resistor", note="Aux channel"),
         # Lighting node
+        # The lighting personality always exposes FOUR PWM channels — white/blue/
+        # red/far_red on SP_CHANNEL_PINS {25, 26, 27, 14} (firmware
+        # lib/sp_core/personality.h). This tier buys only the white + blue strips,
+        # so channels 3 and 4 stay unpopulated; All the Things lands strips on
+        # them (see TIER_ALL.wiring, which extends this list).
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 25", to_device="IRLZ44N Gate", to_pin="via 100R", note="White 6500K strip"),
         WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 26", to_device="IRLZ44N Gate", to_pin="via 100R", note="Blue 450nm strip"),
     ],
@@ -483,7 +490,7 @@ TIER_RECOMMENDED = HardwareTier(
         "Copy .env.example to .env, set SPOREPRINT_WEATHER_LAT and _LON for your location",
         "Wire climate node: SHT31-D + SCD41 + BH1750 on shared I2C bus (SDA=GPIO21, SCL=GPIO22) per diagram",
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
-        "Wire lighting node: same MOSFET pattern — white LED strip on GPIO 25, blue on GPIO 26",
+        "Wire lighting node: same MOSFET pattern — white 6500K on GPIO 25, blue 450nm on GPIO 26. The firmware's lighting personality also exposes GPIO 27 + GPIO 14 (red 660nm / far-red 730nm) — leave them unpopulated for now; add strips there later without re-flashing (All the Things ships them wired)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
         "Flash each node: cd firmware && pio run -t upload -e node_esp32 — one unified image covers climate/relay/lighting (pick the personality in the node's setup portal); the camera flashes with -e cam",
         "Flash the ESP32-CAM via the USB-UART programmer (hold GPIO 0 → GND while flashing; 2-pack "
@@ -532,7 +539,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$540",
+    estimated_cost="~$555",
     best_for=(
         "Advanced growers running multiple shelves or chambers, commercial-adjacent "
         "operations, and researchers tuning parameters for yield optimization. Ideal "
@@ -561,7 +568,7 @@ TIER_ALL = HardwareTier(
         "4 smart plugs: humidifier, dehumidifier, heater, Peltier cooler",
         "2 cameras (front + top-down views)",
         "Door reed switch — door-open telemetry + alerts (automation suspension via rules)",
-        "Load cell — live raw weight telemetry for harvest tracking",
+        "Load cell — weight in grams for harvest tracking (once tared + calibrated)",
         "Peristaltic pump for automated misting between flushes",
         "Weather-predictive automation",
     ],
@@ -600,7 +607,7 @@ TIER_ALL = HardwareTier(
             title="Advanced automation",
             items=[
                 "Peristaltic dosing pump for automated misting between flushes",
-                "Load cell (5kg HX711) — raw weight in telemetry for harvest logging",
+                "Load cell (5kg HX711) — calibrated weight in grams for harvest logging",
                 "Weather-predictive automation — adjusts fans based on forecast",
                 "Door-open detection — alert events; pair with a rule to pause humidity",
                 "Multi-zone rules — different setpoints per shelf",
@@ -647,23 +654,22 @@ TIER_ALL = HardwareTier(
             name="Noctua NF-A8 PWM Fan (80mm, 12V)",
             role="FAE / exhaust / circulation fans",
             quantity=3,
-            price_approx="$17",
-            url="https://www.amazon.com/s?k=noctua+nf-a8+pwm",
+            price_approx="$18",
+            url="https://www.amazon.com/dp/B00NEMG62M",
             category="actuator",
-            notes="12V variant — this tier powers fans from the 12V 10A PSU rail; do NOT buy the "
-                  "5V NF-A8 variant for this build. "
-                  "Alternative: Arctic P8 PWM PST (~$10 — spec the PST variant; the plain P8 PWM "
-                  "listing is discontinued). Also: newegg.com, walmart.com, noctua.at/buy.",
+            notes="12V variant ($17.95, sold by Noctua) — this tier powers fans from the 12V 10A PSU rail; "
+                  "do NOT buy the 5V NF-A8 variant for this build. "
+                  "Alternative: Arctic P8 PWM PST (~$10) — buy ASIN B07XR1KLLK specifically; the other P8 "
+                  "listing (B07WWKF96F) has a suppressed buybox and only resells from $16+. "
+                  "Also: newegg.com, walmart.com, noctua.at/buy.",
         ),
-        Component(name="12V LED Strip - Cool White (6500K), 2m", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+2m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Blue (450nm), 1m", role="Cordyceps + pinning", price_approx="$8", url="https://www.amazon.com/s?k=12v+blue+led+strip+450nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Red (660nm), 1m", role="Fruiting enhancement", price_approx="$8", url="https://www.amazon.com/s?k=12v+red+led+strip+660nm+1m", category="actuator", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(name="12V LED Strip - Far Red (730nm), 1m", role="Morphology control", price_approx="$18", url="https://www.superlightingled.com/far-red-light-730nm-led-strip-c-1_352_675.html", category="actuator", notes="Specialty item — 12V flexible 730nm strips. SuperLightingLED carries 2835/5050 SMD variants and a tri-spectrum 450+660+730nm option that can replace 3 separate strips. "
-                  "Alternatives: ledworker.com (China direct, 3-5 day shipping). Amazon 'far red led' search returns 30W fixtures, not strips — avoid for this build. "
-                  "If unavailable, omit — far-red is optional morphology tuning, not required for fruiting."),
+        Component(name="12V LED Strip - Cool White (6500K), 5m roll", role="General light", price_approx="$12", url="https://www.amazon.com/s?k=12v+led+strip+6500k+5m", category="actuator", notes="5m rolls are the real unit of sale (~$10-14); cut to length. Widely available. Amazon, AliExpress, eBay."),
+        Component(name="12V LED Strip - Tri-spectrum (450 + 660 + 730nm)", role="Cordyceps + pinning + fruiting + morphology — blue, red, and far-red channels in one strip", price_approx="$36", url="https://www.superlightingled.com/450nm-660nm-730nm-trispectrum-tunable-red-blue-led-horticulture-grow-light-strip-p-7120.html", category="actuator", notes="One strip drives all three specialty lighting channels — it replaces the separate blue/red/far-red strips this tier used to list, at roughly the same total cost, and unlike them it is actually purchasable. "
+                  "Buy wavelength-spec'd strips from a horticulture supplier, never Amazon: 'blue 450nm' returns zero true-450nm strips (generic blue is ~465-470nm — wrong for Cordyceps), 'red 660nm' returns only $35+/5m rolls, and 'far red' returns 30W fixtures rather than strips. "
+                  "Alternatives: dedicated SuperLightingLED 730nm strips (p-7066 from $12, p-6959 $43.98/5m); ledworker.com (China direct, 3-5 day shipping). "
+                  "Far-red is optional morphology tuning, not required for fruiting."),
         Component(name="12V Power Supply (10A, 120W)", role="Power for all 12V devices", price_approx="$18", url="https://www.amazon.com/s?k=12v+10a+power+supply+120w", category="power", notes="Widely available from any electronics supplier. Amazon, AliExpress, eBay, DigiKey, Mouser."),
-        Component(**{**_ESP32_CAM.model_dump(), "quantity": 2, "notes": "Front view + top-down view. A HiLetgo 2-pack with CH340 programmer (~$18.50) covers both. ESP32-S3 camera boards are NOT supported by the shipped firmware."}),
-        _FTDI,
+        Component(**{**_ESP32_CAM.model_dump(), "notes": "Front view + top-down view — the 2-pack is exactly this tier's two cameras, and it bundles the CH340 programmer both boards need. ESP32-S3 camera boards are NOT supported by the shipped firmware."}),
         _tasmota_plug("Humidifier"),
         _tasmota_plug("Dehumidifier"),
         _tasmota_plug("Space heater"),
@@ -671,21 +677,23 @@ TIER_ALL = HardwareTier(
         Component(
             name="HX711 Load Cell Amplifier + 5kg Load Cell",
             role="Automated harvest weight tracking (enable the scale flag at provisioning)",
-            price_approx="$8",
+            price_approx="$7",
             url="https://www.amazon.com/s?k=hx711+load+cell+5kg",
             category="sensor",
             notes="Wire DOUT to GPIO 32, SCK to GPIO 33 on the relay node. "
-                  "Enable the scale option when provisioning the node; raw counts ride in telemetry. "
+                  "Enable the scale option when provisioning the node, then run the tare + scale "
+                  "calibration once; weight_g rides in telemetry in grams after that. "
                   "Place under grow block to track water loss and harvest weight. "
                   "Widely available. Also: sparkfun.com, adafruit.com. Multiple Amazon sellers.",
         ),
         Component(
             name="Reed Switch (magnetic, normally open)",
             role="Door sensor — door-open telemetry + alerts",
-            price_approx="$3",
+            price_approx="$9",
             url="https://www.amazon.com/s?k=magnetic+reed+switch+normally+open",
             category="sensor",
-            notes="Mount on the door frame: one leg to GPIO 35, the other to GND, with an "
+            notes="Sold as 2-4pc wired alarm-contact sets (~$9), not as bare singles — one set covers "
+                  "several doors. Mount on the door frame: one leg to GPIO 35, the other to GND, with an "
                   "EXTERNAL 10K pull-up from GPIO 35 to 3V3 — GPIO 34-39 have no internal "
                   "pulls (a 10K is already in the parts kit). Magnet on door, switch on "
                   "frame; enable the door-sensor option in the node's setup portal. "
@@ -714,8 +722,20 @@ TIER_ALL = HardwareTier(
     wiring=[
         *TIER_RECOMMENDED.wiring,
         WiringConnection(from_device="ESP32 (Climate #2)", from_pin="GPIO 21/22", to_device="SHT31-D #2 / SCD41 #2 / BH1750 #2", to_pin="Shared I2C", note="Second shelf"),
+        # This tier populates the lighting node's remaining two PWM channels. Both
+        # land on the ONE tri-spectrum strip — it carries separate 450/660/730nm
+        # leads, so blue (GPIO 26, wired above) and these two share a strip.
+        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 27", to_device="IRLZ44N Gate", to_pin="via 100R", note="Red 660nm lead (tri-spectrum strip)"),
+        WiringConnection(from_device="ESP32 (Lighting)", from_pin="GPIO 14", to_device="IRLZ44N Gate", to_pin="via 100R", note="Far-red 730nm lead (tri-spectrum strip)"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 14 (aux)", to_device="Peristaltic Pump", to_pin="Via IRLZ44N + flyback diode"),
-        WiringConnection(from_device="Any ESP32 GPIO", from_pin="GPIO (INPUT_PULLUP)", to_device="Reed Switch", to_pin="One leg to GPIO, other to GND"),
+        # HX711 had no wiring row at all — the pins lived only in the component
+        # notes and the SVG, so the rendered wiring table simply omitted the scale.
+        WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 32", to_device="HX711", to_pin="DOUT", note="Load cell amplifier — data"),
+        WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 33", to_device="HX711", to_pin="SCK", note="Load cell amplifier — clock"),
+        # GPIO 34-39 are input-only with NO internal pull-ups, so the old
+        # "INPUT_PULLUP" note was not physically realisable. An external 10K to
+        # 3V3 is required — as the component notes and the SVG both already said.
+        WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 35", to_device="Reed Switch", to_pin="One leg to GPIO 35, other to GND", note="EXTERNAL 10K pull-up GPIO 35 → 3V3 (no internal pull on 34-39)"),
     ],
     wiring_diagram="See docs/wiring-tier3-all-the-things.svg for full wiring diagram with all 5 ESP32 nodes, load cell, reed switch, pump, and 4-channel lighting.",
     firmware_targets=["node_esp32", "cam"],
@@ -730,9 +750,9 @@ TIER_ALL = HardwareTier(
         "Wire relay node: 4x IRLZ44N MOSFETs with 10K pull-down resistors (gate to GND) and 1N4007 flyback diodes per diagram",
         "Wire lighting node: same MOSFET pattern — white (GPIO 25), blue (GPIO 26), red (GPIO 27), far-red (GPIO 14)",
         "Install PlatformIO: pip install platformio (or download each node's ZIP from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)",
-        "Flash all firmwares: cd firmware && pio run -t upload -e climate_node (repeat for relay_node, lighting_node, cam_node)",
-        "Flash climate node #2 with different node_id: set MQTT node_id to 'climate-02' before flashing",
-        "Flash both ESP32-CAMs via the USB-UART programmer: first cam with default node_id, second cam with node_id 'cam-02' for top-down view",
+        "Flash all five nodes: cd firmware && pio run -t upload -e node_esp32 — ONE unified image covers climate/relay/lighting; you pick the personality per node in its setup portal, so the same binary goes on all four node boards (use -e node_esp32s3 for an S3 board)",
+        "Flash both ESP32-CAMs with -e cam via the USB-UART programmer (hold GPIO 0 → GND while flashing; the 2-pack bundles the programmer)",
+        "Node identity is set at PROVISIONING, not at flash time: in each node's setup portal give the second climate node the id 'climate-02' and the top-down camera 'cam-02'",
         "Each ESP32 creates the 'SporePrint-Setup' WiFi AP on first boot — connect and enter WiFi credentials, the Pi's address, the node personality (climate/relay/lighting), and optionally an OTA password, the command signing key, and the Secure MQTT (TLS) toggle",
         "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each sensor board inside "
         "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
@@ -751,14 +771,14 @@ TIER_ALL = HardwareTier(
         "inspection and ensure good ventilation — MOSFETs generate heat under load. Use the zip tie "
         "channels on the relay board for cable management — bundle the 12V wires neatly",
         "Connect fans to relay node: FAE fan to channel 0 (GPIO 25), exhaust to channel 1 (GPIO 26), circulation to channel 2 (GPIO 27)",
-        "Connect LED strips to lighting node: white to ch 0, blue to ch 1, red (660nm) to ch 2 (GPIO 27), far-red (730nm) to ch 3 (GPIO 14)",
+        "Connect LED strips to lighting node: the white strip to ch 0 (GPIO 25). The tri-spectrum strip carries three separate leads — blue 450nm to ch 1 (GPIO 26), red 660nm to ch 2 (GPIO 27), far-red 730nm to ch 3 (GPIO 14). One physical strip, three channels",
         "CAMERA PLACEMENT: Use BOTH recommended positions for full coverage — (1) FRONT-FACING camera "
         "(default node_id) at substrate level, angled slightly upward to capture pin formation and "
         "fruiting body development. (2) TOP-DOWN camera (cam-02) above the substrate looking straight "
         "down for overall colonization progress. Use cam_mount.scad — suction cup on glass door or zip "
         "tie to shelf rail. Distance: 15-30cm from substrate for good detail without fish-eye distortion. "
         "The camera has a built-in flash LED (GPIO 4) — use it for consistent photos since ambient light varies",
-        "Wire HX711 load cell to the node's spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33), place the cell under the grow block, and enable the scale option in the node's setup portal",
+        "Wire the HX711 to the RELAY node's spare GPIOs (DOUT=GPIO 32, SCK=GPIO 33), place the load cell under the grow block, enable the scale option in that node's setup portal, then tare and calibrate once (send {\"tare\":true}, then {\"calibrate_scale\":<known grams>}) — after that weight_g rides in telemetry in grams",
         "Mount reed switch on the door frame — one leg to GPIO 35, the other to GND, with an EXTERNAL 10K pull-up from GPIO 35 to 3V3 (GPIO 34-39 have no internal pulls). Enable the door-sensor option in the node's setup portal",
         "Connect peristaltic pump to relay node aux channel (GPIO 14) via IRLZ44N + flyback diode — run food-safe silicone tubing to misting nozzle",
         "Power all 12V devices (fans, LED strips, pump) from the 12V 10A PSU. ESP32s powered via USB",

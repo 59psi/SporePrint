@@ -1,7 +1,7 @@
 import json
 
 from ..db import get_db
-from .models import AutomationRule
+from .models import AutomationRule, RuleAction
 from .templates import BUILTIN_RULES
 
 # Fields stored as top-level columns (not in rule_data JSON blob)
@@ -62,6 +62,42 @@ async def get_rule(rule_id: int) -> dict | None:
         )
         row = await cursor.fetchone()
         return deserialize_rule_row(row) if row else None
+
+
+async def validate_action_channel(action: RuleAction) -> str | None:
+    """Return an error message if the action names a channel its node lacks.
+
+    Channel names are MQTT command routing keys: the node dispatches
+    ``cmd/<channel>`` by exact match and logs-and-drops anything else. A
+    misnamed channel therefore *looks* armed — the rule saves, fires, and
+    writes a "fired" audit row — while the actuator never moves. This is the
+    one place we can catch that, because nodes enumerate their real channel
+    names in the health doc (see mqtt.py).
+
+    Follows the firmware's own posture: validate, don't discover. We only have
+    an opinion when the node has actually told us its channels. Vendor actions
+    (which route through the integrations dispatcher, not MQTT), non-node
+    targets, and nodes that have never reported health all pass through.
+    """
+    if action.vendor_slug or not action.channel:
+        return None
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT channels FROM hardware_nodes WHERE node_id = ?", (action.target,)
+        )
+        row = await cursor.fetchone()
+
+    if not row or not row["channels"]:
+        return None
+    known = json.loads(row["channels"])
+    if not isinstance(known, list) or action.channel in known:
+        return None
+
+    return (
+        f"Node '{action.target}' has no channel '{action.channel}'. "
+        f"Available channels: {', '.join(known)}"
+    )
 
 
 async def create_rule(rule: AutomationRule) -> int:

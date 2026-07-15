@@ -8,6 +8,12 @@ class GrowPhase(str, Enum):
     LIQUID_CULTURE = "liquid_culture"
     GRAIN_COLONIZATION = "grain_colonization"
     SUBSTRATE_COLONIZATION = "substrate_colonization"
+    # Fully colonized agar / LC / grain that is not going straight to fruiting
+    # goes in the fridge to hold until use. Only temperature matters here — no
+    # light, no FAE, no CO2 control. This is the fork the product spec describes:
+    # a grow bag advances to PRIMORDIA_INDUCTION; everything else parks in
+    # COLD_STORAGE.
+    COLD_STORAGE = "cold_storage"
     PRIMORDIA_INDUCTION = "primordia_induction"
     FRUITING = "fruiting"
     REST = "rest"
@@ -22,7 +28,16 @@ class PhaseParams(BaseModel):
     humidity_min: float
     humidity_max: float
     co2_max_ppm: int
+    # Some species want CO2 held HIGH, not just capped — reishi antler formation
+    # and king trumpet primordia both restrict FAE below a floor. This was two
+    # hardcoded rules (templates.py) before; now it is data. None = no floor.
+    co2_min_ppm: int | None = None
     co2_tolerance: str  # "low" | "moderate" | "high"
+    # Provenance for the CO2 figure. Most values in the library are class-based
+    # inference, not measured — and the user cannot tell them apart because they
+    # render identically. Default False (honest): opt IN to claiming a citation.
+    co2_sourced: bool = False
+    co2_source: str | None = None  # citation string; renders in the UI when set
     light_hours_on: float
     light_hours_off: float
     light_spectrum: str  # "none" | "daylight_6500k" | "blue_450nm" | "blue_emphasis"
@@ -30,6 +45,10 @@ class PhaseParams(BaseModel):
     fae_mode: str  # "none" | "passive" | "scheduled" | "continuous"
     fae_interval_min: int | None = None
     fae_duration_sec: int | None = None
+    # Optional per-phase override for the internal circulation cadence. None =
+    # use the Circulation Cycle rule's default. Left None on every species for
+    # now — a real value belongs to the cultivation research, not to code.
+    circulation_interval_min: int | None = None
     substrate_moisture: str = "field_capacity"
     expected_duration_days: tuple[int, int]
     notes: str = ""
@@ -61,6 +80,12 @@ class SpeciesProfile(BaseModel):
     common_name: str
     scientific_name: str
     category: str  # "gourmet" | "medicinal" | "active"
+    # Some profiles are useful REFERENCE but not chamber-cultivable (chaga is a
+    # sclerotium on a living birch over ~10 years; pestalotiopsis is an endophyte
+    # with no fruit body). False ⇒ excluded from automation-enabled sessions and
+    # the UI shows cultivation_note instead of a phase setpoint table.
+    chamber_cultivable: bool = True
+    cultivation_note: str = ""
     strain: str | None = None
     substrate_types: list[str]
     colonization_visual_description: str

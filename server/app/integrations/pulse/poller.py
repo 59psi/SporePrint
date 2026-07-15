@@ -9,14 +9,19 @@ Mapped measurement types:
   humidity         | humidity
   vpd              | vpd_kpa     (unit-prefixed name — VPD is not a
                                   legacy SporePrint sensor; new lane)
-  dew_point        | dew_point_c
+  dew_point        | dew_point_f (converted C -> F at ingest — the
+                                  canonical name the firmware emits, so
+                                  Pulse dew point flows through Grafana,
+                                  analytics, and export like any other)
   light            | lux
 
-`vpd_kpa` and `dew_point_c` are new sensor names this driver introduces
-into telemetry. Existing automation rules that match on `temp_c` /
-`humidity` continue to work; rules that want VPD can match on the new
-name. The Grafana exporter's `_TYPE_MAP` does not yet emit them — that
-is a follow-up pass once chamber UI grows VPD widgets.
+`vpd_kpa` is the one new sensor name this driver introduces into
+telemetry (VPD is not a firmware sensor; new lane, invisible to Grafana
+until chamber UI grows VPD widgets). Everything else maps onto canonical
+firmware names — vendor readings must not mint parallel names for
+sensors the firmware already emits, or they fork the pipeline (the old
+`dew_point_c` was persisted but invisible to Grafana/export for exactly
+that reason).
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ _TYPE_MAP: dict[str, str] = {
     "temperature": "temp_c",
     "humidity": "humidity",
     "vpd": "vpd_kpa",
-    "dew_point": "dew_point_c",
+    "dew_point": "dew_point_f",
     "light": "lux",
 }
 
@@ -67,8 +72,11 @@ async def _publish_device(
                 response.device_id,
             )
             continue
+        value = float(m.value)
+        if m.type == "dew_point":
+            value = value * 9.0 / 5.0 + 32.0  # Pulse reports metric
         try:
-            await publisher(node_id, sp_sensor, float(m.value), now)
+            await publisher(node_id, sp_sensor, value, now)
             written += 1
         except Exception:  # noqa: BLE001
             logger.exception(

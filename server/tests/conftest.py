@@ -65,6 +65,24 @@ def mock_mqtt(monkeypatch):
 
 
 @pytest.fixture()
+def mock_mqtt_raw(monkeypatch):
+    """Capture RAW publishes — the ones that bypass mqtt_publish's json.dumps.
+
+    Smart plugs (Shelly/Tasmota) want a bare `on`/`ON` payload, not JSON, so
+    they publish straight through the client. Returns a list of (topic, payload).
+    """
+    calls: list[tuple[str, str]] = []
+
+    class _FakeClient:
+        async def publish(self, topic, payload):
+            calls.append((topic, payload))
+
+    import app.mqtt
+    monkeypatch.setattr(app.mqtt, "_client", _FakeClient())
+    return calls
+
+
+@pytest.fixture()
 def mock_sio():
     """Provide a fake Socket.IO server that records emitted events."""
     from unittest.mock import AsyncMock

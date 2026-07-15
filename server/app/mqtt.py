@@ -139,7 +139,33 @@ async def _handle_message(sio, topic: str, payload: dict):
     node_id = parts[1]
     msg_type = parts[2]
 
-    if msg_type == "telemetry":
+    if msg_type == "telemetry" and len(parts) == 4:
+        # telemetry/<channel> — a relay-bank switch-state report
+        # {channel, state, pwm, trigger}, published on every command, safety
+        # cutoff, and 60s cadence. These used to funnel through the sensor
+        # path below, where store_bulk_readings stored nothing (no key overlaps
+        # SENSOR_FIELDS) — so the actuator_events table, built for exactly this
+        # feed, had no writer and Grafana's actuator_event_count sat at zero.
+        received_at = time.time()
+        async with get_db() as db:
+            await db.execute(
+                """INSERT INTO actuator_events (timestamp, node_id, channel, action, value, trigger)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    received_at, node_id,
+                    payload.get("channel", parts[3]),
+                    payload.get("state", "unknown"),
+                    payload.get("pwm"),
+                    payload.get("trigger", "report"),
+                ),
+            )
+            await db.commit()
+        await sio.emit("actuator_state", {"node_id": node_id, **payload})
+        # Keep the cloud forward — remote clients render live actuator state
+        # from these frames; only the pointless local store + rules eval stops.
+        await forward_telemetry(node_id, payload)
+
+    elif msg_type == "telemetry":
         received_at = time.time()
         raw_ts = payload.get("ts", received_at)
         try:
@@ -183,10 +209,14 @@ async def _handle_message(sio, topic: str, payload: dict):
             # full capability list for combined nodes).
             roles = payload.get("roles")
             roles_json = json.dumps(roles) if isinstance(roles, list) else None
+            # reset_reason + mqtt_reconnects were emitted on every heartbeat and
+            # dropped on the floor. reset_reason is the panic-loop tell: a node
+            # stuck in a WDT/brownout reboot cycle looks "online" on every other
+            # signal — this column is the only place that failure is visible.
             async with get_db() as db:
                 await db.execute(
-                    """INSERT INTO hardware_nodes (node_id, node_type, firmware_version, last_seen, ip_address, status, roles)
-                       VALUES (?, ?, ?, ?, ?, 'online', ?)
+                    """INSERT INTO hardware_nodes (node_id, node_type, firmware_version, last_seen, ip_address, status, roles, reset_reason, mqtt_reconnects)
+                       VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?)
                        ON CONFLICT(node_id) DO UPDATE SET
                          node_type=CASE WHEN excluded.node_type != 'unknown'
                                         THEN excluded.node_type
@@ -195,10 +225,13 @@ async def _handle_message(sio, topic: str, payload: dict):
                          last_seen=excluded.last_seen,
                          ip_address=excluded.ip_address,
                          status='online',
-                         roles=COALESCE(excluded.roles, hardware_nodes.roles)""",
+                         roles=COALESCE(excluded.roles, hardware_nodes.roles),
+                         reset_reason=COALESCE(excluded.reset_reason, hardware_nodes.reset_reason),
+                         mqtt_reconnects=COALESCE(excluded.mqtt_reconnects, hardware_nodes.mqtt_reconnects)""",
                     (node_id, payload.get("type", "unknown"),
                      payload.get("firmware_version"), time.time(),
-                     payload.get("ip"), roles_json),
+                     payload.get("ip"), roles_json,
+                     payload.get("reset_reason"), payload.get("mqtt_reconnects")),
                 )
                 await db.commit()
         else:
@@ -216,6 +249,21 @@ async def _handle_message(sio, topic: str, payload: dict):
     elif msg_type == "health":
         # Component-level health from ESP32 nodes
         await sio.emit("component_health", {"node_id": node_id, **payload})
+        # v4.2: the health doc is the only place a node enumerates the channel
+        # names it answers to (an object keyed by name). Persist those names —
+        # the node routes `cmd/<channel>` by exact match and drops anything it
+        # doesn't recognise, so an automation rule naming a channel that isn't
+        # here is a silent no-op. See automation.service.validate_action_channel.
+        channels = payload.get("channels")
+        if isinstance(channels, dict) and channels:
+            async with get_db() as db:
+                await db.execute(
+                    """INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen)
+                       VALUES (?, 'unknown', ?, ?)
+                       ON CONFLICT(node_id) DO UPDATE SET channels=excluded.channels""",
+                    (node_id, json.dumps(sorted(channels)), time.time()),
+                )
+                await db.commit()
         try:
             await forward_component_health(node_id, payload)
         except Exception as e:

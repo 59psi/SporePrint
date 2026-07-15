@@ -10,8 +10,9 @@
 // composition root must wrap read_raw() in noInterrupts()/interrupts()
 // because PD_SCK held high > 60 µs power-cycles the chip mid-read.
 //
-// Returns sign-extended 24-bit raw counts; taring and gram conversion are
-// node-app concerns (calibration lives in NVS, not here).
+// Returns sign-extended 24-bit raw counts; taring and calibration policy
+// are node-app concerns (calibration lives in NVS, not here) — but the
+// pure counts→grams math is exposed as to_grams() so hosts can test it.
 //
 // Native-safe; host-tested against scripted pins.
 
@@ -46,6 +47,16 @@ public:
     int32_t read_raw();
 
     const DriverHealth& health() const { return health_; }
+
+    // Pure tare/scale → grams conversion (scale = counts per gram).
+    // scale == 0 means uncalibrated: returns false, *grams untouched —
+    // the node app publishes raw counts instead so setup can proceed.
+    static bool to_grams(int32_t raw, int32_t tare, float scale,
+                         float* grams) {
+        if (scale == 0.0f) return false;
+        *grams = (float)(raw - tare) / scale;
+        return true;
+    }
 
 private:
     GpioPin& dout_;

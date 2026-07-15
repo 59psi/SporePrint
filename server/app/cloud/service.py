@@ -29,6 +29,18 @@ _reconnect_attempts: int = 0
 _heartbeat_task: asyncio.Task | None = None
 _queue_drops: int = 0
 
+# The cloud refuses a device whose owner has no active subscription
+# (`subscription_required` at connect, 402 on REST ingest). That is a STANDING
+# condition, not a transient fault: it clears only when the user resubscribes.
+# Treated as a normal error it would mean a 5-minute reconnect storm forever
+# against a relay that has storm detection, plus a telemetry queue quietly
+# filling with frames that can never be delivered. So: back off far, say why,
+# and stop buffering. The Pi itself keeps working — local control never depended
+# on the cloud.
+_subscription_blocked: bool = False
+_SUBSCRIPTION_RETRY_SECONDS = 900  # 15 min — long enough not to be a storm,
+                                   # short enough that resubscribing feels instant
+
 # Replayed-command protection. Cache is a real FIFO/LRU — popitem(last=False)
 # evicts the oldest-inserted id. A burst of >1024 distinct ids no longer lets
 # an arbitrary earlier id be resurrected (which the prior set.pop() allowed).
@@ -49,6 +61,40 @@ HEALTH_HEARTBEAT_INTERVAL = 60  # seconds
 
 # Task registry for health reporting
 _task_status: dict = {"cloud_connector": {"status": "idle", "last_run": None}}
+
+
+def _is_subscription_refusal(exc: Exception) -> bool:
+    """Did the cloud refuse us because the owner has no active subscription?
+
+    python-socketio surfaces a server-side ConnectionRefusedError as a generic
+    ConnectionError carrying the server's rejection payload in its message, so
+    the reason is only available as text. Matching on the wire token the cloud
+    sends (`subscription_required`) is the whole contract — keep it in step with
+    cloud/app/relay/service.py.
+    """
+    return "subscription_required" in str(exc)
+
+
+def _drop_undeliverable_queue() -> None:
+    """Empty the forward queue when the cloud will not take our data.
+
+    Buffering exists to survive a flaky link, not a lapsed subscription. Holding
+    frames the cloud is refusing on principle just churns the drop-oldest ring
+    for as long as the lapse lasts, and inflates the drop counter with data loss
+    that never actually happened. The readings are still on the Pi — SQLite is
+    the record; the cloud is a mirror.
+    """
+    global _queue_drops
+    dropped = 0
+    while True:
+        try:
+            _queue.get_nowait()
+            dropped += 1
+        except asyncio.QueueEmpty:
+            break
+    if dropped:
+        log.info("Cloud: discarded %d queued frame(s) — cloud sync is paused, "
+                 "readings remain in the Pi's local database", dropped)
 
 
 async def _rehydrate_replay_cache() -> int:
@@ -260,7 +306,7 @@ async def _persist_replay_id(command_id: str) -> None:
 
 async def start_cloud_connector():
     """Background task started in main.py lifespan. No-op if cloud not configured."""
-    global _sio, _connected, _start_time, _reconnect_attempts
+    global _sio, _connected, _start_time, _reconnect_attempts, _subscription_blocked
 
     if not settings.cloud_url or not settings.cloud_token:
         log.info("Cloud connector disabled — set SPOREPRINT_CLOUD_URL and _TOKEN to enable")
@@ -286,9 +332,14 @@ async def start_cloud_connector():
 
     @_sio.on("connect")
     async def on_connect():
-        global _connected, _reconnect_attempts, _heartbeat_task
+        global _connected, _reconnect_attempts, _heartbeat_task, _subscription_blocked
         _connected = True
         _reconnect_attempts = 0
+        # A successful connect means the cloud accepted us — the subscription is
+        # live again (or never lapsed). Resume buffering.
+        if _subscription_blocked:
+            _subscription_blocked = False
+            log.info("Cloud: subscription active again — cloud sync resumed")
         _task_status["cloud_connector"]["status"] = "connected"
         log.info("Cloud: connected to %s", settings.cloud_url)
         # Drain buffered telemetry
@@ -533,6 +584,20 @@ async def start_cloud_connector():
                 await _sio.disconnect()
             return
         except Exception as e:
+            if _is_subscription_refusal(e):
+                # Not a fault — the cloud is correctly refusing an unsubscribed
+                # account. Retrying hard would achieve nothing but noise.
+                _subscription_blocked = True
+                _drop_undeliverable_queue()
+                log.warning(
+                    "Cloud: subscription required — cloud sync paused (local control "
+                    "is unaffected). Rechecking every %ds; resubscribe to resume.",
+                    _SUBSCRIPTION_RETRY_SECONDS,
+                )
+                _task_status["cloud_connector"]["status"] = "paused — subscription required"
+                await asyncio.sleep(_SUBSCRIPTION_RETRY_SECONDS)
+                continue
+
             _reconnect_attempts += 1
             backoff = min(300, 5 * (2 ** min(_reconnect_attempts, 6)))
             log.warning("Cloud: connection failed (%s), retry in %ds", e, backoff)
@@ -544,6 +609,10 @@ async def forward_telemetry(node_id: str, payload: dict):
     """Called from mqtt.py after every telemetry ingest. Enqueues for cloud."""
     global _last_forward, _queue_drops
     if not settings.cloud_url:
+        return
+    if _subscription_blocked:
+        # The cloud is refusing this account's data. Queueing it would fill the
+        # ring with frames that can never be delivered. SQLite already has them.
         return
     msg = {"node_id": node_id, "ts": time.time(), **payload}
     try:
