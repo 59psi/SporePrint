@@ -34,6 +34,10 @@ class PhaseParams(BaseModel):
     fae_mode: str  # "none" | "passive" | "scheduled" | "continuous"
     fae_interval_min: int | None = None
     fae_duration_sec: int | None = None
+    # Optional per-phase override for the internal circulation cadence. None =
+    # use the Circulation Cycle rule's default. Left None on every species for
+    # now — a real value belongs to the cultivation research, not to code.
+    circulation_interval_min: int | None = None
     substrate_moisture: str = "field_capacity"
     expected_duration_days: tuple[int, int]
     notes: str = ""

@@ -9,7 +9,7 @@ from ..notifications.service import co2_alert, temperature_alert
 from ..sessions.service import get_active_session
 from ..species.service import get_profile
 from .service import validate_action_channel
-from .smart_plugs import is_plug_target, send_plug_command
+from .smart_plugs import is_plug_target, send_plug_command, target_is_present
 from .models import (
     AutomationRule,
     ConditionType,
@@ -268,6 +268,12 @@ async def evaluate_rules(
             if _is_air_exchange_action(rule.action) and phase_params is not None:
                 if getattr(phase_params, "fae_mode", None) == "none":
                     continue
+
+            # Capability-aware fallback: a rule that should only run when a
+            # preferred actuator is ABSENT (e.g. vent with fans only if there's
+            # no dehumidifier). Goes silent the moment the real device is paired.
+            if rule.requires_absent_target and await target_is_present(rule.requires_absent_target):
+                continue
 
             if is_overridden(rule.action.target, rule.action.channel):
                 continue

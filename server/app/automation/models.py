@@ -107,6 +107,12 @@ class AutomationRule(BaseModel):
     priority: int = 0
     applies_to_phases: list[str] | None = None  # None = all phases
     applies_to_species: list[str] | None = None  # None = all species
+    # Capability-aware fallback: fire this rule ONLY IF the named target is NOT
+    # present on this chamber. It's how "vent with the fans when there's no
+    # dehumidifier" degrades gracefully — the fan-evacuation rule sets this to
+    # the dehumidifier plug, so it goes silent the moment a real dehumidifier is
+    # paired, and the two never fight over the same excess-humidity event.
+    requires_absent_target: str | None = None
     condition: RuleCondition
     action: RuleAction
     cooldown_seconds: int = 60

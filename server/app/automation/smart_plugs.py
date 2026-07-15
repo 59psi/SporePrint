@@ -62,6 +62,8 @@ async def is_plug_target(target: str) -> bool:
 
     Plugs are reached over the vendor's own topic tree, never `sporeprint/*`,
     so the engine has to know which transport a target wants before publishing.
+    This is a TRANSPORT question — the `plug-` prefix is enough to answer it,
+    whether or not the plug has actually been paired yet.
     """
     if target.startswith("plug-"):
         return True
@@ -70,6 +72,37 @@ async def is_plug_target(target: str) -> bool:
             "SELECT 1 FROM smart_plugs WHERE plug_id = ?", (target,)
         )
         return await cursor.fetchone() is not None
+
+
+async def target_is_present(target: str) -> bool:
+    """Is this actuator ACTUALLY paired to this chamber right now?
+
+    Distinct from is_plug_target, which answers "how would I reach it" by naming
+    convention. This answers "is it really there" — a registered smart_plugs row
+    (by id or device_role), or a node channel the firmware has reported in its
+    health doc. Used for capability-aware fallbacks (vent when no dehumidifier).
+    """
+    async with get_db() as db:
+        # Smart plug: a real row, matched by id or by assigned role
+        # (plug-dehumidifier ⇢ device_role 'dehumidifier').
+        role = target[len("plug-"):] if target.startswith("plug-") else None
+        cursor = await db.execute(
+            "SELECT 1 FROM smart_plugs WHERE plug_id = ? OR device_role = ? LIMIT 1",
+            (target, role),
+        )
+        if await cursor.fetchone() is not None:
+            return True
+        # Node channel: does any node report a channel by this name?
+        cursor = await db.execute(
+            "SELECT channels FROM hardware_nodes WHERE channels IS NOT NULL"
+        )
+        for row in await cursor.fetchall():
+            try:
+                if target in json.loads(row["channels"]):
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                continue
+    return False
 
 
 async def send_plug_command(plug_id: str, state: str) -> bool:

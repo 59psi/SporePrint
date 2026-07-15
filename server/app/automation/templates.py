@@ -47,6 +47,97 @@ BUILTIN_RULES: list[AutomationRule] = [
         cooldown_seconds=60,
         log_to_session=True,
     ),
+    # Humidity was ONE-DIRECTIONAL until now: the humidifier turned on and off,
+    # but nothing REMOVED humidity. A sealed chamber pinned at 95% RH is a
+    # contamination event, and Tier 3 ships a dehumidifier plug for exactly it.
+    AutomationRule(
+        name="Dehumidify",
+        description="Run the dehumidifier when humidity exceeds the species maximum",
+        priority=10,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="on", duration_sec=600),
+        cooldown_seconds=300,
+        safety_max_on_seconds=3600,
+        log_to_session=True,
+    ),
+    AutomationRule(
+        name="Dehumidify Cutoff",
+        description="Stop the dehumidifier once humidity is back within range",
+        priority=10,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="off"),
+        cooldown_seconds=60,
+        log_to_session=True,
+    ),
+    # Graceful degradation: no dehumidifier? Shed humidity by exchanging chamber
+    # air with (drier) ambient using the exhaust fan. This is how a monotub
+    # without a dehumidifier is actually managed. `requires_absent_target` makes
+    # it go silent the moment a real dehumidifier is paired, so the two never
+    # fight. Note the tradeoff: venting also sheds CO2 and heat — so this is
+    # fruiting-only (colonization's fae_mode=none already blocks it via the
+    # air-exchange guard) and deliberately gentler than the emergency exhaust.
+    AutomationRule(
+        name="Humidity Vent (no dehumidifier)",
+        description="Vent moist air with the exhaust fan when humidity is high and no dehumidifier is present",
+        priority=9,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        requires_absent_target="plug-dehumidifier",
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=180, duration_sec=180),
+        cooldown_seconds=600,
+        safety_max_on_seconds=900,
+        log_to_session=True,
+    ),
+    # Circulation fan — kept a steady low cycle during fruiting so the chamber
+    # doesn't stratify (CO2 pools low, RH pockets form, pins dry unevenly). It
+    # is NOT fresh-air exchange — it stirs the air already in the chamber — so
+    # it runs even when fae_mode="none" holds the FAE/exhaust fans off. Cadence
+    # is species-driven via the scheduler; falls back to the literal.
+    AutomationRule(
+        name="Circulation Cycle",
+        description="Periodic internal air circulation during fruiting to prevent stratification",
+        priority=4,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(profile_interval_ref="circulation_interval_min", interval_min=30),
+        ),
+        action=RuleAction(target="relay-01", channel="circulation", state="on", pwm=160, duration_sec=120),
+        cooldown_seconds=600,
+        log_to_session=True,
+    ),
+    # Misting pump (relay aux / GPIO 14) as the HUMIDIFIER's fallback — symmetric
+    # with the exhaust-vent fallback for the dehumidifier. If no humidifier plug
+    # is paired, a brief mist raises RH. Gated HARD: short pulse, long cooldown,
+    # tight safety cutoff — over-misting causes bacterial blotch, and we have no
+    # substrate-moisture sensor to close the loop, so this stays conservative and
+    # only runs when there is genuinely no other way to add humidity.
+    AutomationRule(
+        name="Mist (no humidifier)",
+        description="Brief misting pulse when humidity is low and no humidifier plug is present",
+        priority=9,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        requires_absent_target="plug-humidifier",
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_min"),
+        ),
+        action=RuleAction(target="relay-01", channel="aux", state="on", pwm=255, duration_sec=8),
+        cooldown_seconds=600,
+        safety_max_on_seconds=30,
+        log_to_session=True,
+    ),
 
     # ─── CO2 / FAE Control ──────────────────────────────────────
     AutomationRule(
