@@ -1,6 +1,12 @@
 // SporePrint Universal Sensor Mounting Bracket
-// Adjustable bracket that clips to a wire shelf, with a platform
-// for the sensor mount enclosure
+// Clips to a wire shelf and carries the sensor_mount.scad climate enclosure
+// out over the substrate. The platform is sized DIRECTLY from that
+// enclosure's footprint via `use <sensor_mount.scad>` — its two tie-down
+// holes land on the enclosure's end-ear M3 holes, so the pair actually bolt
+// together. This closed a real gap: the platform was hard-coded 40 x 50 mm
+// while the enclosure is ~79 mm wide, so the two never mated. Sizing from
+// the shared footprint means an SCD30 build (wider enclosure) tracks
+// automatically — set scd30 = true to match.
 //
 // Mounting options:
 //   - Wire shelf clips (snap onto standard wire shelving)
@@ -14,17 +20,18 @@
 //
 // github.com/sporeprint — open-source mushroom cultivation platform
 
+use <sensor_mount.scad>
+
 // ── Parameters ────────────────────────────────────────────────
+scd30 = false;   // match sensor_mount's variant (true widens the platform)
 wire_d          = 5;     // mm — wire shelf wire diameter (measure yours)
 wire_spacing    = 25;    // mm — center-to-center wire spacing
-platform_w      = 40;    // mm — sensor platform width
-platform_l      = 50;    // mm — sensor platform length
 platform_thick  = 3;     // mm — platform thickness
 wall            = 3;     // mm — clip wall thickness
 clip_depth      = 15;    // mm — how far clip extends below shelf wire
 clip_gap        = 0.5;   // mm — extra clearance for clip fit
 arm_length      = 50;    // mm — horizontal arm from shelf to platform
-arm_width       = 15;    // mm — arm cross-section width
+arm_width       = 34;    // mm — arm cross-section width (spans the platform depth)
 arm_thick       = 4;     // mm — arm cross-section thickness
 screw_d         = 3;     // mm — M3 mounting holes (for sensor enclosure)
 tilt_angle      = 0;     // degrees — platform tilt (0 = flat, adjust for airflow)
@@ -37,6 +44,15 @@ sc_diameter = 30;  // mm — standard suction cup diameter
 sc_depth    = 2;   // mm — concave ring depth
 
 // ── Derived ───────────────────────────────────────────────────
+// Platform footprint = enclosure body + both end ears + a small margin, so
+// the enclosure (incl. its overhanging ears) sits fully on the platform and
+// the ear M3 holes fall inboard of the edge.
+plat_margin  = 5;    // mm — platform border past the enclosure ears
+ear_span     = sm_outer_w(scd30) + sm_ear_len() * 2;  // enclosure width incl. ears
+platform_w   = ear_span + plat_margin * 2;
+platform_l   = sm_outer_l(scd30) + plat_margin * 2;
+ear_hole_pitch = sm_outer_w(scd30) + sm_ear_len();     // ear-hole centre pitch
+
 clip_inner_d = wire_d + clip_gap * 2;
 clip_outer_d = clip_inner_d + wall * 2;
 total_clip_w = (num_clips - 1) * wire_spacing + clip_outer_d;
@@ -116,6 +132,10 @@ module arm() {
 }
 
 // ── Sensor platform ───────────────────────────────────────────
+// Flat landscape plate the enclosure bolts onto by its two end ears. No tall
+// rail cage any more — that was sized for a bare 25 mm sensor board, not the
+// full three-bay enclosure. A shallow perimeter lip keeps the enclosure from
+// creeping; the two M3 holes at the ear pitch do the real holding.
 module sensor_platform() {
     platform_x = total_clip_w / 2 - platform_w / 2;
     platform_y = -clip_outer_d / 2 - arm_length - platform_l + 5;
@@ -127,36 +147,37 @@ module sensor_platform() {
                     // Platform base
                     cube([platform_w, platform_l, platform_thick]);
 
-                    // Raised edge rails (sensor retention)
-                    cube([platform_w, 2, platform_thick + 3]);
-                    translate([0, platform_l - 2, 0])
-                        cube([platform_w, 2, platform_thick + 3]);
-                    cube([2, platform_l, platform_thick + 3]);
-                    translate([platform_w - 2, 0, 0])
-                        cube([2, platform_l, platform_thick + 3]);
+                    // Shallow perimeter lip (anti-creep, not full retention)
+                    difference() {
+                        cube([platform_w, platform_l, platform_thick + 2]);
+                        translate([wall, wall, -1])
+                            cube([platform_w - wall * 2,
+                                  platform_l - wall * 2, platform_thick + 4]);
+                    }
 
                     // Suction cup mount on bottom (alternative to shelf clip)
-                    translate([platform_w / 2, platform_l / 2, -sc_depth + 0.1])
+                    translate([platform_w / 2, platform_l / 2,
+                               -sc_depth + 0.1])
                         suction_cup_mount(diameter=sc_diameter, depth=sc_depth);
                 }
 
-                // Mounting screw holes (four positions)
-                for (pos = [[8, 8],
-                             [platform_w - 8, 8],
-                             [8, platform_l - 8],
-                             [platform_w - 8, platform_l - 8]])
-                    translate([pos[0], pos[1], -1])
-                        cylinder(h = platform_thick + 2, d = screw_d, $fn = 16);
+                // Enclosure tie-down holes — aligned to the sensor_mount end
+                // ears (centre pitch = body width + one ear length).
+                for (dx = [-ear_hole_pitch / 2, ear_hole_pitch / 2])
+                    translate([platform_w / 2 + dx, platform_l / 2, -1])
+                        cylinder(h = platform_thick + 2, d = screw_d,
+                                 $fn = 16);
 
                 // Cable routing slot (front edge)
                 translate([platform_w / 2 - cable_slot_w / 2, -1, -1])
                     cube([cable_slot_w, 4, platform_thick + 2]);
 
-                // Ventilation holes (center area)
+                // Ventilation holes so the enclosure floor vents can breathe
+                // (the enclosure must NOT sit on a solid surface).
                 for (x = [12 : 8 : platform_w - 12])
-                    for (y = [12 : 8 : platform_l - 12])
+                    for (y = [wall + 5 : 8 : platform_l - wall - 5])
                         translate([x, y, -1])
-                            cylinder(h = platform_thick + 2, d = 2.5, $fn = 12);
+                            cylinder(h = platform_thick + 2, d = 3, $fn = 12);
             }
         }
     }

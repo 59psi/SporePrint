@@ -128,7 +128,7 @@ Whether you are growing oyster mushrooms in a closet or managing multiple fruiti
 - **Weather multi-provider failover** -- automatic fallback across Open-Meteo, OpenWeatherMap, and NWS; configurable from Settings UI
 - **Weather-predictive alerts** up to 72 hours in advance
 - **Unit preferences** -- Fahrenheit/Celsius, grams/ounces throughout the UI
-- **8 OpenSCAD 3D-printable enclosure models** -- parametric designs for sensor mounts, ESP32 cases, Pi case, and more
+- **10 OpenSCAD 3D-printable enclosure models** -- parametric designs for sensor mounts, ESP32 cases, Pi case, load-cell scale, pump bracket, and more
 - **8 SVG diagrams** -- color-coded wiring diagrams per hardware tier plus architecture overviews
 
 ---
@@ -398,7 +398,7 @@ SporePrint/
 │       ├── labels/            # QR code generation for thermal printers
 │       ├── settings_router.py # User settings API (weather provider, display prefs)
 │       └── settings_service.py # Settings persistence service
-├── models/                    # OpenSCAD 3D-printable enclosure models (8 files)
+├── models/                    # OpenSCAD 3D-printable enclosure models (10 files, see models/README.md)
 ├── ui/                        # React 18 + TypeScript + Vite
 │   └── src/
 │       ├── pages/             # 15 pages (see below)
@@ -518,7 +518,7 @@ Species can also be imported as custom JSON profiles for varieties not in the bu
 | **Recommended** | ~$305 | + CO2 sensor + lighting node + camera |
 | **All the Things** | ~$445+ | + multiple chambers + redundant sensors + full lighting |
 
-The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams (4 wiring diagrams + system overview), step-by-step assembly instructions for each tier, and 8 parametric OpenSCAD 3D-printable enclosure models (sensor mounts, ESP32 cases, Pi case, fan duct, power supply mount).
+The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams (4 wiring diagrams + system overview), step-by-step assembly instructions for each tier, and 10 parametric OpenSCAD 3D-printable enclosure models (sensor mounts, ESP32 cases, Pi case, fan duct, power supply mount, HX711 load-cell scale, peristaltic pump bracket).
 
 ### Firmware
 
