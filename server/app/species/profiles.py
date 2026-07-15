@@ -977,7 +977,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=2000, co2_min_ppm=1000, co2_tolerance="high",
                 light_hours_on=4, light_hours_off=20, light_spectrum="daylight_6500k",
                 light_lux_target=200,
                 fae_mode="passive", expected_duration_days=(5, 7),
@@ -2348,7 +2348,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=75, temp_max_f=85, humidity_min=85, humidity_max=95,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=5000, co2_min_ppm=1500, co2_tolerance="high",
                 light_hours_on=2, light_hours_off=22, light_spectrum="daylight_6500k",
                 fae_mode="none", expected_duration_days=(30, 60),
                 notes="ANTLER FORMATION: Keep CO2 >1500ppm intentionally. Restrict FAE. Minimal light.",

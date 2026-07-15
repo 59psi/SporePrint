@@ -22,6 +22,10 @@ class PhaseParams(BaseModel):
     humidity_min: float
     humidity_max: float
     co2_max_ppm: int
+    # Some species want CO2 held HIGH, not just capped — reishi antler formation
+    # and king trumpet primordia both restrict FAE below a floor. This was two
+    # hardcoded rules (templates.py) before; now it is data. None = no floor.
+    co2_min_ppm: int | None = None
     co2_tolerance: str  # "low" | "moderate" | "high"
     light_hours_on: float
     light_hours_off: float

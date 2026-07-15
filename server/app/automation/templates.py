@@ -51,8 +51,14 @@ BUILTIN_RULES: list[AutomationRule] = [
     # ─── CO2 / FAE Control ──────────────────────────────────────
     AutomationRule(
         name="CO2 FAE Trigger",
-        description="Activate FAE fan when CO2 exceeds species target maximum",
+        description="Vent when CO2 exceeds the species' fruiting/pinning ceiling",
         priority=8,
+        # Fruiting phases only. Colonization WANTS high CO2 (5000-15000ppm at
+        # zero FAE — Stamets & Chilton); this rule used to have no phase gate and
+        # latched the fan on from day one of the spawn run, drying the substrate
+        # and venting the CO2 the mycelium needs. The fae_mode guard in the engine
+        # backstops this, but the phase gate makes the intent explicit.
+        applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
@@ -68,8 +74,13 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     AutomationRule(
         name="Emergency CO2 Exhaust",
-        description="Emergency exhaust activation when CO2 exceeds 3000ppm",
+        description="Hard exhaust when CO2 runs far above the fruiting ceiling",
         priority=20,
+        # ALSO fruiting-only. At 3000ppm during colonization this used to slam
+        # the exhaust to full power — but 3000 is normal, even low, for a spawn
+        # run. It is only an emergency once the species is trying to fruit
+        # (fruiting species want <1000ppm, so 3000 is a genuine excursion).
+        applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
@@ -255,32 +266,24 @@ BUILTIN_RULES: list[AutomationRule] = [
         log_to_session=True,
     ),
 
-    # Reishi — Antler CO2 Maintenance
+    # CO2 FLOOR — species that want CO2 held HIGH, not just capped.
+    # This replaces two hardcoded species rules (reishi <1500, king_trumpet
+    # <1000) with one profile-driven rule. Reishi antler morphology and king
+    # trumpet primordia both need elevated CO2; the value now lives in the
+    # profile's co2_min_ppm (see models.py), so any species that sets it gets
+    # the same behaviour without a bespoke rule. Only fires when a floor is set
+    # AND the reading is below it — species with co2_min_ppm=None never trigger.
     AutomationRule(
-        name="Reishi Antler CO2 Restrict FAE",
-        description="Keep FAE minimal during reishi antler formation to maintain high CO2 >1500ppm",
+        name="CO2 Floor — Restrict FAE",
+        description="Hold FAE off when CO2 drops below the species' floor for this phase",
         priority=12,
-        applies_to_species=["reishi"],
-        applies_to_phases=["primordia_induction"],
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", value=1500),
-        ),
-        action=RuleAction(target="relay-01", channel="fae", state="off"),
-        cooldown_seconds=300,
-        log_to_session=True,
-    ),
-
-    # King Trumpet — Elevated CO2 during primordia
-    AutomationRule(
-        name="King Trumpet Primordia CO2 Restrict",
-        description="Restrict FAE during king trumpet primordia to keep CO2 elevated (1000-2000ppm)",
-        priority=12,
-        applies_to_species=["king_trumpet"],
-        applies_to_phases=["primordia_induction"],
-        condition=RuleCondition(
-            type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", value=1000),
+            threshold=ThresholdCondition(
+                sensor="co2_ppm",
+                operator="lt",
+                profile_ref="co2_min_ppm",
+            ),
         ),
         action=RuleAction(target="relay-01", channel="fae", state="off"),
         cooldown_seconds=300,

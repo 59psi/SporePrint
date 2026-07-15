@@ -55,6 +55,16 @@ def _override_key(target: str, channel: str | None) -> str:
     return f"{target}:{channel or '*'}"
 
 
+# Channels whose whole job is to exchange chamber air with ambient. Driving any
+# of these vents CO2 (and humidity, and heat). fae_mode="none" phases must not
+# actuate them — see the guard in evaluate_rules.
+_AIR_EXCHANGE_CHANNELS = {"fae", "exhaust"}
+
+
+def _is_air_exchange_action(action) -> bool:
+    return action.channel in _AIR_EXCHANGE_CHANNELS
+
+
 async def _load_overrides_from_db():
     """Populate _overrides from the manual_overrides table; drop expired rows."""
     global _overrides_loaded
@@ -248,6 +258,16 @@ async def evaluate_rules(
 
             if rule.applies_to_species and session["species_profile_id"] not in rule.applies_to_species:
                 continue
+
+            # Honour the species profile's fae_mode. It is set on every phase
+            # (49 times) and, until now, read NOWHERE — so a phase declaring
+            # fae_mode="none" (every colonization phase) still got its FAE and
+            # exhaust fans driven by the CO2 rules, venting the 5000-15000ppm
+            # the mycelium needs. The profile said "no fresh air this phase" in
+            # a field the engine ignored. It doesn't any more.
+            if _is_air_exchange_action(rule.action) and phase_params is not None:
+                if getattr(phase_params, "fae_mode", None) == "none":
+                    continue
 
             if is_overridden(rule.action.target, rule.action.channel):
                 continue
