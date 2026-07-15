@@ -46,6 +46,7 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
     shelf_side: '',
     growth_form: '',
     pinning_tek: '',
+    container_type: '',
     chamber_id: null as number | null,
   })
 
@@ -309,6 +310,40 @@ export default function SessionWizard({ onCreated, onCancel }: Props) {
               <option value="grain_colonization">Grain Colonization</option>
               <option value="substrate_colonization">Substrate Colonization</option>
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Container</label>
+            <select
+              value={form.container_type}
+              onChange={(e) => setForm({ ...form, container_type: e.target.value })}
+              className="w-full p-3 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-sm focus:outline-none focus:border-[var(--color-accent-gourmet)]"
+            >
+              <option value="">Select container…</option>
+              <optgroup label="Culture / spawn (→ cold storage when colonized)">
+                <option value="agar_plate">Agar plate</option>
+                <option value="liquid_culture">Liquid culture</option>
+                <option value="grain_jar">Grain jar</option>
+              </optgroup>
+              <optgroup label="Bulk substrate (→ fruiting when colonized)">
+                <option value="grow_bag">Grow bag</option>
+                <option value="monotub">Monotub</option>
+                <option value="tray">Tray</option>
+              </optgroup>
+            </select>
+            {['agar_plate', 'liquid_culture', 'grain_jar'].includes(form.container_type) && (
+              <p className="text-xs text-[var(--color-text-secondary)] mt-2">
+                Sealed vessel: once fully colonized this goes to <strong>cold storage</strong> (the
+                fridge), not fruiting. Chamber CO₂ control is inactive — the sensor reads room air,
+                not the vessel's, so venting would only churn the chamber.
+              </p>
+            )}
+            {form.container_type === 'grow_bag' && (
+              <p className="text-xs text-[var(--color-text-secondary)] mt-2">
+                Grow bag: colonizes sealed (CO₂ control inactive — the mycelium's CO₂ is inside the
+                bag), then cut open for <strong>fruiting</strong>, where CO₂ control becomes active.
+              </p>
+            )}
           </div>
 
           {form.species_profile_id === 'reishi' && (
