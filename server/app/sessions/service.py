@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 
 from ..db import get_db
+from ..species.service import get_profile
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
 
 _PHASE_ORDER = [
@@ -135,21 +136,26 @@ _COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substra
 _BAG_CONTAINERS = {"grow_bag", "bag"}
 
 
-def suggested_next_phase(current_phase: str, container_type: str | None) -> str:
-    """The product spec's fork, as a suggestion the UI offers on 'advance phase'.
+def suggested_next_phase(current_phase: str, container_type: str | None,
+                         more_flushes_expected: bool = True) -> str:
+    """The product spec's forks, as a suggestion the UI offers on 'advance phase'.
 
-    A fully-colonized GROW BAG goes on to fruit (primordia → flushes). Everything
-    else — colonized agar, liquid culture, a grain jar — is typically pulled and
-    parked in the fridge until it's used to inoculate the next step. So once
-    colonization completes:
-        grow bag       → primordia_induction
-        agar/LC/grain  → cold_storage
-    From cold storage the operator later starts a new session (grain → bulk, etc.);
-    the linear order still applies everywhere else.
+    Two forks:
+    1. After colonization: a GROW BAG goes on to fruit; colonized agar / LC /
+       grain is pulled and parked in the fridge until used.
+           grow bag       → primordia_induction
+           agar/LC/grain  → cold_storage
+    2. The flush loop: a bag gives 2-3 flushes. After a flush you REST, then go
+       back to FRUITING for the next one — until the bag is spent, then COMPLETE.
+           rest → fruiting   (if more flushes expected)
+           rest → complete   (bag is spent)
+    Everything else follows the ordinary linear order.
     """
     ct = (container_type or "").lower()
     if current_phase in _COLONIZATION_PHASES:
         return "primordia_induction" if ct in _BAG_CONTAINERS else "cold_storage"
+    if current_phase == "rest":
+        return "fruiting" if more_flushes_expected else "complete"
     # Non-fork transitions follow the ordinary linear progression.
     from ..species.models import GrowPhase
     order = [p.value for p in GrowPhase]
@@ -231,6 +237,43 @@ async def add_harvest(session_id: int, data: HarvestCreate) -> dict:
         harvest_id = cursor.lastrowid
         cursor = await db.execute("SELECT * FROM harvests WHERE id = ?", (harvest_id,))
         return dict(await cursor.fetchone())
+
+
+async def flush_status(session_id: int) -> dict:
+    """How many flushes has this session yielded, and are more expected?
+
+    A grow bag typically gives 2-3 flushes: fruit → harvest → rest → re-fruit,
+    until it's spent. `expected` comes from the species' flush_count_typical.
+    The UI uses `more_expected` to decide whether REST loops back to FRUITING
+    (another flush) or advances to COMPLETE (bag is done).
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(DISTINCT flush_number) AS n, MAX(flush_number) AS latest "
+            "FROM harvests WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        harvested = row["n"] or 0
+        latest = row["latest"] or 0
+        cursor = await db.execute(
+            "SELECT species_profile_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        srow = await cursor.fetchone()
+
+    expected = None
+    if srow:
+        profile = await get_profile(srow["species_profile_id"])
+        if profile is not None:
+            expected = getattr(profile, "flush_count_typical", None)
+
+    more_expected = expected is None or harvested < expected
+    return {
+        "flushes_harvested": harvested,
+        "latest_flush": latest,
+        "expected_flushes": expected,
+        "more_expected": more_expected,
+    }
 
 
 async def get_active_session() -> dict | None:
