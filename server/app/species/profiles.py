@@ -1513,7 +1513,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=82, humidity_min=85, humidity_max=95,
-                co2_max_ppm=2500, co2_tolerance="high",
+                co2_max_ppm=3000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -2282,7 +2282,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=2500, co2_tolerance="high",
+                co2_max_ppm=3000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="Temperature drop from colonization triggers pinning. Good FAE required.",

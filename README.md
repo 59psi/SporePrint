@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Open-source automated mushroom cultivation platform</strong><br>
-  Full environmental automation, 55 species profiles, AI-powered vision analysis,<br>
+  Full environmental automation, 73 species profiles, AI-powered vision analysis,<br>
   weather-predictive intelligence, and a real-time React dashboard -- all running on a Raspberry Pi.
 </p>
 
@@ -380,7 +380,7 @@ SporePrint/
 │       ├── telemetry/         # Sensor data ingest + rollup-aware history
 │       ├── sessions/          # Grow session lifecycle, yield stats, drying tracker, PDF reports, iCal feed
 │       ├── automation/        # Rules engine, smart plugs, overrides, per-chamber scoping
-│       ├── species/           # 55 species profiles, wizard, substrate calc, shopping list
+│       ├── species/           # 73 species profiles, wizard, substrate calc, shopping list
 │       ├── vision/            # Frame ingest, local CNN, Claude Vision
 │       ├── weather/           # Multi-provider weather, prediction, forecasts, history aggregation
 │       ├── retention/         # Tiered data compression (raw > 5min > hourly > daily)
