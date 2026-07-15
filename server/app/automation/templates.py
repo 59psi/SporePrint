@@ -165,20 +165,39 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     AutomationRule(
         name="Emergency CO2 Exhaust",
-        description="Hard exhaust when CO2 runs far above the fruiting ceiling",
+        description="Hard exhaust when CO2 runs above the species' emergency edge",
         priority=20,
-        # ALSO fruiting-only. At 3000ppm during colonization this used to slam
-        # the exhaust to full power — but 3000 is normal, even low, for a spawn
-        # run. It is only an emergency once the species is trying to fruit
-        # (fruiting species want <1000ppm, so 3000 is a genuine excursion).
+        # Fruiting-only AND species-relative. The old hardcoded 3000 was normal —
+        # even low — for a reishi antler fruiting (1000-10000ppm) or a maitake
+        # rosette, so it fought species that legitimately hold CO2 high. Now it
+        # fires at co2_emergency_ppm = the phase's co2_max_ppm + its margin, so
+        # "emergency" means the same distance above target for every species.
         applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
                 sensor="co2_ppm",
                 operator="gt",
-                value=3000,
+                profile_ref="co2_emergency_ppm",
             ),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
+        cooldown_seconds=120,
+        notification=True,
+        log_to_session=True,
+    ),
+    AutomationRule(
+        name="CO2 Hard Ceiling",
+        description="Absolute exhaust backstop — vents no matter the species or phase",
+        priority=21,
+        # The species-relative emergency above needs a phase profile to resolve.
+        # This is the profile-independent floor under it: a level (40000ppm) far
+        # above any legitimate cultivation band, including a 10-40k colonization,
+        # so it never fights a real grow — but it still protects the equipment
+        # and anyone in the room if CO2 runs away with no active grow profile.
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", value=40000),
         ),
         action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
         cooldown_seconds=120,

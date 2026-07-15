@@ -38,6 +38,17 @@ class PhaseParams(BaseModel):
     # render identically. Default False (honest): opt IN to claiming a citation.
     co2_sourced: bool = False
     co2_source: str | None = None  # citation string; renders in the UI when set
+    # The emergency exhaust used to fire at a hardcoded 3000ppm — which is normal
+    # for a reishi antler fruiting (1000-10000ppm) or a maitake rosette, so the
+    # global threshold fought species that legitimately hold CO2 high. Now it
+    # fires at the species' OWN edge (co2_max_ppm + this margin), exposed as a
+    # computed property so a rule can name it via profile_ref like any field.
+    co2_emergency_margin_ppm: int = 1000
+
+    @property
+    def co2_emergency_ppm(self) -> int:
+        return int(self.co2_max_ppm + self.co2_emergency_margin_ppm)
+
     light_hours_on: float
     light_hours_off: float
     light_spectrum: str  # "none" | "daylight_6500k" | "blue_450nm" | "blue_emphasis"
