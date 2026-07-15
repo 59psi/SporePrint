@@ -1,8 +1,30 @@
 import json
 
 from ..db import get_db
-from .models import SpeciesProfile
+from .models import DEFAULT_COLD_STORAGE, GrowPhase, PhaseParams, SpeciesProfile
 from .profiles import BUILTIN_PROFILES
+
+
+def resolve_phase_params(profile: SpeciesProfile | None, phase: str) -> PhaseParams | None:
+    """Return the PhaseParams governing `phase` for `profile`.
+
+    Falls back to DEFAULT_COLD_STORAGE for the COLD_STORAGE fork, which is
+    refrigeration common to every species — so a profile does not have to spell
+    out fridge conditions for the resolver (or the automation engine) to know
+    them. Any other unmapped phase returns None (no opinion), as before.
+    """
+    if profile is None:
+        return None
+    try:
+        key = GrowPhase(phase)
+    except ValueError:
+        return None
+    params = profile.phases.get(key)
+    if params is not None:
+        return params
+    if key is GrowPhase.COLD_STORAGE:
+        return DEFAULT_COLD_STORAGE
+    return None
 
 
 async def seed_builtins():

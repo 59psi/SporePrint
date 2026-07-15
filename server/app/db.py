@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     shelf_side TEXT,
     growth_form TEXT,
     pinning_tek TEXT,
+    container_type TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     created_at REAL DEFAULT (unixepoch('now')),
     completed_at REAL,
@@ -478,6 +479,12 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(hardware_nodes)", "mqtt_reconnects",
             "ALTER TABLE hardware_nodes ADD COLUMN mqtt_reconnects INTEGER",
+        )
+        # v4.3: container type drives the colonization fork (bag → fruiting;
+        # agar/LC/grain jar → cold storage) and CO2 physicality gating.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(sessions)", "container_type",
+            "ALTER TABLE sessions ADD COLUMN container_type TEXT",
         )
         await db.commit()
 

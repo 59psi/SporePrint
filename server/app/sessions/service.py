@@ -24,12 +24,13 @@ async def create_session(data: SessionCreate) -> dict:
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
                substrate_prep_notes, inoculation_date, inoculation_method, spawn_source,
                current_phase, tub_number, shelf_number, shelf_side, growth_form, pinning_tek,
-               chamber_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               chamber_id, container_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data.name, data.species_profile_id, data.substrate, data.substrate_volume,
              data.substrate_prep_notes, data.inoculation_date, data.inoculation_method,
              data.spawn_source, data.current_phase, data.tub_number, data.shelf_number,
-             data.shelf_side, data.growth_form, data.pinning_tek, data.chamber_id),
+             data.shelf_side, data.growth_form, data.pinning_tek, data.chamber_id,
+             data.container_type),
         )
         session_id = cursor.lastrowid
 
@@ -95,7 +96,8 @@ UPDATE sessions SET
     shelf_number = COALESCE(?, shelf_number),
     shelf_side = COALESCE(?, shelf_side),
     growth_form = COALESCE(?, growth_form),
-    pinning_tek = COALESCE(?, pinning_tek)
+    pinning_tek = COALESCE(?, pinning_tek),
+    container_type = COALESCE(?, container_type)
 WHERE id = ?
 """
 
@@ -112,6 +114,7 @@ _UPDATE_SESSION_COLUMNS = (
     "shelf_side",
     "growth_form",
     "pinning_tek",
+    "container_type",
 )
 
 
@@ -133,6 +136,19 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
 
 async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
     now = time.time()
+    # "auto" advances along the spec's container-aware fork; a concrete phase
+    # value is honoured verbatim (manual override). Resolving here keeps the
+    # fork in one place (sessions.lifecycle) instead of duplicated in the UI.
+    target_phase = data.phase
+    trigger = data.trigger
+    if target_phase == "auto":
+        current = await get_session(session_id)
+        if not current:
+            return None
+        from .lifecycle import next_phase
+        target_phase = next_phase(current["current_phase"], current.get("container_type"))
+        if trigger == "manual":
+            trigger = "auto_fork"
     async with get_db() as db:
         # Close current phase
         await db.execute(
@@ -142,16 +158,16 @@ async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
         # Open new phase
         await db.execute(
             "INSERT INTO phase_history (session_id, phase, entered_at, trigger) VALUES (?, ?, ?, ?)",
-            (session_id, data.phase, now, data.trigger),
+            (session_id, target_phase, now, trigger),
         )
         await db.execute(
             "UPDATE sessions SET current_phase = ? WHERE id = ?",
-            (data.phase, session_id),
+            (target_phase, session_id),
         )
         await db.execute(
             "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
-            (session_id, "phase_change", data.trigger, f"Phase advanced to {data.phase}",
-             json.dumps({"phase": data.phase})),
+            (session_id, "phase_change", trigger, f"Phase advanced to {target_phase}",
+             json.dumps({"phase": target_phase})),
         )
         await db.commit()
     return await get_session(session_id)
@@ -358,6 +374,18 @@ async def get_session_stats(session_id: int) -> dict | None:
         species_avg_yield_g = round(agg["avg_yield"], 1) if agg["avg_yield"] else None
         species_best_yield_g = round(agg["best_yield"], 1) if agg["best_yield"] else None
 
+        # Flush progress vs the species' typical flush count ("2-3 flushes per
+        # bag"). Lets the UI and calendar show how many flushes are likely left
+        # and drives the fruiting ⇄ rest cycle in the lifecycle fork.
+        from ..species.service import get_profile as _get_species_profile
+        profile = await _get_species_profile(species_id)
+        expected_flush_count = profile.flush_count_typical if profile else None
+        harvested_flushes = max((f["flush_number"] for f in flush_yields), default=0)
+        flushes_remaining = (
+            max(expected_flush_count - harvested_flushes, 0)
+            if expected_flush_count is not None else None
+        )
+
         return {
             "session_id": session_id,
             "species_profile_id": species_id,
@@ -367,6 +395,9 @@ async def get_session_stats(session_id: int) -> dict | None:
             "total_dry_yield_g": round(total_dry, 1),
             "biological_efficiency": biological_efficiency,
             "flush_count": len(flush_yields),
+            "harvested_flushes": harvested_flushes,
+            "expected_flush_count": expected_flush_count,
+            "flushes_remaining": flushes_remaining,
             "species_avg_yield_g": species_avg_yield_g,
             "species_best_yield_g": species_best_yield_g,
             "species_session_count": species_session_count,

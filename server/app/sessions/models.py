@@ -17,6 +17,11 @@ class SessionCreate(BaseModel):
     growth_form: str | None = None
     pinning_tek: str | None = None
     chamber_id: int | None = None
+    # What the substrate is IN. Drives the colonization fork (bag/monotub →
+    # fruiting; agar/LC/grain jar → cold storage) and whether chamber CO2 is
+    # physically coupled to the substrate. See sessions.lifecycle. Values:
+    # agar_plate | liquid_culture | grain_jar | grow_bag | monotub | tray | bulk_bag
+    container_type: str | None = None
 
 
 class SessionUpdate(BaseModel):
@@ -32,10 +37,13 @@ class SessionUpdate(BaseModel):
     shelf_side: str | None = None
     growth_form: str | None = None
     pinning_tek: str | None = None
+    container_type: str | None = None
 
 
 class PhaseAdvance(BaseModel):
-    phase: str
+    # "auto" resolves the spec's container-aware fork (sessions.lifecycle);
+    # any concrete GrowPhase value is honoured as an explicit manual override.
+    phase: str = "auto"
     trigger: str = "manual"
 
 
