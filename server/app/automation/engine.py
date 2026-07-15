@@ -5,9 +5,15 @@ import time
 
 from ..db import get_db
 from ..mqtt import mqtt_publish
-from ..notifications.service import co2_alert, temperature_alert
+from ..notifications.service import (
+    co2_alert,
+    notify_critical,
+    notify_warning,
+    temperature_alert,
+)
+from ..sessions.lifecycle import co2_control_meaningful
 from ..sessions.service import get_active_session
-from ..species.service import get_profile
+from ..species.service import get_profile, resolve_phase_params
 from .service import validate_action_channel
 from .smart_plugs import is_plug_target, send_plug_command
 from .models import (
@@ -46,9 +52,26 @@ _safety_tasks: dict[str, asyncio.Task] = {}
 _state_lock = asyncio.Lock()
 _safety_tasks_lock = asyncio.Lock()
 
-# How much a reading must exceed the species ceiling before we page the operator.
+# Fallback emergency-band margins, used only when a phase's PhaseParams somehow
+# lacks the per-species margin fields (e.g. a hand-built SimpleNamespace in a
+# test). Real profiles carry their own temp_emergency_margin_f /
+# co2_emergency_margin_ppm; these reproduce the pre-tier global constants so
+# behaviour is unchanged when a margin is absent.
 _TEMP_SAFETY_MARGIN_F = 5.0
 _CO2_SAFETY_MARGIN_PPM = 1000
+
+# Human-safety hard ceiling for CO2, alerted regardless of species, phase, or
+# container. It sits FAR above every legitimate cultivation band (reishi antler
+# runs to ~10,000 ppm; colonization to ~15,000), so it never fights a grow — it
+# only fires when the air itself is becoming hazardous to a person in the room.
+# 40,000 ppm (4%) is the OSHA IDLH for CO2.
+_CO2_HARD_CEILING_PPM = 40000
+
+# Registered-actuator capability cache (plug ids, "role:*", node channels,
+# "vendor:*"). Backs requires_present / requires_absent gating. Refreshed on the
+# same 5s cadence as the rule cache; a stale-by-one-tick read self-heals.
+_capabilities: set[str] = set()
+_capabilities_ts: float = 0
 
 
 def _override_key(target: str, channel: str | None) -> str:
@@ -110,6 +133,122 @@ async def load_rules() -> list[AutomationRule]:
         _rule_cache = rules
         _cache_ts = now
     return rules
+
+
+# Channels that VENT the chamber (fresh-air exchange, so they lower CO2). Turning
+# these ON is refused unless the phase's fae_mode asks for an ACTIVE fan.
+# `circulation` is NOT here — it only stirs existing air, changes no CO2, and is
+# safe during high-CO2 phases.
+_VENTING_CHANNELS = frozenset({"fae", "exhaust"})
+
+# fae_mode values that call for an active FAE FAN. "none" (sealed) and "passive"
+# (gas exchange through micropore/filter, no fan) explicitly do NOT — several
+# species fruit passively (enoki, wine cap, giant puffball) and must not have
+# their fan driven. This is the field that was set 49 times and read zero times.
+_FAE_ACTIVE_MODES = frozenset({"scheduled", "continuous"})
+
+# PhaseParams / ThresholdCondition names that mean "this rule reasons about CO2".
+_CO2_REFS = frozenset({"co2_max_ppm", "co2_min_ppm", "co2_warn_ppm", "co2_emergency_ppm"})
+
+
+async def load_capabilities() -> set[str]:
+    """Registered-actuator token set, cached on the rule-cache cadence.
+
+    Tokens: smart-plug ids ("plug-dehumidifier"), "role:<device_role>", node
+    channel names ("fae"/"exhaust"/"circulation"/"aux"), and "vendor:<slug>"
+    for an enabled integration. requires_present / requires_absent are matched
+    against this set.
+    """
+    global _capabilities, _capabilities_ts
+    now = time.time()
+    if now - _capabilities_ts < 5:
+        return _capabilities
+    tokens: set[str] = set()
+    async with get_db() as db:
+        cur = await db.execute("SELECT plug_id, device_role FROM smart_plugs")
+        for r in await cur.fetchall():
+            tokens.add(r["plug_id"])
+            if r["device_role"]:
+                tokens.add(f"role:{r['device_role']}")
+        cur = await db.execute(
+            "SELECT channels FROM hardware_nodes WHERE channels IS NOT NULL"
+        )
+        for r in await cur.fetchall():
+            try:
+                for ch in json.loads(r["channels"]) or []:
+                    tokens.add(ch)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        try:
+            cur = await db.execute(
+                "SELECT slug FROM integration_settings WHERE enabled = 1"
+            )
+            for r in await cur.fetchall():
+                tokens.add(f"vendor:{r['slug']}")
+        except Exception:
+            pass  # integration_settings absent on an old DB — vendor gating off
+    async with _state_lock:
+        _capabilities = tokens
+        _capabilities_ts = now
+    return tokens
+
+
+def _condition_uses_co2(condition) -> bool:
+    if condition is None:
+        return False
+    if condition.type == ConditionType.THRESHOLD and condition.threshold:
+        t = condition.threshold
+        return t.sensor == "co2_ppm" or (t.profile_ref in _CO2_REFS)
+    if condition.type == ConditionType.COMPOUND and condition.compound:
+        return any(_condition_uses_co2(c) for c in condition.compound.conditions)
+    return False
+
+
+def _action_vents(action) -> bool:
+    """Does firing this action turn ON a venting actuator?"""
+    return action.channel in _VENTING_CHANNELS and action.state == "on"
+
+
+def _rule_suppressed(rule, phase_params, co2_meaningful: bool,
+                     capabilities: set[str]) -> str | None:
+    """Return a reason string if physics or missing hardware forbids this rule.
+
+    Three gates, all returning BEFORE cooldown so a suppressed rule records no
+    firing:
+
+    1. fae_mode — active venting is refused unless the phase calls for an active
+       fan (scheduled/continuous). "none" (sealed) and "passive" (no fan) both
+       forbid it — colonization, and passively-fruited species like enoki.
+       This is the belt-and-suspenders behind phase gating, and it is what makes
+       the humidity/CO2 conflict resolve correctly: a fan-evacuation rule is
+       auto-suppressed during a high-CO2 phase, leaving the dehumidifier or an
+       alert.
+    2. sealed container — CO2 is not coupled to the substrate, so CO2-driven
+       actuation would only churn the chamber.
+    3. capability — requires_present must all be registered actuators and
+       requires_absent none (graceful degradation).
+    """
+    # 1. Active venting is allowed only when the phase asks for an active fan.
+    # "none"/"passive" both mean no fan; unknown (no profile) is left alone so we
+    # never veto a rule we lack the context to judge.
+    fae_mode = getattr(phase_params, "fae_mode", None) if phase_params is not None else None
+    if fae_mode is not None and fae_mode not in _FAE_ACTIVE_MODES and _action_vents(rule.action):
+        return f"fae_mode={fae_mode!r} does not call for an active fan on channel {rule.action.channel!r}"
+
+    # 2. CO2 control physically meaningless in a sealed container.
+    if not co2_meaningful and _condition_uses_co2(rule.condition):
+        return "co2 control meaningless — substrate sealed from the chamber sensor"
+
+    # 3. Capability gating.
+    if rule.requires_present and not all(t in capabilities for t in rule.requires_present):
+        missing = [t for t in rule.requires_present if t not in capabilities]
+        return f"missing required actuator(s): {', '.join(missing)}"
+    if rule.requires_absent:
+        blocking = [t for t in rule.requires_absent if t in capabilities]
+        if blocking:
+            return f"superseded by present actuator(s): {', '.join(blocking)}"
+
+    return None
 
 
 async def set_override(override: ManualOverride):
@@ -227,19 +366,23 @@ async def evaluate_rules(
     species_profile = await get_profile(session["species_profile_id"])
     current_phase = session["current_phase"]
 
-    phase_params = None
-    if species_profile and current_phase in [p.value for p in species_profile.phases]:
-        from ..species.models import GrowPhase
-        try:
-            phase_params = species_profile.phases[GrowPhase(current_phase)]
-        except (ValueError, KeyError):
-            pass
+    # resolve_phase_params falls back to DEFAULT_COLD_STORAGE for the fridge
+    # fork, so a session parked in cold storage still gets its (temperature-only)
+    # band alerts even though no species spells fridge conditions out.
+    phase_params = resolve_phase_params(species_profile, current_phase)
+
+    # Is chamber CO2 physically coupled to this substrate right now? A sealed
+    # bag / jar during colonization holds its CO2 inside the container, so the
+    # chamber sensor reads room air and CO2 rules would only churn the chamber.
+    co2_meaningful = co2_control_meaningful(session.get("container_type"), current_phase)
+
+    capabilities = await load_capabilities()
 
     # Proactive safety alerts — fire regardless of rule state. These are the
     # "closet is on fire" alerts the operator must hear about even if no rule
     # has been authored to handle them.
     if phase_params is not None:
-        await _check_safety_thresholds(node_id, phase_params, readings, session)
+        await _check_safety_thresholds(node_id, phase_params, readings, session, co2_meaningful)
 
     for rule in rules:
         try:
@@ -250,6 +393,15 @@ async def evaluate_rules(
                 continue
 
             if is_overridden(rule.action.target, rule.action.channel):
+                continue
+
+            # Physical + capability gating: fae_mode="none" means no venting;
+            # sealed containers make CO2 control meaningless; requires_present /
+            # requires_absent express graceful degradation (dehumidifier vs fan
+            # evacuation). A suppressed rule is skipped BEFORE cooldown so it
+            # never records a fire it did not do.
+            if reason := _rule_suppressed(rule, phase_params, co2_meaningful, capabilities):
+                log.debug("Rule '%s' suppressed: %s", rule.name, reason)
                 continue
 
             now = time.time()
@@ -267,60 +419,160 @@ async def evaluate_rules(
             log.error("Error evaluating rule '%s': %s", rule.name, e)
 
 
-async def _check_safety_thresholds(node_id: str, phase_params, readings: dict, session: dict | None):
-    """Page the operator when readings breach species ceilings by a safety margin.
+def _margin(phase_params, name: str, fallback: float) -> float:
+    """Read a per-species band margin, tolerating a stripped-down phase object.
 
-    Two channels fire in parallel:
-    - local ntfy via `temperature_alert` / `co2_alert` (so a Pi running headless
-      on the LAN gets notified even if the cloud connector is disconnected)
-    - cloud event via `forward_event` (so premium mobile subscribers get their
-      push notification via the cloud relay's escalation engine)
+    Real PhaseParams carry every margin field; a test SimpleNamespace may not,
+    in which case we fall back to the pre-tier global constant so the emergency
+    tier's behaviour is unchanged.
     """
-    # Late import — forward_event lives in cloud/service.py which imports us transitively.
+    val = getattr(phase_params, name, None)
+    return float(val) if isinstance(val, (int, float)) else float(fallback)
+
+
+def _band_breach(value: float, lo: float, hi: float,
+                 warn_margin: float, emergency_margin: float) -> tuple[str | None, str | None]:
+    """Classify a reading against a nominal [lo, hi] band.
+
+    Returns (severity, direction) where severity ∈ {None, "warning",
+    "emergency"} and direction ∈ {None, "high", "low"}. Emergency is checked
+    first so the loudest applicable tier wins.
+    """
+    if value >= hi + emergency_margin or value <= lo - emergency_margin:
+        return "emergency", ("high" if value >= hi + emergency_margin else "low")
+    if value >= hi + warn_margin or value <= lo - warn_margin:
+        return "warning", ("high" if value >= hi + warn_margin else "low")
+    return None, None
+
+
+async def _check_safety_thresholds(node_id: str, phase_params, readings: dict,
+                                   session: dict | None, co2_meaningful: bool = True):
+    """Alert the operator when readings drift outside the species' nominal band.
+
+    Two tiers per parameter, derived from the phase's own min/max plus its
+    per-species warn/emergency margins (NOT one global constant for every
+    species):
+
+        + warn margin      → WARNING   (ntfy priority 4, deduped)
+        + emergency margin → EMERGENCY (ntfy priority 5 + cloud critical push)
+
+    Alerting only — it never actuates. Actuation is the rules' job, which are
+    phase-/container-/capability-gated; a always-on alert must not be. Two
+    delivery channels fire in parallel for each alert:
+    - local ntfy (so a headless LAN Pi is notified even if cloud is down)
+    - cloud event via forward_event (premium mobile push via the relay).
+    """
     from ..cloud.service import forward_event
 
+    sid = session.get("id") if session else None
+
+    # ── Temperature ── always meaningful (it is THE colonization parameter).
     temp = readings.get("temp_f")
     if isinstance(temp, (int, float)):
-        direction = None
-        if temp > phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F:
-            direction = "high"
-        elif temp < phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F:
-            direction = "low"
-        if direction:
-            try:
-                await temperature_alert(float(temp), direction)
-            except Exception as e:
-                log.warning("temperature_alert failed: %s", e)
-            try:
-                await forward_event("temperature_alert", {
-                    "node_id": node_id,
-                    "temp_f": float(temp),
-                    "direction": direction,
-                    "threshold_f": (
-                        phase_params.temp_max_f + _TEMP_SAFETY_MARGIN_F if direction == "high"
-                        else phase_params.temp_min_f - _TEMP_SAFETY_MARGIN_F
-                    ),
-                    "session_id": session.get("id") if session else None,
-                })
-            except Exception as e:
-                log.warning("forward_event(temperature_alert) failed: %s", e)
+        warn_m = _margin(phase_params, "temp_warn_margin_f", 2.0)
+        emerg_m = _margin(phase_params, "temp_emergency_margin_f", _TEMP_SAFETY_MARGIN_F)
+        severity, direction = _band_breach(
+            float(temp), phase_params.temp_min_f, phase_params.temp_max_f, warn_m, emerg_m)
+        if severity:
+            edge = (phase_params.temp_max_f + (emerg_m if severity == "emergency" else warn_m)
+                    if direction == "high"
+                    else phase_params.temp_min_f - (emerg_m if severity == "emergency" else warn_m))
+            await _emit_band_alert(
+                severity, "temperature_alert",
+                title=f"Temperature {direction.upper()}: {float(temp):.1f}°F",
+                message=f"Temperature is {severity} {direction} (band edge {edge:.1f}°F). Check the environment.",
+                tags=["thermometer"],
+                event={"node_id": node_id, "temp_f": float(temp), "direction": direction,
+                       "severity": severity, "threshold_f": edge, "session_id": sid},
+                forward_event=forward_event,
+            )
 
+    # ── Humidity ── symmetric band; high side is the contamination risk.
+    humidity = readings.get("humidity")
+    if isinstance(humidity, (int, float)):
+        warn_m = _margin(phase_params, "humidity_warn_margin", 5.0)
+        emerg_m = _margin(phase_params, "humidity_emergency_margin", 10.0)
+        severity, direction = _band_breach(
+            float(humidity), phase_params.humidity_min, phase_params.humidity_max, warn_m, emerg_m)
+        if severity:
+            await _emit_band_alert(
+                severity, "humidity_alert",
+                title=f"Humidity {direction.upper()}: {float(humidity):.0f}%",
+                message=f"Humidity is {severity} {direction}. Sustained high RH invites contamination.",
+                tags=["droplet"],
+                event={"node_id": node_id, "humidity": float(humidity), "direction": direction,
+                       "severity": severity, "session_id": sid},
+                forward_event=forward_event,
+            )
+
+    # ── CO2 ── species-band alerts only when the sensor is coupled to the
+    # substrate; the human-safety hard ceiling below is UNconditional.
     co2 = readings.get("co2_ppm")
     if isinstance(co2, (int, float)):
-        if co2 > phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM:
-            try:
-                await co2_alert(int(co2))
-            except Exception as e:
-                log.warning("co2_alert failed: %s", e)
-            try:
-                await forward_event("co2_alert", {
-                    "node_id": node_id,
-                    "co2_ppm": int(co2),
-                    "threshold_ppm": phase_params.co2_max_ppm + _CO2_SAFETY_MARGIN_PPM,
-                    "session_id": session.get("id") if session else None,
-                })
-            except Exception as e:
-                log.warning("forward_event(co2_alert) failed: %s", e)
+        co2 = float(co2)
+        if co2 >= _CO2_HARD_CEILING_PPM:
+            await _emit_band_alert(
+                "emergency", "co2_alert",
+                title=f"CO2 HAZARD: {int(co2)} ppm",
+                message="CO2 is at a level hazardous to people in the room. Ventilate and leave the space.",
+                tags=["cloud", "warning"],
+                event={"node_id": node_id, "co2_ppm": int(co2), "severity": "emergency",
+                       "threshold_ppm": _CO2_HARD_CEILING_PPM, "reason": "human_safety",
+                       "session_id": sid},
+                forward_event=forward_event,
+            )
+        elif co2_meaningful:
+            warn_m = _margin(phase_params, "co2_warn_margin_ppm", 500)
+            emerg_m = _margin(phase_params, "co2_emergency_margin_ppm", _CO2_SAFETY_MARGIN_PPM)
+            ceil = phase_params.co2_max_ppm
+            severity = None
+            if co2 >= ceil + emerg_m:
+                severity = "emergency"
+            elif co2 >= ceil + warn_m:
+                severity = "warning"
+            if severity:
+                edge = ceil + (emerg_m if severity == "emergency" else warn_m)
+                await _emit_band_alert(
+                    severity, "co2_alert",
+                    title=f"CO2 {severity.upper()}: {int(co2)} ppm",
+                    message=f"CO2 is {severity} high (band edge {int(edge)} ppm). Check ventilation.",
+                    tags=["cloud"],
+                    event={"node_id": node_id, "co2_ppm": int(co2), "severity": severity,
+                           "threshold_ppm": int(edge), "session_id": sid},
+                    forward_event=forward_event,
+                )
+            else:
+                # CO2 FLOOR breach: the species wants CO2 held HIGH (reishi
+                # antler, cordyceps) and it has dropped below the floor. Not
+                # dangerous — a warning so the operator can restrict FAE.
+                floor = getattr(phase_params, "co2_min_ppm", None)
+                if isinstance(floor, (int, float)) and co2 < floor:
+                    await _emit_band_alert(
+                        "warning", "co2_alert",
+                        title=f"CO2 below floor: {int(co2)} ppm",
+                        message=f"CO2 has dropped below the species floor of {int(floor)} ppm — "
+                                f"over-ventilation can stall this morphology.",
+                        tags=["cloud"],
+                        event={"node_id": node_id, "co2_ppm": int(co2), "severity": "warning",
+                               "direction": "low", "floor_ppm": int(floor), "session_id": sid},
+                        forward_event=forward_event,
+                    )
+
+
+async def _emit_band_alert(severity: str, event_name: str, *, title: str, message: str,
+                           tags: list[str], event: dict, forward_event) -> None:
+    """Deliver one band alert on both channels (local ntfy + cloud push)."""
+    try:
+        if severity == "emergency":
+            await notify_critical(title, message, tags=tags)
+        else:
+            await notify_warning(title, message, dedup_key=f"{event_name}:{event.get('direction','')}")
+    except Exception as e:
+        log.warning("band alert ntfy (%s) failed: %s", event_name, e)
+    try:
+        await forward_event(event_name, event)
+    except Exception as e:
+        log.warning("forward_event(%s) failed: %s", event_name, e)
 
 
 def _evaluate_condition(

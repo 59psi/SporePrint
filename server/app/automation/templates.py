@@ -53,6 +53,12 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="CO2 FAE Trigger",
         description="Activate FAE fan when CO2 exceeds species target maximum",
         priority=8,
+        # Fruiting-side only. Colonization declares fae_mode="none" and wants CO2
+        # HIGH (mycelium produces it); venting there dries the substrate and
+        # starves the colony. The six sibling rules already gate by phase — this
+        # one lacking it was an oversight, not a design choice. The engine's
+        # fae_mode gate is the second line of defence.
+        applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
@@ -68,14 +74,23 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     AutomationRule(
         name="Emergency CO2 Exhaust",
-        description="Emergency exhaust activation when CO2 exceeds 3000ppm",
+        description="Emergency exhaust when CO2 exceeds the species' emergency band",
         priority=20,
+        # Was a global hardcoded 3000 ppm with NO phase gate — the single most
+        # damaging rule in the table. It fired the exhaust at full power during
+        # colonization (where CO2 legitimately runs 5,000-15,000 ppm), and made
+        # reishi antler morphology (induced at ~3,000 ppm) structurally
+        # impossible. Now: fruiting-side only, and the threshold is the species'
+        # own emergency edge (co2_max_ppm + co2_emergency_margin_ppm), so a
+        # high-CO2 species is not vented out of its legitimate band. The
+        # unconditional human-safety ceiling lives in the engine, not here.
+        applies_to_phases=["primordia_induction", "fruiting"],
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
                 sensor="co2_ppm",
                 operator="gt",
-                value=3000,
+                profile_ref="co2_emergency_ppm",
             ),
         ),
         action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
@@ -258,13 +273,16 @@ BUILTIN_RULES: list[AutomationRule] = [
     # Reishi — Antler CO2 Maintenance
     AutomationRule(
         name="Reishi Antler CO2 Restrict FAE",
-        description="Keep FAE minimal during reishi antler formation to maintain high CO2 >1500ppm",
+        description="Hold FAE off below the species CO2 floor so antler morphology keeps its high CO2",
         priority=12,
         applies_to_species=["reishi"],
         applies_to_phases=["primordia_induction"],
+        # The 1500-ppm floor used to be hardcoded here; it now lives on the
+        # species' PhaseParams (co2_min_ppm) so the value travels with the
+        # species, not the rule. profile_ref resolves it at fire time.
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", value=1500),
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", profile_ref="co2_min_ppm"),
         ),
         action=RuleAction(target="relay-01", channel="fae", state="off"),
         cooldown_seconds=300,
@@ -274,13 +292,15 @@ BUILTIN_RULES: list[AutomationRule] = [
     # King Trumpet — Elevated CO2 during primordia
     AutomationRule(
         name="King Trumpet Primordia CO2 Restrict",
-        description="Restrict FAE during king trumpet primordia to keep CO2 elevated (1000-2000ppm)",
+        description="Hold FAE off below the species CO2 floor to keep king trumpet primordia CO2 elevated",
         priority=12,
         applies_to_species=["king_trumpet"],
         applies_to_phases=["primordia_induction"],
+        # Was a hardcoded 1000-ppm floor; now resolved from the species'
+        # co2_min_ppm, matching the reishi conversion above.
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", value=1000),
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", profile_ref="co2_min_ppm"),
         ),
         action=RuleAction(target="relay-01", channel="fae", state="off"),
         cooldown_seconds=300,
@@ -300,6 +320,113 @@ BUILTIN_RULES: list[AutomationRule] = [
         ),
         action=RuleAction(target="light-01", scene="cordyceps_blue"),
         cooldown_seconds=3600,
+        log_to_session=True,
+    ),
+
+    # ─── Air Circulation ────────────────────────────────────────
+    # The circulation fan ships in every Tier-2 kit and had ZERO rules — it
+    # never ran. Unlike FAE it does not vent (changes no CO2), so it is safe in
+    # high-CO2 phases and is NOT subject to the fae_mode gate. Cadence is
+    # species-driven via the profile's circulation_interval_min/_duration_sec.
+    AutomationRule(
+        name="Circulation Cycle",
+        description="Periodic internal air circulation — breaks up CO2 stratification and stagnant RH pockets",
+        priority=4,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(
+                profile_interval_ref="circulation_interval_min", interval_min=30,
+            ),
+        ),
+        action=RuleAction(
+            target="relay-01", channel="circulation", state="on", pwm=140,
+            duration_profile_ref="circulation_duration_sec", duration_sec=120,
+        ),
+        cooldown_seconds=300,
+        safety_max_on_seconds=1800,
+        log_to_session=True,
+    ),
+
+    # ─── Humidity Removal (capability-aware) ────────────────────
+    # Humidity control was one-directional (Boost/Cut only add moisture or stop
+    # adding it). Nothing ever REMOVED humidity — a contamination risk in a
+    # chamber pinned at 95% RH. Two rules cover it by capability:
+    #   Tier 3 (dehumidifier plug present) → run the dehumidifier.
+    #   Tier 2 (no dehumidifier, fans present) → vent moist air with exhaust.
+    # requires_present / requires_absent make exactly one of them live, so they
+    # never fight (venting also sheds CO2/temp; prefer the dehumidifier).
+    AutomationRule(
+        name="Dehumidifier On",
+        description="Run the dehumidifier when humidity exceeds the species maximum (Tier 3 hardware)",
+        priority=10,
+        requires_present=["plug-dehumidifier"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="on", duration_sec=600),
+        cooldown_seconds=120,
+        safety_max_on_seconds=1800,
+        log_to_session=True,
+    ),
+    AutomationRule(
+        name="Dehumidifier Off",
+        description="Stop the dehumidifier once humidity falls back to the species maximum",
+        priority=10,
+        requires_present=["plug-dehumidifier"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lte", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="off"),
+        cooldown_seconds=60,
+        log_to_session=False,
+    ),
+    AutomationRule(
+        name="High Humidity Fan Evacuation",
+        description="Fallback dehumidification: vent moist chamber air with the exhaust fan when no dehumidifier is present",
+        priority=9,
+        # Fruiting-side only. During a high-CO2 phase (fae_mode='none') the
+        # engine suppresses this automatically — venting to shed RH would also
+        # vent the CO2 the species needs, so we prefer the dehumidifier there
+        # and fall back to an alert. requires_absent means a Tier-3 owner never
+        # runs this in parallel with their dehumidifier.
+        applies_to_phases=["primordia_induction", "fruiting"],
+        requires_absent=["plug-dehumidifier"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=220, duration_sec=180),
+        cooldown_seconds=600,
+        safety_max_on_seconds=900,
+        log_to_session=True,
+    ),
+
+    # ─── Misting Pump (aux) — INTENTIONALLY DISABLED ────────────
+    # Tier 3's peristaltic pump on relay channel `aux` (GPIO 14). It ships with
+    # a ready template but is DISABLED by default: there is no defensible fully
+    # automatic trigger. Over-misting is a leading cause of bacterial blotch and
+    # contamination, and the humidity sensor does not measure substrate-surface
+    # moisture (the thing misting actually changes). Left for the operator to
+    # enable and tune per substrate. When enabled it is deliberately conservative
+    # — a short pulse, a long cooldown, and a hard auto-off — but the decision to
+    # run it at all is the grower's, not a guessed setpoint. (This models the
+    # capability so the pump is reachable and documented, without firing blind.)
+    AutomationRule(
+        name="Misting Pulse (manual-enable)",
+        description="Conservative substrate-surface misting pulse on low humidity — DISABLED by default (over-misting → blotch); enable and tune per substrate",
+        priority=2,
+        enabled=False,
+        applies_to_phases=["fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_min"),
+        ),
+        action=RuleAction(target="relay-01", channel="aux", state="on", duration_sec=8),
+        cooldown_seconds=3600,
+        safety_max_on_seconds=15,
         log_to_session=True,
     ),
 

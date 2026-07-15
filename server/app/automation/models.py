@@ -114,6 +114,17 @@ class AutomationRule(BaseModel):
     notification: bool = False
     log_to_session: bool = True
 
+    # Capability gating (v4.3). The engine only fires a rule when every token in
+    # `requires_present` is a registered actuator AND none in `requires_absent`
+    # is. This is how graceful degradation works without duplicate-but-blind
+    # rules: the dehumidifier rule declares requires_present=["plug-dehumidifier"],
+    # and the fan-evacuation FALLBACK declares requires_absent=["plug-dehumidifier"]
+    # so exactly one of them is live. Tokens are smart-plug ids, "role:<role>",
+    # node channel names ("fae"/"exhaust"/…), or "vendor:<slug>" for an enabled
+    # integration. Empty lists (the default) mean "no capability constraint".
+    requires_present: list[str] = []
+    requires_absent: list[str] = []
+
 
 class ManualOverride(BaseModel):
     target: str
