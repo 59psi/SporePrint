@@ -33,6 +33,11 @@ class PhaseParams(BaseModel):
     # hardcoded rules (templates.py) before; now it is data. None = no floor.
     co2_min_ppm: int | None = None
     co2_tolerance: str  # "low" | "moderate" | "high"
+    # Provenance for the CO2 figure. Most values in the library are class-based
+    # inference, not measured — and the user cannot tell them apart because they
+    # render identically. Default False (honest): opt IN to claiming a citation.
+    co2_sourced: bool = False
+    co2_source: str | None = None  # citation string; renders in the UI when set
     light_hours_on: float
     light_hours_off: float
     light_spectrum: str  # "none" | "daylight_6500k" | "blue_450nm" | "blue_emphasis"
@@ -75,6 +80,12 @@ class SpeciesProfile(BaseModel):
     common_name: str
     scientific_name: str
     category: str  # "gourmet" | "medicinal" | "active"
+    # Some profiles are useful REFERENCE but not chamber-cultivable (chaga is a
+    # sclerotium on a living birch over ~10 years; pestalotiopsis is an endophyte
+    # with no fruit body). False ⇒ excluded from automation-enabled sessions and
+    # the UI shows cultivation_note instead of a phase setpoint table.
+    chamber_cultivable: bool = True
+    cultivation_note: str = ""
     strain: str | None = None
     substrate_types: list[str]
     colonization_visual_description: str

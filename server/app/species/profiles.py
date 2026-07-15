@@ -39,14 +39,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.GRAIN_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=100,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(10, 14),
                 notes="Optional. In-bag with micropore tape.",
             ),
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(7, 14),
                 notes="Keep dark. No FAE until fully colonized.",
@@ -61,7 +61,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -125,21 +125,21 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=79, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(14, 21),
                 notes="Slower than standard cubensis. Patience required.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=70, temp_max_f=74, humidity_min=92, humidity_max=97,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(10, 21),
                 notes="Aggressive FAE. Consider bubble wrap tek or fork tek for overlay.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=88, humidity_max=93,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(14, 21),
@@ -194,21 +194,21 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=79, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(21, 30),
                 notes="Extremely slow. 3-4 weeks minimum.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=70, temp_max_f=74, humidity_min=92, humidity_max=97,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(14, 28),
                 notes="May take 2-4 weeks. Multiple tek strategies may be needed.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=88, humidity_max=93,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(14, 21),
@@ -263,7 +263,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(10, 16),
                 notes="Faster than PE, slower than GT. Watch for enigma mutation.",
@@ -278,7 +278,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -332,7 +332,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=78, temp_max_f=84, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(10, 18),
                 notes="Prefers warmer temps than cubensis. Manure-based substrate essential.",
@@ -401,7 +401,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=82, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(7, 12),
                 notes="Fast colonizer. Slightly warmer than cubensis preferred.",
@@ -471,7 +471,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.GRAIN_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=82, humidity_min=0, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(60, 120),
                 notes="Sclerotia form in sealed jars over 2-4 months. No opening, no FAE. "
@@ -524,7 +524,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.GRAIN_COLONIZATION: PhaseParams(
                 temp_min_f=72, temp_max_f=80, humidity_min=0, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(60, 90),
                 notes="Sclerotia production in sealed jars. 2-3 months. "
@@ -584,7 +584,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=60, temp_max_f=75, humidity_min=80, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(60, 120),
                 notes="Wood-lover. Colonizes alder/hardwood chips. Very slow — 2-4 months. "
@@ -653,7 +653,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=82, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(14, 21),
                 notes="Subtropical species. Prefers warm colonization.",
@@ -731,14 +731,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
-                co2_max_ppm=500, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(3, 5),
                 notes="Cold shock triggers massive pinning. Very responsive.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=70, humidity_min=85, humidity_max=92,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="Widest temp range of any oyster. Harvest before caps flatten/edges upturn.",
@@ -831,7 +831,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="blue_oyster",
         common_name="Blue Oyster",
-        scientific_name="Pleurotus columbinus",
+        scientific_name="Pleurotus ostreatus var. columbinus",
         category="gourmet",
         substrate_types=["straw", "hardwood sawdust", "masters mix"],
         colonization_visual_description=(
@@ -856,14 +856,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=500, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(3, 5),
                 notes="COLD SHOCK required. Aggressive FAE. CO2 must be <500ppm.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=85, humidity_max=92,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="CRITICAL: >700ppm CO2 = etiolation (leggy stems, tiny caps). Heavy spore load near maturity.",
@@ -921,7 +921,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=85, humidity_min=85, humidity_max=95,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="CRITICAL: Dies below 40°F. Cannot be refrigerated. Process immediately post-harvest.",
@@ -985,7 +985,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=58, temp_max_f=65, humidity_min=80, humidity_max=90,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -1038,7 +1038,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(14, 21),
                 notes="In-bag with filter patch. Fine mycelium is normal for this species.",
@@ -1047,7 +1047,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
                 temp_min_f=55, temp_max_f=65,
                 temp_swing_required=True, temp_swing_delta_f=8.0,
                 humidity_min=90, humidity_max=95,
-                co2_max_ppm=500, co2_tolerance="low",
+                co2_max_ppm=700, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 light_lux_target=300,
                 fae_mode="continuous", expected_duration_days=(5, 10),
@@ -1055,7 +1055,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=600, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="CO2 >600ppm → coral/branching deformities instead of pom-pom. Vision should detect.",
@@ -1108,14 +1108,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(30, 60),
                 notes="Very long colonization. 4-8 weeks. Patience critical.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=700, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(5, 10),
@@ -1184,7 +1184,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=64, temp_max_f=78, humidity_min=85, humidity_max=95,
-                co2_max_ppm=700, co2_tolerance="low",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="Wider temp range than pink oyster. Bright yellow color fades when overripe.",
@@ -1310,14 +1310,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 10),
                 notes="Cold shock beneficial. Remove block from bag, expose top surface.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 18),
@@ -1352,7 +1352,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="nameko",
         common_name="Nameko",
-        scientific_name="Pholiota nameko",
+        scientific_name="Pholiota microspora",
         category="gourmet",
         substrate_types=["supplemented hardwood", "hardwood sawdust", "logs"],
         colonization_visual_description=(
@@ -1420,7 +1420,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="enoki",
         common_name="Enoki",
-        scientific_name="Flammulina velutipes",
+        scientific_name="Flammulina filiformis",
         category="gourmet",
         substrate_types=["supplemented hardwood", "hardwood sawdust"],
         colonization_visual_description=(
@@ -1453,7 +1453,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=38, temp_max_f=50, humidity_min=85, humidity_max=95,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=4, light_hours_off=20, light_spectrum="daylight_6500k",
                 light_lux_target=50,
                 fae_mode="passive", expected_duration_days=(10, 18),
@@ -1488,7 +1488,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="wood_ear",
         common_name="Wood Ear",
-        scientific_name="Auricularia auricula-judae",
+        scientific_name="Auricularia heimuer",
         category="gourmet",
         substrate_types=["supplemented hardwood", "hardwood sawdust", "logs"],
         colonization_visual_description=(
@@ -1506,14 +1506,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=70, temp_max_f=82, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=15000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(14, 21),
                 notes="In-bag with filter patch. Likes warmth.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=82, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2500, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -1564,14 +1564,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(10, 18),
                 notes="Compost-based substrate. Apply casing layer after colonization.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(5, 10),
@@ -1579,7 +1579,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(5, 10),
@@ -1646,7 +1646,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 18),
@@ -1706,7 +1706,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=45, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -1714,7 +1714,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=50, temp_max_f=64, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 21),
@@ -1774,7 +1774,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=73, temp_max_f=82, humidity_min=90, humidity_max=98,
-                co2_max_ppm=1500, co2_tolerance="high",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="passive", expected_duration_days=(10, 21),
                 notes="VERY high humidity required. Translucent white jelly fronds. "
@@ -1893,7 +1893,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(21, 42),
                 notes="Single large ruffled fruit body. Harvest when lobes are firm and white. "
@@ -1952,7 +1952,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=65, temp_max_f=80, humidity_min=80, humidity_max=95,
-                co2_max_ppm=1500, co2_tolerance="high",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="passive", expected_duration_days=(14, 28),
                 notes="Bright orange/yellow shelves. Harvest young — tender and chicken-like. "
@@ -1988,7 +1988,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="white_beech",
         common_name="White Beech / Bunashimeji",
-        scientific_name="Hypsizygus tessellatus",
+        scientific_name="Hypsizygus marmoreus",
         category="gourmet",
         substrate_types=["supplemented hardwood", "masters mix"],
         colonization_visual_description=(
@@ -2013,14 +2013,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=45, temp_max_f=55, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1000, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="Needs significant cold shock. Remove from bag and top-fruit.",
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=50, temp_max_f=64, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(10, 18),
@@ -2073,14 +2073,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=72, temp_max_f=78, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", expected_duration_days=(14, 21),
                 notes="Compost-based substrate. Apply casing layer after full colonization.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=60, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=800, co2_tolerance="low",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2089,7 +2089,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=58, temp_max_f=65, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2149,7 +2149,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=60, temp_max_f=80, humidity_min=70, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=20000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(14, 30),
                 notes="Very forgiving. Can colonize non-sterile wood chips. "
@@ -2157,7 +2157,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=55, temp_max_f=75, humidity_min=80, humidity_max=95,
-                co2_max_ppm=1500, co2_tolerance="high",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="passive", expected_duration_days=(7, 14),
                 notes="Large mushrooms. Harvest when caps still convex. "
@@ -2216,7 +2216,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=68, temp_max_f=75, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2224,7 +2224,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=78, humidity_min=85, humidity_max=92,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2275,14 +2275,14 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=68, temp_max_f=77, humidity_min=90, humidity_max=100,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=20000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(30, 60),
                 notes="Very long colonization. 4-8 weeks. Oak-based substrate preferred.",
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=55, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=2500, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(7, 14),
                 notes="Temperature drop from colonization triggers pinning. Good FAE required.",
@@ -2323,7 +2323,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="reishi",
         common_name="Reishi",
-        scientific_name="Ganoderma lucidum",
+        scientific_name="Ganoderma sichuanense",
         category="medicinal",
         substrate_types=["supplemented hardwood", "grain"],
         colonization_visual_description=(
@@ -2416,7 +2416,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=60, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="blue_450nm",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2424,7 +2424,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=60, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="moderate",
+                co2_max_ppm=1500, co2_tolerance="moderate",
                 light_hours_on=16, light_hours_off=8, light_spectrum="blue_450nm",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(30, 45),
@@ -2519,6 +2519,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         common_name="Chaga",
         scientific_name="Inonotus obliquus",
         category="medicinal",
+        chamber_cultivable=False,
+        cultivation_note="Chaga is a sclerotium (conk) on a LIVING birch, developing over 7-10 years. It is not cultivated to a fruit body in a chamber — this profile is reference only.",
         substrate_types=["supplemented birch hardwood", "birch sawdust"],
         colonization_visual_description=(
             "Very slow white-brown mycelium. In nature grows on birch trees over years. "
@@ -2570,7 +2572,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="meshima",
         common_name="Meshima / Sang Hwang",
-        scientific_name="Phellinus linteus",
+        scientific_name="Tropicoporus linteus",
         category="medicinal",
         substrate_types=["supplemented hardwood (mulberry)", "hardwood sawdust"],
         colonization_visual_description=(
@@ -2595,7 +2597,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=68, temp_max_f=78, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="moderate",
+                co2_max_ppm=2000, co2_tolerance="high",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(60, 120),
@@ -2779,6 +2781,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         common_name="Polyurethane-Eating Fungus",
         scientific_name="Pestalotiopsis microspora",
         category="novelty",
+        chamber_cultivable=False,
+        cultivation_note="An endophytic fungus studied for polyurethane degradation; it forms no fruiting body. Grown in liquid/plate culture for mycoremediation research, not fruited in a chamber.",
         substrate_types=["grain", "agar", "polyurethane plastic"],
         colonization_visual_description="Endophytic fungus. Grows as standard mycelium on grain/agar. Can survive without air or light.",
         contamination_risk_notes="Standard sterile technique. Requires plant host (English Ivy, Kudzu) for fruiting.",
@@ -2874,6 +2878,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         common_name="Giant Puffball",
         scientific_name="Calvatia gigantea",
         category="novelty",
+        chamber_cultivable=False,
+        cultivation_note="No reliable indoor cultivation protocol exists — Calvatia gigantea is foraged, not chamber-grown. Reference profile only.",
         substrate_types=["grass/garden soil", "compost"],
         colonization_visual_description="Underground mycelium network in soil/grass. Not visible during colonization.",
         contamination_risk_notes="Outdoor cultivation only. Cannot be reliably grown indoors. Propagated by spore slurry over grass/garden beds.",
@@ -2934,7 +2940,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=78, temp_max_f=84, humidity_min=90, humidity_max=95,
-                co2_max_ppm=5000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(5, 10),
@@ -2942,7 +2948,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=79, humidity_min=90, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -2990,7 +2996,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(12, 18),
@@ -2998,7 +3004,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3046,7 +3052,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 16),
@@ -3054,7 +3060,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3102,7 +3108,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(7, 12),
@@ -3110,7 +3116,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3158,7 +3164,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 16),
@@ -3166,7 +3172,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3214,7 +3220,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(21, 35),
@@ -3222,7 +3228,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3268,7 +3274,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 16),
@@ -3276,7 +3282,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3324,7 +3330,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=77, temp_max_f=84, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(7, 12),
@@ -3332,7 +3338,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=72, temp_max_f=79, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",
@@ -3380,7 +3386,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         phases={
             GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
                 temp_min_f=75, temp_max_f=81, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="none", substrate_moisture="field_capacity",
                 expected_duration_days=(10, 18),
@@ -3388,7 +3394,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=75, humidity_min=85, humidity_max=95,
-                co2_max_ppm=800, co2_tolerance="low",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
                 substrate_moisture="field_capacity",

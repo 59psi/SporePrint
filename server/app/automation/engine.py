@@ -322,6 +322,11 @@ async def evaluate_rules(
         return
 
     species_profile = await get_profile(session["species_profile_id"])
+    # Reference-only species (chaga on a birch, an endophyte in liquid culture)
+    # have no chamber setpoints to drive. Don't evaluate any rule against them —
+    # the profile exists for its prose, not as a grow target.
+    if species_profile is not None and not getattr(species_profile, "chamber_cultivable", True):
+        return
     current_phase = session["current_phase"]
     container_type = session.get("container_type")
 
