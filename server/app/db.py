@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     inoculation_method TEXT,
     spawn_source TEXT,
     current_phase TEXT NOT NULL DEFAULT 'substrate_colonization',
+    container_type TEXT DEFAULT 'monotub',
     tub_number TEXT,
     shelf_number INTEGER,
     shelf_side TEXT,
@@ -478,6 +479,12 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(hardware_nodes)", "mqtt_reconnects",
             "ALTER TABLE hardware_nodes ADD COLUMN mqtt_reconnects INTEGER",
+        )
+        # v4.2: container type drives the colonization→(fruiting|cold-storage)
+        # fork and gates environmental control for sealed vessels.
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(sessions)", "container_type",
+            "ALTER TABLE sessions ADD COLUMN container_type TEXT DEFAULT 'monotub'",
         )
         await db.commit()
 

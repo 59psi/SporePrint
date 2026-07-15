@@ -43,6 +43,20 @@ async def update_session(session_id: int, data: SessionUpdate):
     return session
 
 
+@router.get("/{session_id}/next-phase")
+async def next_phase(session_id: int):
+    """What phase does this session advance to next? Implements the container
+    fork (colonized bag → fruiting; jar/agar → cold storage) so the UI can
+    default the 'advance' action correctly."""
+    session = await service.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    suggested = service.suggested_next_phase(
+        session["current_phase"], session.get("container_type")
+    )
+    return {"current_phase": session["current_phase"], "suggested_next_phase": suggested}
+
+
 @router.post("/{session_id}/phase")
 async def advance_phase(session_id: int, data: PhaseAdvance):
     session = await service.advance_phase(session_id, data)

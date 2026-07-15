@@ -65,6 +65,63 @@ def _is_air_exchange_action(action) -> bool:
     return action.channel in _AIR_EXCHANGE_CHANNELS
 
 
+# Cold storage is preservation, not cultivation: hold the fridge cold, and do
+# nothing else. Species-agnostic — a colonized jar in the fridge doesn't care
+# what it will eventually grow. Built lazily to avoid importing the species
+# model at engine import time.
+_COLD_STORAGE_PARAMS = None
+
+
+def _cold_storage_params():
+    global _COLD_STORAGE_PARAMS
+    if _COLD_STORAGE_PARAMS is None:
+        from ..species.models import PhaseParams
+        _COLD_STORAGE_PARAMS = PhaseParams(
+            temp_min_f=35, temp_max_f=40,
+            humidity_min=80, humidity_max=95,   # incidental; not actively driven
+            co2_max_ppm=100000, co2_tolerance="high",  # never vent a sealed fridge
+            light_hours_on=0, light_hours_off=24, light_spectrum="none",
+            fae_mode="none",                     # no fresh air — it's a fridge
+            expected_duration_days=(0, 365),
+            notes="Cold storage — hold at fridge temperature. No light, FAE, or CO2 control.",
+        )
+    return _COLD_STORAGE_PARAMS
+
+
+# Substrate containers the chamber's sensors cannot see into, and whose interior
+# CO2/humidity the chamber's actuators cannot change. Running a CO2 or humidity
+# rule against the chamber does nothing for a sealed vessel — the sensor reads
+# room air, the fan moves room air, the substrate stays sealed. Grow bags are
+# sealed during colonization and OPENED to fruit; jars/agar stay sealed (they
+# go to cold storage, they don't fruit in-chamber).
+_ALWAYS_SEALED_CONTAINERS = {"jar", "grain_jar", "agar_plate", "agar"}
+_SEALED_UNTIL_FRUITING = {"grow_bag", "bag"}
+_FRUITING_PHASES = {"primordia_induction", "fruiting"}
+
+
+def _container_is_sealed(container_type: str | None, phase: str) -> bool:
+    if not container_type:
+        return False  # unknown → assume open (monotub/tray); don't over-gate
+    ct = container_type.lower()
+    if ct in _ALWAYS_SEALED_CONTAINERS:
+        return True
+    if ct in _SEALED_UNTIL_FRUITING:
+        return phase not in _FRUITING_PHASES  # the bag is opened to fruit
+    return False  # monotub, tray, open, anything else → the substrate is in the sensed air
+
+
+# Rules whose actuation only makes sense when the substrate is in the sensed
+# volume. If the container is sealed, these are no-ops that just churn actuators.
+_CHAMBER_ENV_CHANNELS = {"fae", "exhaust", "circulation", "aux"}
+
+
+def _acts_on_chamber_environment(action) -> bool:
+    if action.channel in _CHAMBER_ENV_CHANNELS:
+        return True
+    # humidifier / dehumidifier plugs also act on chamber air, not the vessel
+    return action.target in ("plug-humidifier", "plug-dehumidifier")
+
+
 async def _load_overrides_from_db():
     """Populate _overrides from the manual_overrides table; drop expired rows."""
     global _overrides_loaded
@@ -236,14 +293,24 @@ async def evaluate_rules(
 
     species_profile = await get_profile(session["species_profile_id"])
     current_phase = session["current_phase"]
+    container_type = session.get("container_type")
 
     phase_params = None
-    if species_profile and current_phase in [p.value for p in species_profile.phases]:
+    if current_phase == "cold_storage":
+        # Species-agnostic: hold the fridge cold, drive nothing else.
+        phase_params = _cold_storage_params()
+    elif species_profile and current_phase in [p.value for p in species_profile.phases]:
         from ..species.models import GrowPhase
         try:
             phase_params = species_profile.phases[GrowPhase(current_phase)]
         except (ValueError, KeyError):
             pass
+
+    # If the substrate is in a sealed vessel the chamber can't sense or affect,
+    # the chamber-environment rules (CO2/FAE/humidity/circulation/mist) are
+    # no-ops. Skip them wholesale rather than churn actuators against a sealed
+    # bag — the UI surfaces "sealed container: environmental control paused".
+    container_sealed = _container_is_sealed(container_type, current_phase)
 
     # Proactive safety alerts — fire regardless of rule state. These are the
     # "closet is on fire" alerts the operator must hear about even if no rule
@@ -265,6 +332,12 @@ async def evaluate_rules(
             # exhaust fans driven by the CO2 rules, venting the 5000-15000ppm
             # the mycelium needs. The profile said "no fresh air this phase" in
             # a field the engine ignored. It doesn't any more.
+            # Sealed vessel: the chamber can't reach the substrate, so
+            # environmental actuation is a no-op. (Temperature still applies —
+            # a fridge/heater warms the whole chamber including the vessel.)
+            if container_sealed and _acts_on_chamber_environment(rule.action):
+                continue
+
             if _is_air_exchange_action(rule.action) and phase_params is not None:
                 if getattr(phase_params, "fae_mode", None) == "none":
                     continue

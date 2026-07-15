@@ -8,6 +8,12 @@ class GrowPhase(str, Enum):
     LIQUID_CULTURE = "liquid_culture"
     GRAIN_COLONIZATION = "grain_colonization"
     SUBSTRATE_COLONIZATION = "substrate_colonization"
+    # Fully colonized agar / LC / grain that is not going straight to fruiting
+    # goes in the fridge to hold until use. Only temperature matters here — no
+    # light, no FAE, no CO2 control. This is the fork the product spec describes:
+    # a grow bag advances to PRIMORDIA_INDUCTION; everything else parks in
+    # COLD_STORAGE.
+    COLD_STORAGE = "cold_storage"
     PRIMORDIA_INDUCTION = "primordia_induction"
     FRUITING = "fruiting"
     REST = "rest"
