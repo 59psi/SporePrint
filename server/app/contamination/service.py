@@ -41,9 +41,14 @@ async def get_event(event_id: int) -> dict | None:
 
 
 async def list_events(
-    session_id: int | None = None, chamber_id: int | None = None
+    session_id: int | None = None,
+    chamber_id: int | None = None,
+    limit: int = 200,
 ) -> list[dict]:
-    """Newest-first list of contamination events, optionally filtered."""
+    """Newest-first list of contamination events, optionally filtered.
+
+    Capped (default 200) — the table grows for the life of the install.
+    """
     query = "SELECT * FROM contamination_events WHERE 1=1"
     params: list = []
     if session_id is not None:
@@ -52,7 +57,8 @@ async def list_events(
     if chamber_id is not None:
         query += " AND chamber_id = ?"
         params.append(chamber_id)
-    query += " ORDER BY detected_at DESC, id DESC"
+    query += " ORDER BY detected_at DESC, id DESC LIMIT ?"
+    params.append(max(1, min(limit, 1000)))
 
     async with get_db() as db:
         cursor = await db.execute(query, params)

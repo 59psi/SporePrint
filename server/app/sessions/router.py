@@ -92,8 +92,8 @@ async def add_harvest(session_id: int, data: HarvestCreate):
 
 
 @router.get("/{session_id}/events")
-async def get_events(session_id: int):
-    return await service.get_events(session_id)
+async def get_events(session_id: int, limit: int | None = None):
+    return await service.get_events(session_id, limit=limit)
 
 
 @router.get("/{session_id}/telemetry")
