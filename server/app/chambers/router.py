@@ -66,11 +66,11 @@ async def chamber_photos(chamber_id: int, limit: int = Q(50, ge=1, le=500)):
 
 
 @router.get("/{chamber_id}/maintenance")
-async def list_chamber_maintenance(chamber_id: int):
+async def list_chamber_maintenance(chamber_id: int, limit: int = 200):
     chamber = await service.get_chamber(chamber_id)
     if not chamber:
         raise HTTPException(404, "Chamber not found")
-    return await service.list_maintenance(chamber_id)
+    return await service.list_maintenance(chamber_id, limit=limit)
 
 
 @router.post("/{chamber_id}/maintenance")

@@ -223,12 +223,13 @@ async def get_maintenance(mid: int) -> dict | None:
         return dict(row) if row else None
 
 
-async def list_maintenance(chamber_id: int) -> list[dict]:
+async def list_maintenance(chamber_id: int, limit: int = 200) -> list[dict]:
+    """Newest-first maintenance log, capped — it grows for the chamber's life."""
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT * FROM chamber_maintenance WHERE chamber_id = ? "
-            "ORDER BY created_at DESC, id DESC",
-            (chamber_id,),
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (chamber_id, max(1, min(limit, 1000))),
         )
         return [dict(r) for r in await cursor.fetchall()]
 

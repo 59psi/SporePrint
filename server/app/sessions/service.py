@@ -291,10 +291,25 @@ async def get_active_session() -> dict | None:
         return dict(row) if row else None
 
 
-async def get_events(session_id: int) -> list[dict]:
+async def get_events(session_id: int, limit: int | None = None) -> list[dict]:
+    """Session events in chronological order.
+
+    `limit` keeps the NEWEST N while preserving the ascending contract
+    (transcripts/reports read the full history; feeds pass a cap).
+    """
     async with get_db() as db:
+        if limit is None:
+            cursor = await db.execute(
+                "SELECT * FROM session_events WHERE session_id = ? ORDER BY timestamp",
+                (session_id,),
+            )
+            return [dict(r) for r in await cursor.fetchall()]
         cursor = await db.execute(
-            "SELECT * FROM session_events WHERE session_id = ? ORDER BY timestamp", (session_id,)
+            "SELECT * FROM ("
+            "SELECT * FROM session_events WHERE session_id = ? "
+            "ORDER BY timestamp DESC, id DESC LIMIT ?"
+            ") ORDER BY timestamp, id",
+            (session_id, max(1, min(limit, 1000))),
         )
         return [dict(r) for r in await cursor.fetchall()]
 

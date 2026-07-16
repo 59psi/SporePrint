@@ -199,18 +199,12 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
             return False, f"rule suspend failed: {type(e).__name__}: {e}"
 
     if channel == "reboot":
-        # Schedule the reboot AFTER the ack flushes — we don't want to
-        # blackhole the response. 5s gives the relay + mobile time to
-        # receive the success ack. subprocess with a static arg list
-        # avoids shell-injection risk; the args are hardcoded constants.
-        async def _reboot_task():
-            try:
-                await asyncio.sleep(5)
-                import subprocess
-                subprocess.run(["sudo", "systemctl", "reboot"], check=False)
-            except Exception as e:
-                log.error("Reboot scheduling failed: %s", e)
-        asyncio.create_task(_reboot_task())
+        # Canonical grace-period reboot lives in system_actions (shared
+        # with the LAN REST route) — the delay lets this ack flush before
+        # the box goes down.
+        from ..system_actions import schedule_reboot
+
+        schedule_reboot()
         return True, None
 
     if channel == "ota":

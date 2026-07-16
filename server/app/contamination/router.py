@@ -117,10 +117,12 @@ async def identify_contamination(
 
 @router.get("/events")
 async def list_contamination_events(
-    session_id: int | None = None, chamber_id: int | None = None
+    session_id: int | None = None, chamber_id: int | None = None, limit: int = 200
 ):
     """Newest-first contamination event log (backs the page's gallery)."""
-    return await service.list_events(session_id=session_id, chamber_id=chamber_id)
+    return await service.list_events(
+        session_id=session_id, chamber_id=chamber_id, limit=limit
+    )
 
 
 @router.post("/events")
