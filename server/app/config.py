@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 
@@ -30,9 +32,24 @@ class Settings(BaseSettings):
     allow_unauthenticated: bool = False
     # HMAC-SHA256 key used to sign every cmd/* MQTT frame the Pi publishes
     # to an ESP32 node. v3.4.9 C-1. Must match the `hmac_key` stored in NVS
-    # on each node. Empty = unsigned (migration period; nodes log WARNING
-    # per command). Use scripts/provision-node.sh to generate and deploy.
+    # on each node. Use scripts/provision-node.sh to generate and deploy.
     mqtt_hmac_key: str = ""
+    # Command-signing enforcement — how the Pi behaves when it publishes a
+    # cmd/* frame but mqtt_hmac_key is UNSET (when the key IS set, frames are
+    # always signed):
+    #   "auto"   — enforce iff this Pi is cloud-configured (cloud_url set): a
+    #              cloud-paired / managed deployment refuses to ship unsigned
+    #              commands; a pure-LAN self-host stays permissive (LAN-trust).
+    #              Keyed off the STABLE config, not the live connection, so a
+    #              cloud outage / DoS can't silently downgrade signing.
+    #   "always" — always enforce.
+    #   "never"  — never enforce (ship unsigned on a trusted LAN).
+    # Enforcing REFUSES the unsigned publish and logs a CRITICAL with
+    # remediation, instead of the old silent fail-open; state is surfaced at
+    # GET /api/health/detail/mqtt and logged once at MQTT startup. A
+    # provisioned node rejects unsigned frames regardless, so keyed fleets are
+    # unaffected by this policy either way.
+    mqtt_require_signing: Literal["auto", "always", "never"] = "auto"
     host: str = "0.0.0.0"
     port: int = 8000
     # OTA self-update — base64-encoded raw 32-byte Ed25519 public key.

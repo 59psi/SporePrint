@@ -64,6 +64,73 @@ def _sign_cmd_payload(payload: dict) -> dict:
     return signed
 
 
+def _is_cmd_topic(topic: str) -> bool:
+    """A Pi→node command frame (`.../cmd/<channel>` or `.../cmd`)."""
+    return "/cmd/" in topic or topic.endswith("/cmd")
+
+
+def _signing_enforced() -> bool:
+    """Whether an unsigned cmd/* publish should be REFUSED when no key is set.
+
+    "always"/"never" are explicit; "auto" enforces iff the Pi is cloud-
+    configured (a paired/managed deployment) — using the stable `cloud_url`
+    config, not the live connection, so a cloud outage can't downgrade signing.
+    """
+    mode = settings.mqtt_require_signing
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return bool(settings.cloud_url)  # "auto"
+
+
+def command_signing_status() -> dict:
+    """Pi→ESP32 command-signing posture — for /health + the startup log."""
+    key_set = bool(settings.mqtt_hmac_key)
+    if key_set:
+        mode = "active"                 # frames are signed
+    elif _signing_enforced():
+        mode = "enforced_blocking"      # unsigned cmd/* frames are refused
+    else:
+        mode = "permissive_unsigned"    # unsigned cmd/* frames are sent (LAN-trust)
+    return {
+        "key_set": key_set,
+        "policy": settings.mqtt_require_signing,
+        "cloud_configured": bool(settings.cloud_url),
+        "mode": mode,
+    }
+
+
+# Warn-once guards so a command every few seconds doesn't spam the log; the
+# persistent state is always visible at GET /api/health/detail/mqtt.
+_signing_block_logged = False
+_unsigned_ship_logged = False
+
+
+def _log_signing_block(topic: str) -> None:
+    global _signing_block_logged
+    if not _signing_block_logged:
+        _signing_block_logged = True
+        log.critical(
+            "[SEC] REFUSING unsigned command to %s — mqtt_hmac_key is unset and "
+            "signing is enforced (policy=%s). Provision the key "
+            "(scripts/provision-node.sh) or set SPOREPRINT_MQTT_REQUIRE_SIGNING=never "
+            "for trusted-LAN operation. Commands are dropped until then.",
+            topic, settings.mqtt_require_signing,
+        )
+
+
+def _log_unsigned_ship() -> None:
+    global _unsigned_ship_logged
+    if not _unsigned_ship_logged:
+        _unsigned_ship_logged = True
+        log.warning(
+            "[SEC] shipping UNSIGNED cmd/* frames — mqtt_hmac_key unset and signing "
+            "not enforced (trusted-LAN mode). A provisioned node will reject these. "
+            "Set SPOREPRINT_MQTT_HMAC_KEY to sign.",
+        )
+
+
 async def mqtt_publish(topic: str, payload: dict) -> bool:
     if _client is None:
         return False
@@ -72,7 +139,14 @@ async def mqtt_publish(topic: str, payload: dict) -> bool:
     # Non-cmd topics (state/*, telemetry/*) don't need signing because they
     # flow node→Pi, not Pi→node, and the Pi is the trust root.
     outbound = payload
-    if "/cmd/" in topic or topic.endswith("/cmd") or "cmd/" in topic.split("/")[-2:][0]:
+    if _is_cmd_topic(topic):
+        if not settings.mqtt_hmac_key:
+            # Fail closed when enforced — never ship an unsigned actuator
+            # command silently (the archaeology's top finding).
+            if _signing_enforced():
+                _log_signing_block(topic)
+                return False
+            _log_unsigned_ship()
         outbound = _sign_cmd_payload(payload)
 
     try:
@@ -129,6 +203,24 @@ async def start_mqtt(sio):
                     await client.subscribe(sys_topic)
                 update_task("mqtt", "running")
                 log.info("MQTT connected to %s:%d", settings.mqtt_host, settings.mqtt_port)
+
+                # Announce the command-signing posture once per (re)connect so a
+                # misconfigured Pi is never silently unsigned.
+                _sig = command_signing_status()
+                if _sig["mode"] == "active":
+                    log.info("[SEC] cmd/* signing ACTIVE (mqtt_hmac_key set)")
+                elif _sig["mode"] == "enforced_blocking":
+                    log.critical(
+                        "[SEC] cmd/* signing ENFORCED but mqtt_hmac_key is UNSET "
+                        "(policy=%s) — commands will be REFUSED. Provision the key "
+                        "or set SPOREPRINT_MQTT_REQUIRE_SIGNING=never.",
+                        settings.mqtt_require_signing,
+                    )
+                else:
+                    log.warning(
+                        "[SEC] cmd/* signing DISABLED — frames ship UNSIGNED "
+                        "(trusted-LAN mode). Set SPOREPRINT_MQTT_HMAC_KEY to enable.",
+                    )
 
                 async for message in client.messages:
                     topic = str(message.topic)
