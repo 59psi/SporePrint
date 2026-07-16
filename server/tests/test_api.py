@@ -84,6 +84,68 @@ def test_session_lifecycle_via_api(client):
     assert "harvest" in types
 
 
+def test_list_sessions_default_has_no_phase_history(client):
+    client.post("/api/sessions", json={
+        "name": "No History Key",
+        "species_profile_id": "blue_oyster",
+    })
+    r = client.get("/api/sessions")
+    assert r.status_code == 200
+    sessions = r.json()
+    assert len(sessions) == 1
+    # Default response stays byte-identical for existing callers
+    assert all("phase_history" not in s for s in sessions)
+
+
+def test_list_sessions_include_phase_history_matches_get_session(client):
+    # Two sessions with different-length histories — the grouped query must
+    # attach each session's OWN history, matching GET /{id} exactly.
+    sid_a = client.post("/api/sessions", json={
+        "name": "Grow A", "species_profile_id": "blue_oyster",
+    }).json()["id"]
+    client.post(f"/api/sessions/{sid_a}/phase", json={"phase": "primordia_induction"})
+    client.post(f"/api/sessions/{sid_a}/phase", json={"phase": "fruiting"})
+
+    sid_b = client.post("/api/sessions", json={
+        "name": "Grow B", "species_profile_id": "blue_oyster",
+    }).json()["id"]
+    client.post(f"/api/sessions/{sid_b}/phase", json={"phase": "fruiting"})
+
+    r = client.get("/api/sessions", params={"include_phase_history": "true"})
+    assert r.status_code == 200
+    sessions = {s["id"]: s for s in r.json()}
+    assert set(sessions) == {sid_a, sid_b}
+
+    for sid in (sid_a, sid_b):
+        expected = client.get(f"/api/sessions/{sid}").json()["phase_history"]
+        assert sessions[sid]["phase_history"] == expected
+    assert len(sessions[sid_a]["phase_history"]) == 3
+    assert len(sessions[sid_b]["phase_history"]) == 2
+
+
+def test_list_sessions_include_phase_history_empty_history(client):
+    """A session with no phase_history rows gets [] — not a missing key."""
+    import asyncio
+
+    from app.db import get_db
+
+    async def _insert_bare_session():
+        async with get_db() as db:
+            cursor = await db.execute(
+                "INSERT INTO sessions (name, species_profile_id) VALUES (?, ?)",
+                ("Bare Session", "blue_oyster"),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    sid = asyncio.run(_insert_bare_session())
+
+    r = client.get("/api/sessions", params={"include_phase_history": "true"})
+    assert r.status_code == 200
+    bare = next(s for s in r.json() if s["id"] == sid)
+    assert bare["phase_history"] == []
+
+
 # ── Species ─────────────────────────────────────────────────────
 
 

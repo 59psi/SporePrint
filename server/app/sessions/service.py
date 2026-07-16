@@ -52,7 +52,8 @@ async def create_session(data: SessionCreate) -> dict:
         return await get_session(session_id)
 
 
-async def list_sessions(status: str | None = None, species: str | None = None) -> list[dict]:
+async def list_sessions(status: str | None = None, species: str | None = None,
+                        include_phase_history: bool = False) -> list[dict]:
     query = "SELECT * FROM sessions WHERE 1=1"
     params = []
     if status:
@@ -65,7 +66,25 @@ async def list_sessions(status: str | None = None, species: str | None = None) -
 
     async with get_db() as db:
         cursor = await db.execute(query, params)
-        return [dict(r) for r in await cursor.fetchall()]
+        sessions = [dict(r) for r in await cursor.fetchall()]
+
+        if include_phase_history and sessions:
+            # One grouped query (not a per-session loop), same row shape and
+            # ordering as get_session's phase_history.
+            placeholders = ",".join("?" * len(sessions))
+            cursor = await db.execute(
+                f"SELECT * FROM phase_history WHERE session_id IN ({placeholders}) "
+                "ORDER BY entered_at",
+                [s["id"] for s in sessions],
+            )
+            history_by_session = defaultdict(list)
+            for r in await cursor.fetchall():
+                row = dict(r)
+                history_by_session[row["session_id"]].append(row)
+            for s in sessions:
+                s["phase_history"] = history_by_session[s["id"]]
+
+        return sessions
 
 
 async def get_session(session_id: int) -> dict | None:

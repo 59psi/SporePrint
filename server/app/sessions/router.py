@@ -13,8 +13,15 @@ async def create_session(data: SessionCreate):
 
 
 @router.get("")
-async def list_sessions(status: str | None = None, species: str | None = None):
-    return await service.list_sessions(status, species)
+async def list_sessions(
+    status: str | None = None,
+    species: str | None = None,
+    include_phase_history: bool = False,
+):
+    """List sessions. `include_phase_history=true` attaches each session's
+    phase_history (same shape as GET /{id}) so the fleet view can compute
+    "day N of M" without fanning out one request per session."""
+    return await service.list_sessions(status, species, include_phase_history)
 
 
 @router.get("/calendar.ics")
