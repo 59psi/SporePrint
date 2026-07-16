@@ -411,6 +411,57 @@ CREATE TABLE IF NOT EXISTS integration_settings (
     last_error TEXT,
     updated_at REAL DEFAULT (unixepoch('now'))
 );
+
+-- Contamination events (persisted identify detections + manual marks).
+-- source='identify' rows are auto-created when POST /api/contamination/identify
+-- returns a positive detection; source='manual' rows come from the page's
+-- manual-mark flow. root_cause is stamped later via the RCA endpoint.
+CREATE TABLE IF NOT EXISTS contamination_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES sessions(id),
+    chamber_id INTEGER REFERENCES chambers(id),
+    detected_at REAL NOT NULL DEFAULT (unixepoch('now')),
+    source TEXT NOT NULL,
+    contamination_type TEXT,
+    confidence REAL,
+    frame_id INTEGER REFERENCES vision_frames(id),
+    notes TEXT,
+    root_cause TEXT,
+    root_cause_recorded_at REAL,
+    created_at REAL DEFAULT (unixepoch('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_contam_events_session ON contamination_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_contam_events_chamber ON contamination_events(chamber_id);
+CREATE INDEX IF NOT EXISTS idx_contam_events_detected ON contamination_events(detected_at DESC);
+
+-- Chamber maintenance schedule + log. due_at/completed_at are unix timestamps
+-- (nullable). An entry with completed_at IS NULL is still outstanding.
+CREATE TABLE IF NOT EXISTS chamber_maintenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chamber_id INTEGER NOT NULL REFERENCES chambers(id),
+    kind TEXT NOT NULL,
+    due_at REAL,
+    completed_at REAL,
+    notes TEXT,
+    created_at REAL DEFAULT (unixepoch('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chamber_maint_chamber ON chamber_maintenance(chamber_id);
+
+-- Planner events — a month-calendar store of planned grow events (distinct from
+-- the /api/planner species-compatibility recommender). `date` is an ISO date
+-- string (YYYY-MM-DD); drag-reschedule is a PUT that changes `date`.
+CREATE TABLE IF NOT EXISTS planned_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    date TEXT NOT NULL,
+    chamber_id INTEGER REFERENCES chambers(id),
+    session_id INTEGER REFERENCES sessions(id),
+    notes TEXT,
+    created_at REAL DEFAULT (unixepoch('now')),
+    updated_at REAL DEFAULT (unixepoch('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_planned_events_date ON planned_events(date);
 """
 
 

@@ -2,11 +2,13 @@ import base64
 import logging
 
 import anthropic
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..config import settings
 from ..vision.service import parse_claude_json
+from . import service
 from .library import CONTAMINANTS, IDENTIFICATION_SYSTEM_PROMPT
+from .models import ContaminationEventCreate, RootCauseUpdate
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +33,17 @@ async def get_contaminant(contaminant_id: str):
 
 
 @router.post("/identify")
-async def identify_contamination(file: UploadFile = File(...)):
-    """Upload an image for Claude Vision contamination identification."""
+async def identify_contamination(
+    file: UploadFile = File(...),
+    session_id: int | None = Form(None),
+    chamber_id: int | None = Form(None),
+):
+    """Upload an image for Claude Vision contamination identification.
+
+    On a positive detection the result is also persisted as a
+    `source='identify'` contamination event (linked to session_id/chamber_id
+    when supplied). The response contract is unchanged.
+    """
     if not settings.claude_api_key:
         raise HTTPException(503, "Claude API key not configured")
 
@@ -79,9 +90,49 @@ async def identify_contamination(file: UploadFile = File(...)):
         if "raw_response" in result:
             return {"parse_error": True, "raw_response": result["raw_response"]}
 
+        # Persist positive detections. A DB hiccup must not turn a successful
+        # identification into a 500 — the identify response contract is unchanged.
+        detection = service.detection_from_identify(result)
+        if detection is not None:
+            try:
+                await service.record_event(
+                    source="identify",
+                    session_id=session_id,
+                    chamber_id=chamber_id,
+                    contamination_type=detection["contamination_type"],
+                    confidence=detection["confidence"],
+                )
+            except Exception as e:
+                log.warning("Failed to persist contamination event: %s", e)
+
         return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("Contamination identification failed: %s", e)
         status = 502 if "API" in type(e).__name__ else 500
         raise HTTPException(status, f"Contamination identification failed: {e}")
+
+
+@router.get("/events")
+async def list_contamination_events(
+    session_id: int | None = None, chamber_id: int | None = None
+):
+    """Newest-first contamination event log (backs the page's gallery)."""
+    return await service.list_events(session_id=session_id, chamber_id=chamber_id)
+
+
+@router.post("/events")
+async def create_contamination_event(data: ContaminationEventCreate):
+    """Manually log a contamination event (the page's manual-mark flow)."""
+    return await service.create_manual_event(data)
+
+
+@router.post("/events/{event_id}/root-cause")
+async def record_root_cause(event_id: int, data: RootCauseUpdate):
+    """Stamp a root-cause analysis onto an event (the RCA form)."""
+    updated = await service.set_root_cause(event_id, data.root_cause)
+    if not updated:
+        raise HTTPException(404, "Contamination event not found")
+    return updated

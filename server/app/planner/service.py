@@ -382,3 +382,88 @@ async def get_session_warnings(session_id: int) -> dict:
         "message": message,
         "forecast_warnings": forecast_warnings,
     }
+
+
+# ── Planned events (month-calendar event store) ─────────────────
+#
+# Distinct from the species-compatibility recommender above: this is a CRUD
+# store of user-planned grow events (inoculate / transfer / harvest-window /
+# maintenance / custom) shown on the planner's month calendar. `date` is an ISO
+# date string; drag-reschedule is an update that changes `date`.
+
+from .models import PlannedEventCreate, PlannedEventUpdate  # noqa: E402
+
+_PLANNED_EVENT_COLUMNS = ("title", "kind", "date", "chamber_id", "session_id", "notes")
+
+
+async def get_planned_event(event_id: int) -> dict | None:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM planned_events WHERE id = ?", (event_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def list_planned_events(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict]:
+    """Planned events in an inclusive date range, sorted by date."""
+    query = "SELECT * FROM planned_events WHERE 1=1"
+    params: list = []
+    if date_from:
+        query += " AND date >= ?"
+        params.append(date_from)
+    if date_to:
+        query += " AND date <= ?"
+        params.append(date_to)
+    query += " ORDER BY date ASC, id ASC"
+
+    async with get_db() as db:
+        cursor = await db.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def create_planned_event(data: PlannedEventCreate) -> dict:
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO planned_events (title, kind, date, chamber_id, session_id, notes)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (data.title, data.kind, data.date, data.chamber_id, data.session_id, data.notes),
+        )
+        await db.commit()
+        event_id = cursor.lastrowid
+    return await get_planned_event(event_id)
+
+
+async def update_planned_event(
+    event_id: int, data: PlannedEventUpdate
+) -> dict | None:
+    """Partial update. None fields are left unchanged (matches the repo's
+    partial-update convention); `date` change is the drag-reschedule."""
+    existing = await get_planned_event(event_id)
+    if not existing:
+        return None
+
+    dumped = data.model_dump()
+    changed = {c: dumped[c] for c in _PLANNED_EVENT_COLUMNS if dumped[c] is not None}
+    if changed:
+        # Column names come from the fixed whitelist above, never user input.
+        set_sql = ", ".join(f"{c} = ?" for c in changed)
+        params = list(changed.values()) + [time.time(), event_id]
+        async with get_db() as db:
+            await db.execute(
+                f"UPDATE planned_events SET {set_sql}, updated_at = ? WHERE id = ?",
+                params,
+            )
+            await db.commit()
+    return await get_planned_event(event_id)
+
+
+async def delete_planned_event(event_id: int) -> bool:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "DELETE FROM planned_events WHERE id = ?", (event_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
