@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from ..db import get_db
+from . import ota_push
 from .coredumps import dump_path, list_dumps
 from .service import (
     NODE_ID_RE,
@@ -52,6 +53,59 @@ async def get_node_logs(node_id: str, limit: int = 200):
         rows = await cursor.fetchall()
     return {"node_id": node_id,
             "entries": [dict(r) for r in rows]}
+
+
+@router.post("/nodes/{node_id}/ota", status_code=202)
+async def push_node_firmware(
+    node_id: str,
+    file: UploadFile = File(...),
+    password: str = Form(...),
+    port: int = Form(ota_push.DEFAULT_OTA_PORT),
+):
+    """Push a firmware .bin to an ESP32 node via the espota protocol (v4.2).
+
+    The node's ArduinoOTA password is supplied per request and never
+    stored or logged. The transfer runs in the background — poll
+    GET .../ota for the Pi-side outcome; the node's own lifecycle arrives
+    as node_ota MQTT events.
+    """
+    if not NODE_ID_RE.match(node_id):
+        raise HTTPException(400, "Invalid node_id")
+    if not 1 <= port <= 65535:
+        raise HTTPException(400, "Invalid port")
+    if not (file.filename or "").lower().endswith(".bin"):
+        raise HTTPException(400, "Firmware image must be a .bin file")
+    node = await service_get_node(node_id)
+    if not node:
+        raise HTTPException(404, "Node not found")
+    if not node.get("ip_address"):
+        raise HTTPException(400, "Node has no known IP address")
+    image = await file.read(ota_push.MAX_UPLOAD_BYTES + 1)
+    if len(image) > ota_push.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Firmware image exceeds the 16 MB cap")
+    if not image:
+        raise HTTPException(400, "Firmware image is empty")
+    # No await between this check and start_push — the check-and-set is
+    # atomic on the event loop, so concurrent POSTs cannot both start.
+    if ota_push.is_running(node_id):
+        raise HTTPException(409, "An OTA push to this node is already running")
+    ota_push.start_push(node_id, node["ip_address"], port, password, image)
+    return {"status": "started", "node_id": node_id}
+
+
+@router.get("/nodes/{node_id}/ota")
+async def get_node_ota_status(node_id: str):
+    """Pi-side status of the most recent espota push to this node.
+
+    Covers the failures that never reach MQTT (wrong password, node
+    unreachable, stalled transfer): state idle|running|ok|error + message
+    + timestamps + byte progress.
+    """
+    if not NODE_ID_RE.match(node_id):
+        raise HTTPException(400, "Invalid node_id")
+    if not await service_get_node(node_id):
+        raise HTTPException(404, "Node not found")
+    return ota_push.get_status(node_id)
 
 
 @router.get("/coredumps")

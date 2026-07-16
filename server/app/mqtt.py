@@ -83,6 +83,33 @@ async def mqtt_publish(topic: str, payload: dict) -> bool:
         return False
 
 
+# Broker $SYS stats — health/service.update_mqtt_stat was designed for this
+# feed but the subscription was never wired, so GET /api/health/detail/mqtt
+# always returned {}. Curated topics only: the full $SYS/broker/# firehose is
+# ~50 topics the UI would never render.
+_SYS_TOPICS = (
+    "$SYS/broker/version",
+    "$SYS/broker/uptime",
+    "$SYS/broker/clients/connected",
+    "$SYS/broker/messages/received",
+    "$SYS/broker/messages/sent",
+    "$SYS/broker/bytes/received",
+    "$SYS/broker/bytes/sent",
+    "$SYS/broker/load/messages/received/1min",
+    "$SYS/broker/load/messages/sent/1min",
+)
+
+
+def _handle_sys_message(topic: str, raw: bytes) -> None:
+    """Store one $SYS/broker/* payload (plain text, not JSON) as an mqtt stat."""
+    from .health.service import update_mqtt_stat
+
+    try:
+        update_mqtt_stat(topic.removeprefix("$SYS/broker/"), raw.decode().strip())
+    except Exception:  # never let a stats update disturb the message loop
+        pass
+
+
 async def start_mqtt(sio):
     global _client, _mqtt_restart_count
     from .health.service import update_task
@@ -98,11 +125,18 @@ async def start_mqtt(sio):
                 await client.subscribe("sporeprint/#")
                 await client.subscribe("shellies/#")
                 await client.subscribe("tasmota/#")
+                for sys_topic in _SYS_TOPICS:
+                    await client.subscribe(sys_topic)
                 update_task("mqtt", "running")
                 log.info("MQTT connected to %s:%d", settings.mqtt_host, settings.mqtt_port)
 
                 async for message in client.messages:
                     topic = str(message.topic)
+                    # $SYS payloads are plain text — handle before the JSON
+                    # parse below would silently drop them.
+                    if topic.startswith("$SYS/"):
+                        _handle_sys_message(topic, bytes(message.payload or b""))
+                        continue
                     try:
                         payload = json.loads(message.payload.decode())
                     except (json.JSONDecodeError, UnicodeDecodeError):
