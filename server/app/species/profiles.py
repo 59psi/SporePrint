@@ -4,7 +4,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     # ─── ACTIVE SPECIES ─────────────────────────────────────────────────
     SpeciesProfile(
         id="cubensis_golden_teacher",
-        common_name="Golden Teacher / B+",
+        common_name="Golden Teacher",
         scientific_name="Psilocybe cubensis",
         category="active",
         strain="Golden Teacher",
@@ -80,6 +80,107 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         yield_notes="3-5 flushes typical. First flush largest. Expect 1-3oz dry per quart of spawn.",
         tags=["beginner", "fast", "reliable"],
         tldr="Beginner-friendly cubensis baseline. Colonizes CVG or manure substrate in 7-14 days at 75-80°F. Introduce FAE + 12/12 light to pin. 3-5 flushes, first flush is largest. Responds reliably to standard tek. Dunk in cold water between flushes.",
+        flavor_profile="Active species are not primarily consumed for flavor. Typically dried and consumed in capsules, tea, or food preparations. Fresh specimens have a mild earthy/grain taste.",
+        legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only.",
+        tek_guide=[
+            TekStep(step_number=1, title="Substrate Preparation", description="Prepare CVG (coco coir, vermiculite, gypsum) by pasteurizing with boiling water in a bucket. Pour boiling water over the dry mix, seal the lid, and let it cool to room temperature (8-12 hours). Target field capacity moisture — squeeze a handful and only a few drops should fall.", duration="8-12 hours", tips=["Use a 5-gallon bucket with a gamma seal lid for consistent results", "Field capacity test: squeeze a fistful — only a few drops should fall"], common_mistakes=["Adding too much water — soggy substrate invites bacterial contamination", "Not waiting for full cool-down — heat kills spawn on contact"]),
+            TekStep(step_number=2, title="Spawn to Substrate", description="Break up fully colonized grain spawn and mix thoroughly with cooled, pasteurized CVG substrate at a 1:2 to 1:4 spawn-to-substrate ratio in a monotub. Level the surface but do not pack down.", duration="30 minutes", tips=["Higher spawn ratios (1:2) colonize faster and resist contamination better", "Mix thoroughly for even colonization — no clumps of unmixed substrate"], common_mistakes=["Packing substrate too tightly — restricts airflow and causes pooling", "Using under-colonized grain spawn with visible uncolonized kernels"]),
+            TekStep(step_number=3, title="Colonization", description="Seal the monotub (tape micropore tape over holes or leave lid latched with no FAE). Store in a dark location at 75-80°F. Do not open the tub during colonization. Wait for full surface colonization (7-14 days).", duration="7-14 days", tips=["Resist the urge to peek — every opening introduces contaminants", "A small amount of condensation on tub walls is normal and healthy"], common_mistakes=["Opening the tub during colonization to check progress", "Storing in direct sunlight or temperature-fluctuating locations"]),
+            TekStep(step_number=4, title="Fruiting Introduction", description="Once the surface is 75-100% colonized, introduce fruiting conditions: crack the lid or open FAE holes, introduce 12/12 light cycle, and maintain surface moisture via misting and fanning 2-3x daily.", duration="5-10 days to first pins", tips=["Fan for 30 seconds after misting to promote surface evaporation", "Tiny water droplets on the surface (not pooling) are ideal"], common_mistakes=["Heavy direct misting on pins — causes aborts", "Insufficient FAE — high CO2 causes long leggy stems"]),
+            TekStep(step_number=5, title="Fruiting and Harvest", description="Maintain fruiting conditions. Pins will develop into mature fruits in 5-10 days. Harvest individual mushrooms as their veils begin to tear — twist and pull gently or cut at the base with a clean blade.", duration="7-14 days per flush", tips=["Harvest just before or as the veil tears for best potency and appearance", "Harvest the entire flush at once if possible to encourage a uniform next flush"], common_mistakes=["Waiting too long — spore drop makes a mess and can suppress next flush", "Pulling too hard and damaging the substrate surface"]),
+            TekStep(step_number=6, title="Dunk and Rest", description="After harvesting, soak the substrate block in cold water for 12-24 hours (dunk). Drain excess water, return to fruiting conditions. Next flush should appear in 7-14 days.", duration="12-24 hours soak + 7-14 days to next flush", tips=["Use cold water (40-50°F) for the dunk — acts as a cold shock trigger", "Weight down the substrate with a plate to keep it submerged"], common_mistakes=["Skipping the dunk — substrate dries out and yields drop sharply", "Soaking longer than 24 hours — waterlogged substrate invites bacteria"]),
+        ],
+        substrate_recipes=[
+            SubstrateRecipe(name="CVG (Coco Coir, Vermiculite, Gypsum)", ingredients={"coco coir brick": "650g", "vermiculite": "2 quarts", "gypsum": "1 cup"}, water_liters_per_liter_substrate=0.8, spawn_rate_percent=10, sterilization_method="pasteurize_hot_water", sterilization_time_min=90, sterilization_temp_f=170, suitability="optimal", notes="Most popular cubensis substrate. Cheap, reliable, low contamination risk."),
+            SubstrateRecipe(name="Manure-Based (Horse/Cow)", ingredients={"aged horse manure": "5 quarts", "vermiculite": "2 quarts", "gypsum": "1 cup", "coco coir": "1 quart"}, water_liters_per_liter_substrate=0.9, spawn_rate_percent=10, sterilization_method="pasteurize_hot_water", sterilization_time_min=120, sterilization_temp_f=170, suitability="good", notes="Higher yields for many cubensis strains. Slightly more contamination risk than CVG."),
+            SubstrateRecipe(name="BRF Cakes (Brown Rice Flour + Vermiculite)", ingredients={"brown rice flour": "2 cups", "vermiculite": "2 cups", "water": "1 cup"}, water_liters_per_liter_substrate=0.6, spawn_rate_percent=100, sterilization_method="pressure_sterilize", sterilization_time_min=90, sterilization_temp_f=250, suitability="acceptable", notes="Classic PF Tek. Simple but lower yield. Good for first-time growers."),
+        ],
+        substrate_preference_ranking=["CVG", "manure-based", "BRF"],
+        contamination_risks=["Trichoderma (green mold) — most common threat, appears as white then green patches within 24-48 hours", "Cobweb mold — grey wispy overlay that spreads very fast, often responds to hydrogen peroxide spray", "Bacterial contamination — slimy/sour smell, often from wet spots or poor pasteurization", "Lipstick mold (Sporendonema) — pink/red spots, discard immediately"],
+        photo_references={
+            "colonization": "https://commons.wikimedia.org/wiki/File:Psilocybe_cubensis_mycelium.jpg",
+            "fruiting": "https://en.wikipedia.org/wiki/Psilocybe_cubensis#/media/File:Psilocybe_cubensis_(Magic_Mushrooms).jpg",
+        },
+    ),
+
+    SpeciesProfile(
+        id="cubensis_b_plus",
+        common_name="B+",
+        scientific_name="Psilocybe cubensis",
+        category="active",
+        strain="B+",
+        substrate_types=["CVG", "manure-based", "BRF"],
+        colonization_visual_description=(
+            "Rhizomorphic white mycelium — vigorous and forgiving. "
+            "Tomentose (fluffy) patches are normal. Full colonization before fruiting."
+        ),
+        contamination_risk_notes=(
+            "Same contaminants as Golden Teacher: trich (#1 — white→green 24-48h), "
+            "cobweb (grey/wispy, fast), black mold (Aspergillus — discard), bacterial "
+            "(slimy/sour), lipstick mold (pink/red — discard). B+'s resilience gives a little margin."
+        ),
+        pinning_trigger_description=(
+            "FAE introduction (CO2 drop) + 12/12 light + high surface humidity. "
+            "Very forgiving — pins reliably under standard conditions."
+        ),
+        phases={
+            GrowPhase.AGAR: PhaseParams(
+                temp_min_f=75, temp_max_f=80, humidity_min=0, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(7, 14),
+                notes="Optional phase. Ambient conditions in SAB/flow hood.",
+            ),
+            GrowPhase.LIQUID_CULTURE: PhaseParams(
+                temp_min_f=75, temp_max_f=80, humidity_min=0, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(10, 21),
+                notes="Optional phase. Stir plate recommended.",
+            ),
+            GrowPhase.GRAIN_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=100,
+                co2_max_ppm=10000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="passive", expected_duration_days=(10, 14),
+                notes="Optional. In-bag with micropore tape.",
+            ),
+            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
+                temp_min_f=75, temp_max_f=80, humidity_min=70, humidity_max=80,
+                co2_max_ppm=10000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", expected_duration_days=(7, 14),
+                notes="Keep dark. No FAE until fully colonized.",
+            ),
+            GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
+                temp_min_f=72, temp_max_f=75, humidity_min=90, humidity_max=95,
+                co2_max_ppm=800, co2_tolerance="low",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
+                expected_duration_days=(5, 10),
+                notes="Introduce FAE. Surface evaporation triggers pinning.",
+            ),
+            GrowPhase.FRUITING: PhaseParams(
+                temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
+                co2_max_ppm=800, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="scheduled", fae_interval_min=20, fae_duration_sec=300,
+                expected_duration_days=(7, 14),
+                notes="Harvest before spore drop — veil breaking.",
+            ),
+            GrowPhase.REST: PhaseParams(
+                temp_min_f=72, temp_max_f=75, humidity_min=95, humidity_max=100,
+                co2_max_ppm=5000, co2_tolerance="high",
+                light_hours_on=0, light_hours_off=24, light_spectrum="none",
+                fae_mode="none", substrate_moisture="soaked",
+                expected_duration_days=(1, 1),
+                notes="Dunk in cold water 12-24h between flushes.",
+            ),
+        },
+        flush_count_typical=4,
+        yield_notes="3-5 flushes typical. Large, meaty fruits — B+ is known for fruit size and consistency. First flush largest.",
+        tags=["beginner", "reliable", "forgiving"],
+        tldr="Forgiving beginner cubensis known for large, meaty fruits. Tolerates temperature swings and less-than-ideal conditions better than most strains. Colonizes CVG or manure in 7-14 days at 75-80°F; introduce FAE + 12/12 light to pin. 3-5 flushes, first flush largest. An excellent first strain alongside Golden Teacher.",
         flavor_profile="Active species are not primarily consumed for flavor. Typically dried and consumed in capsules, tea, or food preparations. Fresh specimens have a mild earthy/grain taste.",
         legal_disclaimer="LEGAL NOTICE: Psilocybin is a controlled substance in many jurisdictions. Check your local, state, and federal laws before cultivating this species. Possession, cultivation, and distribution may be illegal in your area. Some jurisdictions have decriminalized or legalized therapeutic use. Spore possession for microscopy is legal in most US states (exceptions: CA, ID, GA). This information is provided for educational and research reference only.",
         tek_guide=[
@@ -2324,7 +2425,9 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
     SpeciesProfile(
         id="reishi",
         common_name="Reishi",
-        scientific_name="Ganoderma sichuanense",
+        scientific_name="Ganoderma lingzhi",
+        edible=False,
+        safety_warning="Not eaten as food — woody and bitter. Consumed only as a tea, decoction, or extract.",
         category="medicinal",
         substrate_types=["supplemented hardwood", "grain"],
         colonization_visual_description=(
@@ -2460,6 +2563,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         id="turkey_tail",
         common_name="Turkey Tail",
         scientific_name="Trametes versicolor",
+        edible=False,
+        safety_warning="Not eaten as food — thin and leathery. Consumed only as a tea, decoction, or extract.",
         category="medicinal",
         substrate_types=["supplemented hardwood", "logs"],
         colonization_visual_description=(
@@ -2519,6 +2624,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         id="chaga",
         common_name="Chaga",
         scientific_name="Inonotus obliquus",
+        edible=False,
         category="medicinal",
         chamber_cultivable=False,
         cultivation_note="Chaga is a sclerotium (conk) on a LIVING birch, developing over 7-10 years. It is not cultivated to a fruit body in a chamber — this profile is reference only.",
@@ -2574,6 +2680,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         id="meshima",
         common_name="Meshima / Sang Hwang",
         scientific_name="Tropicoporus linteus",
+        edible=False,
+        safety_warning="Not eaten as food — hard and woody. Consumed only as a tea, decoction, or extract.",
         category="medicinal",
         substrate_types=["supplemented hardwood (mulberry)", "hardwood sawdust"],
         colonization_visual_description=(
@@ -3848,6 +3956,8 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         id="ganoderma_tsugae",
         common_name="Hemlock Reishi",
         scientific_name="Ganoderma tsugae",
+        edible=False,
+        safety_warning="Not eaten as food — woody and bitter. Consumed only as a tea, decoction, or extract.",
         category="medicinal",
         substrate_types=["conifer sawdust (hemlock/larch)", "conifer logs", "supplemented hardwood sawdust"],
         colonization_visual_description=(
