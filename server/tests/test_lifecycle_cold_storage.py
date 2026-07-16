@@ -27,6 +27,13 @@ def test_colonized_bag_advances_to_fruiting():
         assert suggested_next_phase(phase, "grow_bag") == "primordia_induction"
 
 
+def test_colonized_monotub_and_tray_fruit_in_place():
+    # Bulk substrate (monotub, tray) fruits in place like a cut bag — it must not
+    # be parked in cold storage. Regression for the container-fork fix.
+    for container in ("monotub", "tray"):
+        assert suggested_next_phase("substrate_colonization", container) == "primordia_induction"
+
+
 def test_colonized_jar_and_agar_go_to_cold_storage():
     assert suggested_next_phase("grain_colonization", "jar") == "cold_storage"
     assert suggested_next_phase("agar", "agar_plate") == "cold_storage"

@@ -133,7 +133,12 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
 
 
 _COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substrate_colonization"}
-_BAG_CONTAINERS = {"grow_bag", "bag"}
+# Bulk-substrate containers that fruit in place (a bag is cut open; a tub/tray
+# is opened to air). Everything else — colonized agar / liquid culture / grain
+# spawn — is pulled and parked in cold storage until used. monotub/tray were
+# missing here, which wrongly routed them to cold storage; they are bulk
+# substrate that fruits, matching the session-wizard container selector.
+_FRUITING_CONTAINERS = {"grow_bag", "bag", "bulk_bag", "monotub", "tray"}
 
 
 def suggested_next_phase(current_phase: str, container_type: str | None,
@@ -141,9 +146,9 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
     """The product spec's forks, as a suggestion the UI offers on 'advance phase'.
 
     Two forks:
-    1. After colonization: a GROW BAG goes on to fruit; colonized agar / LC /
-       grain is pulled and parked in the fridge until used.
-           grow bag       → primordia_induction
+    1. After colonization: BULK SUBSTRATE (grow bag / monotub / tray) goes on to
+       fruit; colonized agar / LC / grain is pulled and parked in the fridge.
+           bulk substrate → primordia_induction
            agar/LC/grain  → cold_storage
     2. The flush loop: a bag gives 2-3 flushes. After a flush you REST, then go
        back to FRUITING for the next one — until the bag is spent, then COMPLETE.
@@ -153,7 +158,7 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
     """
     ct = (container_type or "").lower()
     if current_phase in _COLONIZATION_PHASES:
-        return "primordia_induction" if ct in _BAG_CONTAINERS else "cold_storage"
+        return "primordia_induction" if ct in _FRUITING_CONTAINERS else "cold_storage"
     if current_phase == "rest":
         return "fruiting" if more_flushes_expected else "complete"
     # Non-fork transitions follow the ordinary linear progression.
