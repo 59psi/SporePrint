@@ -16,7 +16,10 @@ async def system_health():
 
 @router.get("/mqtt")
 async def mqtt_health():
-    return get_mqtt_stats()
+    # Lazy import avoids a cycle (mqtt imports health.service).
+    from ..mqtt import command_signing_status
+
+    return {**get_mqtt_stats(), "command_signing": command_signing_status()}
 
 
 @router.get("/clients")
