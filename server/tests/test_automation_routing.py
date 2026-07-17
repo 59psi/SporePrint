@@ -115,15 +115,24 @@ async def test_tasmota_plug_rule_reaches_the_tasmota_topic(mock_mqtt, mock_mqtt_
     assert mock_mqtt_raw == [("tasmota/heater/cmnd/POWER", "OFF")]
 
 
-async def test_unregistered_plug_falls_back_to_shelly_convention(mock_mqtt, mock_mqtt_raw):
-    """plug-<id> with no DB row: infer a Shelly at that device id."""
+async def test_unregistered_plug_is_an_honest_no_op(mock_mqtt, mock_mqtt_raw):
+    """plug-<id> with no DB row is NOT paired: no actuator can receive the
+    command, so it must be a reported no-op — not a speculative publish that
+    logs status='sent' for hardware that was never there. (V2-3)"""
     await _fire_rule(
         _rule(RuleAction(target="plug-cooler", state="on"), "plug"),
         {"humidity": 70},
         session=None,
     )
+    # Nothing published anywhere — not on sporeprint/*, and not on a guessed
+    # shellies/* topic for a plug that was never paired.
     assert [t for t, _ in mock_mqtt] == []
-    assert mock_mqtt_raw == [("shellies/cooler/relay/0/command", "on")]
+    assert mock_mqtt_raw == []
+    # The audit row tells the truth: the firing actuated nothing.
+    async with get_db() as db:
+        cursor = await db.execute("SELECT status FROM automation_firings")
+        row = await cursor.fetchone()
+    assert row["status"] == "failed", row["status"]
 
 
 async def test_safety_auto_off_routes_plug_targets_to_plug_topic(mock_mqtt, mock_mqtt_raw):
@@ -139,7 +148,9 @@ async def test_safety_auto_off_routes_plug_targets_to_plug_topic(mock_mqtt, mock
 
 
 async def test_plug_firing_is_recorded_as_sent(mock_mqtt, mock_mqtt_raw):
-    """The audit row must reflect the plug transport, not claim a failure."""
+    """The audit row must reflect the plug transport, not claim a failure —
+    a PAIRED plug records status='sent'."""
+    await _register_plug("plug-humidifier", "shelly", "shellies/humidifier")
     await _fire_rule(
         _rule(RuleAction(target="plug-humidifier", state="on"), "plug"),
         {"humidity": 70},

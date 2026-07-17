@@ -17,7 +17,7 @@ from .models import (
     ThresholdCondition,
     ManualOverride,
 )
-from .service import deserialize_rule_row
+from .service import deserialize_rule_row, get_rule
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,16 @@ _overrides: dict[str, ManualOverride] = {}
 _rule_cache: list[AutomationRule] = []
 _cache_ts: float = 0
 _overrides_loaded: bool = False
+
+# Whole-engine pause. When True, evaluate_rules short-circuits before any rule
+# runs, so no telemetry frame can drive an actuator. Persisted to user_settings
+# (key below) so a remote "pause automation" survives a Pi reboot — the same
+# durability manual_overrides and safety_watchdogs already have. Read on the hot
+# path without a lock (a single-bool read is atomic under the GIL, matching the
+# is_overridden convention); the DB load runs once, gated by _pause_loaded.
+_paused: bool = False
+_pause_loaded: bool = False
+_PAUSE_SETTING_KEY = "automation_paused"
 
 # Per-actuator auto-off tasks for safety_max_on_seconds enforcement.
 # Key is "target:channel"; value is the asyncio.Task waiting to publish OFF.
@@ -189,6 +199,49 @@ async def ensure_overrides_loaded():
         await _load_overrides_from_db()
 
 
+async def _load_pause_from_db() -> None:
+    """Load the persisted automation-pause flag into memory (once).
+
+    The flag lives in the user_settings key-value table (same upsert shape
+    settings_service uses) so a remote pause outlives a reboot. An absent row
+    reads as not-paused — pause is strictly opt-in.
+    """
+    global _paused, _pause_loaded
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT value FROM user_settings WHERE key = ?", (_PAUSE_SETTING_KEY,)
+        )
+        row = await cursor.fetchone()
+    _paused = bool(row and row["value"] == "1")
+    _pause_loaded = True
+
+
+async def ensure_pause_loaded() -> None:
+    if not _pause_loaded:
+        await _load_pause_from_db()
+
+
+async def set_paused(paused: bool) -> None:
+    """Pause or resume this Pi's automation engine.
+
+    While paused, evaluate_rules returns before loading a single rule, so no
+    telemetry frame drives an actuator. Persisted to user_settings so the hold
+    survives a reboot. This is the target of the cloud relay's `system` /
+    `automation` command (payload ``{paused: bool}``) — see cloud/service.py.
+    """
+    global _paused, _pause_loaded
+    async with get_db() as db:
+        await db.execute(
+            """INSERT INTO user_settings (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=unixepoch('now')""",
+            (_PAUSE_SETTING_KEY, "1" if paused else "0"),
+        )
+        await db.commit()
+    _paused = bool(paused)
+    _pause_loaded = True
+    log.info("Automation engine %s", "PAUSED" if paused else "RESUMED")
+
+
 async def load_rules() -> list[AutomationRule]:
     global _rule_cache, _cache_ts
     now = time.time()
@@ -260,6 +313,39 @@ async def clear_override(target: str, channel: str | None):
     )
 
 
+async def suspend_rule(rule_id: str | int, minutes: int = 30) -> None:
+    """Temporarily suspend one automation rule, driven from the cloud relay.
+
+    Mirrors the Pi LAN UI's "suspend" button (POST /api/automation/overrides →
+    set_override): pin an expiring manual override on the rule's OWN action
+    target/channel so evaluate_rules skips it via is_overridden until the
+    override lapses. Reusing set_override means a cloud-suspended rule shows up
+    in the same /overrides list and is cleared the same way as a UI-suspended
+    one — one mechanism, not two.
+
+    ``expires_at`` is set to now + minutes, then clamped by ManualOverride to
+    its server-side TTL ceiling, so a bogus ``minutes`` can never pin the
+    actuator forever. Raises ValueError for an unknown or non-numeric rule id;
+    the caller (cloud/service.py) surfaces that as the command_result error.
+    """
+    rule = await get_rule(int(rule_id))
+    if rule is None:
+        raise ValueError(f"No automation rule with id {rule_id!r}")
+    action = AutomationRule.model_validate(rule).action
+    minutes = max(1, int(minutes))
+    await set_override(ManualOverride(
+        target=action.target,
+        channel=action.channel,
+        locked=True,
+        reason=f"rule '{rule['name']}' suspended {minutes}m via cloud",
+        expires_at=time.time() + minutes * 60,
+    ))
+    log.info(
+        "Suspended rule %s ('%s') for %dm → override %s:%s",
+        rule_id, rule["name"], minutes, action.target, action.channel,
+    )
+
+
 async def get_overrides() -> list[ManualOverride]:
     await ensure_overrides_loaded()
     now = time.time()
@@ -312,6 +398,13 @@ async def evaluate_rules(
     sio=None,
 ):
     """Evaluate all automation rules against new telemetry readings."""
+    # Whole-engine pause gate — the very first check, before any rule loads.
+    # A remote "pause automation" (cloud → set_paused) must halt every actuator
+    # decision, not just filter individual rules. Loaded from the DB once, then
+    # cached, so the hot path is a single bool read once warm.
+    await ensure_pause_loaded()
+    if _paused:
+        return
     await ensure_overrides_loaded()
     rules = await load_rules()
     if not rules:

@@ -226,7 +226,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="4.2.0", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="5.0.0", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -283,6 +283,9 @@ from .sessions.router import router as sessions_router
 from .species.router import router as species_router
 from .hardware.router import router as hardware_router
 from .automation.router import router as automation_router
+# V2-1 — hardware-coverage verdict lives under /api/chambers/{id}/... but is an
+# automation concern, so its router ships from the automation package.
+from .automation.coverage_router import router as automation_coverage_router
 from .vision.router import router as vision_router
 from .transcript.router import router as transcript_router
 from .builder.router import router as builder_router
@@ -324,6 +327,9 @@ app.include_router(planner_router, prefix="/api/planner", tags=["planner"])
 app.include_router(contamination_router, prefix="/api/contamination", tags=["contamination"])
 app.include_router(cultures_router, prefix="/api/cultures", tags=["cultures"])
 app.include_router(chambers_router, prefix="/api/chambers", tags=["chambers"])
+# V2-1 — GET /api/chambers/{id}/automation-coverage?species=... (extra segment,
+# so it does not collide with the chambers_router's /{chamber_id} routes).
+app.include_router(automation_coverage_router, prefix="/api/chambers", tags=["automation.coverage"])
 app.include_router(experiments_router, prefix="/api/experiments", tags=["experiments"])
 app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
@@ -351,7 +357,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "4.2.0"}
+    return {"status": "ok", "version": "5.0.0"}
 
 
 # Track Socket.IO clients for health reporting

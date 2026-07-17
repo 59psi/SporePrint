@@ -141,38 +141,65 @@ SSH into a freshly-imaged Raspberry Pi (64-bit Raspberry Pi OS, Ubuntu Server,
 or Debian 12+) and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/59psi/SporePrint/main/scripts/setup-pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/59psi/SporePrint/main/install.sh | bash
 ```
 
-`scripts/setup-pi.sh` is idempotent — it:
+That is the only command you need — the sole prerequisite is Docker, which the
+script installs for you. `install.sh` is idempotent (safe to re-run) and:
 
-1. Installs Docker Engine + the Compose plugin (via `get.docker.com`) if not already present
-2. Clones the SporePrint repo into `~/SporePrint` (or pulls latest if it already exists)
-3. Seeds a `.env` from the template (weather lat/lon blank — fill in after)
-4. Builds the stack and brings it up with `docker compose up -d --build`
-5. Prints next steps, the Pi's LAN URLs, and common ops commands
+1. Detects the OS and installs Docker Engine + the Compose plugin (via
+   `get.docker.com`), plus `chrony` (NTP) and `openssl`, if they are missing.
+2. Clones the repo into `~/SporePrint` (or pulls latest if already cloned).
+3. Generates the secrets the stack needs — the MQTT broker credentials and its
+   TLS certificates — and writes a LAN-trust `.env`. No secret is committed.
+4. Builds and starts everything with `docker compose up -d --build`, then waits
+   for the API to report healthy.
+5. Prints the dashboard URL and the common ops commands.
 
-Re-run the same one-liner any time to pull updates and rebuild.
+When it finishes, open the dashboard:
 
-After it finishes:
+- **http://<pi-ip>:3001**  (or `http://sporeprint.local:3001` if mDNS works)
+- Then generate a 6-digit pairing code in Settings → Cloud Pairing to pair the mobile app.
 
-- Dashboard: `http://<pi-ip>:3001` (or `http://sporeprint.local:3001` if mDNS works)
-- Generate a 6-digit pairing code in Settings → Cloud Pairing, then pair from the mobile app
+**Update** to the latest release — re-run the same one-liner, or from the
+checkout: `cd ~/SporePrint && ./install.sh`.
+
+**View logs / manage the stack** (from `~/SporePrint`):
+
+```bash
+docker compose logs -f server    # live server logs
+docker compose ps                # service status
+docker compose restart server    # apply .env changes
+docker compose down              # stop (data is kept in named volumes)
+```
+
+**Security — LAN-trust by default.** The Pi's own dashboard calls the API
+same-origin with no token, so the stack ships with HTTP auth off. That is safe
+on a home LAN behind a router/NAT — keep the Pi there and never port-forward it.
+The MQTT broker is still credentialed. To require an API key for the mobile app
+or other external clients, set `SPOREPRINT_API_KEY` in `~/SporePrint/.env` and
+run `docker compose restart server`.
 
 ### Manual Docker Compose
+
+The one-command installer above is the supported path because the stack needs a
+broker password file and TLS certificates generated on first run (a bare
+`docker compose up` would start with no broker credentials and the server would
+refuse to boot). If you prefer to drive Compose yourself, let `install.sh` do
+that one-time preparation, then start the stack:
 
 ```bash
 git clone --recurse-submodules https://github.com/59psi/SporePrint.git
 cd SporePrint
-cp .env.example .env     # edit weather lat/lon
-docker compose up -d
+SPOREPRINT_SKIP_START=1 ./install.sh   # writes .env + broker creds + TLS certs, then stops
+docker compose up -d --build
 ```
 
 Services:
-- **UI**: http://localhost:3001
+- **UI**: http://localhost:3001  (nginx — serves the dashboard, proxies `/api` + `/socket.io`)
 - **API**: http://localhost:8000
-- **MQTT**: localhost:1883 (ESP32 nodes connect here)
-- **ntfy**: http://localhost:8080 (free-tier push fallback)
+- **MQTT**: localhost:1883 (credentialed; TLS on 8883) — ESP32 nodes connect here
+- **ntfy**: http://localhost:8080 (local push)
 
 ### Manual Development Setup
 
@@ -259,6 +286,7 @@ Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 
 - **Weather-based species recommendations** -- scores species against local climate history to find what grows best in your area right now
 - **Grow calendar** -- monthly view of species compatibility per season
+- **Dated cycle proposal** -- from a species + inoculation date, generates the full phase-by-phase grow calendar with per-phase setpoints and a projected harvest date (`/api/planner/propose`, or `.ics` for any calendar app)
 - **Session warnings** -- alerts for active sessions when unfavorable conditions are forecast
 - **iCal export** -- add your grow calendar to any calendar app
 
@@ -300,6 +328,7 @@ Only needed for manual dev — `scripts/setup-pi.sh` handles everything on a Pi.
 
 - **Local CNN** -- fast contamination detection on ~15-minute cycle
 - **Claude Vision API** -- deep morphology analysis with species-specific context
+- **Auto-analysis on ingest** -- new camera frames trigger a throttled (15-min per session), BYOK-gated Claude pass that raises contamination (green mold / Trichoderma) and harvest-ready alerts on its own
 - **Camera module** -- ESP32-CAM MJPEG streaming with frame capture
 
 ### Hardware Builder
@@ -440,15 +469,15 @@ SporePrint/
 | `telemetry` | 5+ | Real-time sensor data ingest and rollup-aware history queries |
 | `sessions` | 10+ | Grow session CRUD, phase management, yield stats, drying tracker, PDF reports, iCal feed |
 | `species` | 8+ | Species profiles, wizard scoring, substrate calculator, shopping list generator |
-| `automation` | 6+ | Declarative rules engine, smart plug control, per-chamber overrides |
+| `automation` | 8+ | Declarative rules engine, smart plug control, per-chamber overrides, remote pause / rule-suspend, 24h manual override with auto-resume, pre-grow automation-coverage verdict |
 | `weather` | 5+ | Multi-provider weather API with failover (Open-Meteo, OpenWeatherMap, NWS), 7-day forecast, prediction model, history aggregation |
-| `vision` | 4+ | Camera frame ingest, local CNN detection, Claude Vision analysis |
+| `vision` | 4+ | Camera frame ingest, local CNN detection, Claude Vision analysis, auto-analysis on ingest |
 | `builder` | 3+ | 3-tier hardware guide, wiring diagrams, Claude assistant |
-| `hardware` | 3+ | Node registry, command dispatch, component health |
+| `hardware` | 5+ | Node registry, command dispatch, component health, LAN node discovery + claim |
 | `cloud` | 2+ | Opt-in WebSocket relay for mobile app access |
 | `health` | 4+ | System metrics (CPU, memory, disk, MQTT, clients, tasks) |
 | `notifications` | 2+ | ntfy push notifications with 3-tier alert system |
-| `planner` | 3+ | Seasonal species recommendations, grow calendar, session weather warnings |
+| `planner` | 4+ | Seasonal species recommendations, grow calendar, session weather warnings, dated cycle proposal (`.ics`) |
 | `contamination` | 3+ | Contaminant library (7 profiles), Claude Vision identification |
 | `cultures` | 5+ | Genetics pipeline, lineage trees, transfer logs, generation tracking |
 | `chambers` | 4+ | Multi-chamber CRUD, node assignment, comparison queries |
@@ -539,17 +568,17 @@ The backend exposes a REST API and Socket.IO WebSocket for real-time updates.
 | Telemetry | `/api/telemetry` | Sensor data ingest and history queries |
 | Sessions | `/api/sessions` | Grow session CRUD, phase management, yield stats, calendar feed |
 | Species | `/api/species` | Species profiles, wizard, substrate calculator, shopping list |
-| Automation | `/api/automation` | Rules CRUD, smart plug control, overrides |
+| Automation | `/api/automation` | Rules CRUD, smart plug control, overrides (24h TTL, auto-resume), remote pause / rule-suspend |
 | Weather | `/api/weather` | Forecast, prediction, provider status |
 | Vision | `/api/vision` | Frame upload, Claude analysis, detection results |
 | Builder | `/api/builder` | Hardware tiers, BOM, wiring diagrams |
-| Hardware | `/api/hardware` | Node registry, commands, component health |
+| Hardware | `/api/hardware` | Node registry, commands, component health, LAN discovery + claim |
 | Cloud | `/api/cloud` | Cloud connector status, pairing |
 | Health | `/api/health` | System metrics, task status, client list |
-| Planner | `/api/planner` | Species recommendations, grow calendar, session warnings |
+| Planner | `/api/planner` | Species recommendations, grow calendar, session warnings, dated cycle proposal (`/propose`, `.ics`) |
 | Contamination | `/api/contamination` | Contaminant library, Claude Vision ID |
 | Cultures | `/api/cultures` | Lineage CRUD, transfer logs, generation tree |
-| Chambers | `/api/chambers` | Chamber CRUD, node assignment, comparison |
+| Chambers | `/api/chambers` | Chamber CRUD, node assignment, comparison, automation-coverage verdict |
 | Experiments | `/api/experiments` | Experiment CRUD, comparison reports |
 | Labels | `/api/labels` | QR code generation (PNG) |
 | Settings | `/api/settings` | User settings (weather provider, display preferences) |

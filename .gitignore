@@ -44,3 +44,5 @@ models/datasets/*.jpg
 models/datasets/*.png
 .playwright-mcp/
 CLAUDE.md
+config/mosquitto/passwd
+config/mosquitto/certs/

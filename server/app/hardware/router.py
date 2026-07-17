@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from ..db import get_db
 from . import ota_push
 from .coredumps import dump_path, list_dumps
+from .discovery import claim_node, list_discovered_nodes
 from .service import (
     NODE_ID_RE,
     get_node as service_get_node,
@@ -12,6 +13,29 @@ from .service import (
 )
 
 router = APIRouter()
+
+
+# ─── LAN discovery + claim (H2-1) ───────────────────────────────
+
+@router.get("/discover")
+async def discover_nodes():
+    """Nodes the Pi has heard from on the LAN, each tagged claimed/unclaimed.
+
+    Backed by the heartbeat-populated `hardware_nodes` registry — that
+    heartbeat is the firmware's LAN-presence signal (see discovery.py).
+    """
+    return {"nodes": await list_discovered_nodes()}
+
+
+@router.post("/claim")
+async def claim_node_route(body: dict):
+    """Adopt an unclaimed, heartbeat-known node. Body: {"node_id": "..."}."""
+    node_id = (body or {}).get("node_id")
+    if not node_id or not NODE_ID_RE.match(str(node_id)):
+        raise HTTPException(400, "Invalid or missing node_id")
+    if not await claim_node(str(node_id)):
+        raise HTTPException(404, "Node not found — only heartbeat-known nodes can be claimed")
+    return {"status": "claimed", "node_id": node_id}
 
 
 @router.get("/nodes")

@@ -1,76 +1,145 @@
+# SporePrint Pi — self-hosted stack (FastAPI server + LAN UI + MQTT broker + ntfy).
+#
+# One command brings the whole thing up, dependencies and all:
+#
+#     ./install.sh
+#
+# install.sh installs Docker (if missing), generates the broker credentials +
+# TLS certs this file expects, writes a LAN-trust .env, and runs
+# `docker compose up -d --build`. See the README "Install (one command)".
+#
+# LAN-scoped by design — keep the Pi behind your home router/NAT and never
+# port-forward it (see app/main.py CORS + app/auth.py LAN-trust model).
+# Published ports:
+#   3001  Pi dashboard   — nginx serving ui/dist, proxies /api + /socket.io → server
+#   8000  FastAPI server — uvicorn app.main:socket_app
+#   1883  MQTT           — credentialed; ESP32 firmware nodes connect here
+#   8883  MQTT over TLS  — opt-in per node (portal "Secure MQTT" toggle)
+#   8080  ntfy           — local push notifications
+
 services:
+  # One-shot: the server runs as non-root appuser (uid 1000 — see
+  # server/Dockerfile), but Docker creates named volumes root-owned. Chown the
+  # server's data volumes to appuser before it boots, otherwise SQLite cannot
+  # create the database file. mqtt/ntfy run as root, so their volumes are fine.
+  init-perms:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /data/db /data/vision && chown -R 1000:1000 /data/db /data/vision"]
+    volumes:
+      - sporeprint_db:/data/db
+      - sporeprint_vision:/data/vision
+    restart: "no"
+
   server:
     build: ./server
     ports:
       - "8000:8000"
     volumes:
-      - ./server:/app
-      - ./models:/models
-      - ./docs:/docs
+      # Runtime data → named volumes so it survives `docker compose down`
+      # and container rebuilds. SQLite DB + the Fernet integration key live
+      # in sporeprint_db; captured vision frames in sporeprint_vision.
+      - sporeprint_db:/data/db
+      - sporeprint_vision:/data/vision
+      # Read-only content the hardware builder serves. These live OUTSIDE the
+      # ./server build context, so the container can only reach them via bind
+      # mounts — app/builder/models_router.py reads /models, /firmware, /docs.
+      - ./models:/models:ro
       - ./firmware:/firmware:ro
-      - ./data/db:/data/db
-      - ./data/vision:/data/vision
+      - ./docs:/docs:ro
     environment:
       - SPOREPRINT_DATABASE_PATH=/data/db/sporeprint.db
+      - SPOREPRINT_VISION_STORAGE=/data/vision
+      # Fernet key for encrypted third-party integration secrets. The app
+      # default is CWD-relative (data/db/.integration-key); pin it to the
+      # persistent volume so it is not regenerated — and its secrets orphaned —
+      # every time the immutable server image is recreated.
+      - SPOREPRINT_INTEGRATION_KEY_PATH=/data/db/.integration-key
+      # MQTT broker (the `server` client). Credentials come from .env, which
+      # install.sh generates and mirrors into config/mosquitto/passwd.
       - SPOREPRINT_MQTT_HOST=mqtt
       - SPOREPRINT_MQTT_PORT=1883
-      - SPOREPRINT_MQTT_USERNAME=${SPOREPRINT_MQTT_USERNAME:-}
+      - SPOREPRINT_MQTT_USERNAME=${SPOREPRINT_MQTT_USERNAME:-server}
       - SPOREPRINT_MQTT_PASSWORD=${SPOREPRINT_MQTT_PASSWORD:-}
       - SPOREPRINT_NTFY_URL=http://ntfy:80
-      - SPOREPRINT_VISION_STORAGE=/data/vision
+      - SPOREPRINT_NTFY_TOPIC=${SPOREPRINT_NTFY_TOPIC:-sporeprint}
       - SPOREPRINT_WEATHER_PROVIDER=${SPOREPRINT_WEATHER_PROVIDER:-openmeteo}
       - SPOREPRINT_CLAUDE_API_KEY=${SPOREPRINT_CLAUDE_API_KEY:-}
       - SPOREPRINT_WEATHER_API_KEY=${SPOREPRINT_WEATHER_API_KEY:-}
       - SPOREPRINT_WEATHER_LAT=${SPOREPRINT_WEATHER_LAT:-}
       - SPOREPRINT_WEATHER_LON=${SPOREPRINT_WEATHER_LON:-}
       - SPOREPRINT_WEATHER_POLL_MINUTES=${SPOREPRINT_WEATHER_POLL_MINUTES:-10}
+      # HTTP auth. The Pi LAN UI (ui/dist) calls /api same-origin with NO
+      # bearer token, so the browser dashboard only works in LAN-trust mode.
+      # install.sh writes SPOREPRINT_ALLOW_UNAUTHENTICATED=true into .env; the
+      # compose default stays false so a bare `docker compose up` (skipping
+      # install.sh) fails loud at boot per app/main.py rather than silently
+      # running open. Set SPOREPRINT_API_KEY to gate the mobile app / external
+      # clients (which CAN present `Authorization: Bearer`).
       - SPOREPRINT_API_KEY=${SPOREPRINT_API_KEY:-}
       - SPOREPRINT_ALLOW_UNAUTHENTICATED=${SPOREPRINT_ALLOW_UNAUTHENTICATED:-false}
+      # Cloud pairing (opt-in — normally written by the mobile app via
+      # POST /api/cloud/configure; here for completeness).
+      - SPOREPRINT_CLOUD_URL=${SPOREPRINT_CLOUD_URL:-}
+      - SPOREPRINT_CLOUD_TOKEN=${SPOREPRINT_CLOUD_TOKEN:-}
+      - SPOREPRINT_CLOUD_DEVICE_ID=${SPOREPRINT_CLOUD_DEVICE_ID:-}
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status==200 else 1)\""]
+      # The health route is /api/health (public — bypasses the api-key gate).
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 20s
+      start_period: 30s
     depends_on:
+      # Fix the data-volume ownership before we boot as non-root.
+      init-perms:
+        condition: service_completed_successfully
+      # The server's MQTT + ntfy clients reconnect on their own, so we only
+      # wait for the containers to start — not for their health — to avoid a
+      # broker/ntfy health blip stalling the whole stack.
       mqtt:
-        condition: service_healthy
+        condition: service_started
       ntfy:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
   mqtt:
     image: eclipse-mosquitto:2
-    # Broker is LAN-scoped — firmware nodes connect from the local network
-    # with credentials (+ TLS on 8883). v4.2 fix: 1883 was previously bound
-    # to the host loopback, so LAN nodes could never reach the broker at
-    # all. Never expose either port to the public internet (router/firewall
-    # responsibility — the Pi sits on RFC1918 space).
+    # LAN-scoped, credentialed broker (allow_anonymous false + per-user ACL).
+    # 1883 is published on the LAN so firmware nodes can reach it; 8883 adds
+    # TLS for nodes that opt in. Never expose either port to the public
+    # internet — that is the router/firewall's job (the Pi sits on RFC1918).
     ports:
       - "1883:1883"
       - "8883:8883"
-      - "127.0.0.1:9001:9001"
     volumes:
       - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./config/mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
+      # passwd + certs are generated on first run by install.sh. They MUST
+      # exist before `up`: a missing bind-mount file would be created by Docker
+      # as a directory and break the broker.
       - ./config/mosquitto/passwd:/mosquitto/config/passwd:ro
       - ./config/mosquitto/certs:/mosquitto/certs:ro
-      - ./data/mosquitto:/mosquitto/data
+      - mosquitto_data:/mosquitto/data
+    environment:
+      # Consumed only by the healthcheck below (the broker's own `server` creds).
+      - SPOREPRINT_MQTT_PASSWORD=${SPOREPRINT_MQTT_PASSWORD:-}
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/version' -C 1 -W 2 >/dev/null 2>&1"]
+      # allow_anonymous is false, so a meaningful check must authenticate.
+      # Connect as `server` (ACL: read sporeprint/#) and exit on SUBACK.
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t 'sporeprint/#' -u server -P \"$$SPOREPRINT_MQTT_PASSWORD\" -E >/dev/null 2>&1 || exit 1"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
       start_period: 5s
     restart: unless-stopped
 
   ntfy:
     image: binwiederhier/ntfy
+    command: serve
     ports:
       - "8080:80"
     volumes:
-      - ./data/ntfy:/var/cache/ntfy
-    command: serve
+      - ntfy_data:/var/cache/ntfy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost/v1/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -84,6 +153,15 @@ services:
     ports:
       - "3001:80"
     depends_on:
+      # Wait for a working API so the first dashboard load proxies cleanly
+      # instead of hitting a 502 storm. The server healthcheck hits
+      # /api/health, which is reliable once the process is up.
       server:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  sporeprint_db:
+  sporeprint_vision:
+  mosquitto_data:
+  ntfy_data:

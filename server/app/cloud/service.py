@@ -132,12 +132,15 @@ async def _rehydrate_replay_cache() -> int:
     return loaded
 
 
-# Allowlist of accepted target_kind values. The Pi resolves these to a
-# concrete node_id at publish time via the hardware_nodes registry; the
-# `system` kind is a virtual target the Pi server handles in-process
-# (automation pause/resume, session start/end, rule suspend, reboot,
-# ota). Mobile + cloud-relay + Pi all share this allowlist verbatim.
-_VALID_TARGET_KINDS: set[str] = {"climate", "relay", "lighting", "camera", "system"}
+# Allowlist of accepted target_kind values. The Pi resolves the hardware kinds
+# to a concrete node_id at publish time via the hardware_nodes registry; the
+# `system` and `automation` kinds are virtual targets the Pi server handles
+# in-process (no MQTT publish). `system` covers automation pause/resume, session
+# start/end, rule suspend, reboot, ota. `automation` carries the manual actuator
+# override twin the cloud's POST /devices/{id}/actuator emits alongside the raw
+# relay toggle, so the rules engine doesn't re-flip a manual change on its next
+# tick. Mobile + cloud-relay + Pi all share this allowlist verbatim.
+_VALID_TARGET_KINDS: set[str] = {"climate", "relay", "lighting", "camera", "system", "automation"}
 
 
 async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[bool, str | None]:
@@ -243,6 +246,99 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
         return True, None
 
     return False, f"Unknown system channel '{channel}'"
+
+
+# Firmware actuator channel → the hardware node type that drives it. The cloud's
+# POST /devices/{id}/actuator maps a design ActuatorKey to a firmware channel
+# (mister→aux, fan→fae, light→white — see cloud devices/service.py
+# ACTUATOR_CHANNELS) and emits the override twin carrying that firmware channel.
+# We map it back to a node type so the override pins the SAME (node, channel) a
+# rule's action targets. heater/pump are smart plugs the cloud rejects (400)
+# before emit; any channel absent here has no relay/lighting node to pin, so the
+# override degrades to a logged no-op rather than crashing.
+_OVERRIDE_CHANNEL_NODE_TYPE: dict[str, str] = {
+    "aux": "relay",
+    "fae": "relay",
+    "white": "lighting",
+}
+
+
+async def _dispatch_automation_command(channel: str | None, payload: dict) -> tuple[bool, str | None]:
+    """Handle a chamber-level "automation" command in-process — no MQTT publish.
+
+    The relay-path twin of the Pi's LAN ``POST/DELETE /api/automation/overrides``.
+    The cloud's ``POST /devices/{id}/actuator`` emits this alongside the raw relay
+    toggle so the rules engine leaves the manually-driven channel alone until the
+    hold expires (set) or is cleared (release).
+
+    Returns ``(ok, error)``; the cloud ``command_result`` ack carries this back.
+
+    Channel:
+      - override:
+          set     payload ``{channel, state, duration_sec, expires_at}`` — register
+                  an expiring manual override on the actuator's node/channel.
+          release payload ``{channel, release: true}`` — clear it; automation resumes.
+    """
+    if channel != "override":
+        return False, f"Unknown automation channel '{channel}'"
+
+    fw_channel = payload.get("channel")
+    if not isinstance(fw_channel, str) or not fw_channel:
+        return False, "automation override requires payload.channel"
+
+    node_type = _OVERRIDE_CHANNEL_NODE_TYPE.get(fw_channel)
+    if node_type is None:
+        # A smart-plug actuator (heater/pump) or a channel this Pi can't pin on a
+        # relay/lighting node. Degrade honestly — log + no-op, never crash.
+        log.warning(
+            "Cloud: automation override for unmappable channel %r — no-op "
+            "(not a relay/lighting channel)", fw_channel,
+        )
+        return False, f"Channel '{fw_channel}' maps to no relay/lighting node — override not registered"
+
+    node_id = await _resolve_node_id_by_type(node_type)
+    if not node_id:
+        log.warning(
+            "Cloud: automation override for %r — no registered %s node — no-op",
+            fw_channel, node_type,
+        )
+        return False, f"No registered {node_type} node to override"
+
+    # Reuse the engine's override API — the exact mechanism the LAN UI's
+    # /api/automation/overrides endpoint and suspend_rule already drive.
+    from ..automation.engine import clear_override, set_override
+    from ..automation.models import ManualOverride
+
+    if payload.get("release"):
+        await clear_override(node_id, fw_channel)
+        log.info("Cloud: cleared manual override %s:%s", node_id, fw_channel)
+        return True, None
+
+    # set — pin the channel out of automation's reach until it expires. The cloud
+    # sends an absolute `expires_at`; fall back to duration-from-now, then to None
+    # (ManualOverride clamps None / over-long to its 24h TTL ceiling, so a hold
+    # can never go sticky-forever).
+    expires_at = payload.get("expires_at")
+    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+        duration = payload.get("duration_sec")
+        expires_at = (
+            time.time() + duration
+            if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+            else None
+        )
+    state = payload.get("state")
+    await set_override(ManualOverride(
+        target=node_id,
+        channel=fw_channel,
+        locked=True,
+        reason=f"cloud manual override ({fw_channel}={state})" if state else "cloud manual override",
+        expires_at=expires_at,
+    ))
+    log.info(
+        "Cloud: registered manual override %s:%s (state=%s expires_at=%s)",
+        node_id, fw_channel, state, expires_at,
+    )
+    return True, None
 
 
 async def _resolve_node_id_by_type(node_type: str) -> str | None:
@@ -478,9 +574,10 @@ async def start_cloud_connector():
                 })
                 return
 
-            # Resolve target_kind → MQTT node_id (or "system" for in-process).
-            if target_kind == "system":
-                target = "system"
+            # Resolve target_kind → MQTT node_id. "system" and "automation" are
+            # virtual in-process targets — no hardware node, no MQTT publish.
+            if target_kind in ("system", "automation"):
+                target = target_kind
             else:
                 target = await _resolve_node_id_by_type(target_kind)
                 if not target:
@@ -499,11 +596,11 @@ async def start_cloud_connector():
                     })
                     return
 
-            # `system` skips the registered-target check — it's a Pi-
-            # internal virtual target, not a hardware_nodes row. The
-            # downstream MQTT publish path also treats it specially
+            # `system` / `automation` skip the registered-target check — they're
+            # Pi-internal virtual targets, not hardware_nodes rows. The
+            # downstream MQTT publish path also treats them specially
             # (see below).
-            if target != "system" and not await _target_is_registered(target):
+            if target not in ("system", "automation") and not await _target_is_registered(target):
                 await _sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
@@ -512,10 +609,12 @@ async def start_cloud_connector():
                 return
 
             # Dispatch:
-            #   - target == "system"  → in-process system handler
+            #   - target == "system"     → in-process system handler
             #     (automation pause/resume, session start/end, rule
             #     suspend, reboot, ota). No MQTT publish.
-            #   - hardware target     → MQTT publish to
+            #   - target == "automation" → in-process manual-override handler
+            #     (the /actuator override twin). No MQTT publish.
+            #   - hardware target        → MQTT publish to
             #     `sporeprint/{node_id}/cmd/{channel}` per the existing
             #     contract.
             if target == "system":
@@ -529,6 +628,19 @@ async def start_cloud_connector():
                 })
                 log.info(
                     "Cloud: %s system command %s from %s",
+                    "executed" if ok else "rejected", channel, tier,
+                )
+            elif target == "automation":
+                ok, err = await _dispatch_automation_command(channel, payload)
+                await _sio.emit("command_result", {
+                    "id": command_id,
+                    "success": ok,
+                    "target_kind": target_kind,
+                    "channel": channel,
+                    "error": err,
+                })
+                log.info(
+                    "Cloud: %s automation command %s from %s",
                     "executed" if ok else "rejected", channel, tier,
                 )
             else:
