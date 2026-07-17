@@ -14,6 +14,7 @@ hold) with no TTL clamp. These tests pin the fix:
   - the cloud system-command dispatcher resolves both imports and drives them.
 """
 
+import json
 import time
 
 import pytest
@@ -23,6 +24,7 @@ from app.automation.engine import (
     evaluate_rules,
     get_overrides,
     is_overridden,
+    set_override,
     set_paused,
     suspend_rule,
 )
@@ -37,8 +39,13 @@ from app.automation.models import (
 )
 from app.automation.service import create_rule
 from app.cloud.service import _dispatch_system_command
+from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
+
+# A real relay node registers under a MAC-derived id, DISTINCT from the seeded
+# relay-01 placeholder that _seed_session_and_rule's rule names. (V4-1)
+MAC_RELAY_NODE = "node-a3f1"
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +90,18 @@ async def _seed_session_and_rule(*, cooldown_seconds: int = 0) -> int:
         cooldown_seconds=cooldown_seconds,
     )
     return await create_rule(rule)
+
+
+async def _register_node(node_id: str, node_type: str) -> None:
+    """Register a firmware-v2 node so resolve_node_target maps the placeholder
+    (relay-01) to this MAC-derived id at fire time."""
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, roles, last_seen) "
+            "VALUES (?, ?, ?, ?)",
+            (node_id, node_type, json.dumps([node_type]), time.time()),
+        )
+        await db.commit()
 
 
 # ── pause stops evaluate_rules ─────────────────────────────────────────────
@@ -225,3 +244,41 @@ async def test_cloud_dispatch_rule_suspend(mock_mqtt):
 def test_engine_exports_pause_and_suspend_symbols():
     """Guard: cloud/service.py imports these by name; keep them importable."""
     from app.automation.engine import set_paused, suspend_rule  # noqa: F401
+
+
+# ── manual hold on the resolved node survives the next tick (V4-1) ──────────
+
+
+async def test_manual_hold_on_resolved_node_is_not_clawed_back(mock_mqtt):
+    """A manual hold is stored under the node's RESOLVED MAC-derived id, but the
+    seeded rule names the relay-01 placeholder. The override gate must resolve
+    the rule's target before checking, or the rule re-fires on the next
+    telemetry tick and claws back the operator's hold. (GAP V4-1)
+
+    The existing suspend_rule tests place the override on relay-01 itself and
+    register no real node, so they can't catch this — here the node is
+    registered under a MAC-style id DISTINCT from the placeholder.
+    """
+    await _register_node(MAC_RELAY_NODE, "relay")
+    await _seed_session_and_rule()
+    resolved_topic = f"sporeprint/{MAC_RELAY_NODE}/cmd/heater"
+
+    # Sanity: with no hold, the cold reading fires the heater on the RESOLVED
+    # node's topic (proving the placeholder resolves to node-a3f1).
+    await evaluate_rules(MAC_RELAY_NODE, {"temp_f": 60})
+    assert any(t == resolved_topic for t, _ in mock_mqtt), \
+        "sanity: seeded rule must fire on the resolved node when unheld"
+    fired = len(mock_mqtt)
+
+    # The operator pins a manual hold on the RESOLVED node — exactly what the
+    # cloud override path does (set_override(target=node_id, …)), NOT relay-01.
+    await set_override(ManualOverride(
+        target=MAC_RELAY_NODE, channel="heater", locked=True,
+        reason="manual hold", expires_at=time.time() + 600,
+    ))
+
+    # The very same reading must now drive nothing: the hold is respected even
+    # though the rule names relay-01, not the resolved node.
+    await evaluate_rules(MAC_RELAY_NODE, {"temp_f": 60})
+    assert len(mock_mqtt) == fired, \
+        "rule clawed back a manual hold placed on the resolved node"

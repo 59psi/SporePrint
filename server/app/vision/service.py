@@ -141,6 +141,8 @@ Provide a structured analysis in JSON format with these fields:
 - contamination_detected: null or {{ type, confidence, description }}
 - growth_stage: description of current growth stage
 - growth_rate: "expanding" | "slowing" | "stalled" | "n/a" — is the fruit body still visibly growing, or has it plateaued? Cues that growth has slowed/stalled: caps flattening or upturning, veils breaking, spores dropping, no size change expected between frames at this stage. A stalled/slowing fruit is at or past its harvest window.
+- colonization_percent: 0-100 or null — for a colonizing culture (grain/agar/substrate, no fruit bodies yet), the estimated percentage of the visible surface run through with white mycelium. 100 means fully colonized and ready to fruit. null when this isn't a colonization image (e.g. fruit bodies present).
+- surface: "bag" | "jar" | "agar" | "n/a" — the container/medium shown (grow bag, grain jar, or agar/petri plate); "n/a" if none applies.
 - morphology_notes: observations about mycelium/fruit body morphology
 - harvest_readiness: "not_ready" | "approaching" | "ready" | "overdue" | "n/a"
 - recommendations: list of actionable recommendations
@@ -210,6 +212,7 @@ Provide a structured analysis in JSON format with these fields:
                 log.warning("forward_event(contamination_alert) failed: %s", e)
 
         await _maybe_harvest_alert(frame, result, species_name)
+        await _maybe_colonization_alert(frame, result, species_name)
 
         return result
 
@@ -221,6 +224,35 @@ Provide a structured analysis in JSON format with these fields:
 _FRUITING_PHASES = {"primordia_induction", "fruiting"}
 _HARVEST_READY = {"ready", "overdue"}
 _GROWTH_SLOWED = {"slowing", "stalled"}
+
+# Phases where the culture is still running (mirrors sessions.service). Full
+# colonization is the "ready to fruit" milestone; only meaningful before the
+# bag/jar/plate is opened to fruit.
+_COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substrate_colonization"}
+# The visible surface must be essentially fully run before we page the operator.
+_COLONIZATION_COMPLETE_PERCENT = 95.0
+
+
+def colonization_signal(current_phase: str, colonization_percent) -> tuple[bool, str | None]:
+    """Should we tell the operator the culture is fully colonized? Pure + testable.
+
+    The spec's ask: surface the "ready to fruit" milestone the vision path never
+    raised. We only judge during a colonization phase (agar / LC / grain /
+    substrate) — once fruit bodies are present the fruiting-side signals take
+    over. The camera can't measure coverage to the percent, so the signal is the
+    model's per-frame ``colonization_percent`` read: at or above the completion
+    threshold, the medium is fully run and ready to move to fruiting conditions.
+    Advancing the phase is a separate product decision — this only alerts.
+    """
+    if current_phase not in _COLONIZATION_PHASES:
+        return False, None
+    try:
+        pct = float(colonization_percent)
+    except (TypeError, ValueError):
+        return False, None
+    if pct >= _COLONIZATION_COMPLETE_PERCENT:
+        return True, f"substrate is {pct:.0f}% colonized — ready to fruit"
+    return False, None
 
 
 def harvest_signal(current_phase: str, recent_analyses: list[dict]) -> tuple[bool, str | None]:
@@ -295,7 +327,7 @@ async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> 
         # Dedup: at most one harvest alert per session per 12h.
         existing = await (await db.execute(
             "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'harvest_ready' "
-            "AND created_at > unixepoch('now') - 43200 LIMIT 1",
+            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
             (session_id,),
         )).fetchone()
         if existing:
@@ -326,6 +358,72 @@ async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> 
         })
     except Exception as e:
         log.warning("forward_event(harvest_ready) failed: %s", e)
+
+
+async def _maybe_colonization_alert(frame: dict, result: dict, species_name: str) -> None:
+    """Fire a deduped colonization-complete alert when the culture is fully run.
+
+    Mirrors _maybe_harvest_alert: gate on the session's phase, dedup one alert
+    per session per 12h via session_events, then notify + forward to the cloud.
+    """
+    if not isinstance(result, dict):
+        return
+    session_id = frame.get("session_id")
+    if not session_id:
+        return
+
+    async with get_db() as db:
+        srow = await (await db.execute(
+            "SELECT current_phase FROM sessions WHERE id = ?", (session_id,)
+        )).fetchone()
+        if not srow:
+            return
+        phase = srow["current_phase"]
+
+    should, reason = colonization_signal(phase, result.get("colonization_percent"))
+    if not should:
+        return
+
+    async with get_db() as db:
+        # Dedup: at most one colonization-complete alert per session per 12h.
+        existing = await (await db.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'colonization_complete' "
+            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
+            (session_id,),
+        )).fetchone()
+        if existing:
+            return
+        await db.execute(
+            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "colonization_complete", "vision", f"Colonization complete: {reason}",
+             json.dumps({"reason": reason,
+                         "colonization_percent": result.get("colonization_percent"),
+                         "surface": result.get("surface"),
+                         "frame_id": frame.get("id")})),
+        )
+        await db.commit()
+
+    try:
+        await notify_warning(
+            f"Colonization complete — {species_name}",
+            f"Vision: {reason}. Ready to move to fruiting.",
+            dedup_key=f"colonization:{session_id}",
+        )
+    except Exception as e:
+        log.warning("colonization notify failed: %s", e)
+    try:
+        from ..cloud.service import forward_event
+        await forward_event("colonization_complete", {
+            "node_id": frame.get("node_id"),
+            "session_id": session_id,
+            "species": species_name,
+            "reason": reason,
+            "colonization_percent": result.get("colonization_percent"),
+            "surface": result.get("surface"),
+            "frame_id": frame.get("id"),
+        })
+    except Exception as e:
+        log.warning("forward_event(colonization_complete) failed: %s", e)
 
 
 async def get_frames(

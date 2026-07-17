@@ -398,18 +398,15 @@ async def evaluate_rules(
     sio=None,
 ):
     """Evaluate all automation rules against new telemetry readings."""
-    # Whole-engine pause gate — the very first check, before any rule loads.
-    # A remote "pause automation" (cloud → set_paused) must halt every actuator
-    # decision, not just filter individual rules. Loaded from the DB once, then
-    # cached, so the hot path is a single bool read once warm.
     await ensure_pause_loaded()
-    if _paused:
-        return
-    await ensure_overrides_loaded()
-    rules = await load_rules()
-    if not rules:
-        return
 
+    # Safety DETECTION is always-on — it runs BEFORE the pause and no-rules
+    # early returns below. Pause and "no enabled rules" suppress ACTUATION only;
+    # they must never mute the "closet is on fire" alerts. So the active-session
+    # lookup, phase-params resolution, and _check_safety_thresholds happen here,
+    # up front: a paused engine (or one with every rule disabled) still pages the
+    # operator when a reading drifts outside the active stage range but under the
+    # firmware absolute limit.
     session = await get_active_session()
     if not session:
         return
@@ -434,17 +431,29 @@ async def evaluate_rules(
         except (ValueError, KeyError):
             pass
 
+    # Proactive safety alerts — fire regardless of rule state. These are the
+    # "closet is on fire" alerts the operator must hear about even if no rule
+    # has been authored to handle them, or automation is paused.
+    if phase_params is not None:
+        await _check_safety_thresholds(node_id, phase_params, readings, session)
+
+    # ── Actuation gates. Pause and no-rules stop actuator DECISIONS here, after
+    # safety detection above has already run. A remote "pause automation"
+    # (cloud → set_paused) halts every actuator decision, not just filters
+    # individual rules; the flag is loaded from the DB once, then cached, so the
+    # hot path is a single bool read once warm. ──
+    if _paused:
+        return
+    await ensure_overrides_loaded()
+    rules = await load_rules()
+    if not rules:
+        return
+
     # If the substrate is in a sealed vessel the chamber can't sense or affect,
     # the chamber-environment rules (CO2/FAE/humidity/circulation/mist) are
     # no-ops. Skip them wholesale rather than churn actuators against a sealed
     # bag — the UI surfaces "sealed container: environmental control paused".
     container_sealed = _container_is_sealed(container_type, current_phase)
-
-    # Proactive safety alerts — fire regardless of rule state. These are the
-    # "closet is on fire" alerts the operator must hear about even if no rule
-    # has been authored to handle them.
-    if phase_params is not None:
-        await _check_safety_thresholds(node_id, phase_params, readings, session)
 
     for rule in rules:
         try:
@@ -476,7 +485,16 @@ async def evaluate_rules(
             if rule.requires_absent_target and await target_is_present(rule.requires_absent_target):
                 continue
 
-            if is_overridden(rule.action.target, rule.action.channel):
+            # A manual hold is stored under the target it was placed on. A cloud
+            # override pins the chamber's REAL node (a MAC-derived id resolved
+            # from the role), while a seeded rule still names the placeholder
+            # (relay-01 / light-01). Resolve the rule's target the same way
+            # _fire_rule does and treat the rule as held if EITHER the resolved
+            # node or the placeholder is overridden — otherwise the rule re-fires
+            # on the next telemetry tick and claws back the operator's hold. (V4-1)
+            resolved = await resolve_node_target(rule.action.target) or rule.action.target
+            if (is_overridden(resolved, rule.action.channel)
+                    or is_overridden(rule.action.target, rule.action.channel)):
                 continue
 
             now = time.time()
