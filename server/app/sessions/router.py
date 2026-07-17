@@ -111,9 +111,15 @@ async def session_telemetry(
     to_ts: float | None = None,
     resolution: str | None = None,
 ):
+    # Resolve the session's real node — session-tagged telemetry first, else the
+    # session's chamber's climate/sensor node — rather than the old hardcoded
+    # "climate-01", which showed the wrong node's data (or nothing) for any node
+    # not named that and for every session in a differently-named chamber.
+    node_id = await service.resolve_session_node_id(session_id, sensor)
+    if not node_id:
+        return []
     from ..telemetry.service import get_history
-    # For session telemetry, we query by session's node (for now, return all)
-    return await get_history("climate-01", sensor, from_ts, to_ts, resolution)
+    return await get_history(node_id, sensor, from_ts, to_ts, resolution)
 
 
 @router.get("/{session_id}/report.md")

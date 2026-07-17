@@ -22,7 +22,7 @@ smart-plug row or node channel says so.
 from ..db import get_db
 from ..hardware.service import get_node
 from .models import AutomationRule
-from .service import deserialize_rule_row, validate_action_channel
+from .service import deserialize_rule_row, resolve_node_target, validate_action_channel
 from .smart_plugs import target_is_present
 
 
@@ -65,19 +65,23 @@ async def _actuator_present(action) -> bool:
     - node channel (target=relay-01, channel=exhaust): the node must not have
       rejected the channel AND some node must expose it;
     - smart plug (target=plug-*, no channel): a `smart_plugs` row by id or role;
-    - bare node target (target=light-01, scene-driven, no channel): the node is
-      registered. `target_is_present` only answers for plugs and channel names,
-      so a scene-only light node is checked against the node registry directly —
-      otherwise every chamber with lights would read as "no lighting".
+    - bare node target (target=light-01, scene-driven, no channel): a node of
+      the placeholder's role is registered. `target_is_present` only answers for
+      plugs and channel names, so a scene-only light node is checked against the
+      node registry directly — RESOLVING the placeholder first, so a lighting
+      node registered under its MAC-derived id still reads as present instead of
+      the chamber reading as "no lighting". (V3-2)
     """
     if await validate_action_channel(action):
-        # A live node has enumerated its channels and this one is not among them.
+        # Either a live node rejected this channel, or the placeholder target
+        # resolves to no node of its role — both mean the actuator isn't there.
         return False
     if action.channel:
         return await target_is_present(action.channel)
     if action.target.startswith("plug-"):
         return await target_is_present(action.target)
-    return await get_node(action.target) is not None
+    resolved = await resolve_node_target(action.target)
+    return resolved is not None and await get_node(resolved) is not None
 
 
 async def _resolve_fallback(target: str, fallbacks: list[AutomationRule]) -> str | None:

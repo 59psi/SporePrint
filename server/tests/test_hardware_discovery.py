@@ -100,3 +100,47 @@ async def test_list_discovered_reflects_claim_state():
     by_id = {n["node_id"]: n for n in await list_discovered_nodes()}
     assert by_id["relay-01"]["claimed"] is True
     assert by_id["light-01"]["claimed"] is False
+
+
+# ── routing contract (H2-1) ───────────────────────────────────────────────
+
+
+def test_discover_and_claim_registered_at_exact_setuppage_paths():
+    # H2-1: the validator reported neither path resolved on the Pi. Assert the
+    # mount prefix + route paths compose to EXACTLY what SetupPage's first-
+    # chamber step calls, so a future prefix/route refactor can't silently
+    # unwire them again.
+    from app.main import app
+
+    routes = {
+        (r.path, method)
+        for r in app.routes
+        for method in (getattr(r, "methods", None) or ())
+    }
+    assert ("/api/hardware/discover", "GET") in routes
+    assert ("/api/hardware/claim", "POST") in routes
+
+
+async def test_setup_first_chamber_flow_discover_unclaimed_then_claim(client):
+    # Mirrors SetupPage step IV end-to-end over the exact paths: the Pi has
+    # heard from three LAN nodes (one already adopted on a prior run); discover
+    # surfaces all three tagged by claim state; the operator claims an unclaimed
+    # row; a re-scan shows it adopted.
+    await _register_node("relay-01", "relay", "192.168.1.51")
+    await _register_node("relay-02", "relay", "192.168.1.52")
+    await _register_node("light-01", "lighting", "192.168.1.53")
+    assert client.post("/api/hardware/claim", json={"node_id": "relay-02"}).status_code == 200
+
+    nodes = client.get("/api/hardware/discover").json()["nodes"]
+    assert {n["node_id"] for n in nodes} == {"relay-01", "relay-02", "light-01"}
+    unclaimed = sorted(n["node_id"] for n in nodes if not n["claimed"])
+    assert unclaimed == ["light-01", "relay-01"]        # the claimable rows
+
+    # Operator clicks a row to claim it.
+    r = client.post("/api/hardware/claim", json={"node_id": "relay-01"})
+    assert r.status_code == 200
+    assert r.json() == {"status": "claimed", "node_id": "relay-01"}
+
+    # A re-scan now shows only light-01 still claimable.
+    nodes = client.get("/api/hardware/discover").json()["nodes"]
+    assert sorted(n["node_id"] for n in nodes if not n["claimed"]) == ["light-01"]

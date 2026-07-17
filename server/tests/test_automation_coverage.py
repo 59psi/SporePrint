@@ -53,21 +53,30 @@ def _profile(phases, species_id="test_sp", cultivable=True) -> SpeciesProfile:
     )
 
 
-async def _register_plug(plug_id: str, role: str) -> None:
+# Real provisioning registers plugs and nodes under hardware-derived ids, never
+# the seeded placeholders (plug-dehumidifier / relay-01 / light-01). Coverage
+# must still report the placeholder a rule NAMES as available — resolved by
+# device_role (plugs) or node_type (nodes) — so these helpers pair hardware the
+# way the build guide does, under an id distinct from the rule target. (V3-1/2)
+async def _register_plug(hardware_id: str, role: str) -> None:
     async with get_db() as db:
         await db.execute(
             "INSERT INTO smart_plugs (plug_id, plug_type, mqtt_topic_prefix, name, device_role) "
             "VALUES (?, 'tasmota', ?, ?, ?)",
-            (plug_id, f"tasmota/{plug_id}", plug_id, role),
+            (hardware_id, f"tasmota/{hardware_id}", hardware_id, role),
         )
         await db.commit()
 
 
-async def _register_node(node_id: str, channels: list[str] | None = None) -> None:
+async def _register_node(
+    node_id: str, channels: list[str] | None = None, node_type: str = "relay"
+) -> None:
     async with get_db() as db:
         await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, channels) VALUES (?, 'relay', ?)",
-            (node_id, json.dumps(channels) if channels is not None else None),
+            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) "
+            "VALUES (?, ?, ?, ?)",
+            (node_id, node_type,
+             json.dumps(channels) if channels is not None else None, 1_752_700_000.0),
         )
         await db.commit()
 
@@ -125,8 +134,10 @@ async def test_bare_chamber_marks_every_requirement_unavailable():
 
 async def test_paired_plug_and_channel_read_available():
     await seed_builtin_rules()
-    await _register_plug("plug-dehumidifier", "dehumidifier")
-    await _register_node("relay-01", ["fae", "exhaust", "circulation", "aux"])
+    # Dehumidifier paired by role under its hardware id; relay node under its
+    # MAC-derived id. Coverage reports the placeholder targets the rules name.
+    await _register_plug("plug-a1b2c3", "dehumidifier")
+    await _register_node("node-relay-7a3f", ["fae", "exhaust", "circulation", "aux"])
     reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
     dh = reqs[("plug-dehumidifier", None)]
     assert dh["available"] is True and dh["fallback"] is None
@@ -138,7 +149,7 @@ async def test_dehumidifier_degrades_to_exhaust_when_absent():
     """No dehumidifier, but the exhaust fan is present → the requirement is
     unavailable BUT the vent fallback (relay-01/exhaust) covers it."""
     await seed_builtin_rules()
-    await _register_node("relay-01", ["fae", "exhaust", "circulation", "aux"])
+    await _register_node("node-relay-7a3f", ["fae", "exhaust", "circulation", "aux"])
     reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
     dh = reqs[("plug-dehumidifier", None)]
     assert dh["available"] is False
@@ -157,8 +168,8 @@ async def test_fallback_is_none_when_the_fallback_actuator_is_also_absent():
 
 async def test_present_dehumidifier_suppresses_the_fallback():
     await seed_builtin_rules()
-    await _register_plug("plug-dehumidifier", "dehumidifier")
-    await _register_node("relay-01", ["fae", "exhaust", "circulation", "aux"])
+    await _register_plug("plug-a1b2c3", "dehumidifier")
+    await _register_node("node-relay-7a3f", ["fae", "exhaust", "circulation", "aux"])
     reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
     dh = reqs[("plug-dehumidifier", None)]
     assert dh["available"] is True
@@ -169,19 +180,22 @@ async def test_channel_rejected_by_live_node_is_unavailable():
     """A node that has enumerated its channels but LACKS 'exhaust' → the
     exhaust requirement is unavailable even though the node exists."""
     await seed_builtin_rules()
-    await _register_node("relay-01", ["fae", "circulation"])  # no exhaust/aux
+    await _register_node("node-relay-7a3f", ["fae", "circulation"])  # no exhaust/aux
     reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
     assert reqs[("relay-01", "exhaust")]["available"] is False
 
 
 async def test_light_node_presence_uses_the_node_registry():
-    """A scene-driven light node has no channel and no plug row — presence is
-    the node being registered, not target_is_present (which can't see it)."""
+    """A scene-driven light node has no channel and no plug row — presence is a
+    lighting node being registered. The rule names the light-01 placeholder, but
+    the real node is MAC-derived, so presence resolves by node_type='lighting',
+    NOT by a literal light-01 row (target_is_present can't see it either). (V3-2)"""
     await seed_builtin_rules()
     profile = _profile([GrowPhase.FRUITING])
     reqs = _by_key((await compute_coverage(profile))[0]["requirements"])
     assert reqs[("light-01", None)]["available"] is False
-    await _register_node("light-01")  # lighting node reports in, no channels yet
+    # Lighting node reports in under its MAC-derived id, no channels yet.
+    await _register_node("node-light-9b2c", node_type="lighting")
     reqs2 = _by_key((await compute_coverage(profile))[0]["requirements"])
     assert reqs2[("light-01", None)]["available"] is True
 

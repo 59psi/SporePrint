@@ -122,11 +122,22 @@ async def send_plug_command(plug_id: str, state: str) -> bool:
     the engine log the firing status='sent': the rule fired, the audit read
     clean, and no actuator moved. That masked the exact missing-actuator no-op
     this function exists to surface. Report it honestly instead. (V2-3)
+
+    Resolution matches `target_is_present` EXACTLY — by plug_id OR device_role —
+    so the two never disagree. Per the build guide a heater/humidifier gets an
+    auto `plug-<hwid>` row (its real id) with `device_role` assigned, while the
+    seeded rule fires the friendly target `plug-heater` (which is only a role,
+    not that row's id). Resolving by id alone found nothing and no-op'd even
+    though the plug was paired and `target_is_present` reported it available.
+    The exact-id match wins the ORDER BY tie-break when both exist. (V3-1)
     """
+    role = plug_id[len("plug-"):] if plug_id.startswith("plug-") else None
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT plug_type, mqtt_topic_prefix FROM smart_plugs WHERE plug_id = ?",
-            (plug_id,),
+            "SELECT plug_type, mqtt_topic_prefix FROM smart_plugs "
+            "WHERE plug_id = ? OR device_role = ? "
+            "ORDER BY (plug_id = ?) DESC LIMIT 1",
+            (plug_id, role, plug_id),
         )
         row = await cursor.fetchone()
 

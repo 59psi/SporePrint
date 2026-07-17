@@ -17,7 +17,7 @@ from .models import (
     ThresholdCondition,
     ManualOverride,
 )
-from .service import deserialize_rule_row, get_rule
+from .service import deserialize_rule_row, get_rule, resolve_node_target
 
 log = logging.getLogger(__name__)
 
@@ -972,6 +972,16 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
         if profile_duration is not None:
             duration_sec = int(profile_duration)
 
+    # Resolve a seeded native-node placeholder (relay-01 / light-01) to the
+    # chamber's real relay/lighting node before composing the topic or arming
+    # the safety watchdog — a real node registers under a MAC-derived id, so a
+    # command published to the placeholder reaches no subscriber and would log
+    # status='sent' while nothing moves. A non-placeholder target (a real node
+    # id, a plug-*, a vendor key) resolves to itself; an unresolvable
+    # placeholder falls back to itself so validate_action_channel's warning
+    # below still surfaces the "no node of this role" gap. (V3-2)
+    target = await resolve_node_target(action.target) or action.target
+
     payload = {"state": action.state}
     if action.pwm is not None:
         payload["pwm"] = action.pwm
@@ -1005,11 +1015,11 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     # and calibration keys and ignores `scene` entirely — so every seeded
     # "Light Scene" rule published, logged status='sent', and did nothing.
     if action.channel:
-        topic = f"sporeprint/{action.target}/cmd/{action.channel}"
+        topic = f"sporeprint/{target}/cmd/{action.channel}"
     elif action.scene:
-        topic = f"sporeprint/{action.target}/cmd/scene"
+        topic = f"sporeprint/{target}/cmd/scene"
     else:
-        topic = f"sporeprint/{action.target}/cmd/config"
+        topic = f"sporeprint/{target}/cmd/config"
 
     condition_met = json.dumps({
         "readings": {k: readings.get(k) for k in
@@ -1075,13 +1085,13 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
                 action.vendor_params or {},
             )
             status = "sent"
-        elif await is_plug_target(action.target):
+        elif await is_plug_target(target):
             # Smart plugs do NOT speak the sporeprint/<node>/cmd/* protocol —
             # Shelly listens on shellies/<id>/relay/0/command and Tasmota on
             # tasmota/<id>/cmnd/POWER. Publishing to sporeprint/plug-*/cmd/*
             # reached no subscriber at all, so every seeded humidifier / heater
             # / cooler rule fired into the void while logging status='sent'.
-            published = await send_plug_command(action.target, action.state)
+            published = await send_plug_command(target, action.state)
             status = "sent" if published else "failed"
             if not published:
                 error = "plug command not published (client disconnected?)"
@@ -1111,18 +1121,21 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     # reboot rehydrates it and either re-arms or publishes OFF immediately if
     # expires_at has passed while we were down.
     if status == "sent":
-        _cancel_safety_task(action.target, action.channel)
+        # Key the watchdog on the RESOLVED target: its auto-OFF must go out on
+        # the same topic the ON did, or a stuck-on heater whose OFF is aimed at
+        # the placeholder never turns off. (V3-2)
+        _cancel_safety_task(target, action.channel)
         if action.state == "on" and rule.safety_max_on_seconds and rule.safety_max_on_seconds > 0:
-            key = _safety_key(action.target, action.channel)
+            key = _safety_key(target, action.channel)
             _safety_tasks[key] = asyncio.create_task(
-                _safety_auto_off(action.target, action.channel, rule.safety_max_on_seconds, rule.name)
+                _safety_auto_off(target, action.channel, rule.safety_max_on_seconds, rule.name)
             )
             await _persist_safety_watchdog(
-                action.target, action.channel, rule.name, rule.safety_max_on_seconds,
+                target, action.channel, rule.name, rule.safety_max_on_seconds,
             )
         elif action.state == "off":
             # OFF explicitly published — any pending watchdog is now redundant.
-            await _clear_persisted_safety_watchdog(action.target, action.channel)
+            await _clear_persisted_safety_watchdog(target, action.channel)
 
     if sio:
         await sio.emit("rule_fired", {

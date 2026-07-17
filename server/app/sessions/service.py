@@ -377,6 +377,112 @@ async def complete_session(session_id: int) -> dict | None:
     return await get_session(session_id)
 
 
+# ── Cloud → Pi remote command seam ───────────────────────────────
+
+
+async def handle_remote_command(channel: str, payload: dict) -> dict | None:
+    """Execute a cloud-relayed chamber "system" command against this service.
+
+    Dispatched by ``app.cloud.service._dispatch_system_command`` for the
+    ``session_start`` / ``session_end`` channels (target_kind="system"). That
+    dispatcher wraps this call in a try/except and reports the outcome in the
+    relay ``command_result`` ack, so any exception raised here surfaces to the
+    originating client as ``success=false`` with its reason.
+
+    - ``session_start``: create a grow session from ``payload`` (SessionCreate fields).
+    - ``session_end``:   mark the session ``payload['session_id']`` complete.
+
+    Reuses the existing ``create_session`` / ``complete_session`` service
+    functions verbatim. Returns the resulting session dict.
+    """
+    if channel == "session_start":
+        return await create_session(SessionCreate(**payload))
+    if channel == "session_end":
+        return await complete_session(payload["session_id"])
+    raise ValueError(f"unknown session command channel: {channel!r}")
+
+
+async def resolve_session_node_id(session_id: int, sensor: str | None = None) -> str | None:
+    """Resolve which hardware node's telemetry backs a session.
+
+    Backs the per-session telemetry endpoint, which previously hardcoded
+    ``climate-01`` and so returned the wrong node's series (or nothing) for any
+    node not named that, and for every session whose chamber is a different node.
+
+    Two strategies, in order:
+      1. Session-tagged telemetry — if any ``telemetry_readings`` rows carry this
+         ``session_id``, use the node that produced them (scoped to ``sensor``
+         when given, so a session spanning several nodes resolves to the one that
+         actually reports the requested sensor). This is authoritative.
+      2. Chamber topology — otherwise map session → ``chamber_id`` → the
+         chamber's ``node_ids`` and pick the climate/sensor node (``node_type``
+         'climate'/'sensor', or a node whose ``roles`` include one of those),
+         falling back to the chamber's first node.
+
+    Returns None when neither strategy yields a node (unknown session, or a
+    session with no chamber and no tagged telemetry) so the caller can return an
+    empty series.
+    """
+    async with get_db() as db:
+        # 1. Prefer telemetry actually tagged with this session.
+        if sensor:
+            cursor = await db.execute(
+                "SELECT node_id FROM telemetry_readings "
+                "WHERE session_id = ? AND sensor = ? "
+                "GROUP BY node_id ORDER BY COUNT(*) DESC, MAX(timestamp) DESC LIMIT 1",
+                (session_id, sensor),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT node_id FROM telemetry_readings WHERE session_id = ? "
+                "GROUP BY node_id ORDER BY COUNT(*) DESC, MAX(timestamp) DESC LIMIT 1",
+                (session_id,),
+            )
+        row = await cursor.fetchone()
+        if row:
+            return row["node_id"]
+
+        # 2. Fall back to the session's chamber's climate/sensor node.
+        cursor = await db.execute(
+            "SELECT chamber_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        srow = await cursor.fetchone()
+        if not srow or srow["chamber_id"] is None:
+            return None
+
+        cursor = await db.execute(
+            "SELECT node_ids FROM chambers WHERE id = ?", (srow["chamber_id"],)
+        )
+        crow = await cursor.fetchone()
+        if not crow:
+            return None
+        try:
+            node_ids = json.loads(crow["node_ids"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            node_ids = []
+        if not node_ids:
+            return None
+
+        # Pick the climate/sensor node among the chamber's nodes, mirroring the
+        # node_type/roles resolution in app.cloud.service._resolve_node_id_by_type.
+        placeholders = ",".join("?" for _ in node_ids)
+        cursor = await db.execute(
+            f"SELECT node_id FROM hardware_nodes "
+            f"WHERE node_id IN ({placeholders}) "
+            f"AND (node_type IN ('climate', 'sensor') "
+            f"     OR EXISTS (SELECT 1 FROM json_each(hardware_nodes.roles) "
+            f"                WHERE json_each.value IN ('climate', 'sensor'))) "
+            f"LIMIT 1",
+            node_ids,
+        )
+        nrow = await cursor.fetchone()
+        if nrow:
+            return nrow["node_id"]
+
+        # No registry classification — the chamber's first node is the best guess.
+        return node_ids[0]
+
+
 # ── Volume parsing helper ────────────────────────────────────────
 
 
