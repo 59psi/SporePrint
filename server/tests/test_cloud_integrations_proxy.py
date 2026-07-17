@@ -304,3 +304,154 @@ async def test_automation_delete_rejects_non_int(fake_sio):
     payload = fake_sio.emits[0][1]
     assert payload["success"] is False
     assert payload["status"] == 400
+
+
+# ── v5.0.0 pre-grow: chamber coverage + planner propose via the proxy ──
+#
+# The cloud-web wizard/planner forward these over the same RPC channel;
+# without a Pi-side branch the operator got "unknown action" at runtime
+# even though the cloud routes and Pi helpers both existed.
+
+
+@pytest.mark.asyncio
+async def test_chamber_coverage_dispatches(monkeypatch, fake_sio):
+    fake_profile = object()
+    monkeypatch.setattr(
+        "app.species.service.get_profile",
+        AsyncMock(return_value=fake_profile),
+    )
+    captured = {}
+
+    async def fake_coverage(profile):
+        captured["profile"] = profile
+        return [{"phase": "fruiting", "requirements": []}]
+
+    monkeypatch.setattr("app.automation.coverage.compute_coverage", fake_coverage)
+
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "chamber_automation_coverage",
+            "payload": {"chamber_id": "dev-1", "species": "blue_oyster"},
+        },
+    )
+    # Resolved profile is what the coverage computer receives; the cloud
+    # device id ("dev-1") is intentionally not used for the computation.
+    assert captured["profile"] is fake_profile
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is True
+    assert payload["body"] == {"phases": [{"phase": "fruiting", "requirements": []}]}
+
+
+@pytest.mark.asyncio
+async def test_chamber_coverage_unknown_species_404(monkeypatch, fake_sio):
+    monkeypatch.setattr(
+        "app.species.service.get_profile", AsyncMock(return_value=None)
+    )
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "chamber_automation_coverage",
+            "payload": {"chamber_id": "dev-1", "species": "ghost"},
+        },
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 404
+
+
+@pytest.mark.asyncio
+async def test_chamber_coverage_requires_species(fake_sio):
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "chamber_automation_coverage",
+            "payload": {"chamber_id": "dev-1"},
+        },
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_planner_propose_dispatches_json_safe(monkeypatch, fake_sio):
+    from datetime import date
+
+    class _FakeCycle:
+        def __init__(self) -> None:
+            self.dump_mode = "unset"
+
+        def model_dump(self, mode=None):
+            self.dump_mode = mode
+            return {
+                "species_id": "blue_oyster",
+                "start_date": "2026-08-01",
+                "phases": [],
+            }
+
+    fake_cycle = _FakeCycle()
+    captured = {}
+
+    async def fake_propose(species_id, start):
+        captured["species_id"] = species_id
+        captured["start"] = start
+        return fake_cycle
+
+    monkeypatch.setattr(
+        "app.planner.service.propose_cycle_for_species", fake_propose
+    )
+
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "planner_propose",
+            "payload": {"species": "blue_oyster", "start": "2026-08-01"},
+        },
+    )
+    assert captured["species_id"] == "blue_oyster"
+    assert captured["start"] == date(2026, 8, 1)
+    # The ProposedCycle carries date objects — it MUST be dumped mode="json"
+    # or socket.io's JSON encoder chokes on the wire.
+    assert fake_cycle.dump_mode == "json"
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is True
+    assert payload["body"]["start_date"] == "2026-08-01"
+
+
+@pytest.mark.asyncio
+async def test_planner_propose_unknown_species_404(monkeypatch, fake_sio):
+    monkeypatch.setattr(
+        "app.planner.service.propose_cycle_for_species",
+        AsyncMock(return_value=None),
+    )
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "planner_propose",
+            "payload": {"species": "ghost", "start": "2026-08-01"},
+        },
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 404
+
+
+@pytest.mark.asyncio
+async def test_planner_propose_bad_date_400(fake_sio):
+    await integrations_proxy.handle_request(
+        fake_sio,
+        {
+            "id": "x",
+            "action": "planner_propose",
+            "payload": {"species": "blue_oyster", "start": "not-a-date"},
+        },
+    )
+    payload = fake_sio.emits[0][1]
+    assert payload["success"] is False
+    assert payload["status"] == 400
