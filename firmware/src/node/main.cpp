@@ -56,6 +56,7 @@
 #include "sht4x.h"
 #include "telemetry_buffer.h"
 #include "wifi_provisioner.h"
+#include "wire_contract.h"
 #include "wrap_time.h"
 
 #ifndef SPOREPRINT_FW_VERSION
@@ -128,10 +129,8 @@ static void write_channel_duty(int idx) {
 
 static void report_switch_channel(int idx, const char* trigger) {
     JsonDocument doc;
-    doc["channel"] = channels[idx].config().name;
-    doc["state"] = channels[idx].is_on() ? "on" : "off";
-    doc["pwm"] = channels[idx].pwm8();
-    doc["trigger"] = trigger;
+    sp::build_switch_report(channels[idx].config().name, channels[idx].is_on(),
+                            channels[idx].pwm8(), trigger, doc);
     std::string t = mqtt->topic("telemetry/");
     t += channels[idx].config().name;
     mqtt->publish(t.c_str(), doc);
@@ -139,9 +138,12 @@ static void report_switch_channel(int idx, const char* trigger) {
 
 static void report_dim_levels() {
     JsonDocument doc;
+    sp::DimLevel levels[SP_CHANNEL_COUNT];
     for (int i = 0; i < channel_count; ++i) {
-        doc[channels[i].config().name] = channels[i].level10();
+        levels[i].name = channels[i].config().name;
+        levels[i].level = channels[i].level10();
     }
+    sp::build_dim_levels(levels, channel_count, doc);
     mqtt->publish(mqtt->topic("telemetry").c_str(), doc);
 }
 
@@ -149,10 +151,7 @@ static void emit_alert(const char* type, float value, const char* message,
                        const char* sensor = nullptr) {
     if (!mqtt->connected()) return;
     JsonDocument doc;
-    doc["type"] = type;
-    doc["value"] = value;
-    doc["message"] = message;
-    if (sensor != nullptr) doc["sensor"] = sensor;
+    sp::build_alert(type, value, message, sensor, doc);
     mqtt->publish(mqtt->topic("alert").c_str(), doc);
 }
 
@@ -165,30 +164,31 @@ static void emit_alert(const char* type, float value, const char* message,
 // stringify corruption that silently armed garbage keys is gone).
 static bool verify_command(const char* raw, size_t raw_len,
                            const char* suffix) {
-    if (cfg.hmac_key.empty()) {
-        SP_LOG(LOG_WARN,
-               "[SEC] hmac_key not provisioned — accepting unsigned cmd/%s",
-               suffix);
-        return true;
+    // Policy (empty-key fail-open, clock gate, strict verify) is the pure,
+    // host-tested sp::command_auth_decision (test_core_hmac). Verification
+    // runs on the exact wire bytes MqttLink hands through — never on a
+    // re-serialized document (lexeme fidelity is what makes the canonicalizer
+    // byte-exact against Python).
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        raw, raw_len, cfg.hmac_key.c_str(), cfg.hmac_key.size(),
+        (uint64_t)time(nullptr), sp::hmac_sha256_host);
+    switch (r.decision) {
+        case sp::CmdAuthDecision::AcceptUnsigned:
+            SP_LOG(LOG_WARN,
+                   "[SEC] hmac_key not provisioned — accepting unsigned cmd/%s",
+                   suffix);
+            return true;
+        case sp::CmdAuthDecision::RejectClockUnsynced:
+            SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: clock not synced", suffix);
+            return false;
+        case sp::CmdAuthDecision::Reject:
+            SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: %s", suffix,
+                   sp::verify_status_str(r.status));
+            return false;
+        case sp::CmdAuthDecision::Accept:
+            return true;
     }
-    time_t now = time(nullptr);
-    if (now < 1577836800) {
-        SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: clock not synced", suffix);
-        return false;
-    }
-    // Verification runs on the exact wire bytes MqttLink hands through —
-    // never on a re-serialized document (number/string lexeme fidelity is
-    // what makes the canonicalizer byte-exact against Python).
-    sp::VerifyStatus st =
-        sp::verify_frame(raw, raw_len, cfg.hmac_key.c_str(),
-                         cfg.hmac_key.size(), (uint64_t)now,
-                         sp::hmac_sha256_host);
-    if (st != sp::VerifyStatus::Ok) {
-        SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: %s", suffix,
-               sp::verify_status_str(st));
-        return false;
-    }
-    return true;
+    return false;
 }
 
 static void handle_config_cmd(JsonDocument& doc) {
@@ -461,29 +461,42 @@ static void check_alerts() {
 }
 
 static void publish_telemetry() {
-    JsonDocument doc;
-    doc["ts"] = millis() / 1000;  // uptime — the server stamps real time
+    sp::TelemetryInputs in;
+    in.ts = millis() / 1000;  // uptime — the server stamps real time
     if (have_temp_rh) {
-        float tf = c_to_f(temp_c);
-        doc["temp_f"] = roundf(tf * 10.0f) / 10.0f;
-        doc["temp_c"] = roundf(temp_c * 10.0f) / 10.0f;
-        doc["humidity"] = roundf(rh * 10.0f) / 10.0f;
-        doc["dew_point_f"] = roundf(c_to_f(dew_point_c(temp_c, rh)) * 10.0f) / 10.0f;
+        in.have_temp_rh = true;
+        in.temp_c = temp_c;  // builder derives temp_f + rounds
+        in.humidity = rh;
+        in.dew_point_f = c_to_f(dew_point_c(temp_c, rh));
     }
-    if (have_co2) doc["co2_ppm"] = co2_ppm;
-    if (have_lux) doc["lux"] = roundf(lux * 10.0f) / 10.0f;
+    if (have_co2) {
+        in.have_co2 = true;
+        in.co2_ppm = co2_ppm;
+    }
+    if (have_lux) {
+        in.have_lux = true;
+        in.lux = lux;
+    }
     if (have_hx711) {
         float grams;
         if (sp::Hx711::to_grams(hx711_raw, cfg.hx711_tare, cfg.hx711_scale,
                                 &grams)) {
-            doc["weight_g"] = roundf(grams * 10.0f) / 10.0f;
+            in.have_weight = true;
+            in.weight_g = grams;
         } else {
             // Uncalibrated (scale == 0) — publish raw counts so the
             // operator can watch the tare/calibrate flow move the needle.
-            doc["scale_raw"] = hx711_raw;  // tolerated-not-stored
+            in.have_scale_raw = true;  // tolerated-not-stored
+            in.scale_raw = hx711_raw;
         }
     }
-    if (reed != nullptr) doc["door_open"] = !reed->is_closed();
+    if (reed != nullptr) {
+        in.have_door = true;
+        in.door_open = !reed->is_closed();
+    }
+
+    JsonDocument doc;
+    sp::build_telemetry(in, doc);
 
     std::string topic = mqtt->topic("telemetry");
     if (mqtt->connected()) {
@@ -499,44 +512,46 @@ static void publish_telemetry() {
 }
 
 static void publish_heartbeat() {
-    JsonDocument doc;
-    doc["uptime_sec"] = millis() / 1000;
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["firmware_version"] = SPOREPRINT_FW_VERSION;
-    doc["wifi_rssi"] = WiFi.RSSI();
-    doc["ip"] = WiFi.localIP().toString();
-    doc["reset_reason"] = (int)esp_reset_reason();
-    doc["wifi_reconnects"] = 0;  // core auto-reconnect owns WiFi recovery
-    doc["mqtt_reconnects"] = mqtt->reconnect_count();
     // v2 additive fields — the Pi upsert + cloud routing consume `type`;
     // `roles` carries the full capability set for the patched resolver.
-    doc["type"] = sp::node_type_str(cfg.personality);
-    JsonArray roles = doc["roles"].to<JsonArray>();
+    const char* roles[3];
+    int n_roles = 0;
     if (sht3x || sht4x || scd4x || scd30 || bh1750 || mhz19)
-        roles.add("climate");
-    if (cfg.personality == sp::Personality::RelayBank) roles.add("relay");
-    if (cfg.personality == sp::Personality::LightingBank) roles.add("lighting");
-    doc["fw_image"] = "node";
-    if (!cfg.migrated_from.empty())
-        doc["migrated_from"] = cfg.migrated_from.c_str();
+        roles[n_roles++] = "climate";
+    if (cfg.personality == sp::Personality::RelayBank) roles[n_roles++] = "relay";
+    if (cfg.personality == sp::Personality::LightingBank)
+        roles[n_roles++] = "lighting";
+
+    // Keep the IP String alive until publish — build_heartbeat stores it as a
+    // borrowed const char* (ArduinoJson does not copy char pointers).
+    String ip = WiFi.localIP().toString();
+
+    sp::HeartbeatInputs in;
+    in.uptime_sec = millis() / 1000;
+    in.free_heap = ESP.getFreeHeap();
+    in.firmware_version = SPOREPRINT_FW_VERSION;
+    in.wifi_rssi = WiFi.RSSI();
+    in.ip = ip.c_str();
+    in.reset_reason = (int)esp_reset_reason();
+    in.emit_wifi_reconnects = true;  // core auto-reconnect owns WiFi recovery
+    in.mqtt_reconnects = mqtt->reconnect_count();
+    in.type = sp::node_type_str(cfg.personality);
+    in.roles = roles;
+    in.n_roles = n_roles;
+    in.fw_image = "node";
+    in.migrated_from = cfg.migrated_from.c_str();
+
+    JsonDocument doc;
+    sp::build_heartbeat(in, doc);
     mqtt->publish(mqtt->topic("status/heartbeat").c_str(), doc);
 }
 
 static void publish_health() {
-    JsonDocument doc;
-    doc["node_id"] = cfg.node_id.c_str();
-    doc["type"] = sp::node_type_str(cfg.personality);
-    doc["uptime_sec"] = millis() / 1000;
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["wifi_rssi"] = WiFi.RSSI();
-
-    JsonObject sensors = doc["sensors"].to<JsonObject>();
+    sp::SensorHealthView sviews[8];
+    int ns = 0;
     auto add_sensor = [&](const char* name, const sp::DriverHealth& h) {
-        JsonObject o = sensors[name].to<JsonObject>();
-        o["ok"] = h.last_error == nullptr;
-        o["reads"] = h.reads;
-        o["fails"] = h.fails;
-        o["last_error"] = h.last_error;
+        sviews[ns++] = {name, h.last_error == nullptr, h.reads, h.fails,
+                        h.last_error};
     };
     if (sht3x) add_sensor("sht3x", sht3x->health());
     if (sht4x) add_sensor("sht4x", sht4x->health());
@@ -547,30 +562,42 @@ static void publish_health() {
     if (hx711) add_sensor("hx711", hx711->health());
     if (reed) add_sensor("reed", reed->health());
 
-    if (channel_count > 0) {
-        JsonObject chans = doc["channels"].to<JsonObject>();
-        uint32_t now = millis();
-        for (int i = 0; i < channel_count; ++i) {
-            const sp::Channel& ch = channels[i];
-            JsonObject o = chans[ch.config().name].to<JsonObject>();
-            o["state"] = ch.is_on();
-            o["pwm"] = ch.config().mode == sp::ChannelMode::Switch
-                           ? (uint16_t)ch.pwm8()
-                           : ch.level10();
-            o["on_time_sec"] = ch.on_time_sec_live(now);
-            o["cycle_count"] = ch.health().cycle_count;
-            o["safety_cutoffs"] = ch.health().safety_cutoffs;
-        }
+    sp::ChannelHealthView cviews[SP_CHANNEL_COUNT];
+    uint32_t now = millis();
+    for (int i = 0; i < channel_count; ++i) {
+        const sp::Channel& ch = channels[i];
+        cviews[i] = {ch.config().name, ch.is_on(),
+                     ch.config().mode == sp::ChannelMode::Switch
+                         ? (uint16_t)ch.pwm8()
+                         : ch.level10(),
+                     ch.on_time_sec_live(now), ch.health().cycle_count,
+                     ch.health().safety_cutoffs};
     }
 
     // Declared-but-missing sensors are an alert, not silence.
-    JsonArray missing = doc["expected_missing"].to<JsonArray>();
+    const char* missing[4];
+    int nm = 0;
     bool expects_climate = true;  // every personality benefits from sensors
-    if (expects_climate && !sht3x && !sht4x) missing.add("temp_rh");
-    if (cfg.mhz19_enabled && mhz19 == nullptr) missing.add("mhz19");
-    if (cfg.hx711_enabled && hx711 == nullptr) missing.add("hx711");
-    if (cfg.reed_enabled && reed == nullptr) missing.add("reed");
+    if (expects_climate && !sht3x && !sht4x) missing[nm++] = "temp_rh";
+    if (cfg.mhz19_enabled && mhz19 == nullptr) missing[nm++] = "mhz19";
+    if (cfg.hx711_enabled && hx711 == nullptr) missing[nm++] = "hx711";
+    if (cfg.reed_enabled && reed == nullptr) missing[nm++] = "reed";
 
+    sp::HealthInputs in;
+    in.node_id = cfg.node_id.c_str();
+    in.type = sp::node_type_str(cfg.personality);
+    in.uptime_sec = millis() / 1000;
+    in.free_heap = ESP.getFreeHeap();
+    in.wifi_rssi = WiFi.RSSI();
+    in.sensors = sviews;
+    in.n_sensors = ns;
+    in.channels = channel_count > 0 ? cviews : nullptr;
+    in.n_channels = channel_count;
+    in.missing = missing;
+    in.n_missing = nm;
+
+    JsonDocument doc;
+    sp::build_health(in, doc);
     mqtt->publish(mqtt->topic("health").c_str(), doc);
 }
 

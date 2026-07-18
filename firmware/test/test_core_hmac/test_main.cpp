@@ -323,6 +323,77 @@ void test_const_time_eq() {
     TEST_ASSERT_FALSE(sp::const_time_eq(a, c, 4));
 }
 
+// ── call-site signing policy (verify_command in node + cam) ────
+// Pins the security hinge of the HMAC migration: fail-OPEN with no key,
+// clock-gate, strict verify with a key. A regression flipping the empty-key
+// early-return (accept-everything for keyed nodes, or reject for
+// unprovisioned ones) must fail here — it can't in the two Arduino main.cpp
+// copies, which are host-untestable.
+void test_command_auth_unprovisioned_key_fails_open() {
+    // No key ⇒ AcceptUnsigned regardless of payload or clock (the migration
+    // posture). Even total garbage and an unsynced clock accept.
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        "not even json", 13, "", 0, 0 /*unsynced*/, sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::AcceptUnsigned,
+                          (int)r.decision);
+    // nullptr key is also treated as unprovisioned.
+    r = sp::command_auth_decision("{}", 2, nullptr, 0, 1700000000ULL,
+                                  sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::AcceptUnsigned,
+                          (int)r.decision);
+}
+
+void test_command_auth_provisioned_key_accepts_valid_frame() {
+    auto vectors = load_vectors();
+    const Vector& v = vectors[0];
+    std::string wire = wire_with_signature(v);
+    uint64_t now = (uint64_t)v.ts + 5;  // in window AND > kMinValidEpoch
+    TEST_ASSERT_TRUE(now >= sp::kMinValidEpoch);
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        wire.data(), wire.size(), kKey, strlen(kKey), now, sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok, (int)r.status);
+}
+
+void test_command_auth_provisioned_key_rejects_bad_signature() {
+    auto vectors = load_vectors();
+    const Vector& v = vectors[0];
+    std::string wire = wire_with_signature(v);
+    uint64_t now = (uint64_t)v.ts;
+    // A DIFFERENT key ⇒ the golden signature no longer matches ⇒ Reject. Using
+    // a distinct key (not a tampered byte) avoids any canonical-id masking.
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        wire.data(), wire.size(), "some-other-key", 14, now,
+        sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Mismatch, (int)r.status);
+}
+
+void test_command_auth_rejects_unsynced_clock_before_verifying() {
+    auto vectors = load_vectors();
+    const Vector& v = vectors[0];
+    std::string wire = wire_with_signature(v);
+    // Key IS provisioned and the frame is perfectly valid, but the clock has
+    // not synced (now < 2020) ⇒ refuse without even reaching verify_frame.
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        wire.data(), wire.size(), kKey, strlen(kKey),
+        sp::kMinValidEpoch - 1, sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::RejectClockUnsynced,
+                          (int)r.decision);
+    // A now of 0 (boot, no NTP) is the real-world case.
+    r = sp::command_auth_decision(wire.data(), wire.size(), kKey, strlen(kKey),
+                                  0, sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::RejectClockUnsynced,
+                          (int)r.decision);
+    // At exactly kMinValidEpoch the clock gate opens (boundary is <, not <=):
+    // the golden ts (~1.7e9) is now far outside the window ⇒ falls through to a
+    // verify-level Reject, NOT a clock reject.
+    r = sp::command_auth_decision(wire.data(), wire.size(), kKey, strlen(kKey),
+                                  sp::kMinValidEpoch, sp::hmac_sha256_host);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::StaleTimestamp, (int)r.status);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_sha256_standard_vectors);
@@ -332,5 +403,9 @@ int main(int, char**) {
     RUN_TEST(test_replay_window_edges);
     RUN_TEST(test_rejection_paths);
     RUN_TEST(test_const_time_eq);
+    RUN_TEST(test_command_auth_unprovisioned_key_fails_open);
+    RUN_TEST(test_command_auth_provisioned_key_accepts_valid_frame);
+    RUN_TEST(test_command_auth_provisioned_key_rejects_bad_signature);
+    RUN_TEST(test_command_auth_rejects_unsynced_clock_before_verifying);
     return UNITY_END();
 }

@@ -46,6 +46,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 No GPIO / I2C / PWM pin reassignments. Per `feedback_firmware_pin_changes`,
 no wiring diagrams, schematics, BOM, or setup guides need updating.
 
+## [5.0.0] - 2026-07-16
+
+Version-lockstep bump to 5.0.0 (`scripts/bump.sh` moves cloud, Pi server, and
+firmware together). **No functional firmware change in this release** — the
+v5.0.0 pass was production-wiring on the cloud + Pi-server side, and the ESP32
+node/camera images were already fully wired in the v2 firmware train (v4.2.0).
+The image matrix (`node_esp32` / `node_esp32s3` / `cam`), the HMAC signing, and
+the NVS layout are unchanged; `VERSION.txt` now reports `5.0.0` so OTA-drift
+detection and the cloud `/status` + `/firmware` build panels stay in lockstep.
+
+### No pin changes
+
+No GPIO / I2C / PWM pin reassignments.
+
 ## [4.2.0] - 2026-06-12
 
 ### Added

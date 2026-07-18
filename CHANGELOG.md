@@ -48,6 +48,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (was the stale `esp32dev`); ESP32-S3-DevKitC-1 note updated to its real
   ~70 × 28 mm dual-USB-C footprint.
 
+## [5.0.0] - 2026-07-16
+
+Production-wiring release, in lockstep with the cloud repo (v5.0.0). The Pi
+server grows the endpoints the cloud-web + mobile surfaces needed to stop
+rendering fixtures, the automation engine gains remote pause/suspend plus a
+bounded manual override, and self-hosting becomes a single command. Firmware
+is a version-only bump — no functional change (see `firmware/CHANGELOG.md`).
+
+### Added
+- **Pre-grow automation coverage** — `GET /api/chambers/{id}/automation-coverage`
+  returns, per grow phase, the actuator requirements and whether each is
+  actually satisfied by a paired actuator (with a named fallback, e.g.
+  vent-with-fans for a missing dehumidifier). Lets the UI warn before a grow
+  starts that the hardware can't hold the species' targets.
+- **Node discovery + claim** — `GET /api/hardware/discover` lists every LAN
+  node the Pi has heard from (the heartbeat registry), tagged
+  claimed/unclaimed; `POST /api/hardware/claim` adopts an unclaimed,
+  heard-from node.
+- **Dated grow-cycle proposal** — `propose_cycle` walks a species' real phases
+  from an inoculation date into a contiguous dated calendar with per-phase
+  setpoints and a projected harvest date; served as JSON at
+  `GET /api/planner/propose` and as a calendar feed at
+  `GET /api/planner/propose.ics`.
+- **Remote automation control** — the engine gains `set_paused` (whole-engine
+  pause, persisted to `user_settings`) and `suspend_rule` (expiring
+  single-rule suspension), both drivable from the cloud relay via the
+  `system` / `automation` command targets.
+- **One-command self-host** — `install.sh` installs Docker + Compose,
+  generates MQTT credentials + self-signed TLS, writes a LAN-trust `.env`
+  (`SPOREPRINT_ALLOW_UNAUTHENTICATED=true` — the single-household posture:
+  pi-ui calls `/api` same-origin with no bearer, while MQTT stays
+  credentialed), and brings the stack up healthy. The Pi server also ships as
+  a signed (Ed25519) OTA bundle, published by the cloud repo's
+  `server-release.yml` to `updates.sporeprint.ai`.
+
+### Changed
+- **Vision auto-analysis on camera ingest** — a new frame at
+  `POST /api/vision/frame` now schedules a throttled (15-min per session),
+  BYOK-gated Claude pass that raises green-mold / Trichoderma contamination
+  and harvest-ready alerts on its own, rather than only analyzing on explicit
+  request. Gated on an active session and the operator's own Claude key.
+- **Manual overrides are bounded and auto-resume** — every `ManualOverride`
+  is clamped to a 24h TTL at construction (a null or over-long expiry can no
+  longer pin an actuator forever), and expired overrides are swept back out
+  automatically so the rules engine resumes control. The cloud actuator path
+  routes through this via `target_kind="automation"`.
+- **`docker-compose.yml` hardened** — healthchecks on server/mqtt/ntfy,
+  `restart: unless-stopped`, a non-root server (`USER appuser`) with a
+  one-shot `init-perms` volume `chown`, read-only bind mounts for config and
+  certs, and a credentialed + ACL'd broker.
+
+### Fixed
+- **Species-id lookup drift** — `get_profile` now canonicalizes the `_` vs `-`
+  separator, so a stored id resolves to its built-in profile regardless of
+  spelling. A plain `WHERE id = ?` had missed 63 of 74 species and returned
+  `None`.
+
 ## [4.2.0] - 2026-06-12
 
 ### Added

@@ -14,7 +14,7 @@ def _seed(client):
 def test_health_endpoint(client):
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok", "version": "4.2.0"}
+    assert r.json() == {"status": "ok", "version": "5.0.0"}
 
 
 # ── Sessions ────────────────────────────────────────────────────
@@ -179,6 +179,24 @@ def test_list_automation_rules(client):
 
 
 def test_create_and_toggle_rule(client):
+    import asyncio
+
+    from app.db import get_db
+
+    # A rule targeting the relay placeholder is only valid once a relay node is
+    # paired — real nodes register under MAC-derived ids, and the engine
+    # resolves relay-01 to that node at fire time. Provision one first.
+    async def _register_relay_node():
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
+                "VALUES ('node-7a3f1c', 'relay', ?)",
+                (1_752_700_000.0,),
+            )
+            await db.commit()
+
+    asyncio.run(_register_relay_node())
+
     rule = {
         "name": "Test Rule",
         "description": "A test rule",

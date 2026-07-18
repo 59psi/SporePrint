@@ -103,4 +103,21 @@ VerifyStatus verify_frame(const char* payload, size_t len,
     return VerifyStatus::Ok;
 }
 
+CmdAuthResult command_auth_decision(const char* payload, size_t len,
+                                    const char* key, size_t key_len,
+                                    uint64_t now_epoch_s, HmacSha256Fn hmac) {
+    // No provisioned key: accept unsigned (fail-open migration posture). An
+    // empty std::string yields key_len 0 here.
+    if (key == nullptr || key_len == 0)
+        return {CmdAuthDecision::AcceptUnsigned, VerifyStatus::NoKey};
+    // Key present but clock not synced — a fresh signature can't be replay-
+    // gated, so refuse rather than trust an unbounded timestamp window.
+    if (now_epoch_s < kMinValidEpoch)
+        return {CmdAuthDecision::RejectClockUnsynced, VerifyStatus::StaleTimestamp};
+    VerifyStatus st = verify_frame(payload, len, key, key_len, now_epoch_s, hmac);
+    return {st == VerifyStatus::Ok ? CmdAuthDecision::Accept
+                                   : CmdAuthDecision::Reject,
+            st};
+}
+
 }  // namespace sp

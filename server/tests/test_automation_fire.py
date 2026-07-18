@@ -21,6 +21,10 @@ from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 
+# The seeded FAE rule names the placeholder relay-01; the real relay node is
+# MAC-derived, so the command must publish to the resolved node's topic. (V3-2)
+RELAY_NODE = "node-relay-7a3f1c"
+
 
 async def _make_session_and_rule(mock_mqtt):
     session = await create_session(SessionCreate(
@@ -29,6 +33,14 @@ async def _make_session_and_rule(mock_mqtt):
         substrate="CVG",
         substrate_volume="1 quart",
     ))
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) "
+            "VALUES (?, 'relay', ?, ?)",
+            (RELAY_NODE, json.dumps(["fae", "exhaust", "circulation", "aux"]),
+             1_752_700_000.0),
+        )
+        await db.commit()
     rule = AutomationRule(
         id=1,
         name="fae-on",
@@ -58,7 +70,7 @@ async def test_fire_rule_marks_sent_when_publish_succeeds(mock_mqtt):
     assert firing is not None
     assert firing["status"] == "sent"
     assert firing["error"] is None
-    assert mock_mqtt and mock_mqtt[-1][0] == "sporeprint/relay-01/cmd/fae"
+    assert mock_mqtt and mock_mqtt[-1][0] == f"sporeprint/{RELAY_NODE}/cmd/fae"
 
 
 async def test_fire_rule_marks_failed_when_broker_disconnected(mock_mqtt):

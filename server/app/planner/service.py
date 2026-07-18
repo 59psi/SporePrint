@@ -467,3 +467,103 @@ async def delete_planned_event(event_id: int) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+# ── Species-derived dated cycle proposer (V1-2) ─────────────────
+#
+# The recommender above scores species against *current* weather. This proposer
+# answers a different question: given a species and an inoculation date, when
+# does each grow phase start and end? It reads the species' real phases
+# (temp/RH/CO2/light + expected_duration_days) and lays out concrete dates —
+# inoculation -> colonization -> primordia -> fruiting -> harvest. Reused by the
+# /propose endpoint and the planner iCal phase-timeline projection (planner/ical.py).
+
+from datetime import date  # noqa: E402
+from .models import ProposedCycle, ProposedPhase, ProposedPhaseSetpoints  # noqa: E402
+
+# Active fruiting-run phases in canonical order. COLD_STORAGE is the fridge-hold
+# fork (a grow bag advances to primordia instead of parking) and COMPLETE is the
+# terminal marker — neither belongs on a dated inoculation -> harvest timeline.
+_TIMELINE_PHASES = [
+    p for p in GrowPhase if p not in (GrowPhase.COLD_STORAGE, GrowPhase.COMPLETE)
+]
+
+
+def _phase_span_days(duration_days: tuple[int, int]) -> int:
+    """Rounded midpoint of a phase's (min, max) expected duration, floored at 1.
+
+    Matches the average-of-range convention the session iCal projection already
+    uses, so a proposed cycle and a live session's projection agree.
+    """
+    lo, hi = duration_days
+    return max(1, round((lo + hi) / 2))
+
+
+def propose_cycle(profile: SpeciesProfile, start: date) -> ProposedCycle:
+    """Lay out a dated per-phase grow cycle for a species from an inoculation date.
+
+    Walks the species' real phases in canonical order, assigning each a start and
+    end date from expected_duration_days. Phases are contiguous (each begins when
+    the previous ends). `harvest_date` is the end of the fruiting phase — the
+    point fruit bodies are ready to pick.
+    """
+    cursor = start
+    phases: list[ProposedPhase] = []
+    harvest_date: date | None = None
+
+    for gp in _TIMELINE_PHASES:
+        params = profile.phases.get(gp)
+        if params is None:
+            continue
+        dur = params.expected_duration_days
+        if not (isinstance(dur, (list, tuple)) and len(dur) == 2):
+            continue
+        span = _phase_span_days(dur)
+        phase_start = cursor
+        phase_end = phase_start + timedelta(days=span)
+        phases.append(
+            ProposedPhase(
+                phase=gp.value,
+                label=gp.value.replace("_", " ").title(),
+                start_date=phase_start,
+                end_date=phase_end,
+                duration_days=span,
+                min_days=int(dur[0]),
+                max_days=int(dur[1]),
+                setpoints=ProposedPhaseSetpoints(
+                    temp_min_f=params.temp_min_f,
+                    temp_max_f=params.temp_max_f,
+                    humidity_min=params.humidity_min,
+                    humidity_max=params.humidity_max,
+                    co2_max_ppm=params.co2_max_ppm,
+                    co2_min_ppm=params.co2_min_ppm,
+                    light_hours_on=params.light_hours_on,
+                    light_hours_off=params.light_hours_off,
+                    light_spectrum=params.light_spectrum,
+                    fae_mode=params.fae_mode,
+                ),
+                notes=params.notes,
+            )
+        )
+        cursor = phase_end
+        if gp == GrowPhase.FRUITING:
+            harvest_date = phase_end
+
+    return ProposedCycle(
+        species_id=profile.id,
+        common_name=profile.common_name,
+        scientific_name=profile.scientific_name,
+        start_date=start,
+        end_date=cursor,
+        total_days=(cursor - start).days,
+        harvest_date=harvest_date,
+        phases=phases,
+    )
+
+
+async def propose_cycle_for_species(species_id: str, start: date) -> ProposedCycle | None:
+    """Load a species profile by id and propose a dated cycle, or None if unknown."""
+    profile = await get_profile(species_id)
+    if profile is None:
+        return None
+    return propose_cycle(profile, start)

@@ -44,6 +44,36 @@ VerifyStatus verify_frame(const char* payload, size_t len,
                           const char* key, size_t key_len,
                           uint64_t now_epoch_s, HmacSha256Fn hmac);
 
+// Earliest epoch we treat as a synced wall clock (2020-01-01T00:00:00Z). A
+// smaller `now` means NTP has not resolved yet, so a signature can't be
+// replay-checked and the command is refused.
+constexpr uint64_t kMinValidEpoch = 1577836800ULL;
+
+// Command-authorization decision at the call site (node + cam verify_command).
+enum class CmdAuthDecision : uint8_t {
+    AcceptUnsigned,       // NO key provisioned — fail-OPEN + warn (the v2
+                          // migration posture; a provisioned key flips it to
+                          // strict). Load-bearing: never let a refactor turn
+                          // this into a silent accept-everything for keyed
+                          // nodes, nor a reject for unprovisioned ones.
+    RejectClockUnsynced,  // key set but now < kMinValidEpoch (NTP not synced)
+    Accept,               // key set, clock synced, signature verified
+    Reject,               // key set, clock synced, verify failed (see .status)
+};
+
+struct CmdAuthResult {
+    CmdAuthDecision decision;
+    VerifyStatus status;  // meaningful only for Accept / Reject
+};
+
+// Pure signing policy shared by both composition roots' verify_command(). The
+// key comes from NodeConfig::hmac_key (empty ⇒ key_len 0 ⇒ fail-open). Kept
+// here so the fail-open hinge + clock gate are host-tested, not buried in two
+// Arduino-coupled main.cpp copies.
+CmdAuthResult command_auth_decision(const char* payload, size_t len,
+                                    const char* key, size_t key_len,
+                                    uint64_t now_epoch_s, HmacSha256Fn hmac);
+
 // Constant-time equality for fixed-length buffers (exposed for tests).
 bool const_time_eq(const uint8_t* a, const uint8_t* b, size_t len);
 

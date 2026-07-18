@@ -2,7 +2,7 @@ import json
 
 from ..db import get_db
 from .models import SpeciesProfile
-from .profiles import BUILTIN_PROFILES
+from .profiles import BUILTIN_PROFILES, species_id_candidates
 
 
 async def seed_builtins():
@@ -25,12 +25,19 @@ async def get_all_profiles() -> list[SpeciesProfile]:
 
 
 async def get_profile(profile_id: str) -> SpeciesProfile | None:
+    # Resolve tolerantly across the hyphen/underscore drift (see
+    # species_id_candidates): the UI stores hyphenated ids while this table is
+    # seeded with the underscored builtin ids. Exact match wins; the swapped
+    # variant is the fallback.
     async with get_db() as db:
-        cursor = await db.execute("SELECT data FROM species_profiles WHERE id = ?", (profile_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return SpeciesProfile.model_validate_json(row["data"])
+        for candidate in species_id_candidates(profile_id):
+            cursor = await db.execute(
+                "SELECT data FROM species_profiles WHERE id = ?", (candidate,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return SpeciesProfile.model_validate_json(row["data"])
+        return None
 
 
 async def create_profile(profile: SpeciesProfile) -> SpeciesProfile:

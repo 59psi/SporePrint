@@ -106,25 +106,51 @@ async def target_is_present(target: str) -> bool:
 
 
 async def send_plug_command(plug_id: str, state: str) -> bool:
-    """Send an on/off command to a smart plug. True if it reached the broker.
+    """Send an on/off command to a smart plug. True only when it was delivered
+    to a PAIRED plug; an unpaired plug is a reported no-op (False).
 
     Shelly and Tasmota both expect a BARE payload (`on` / `ON`), not JSON.
     `mqtt_publish` json.dumps() everything it is given, so the registered-plug
     path was putting `"on"` — with quotes — on the wire, which neither firmware
-    accepts. (The unregistered fallback published raw and was correct, which is
-    what gave the bug away.) Publish raw on every path.
+    accepts. Publish raw on every registered path.
+
+    A plug with no `smart_plugs` row is NOT paired to this chamber. A real
+    Shelly/Tasmota auto-registers a row the instant it announces its relay state
+    (handle_plug_message → _update_plug_state), so an ABSENT row means the plug
+    is genuinely missing. The old code inferred a `shellies/<id>` topic from the
+    naming convention, published into the void, and returned True — which made
+    the engine log the firing status='sent': the rule fired, the audit read
+    clean, and no actuator moved. That masked the exact missing-actuator no-op
+    this function exists to surface. Report it honestly instead. (V2-3)
+
+    Resolution matches `target_is_present` EXACTLY — by plug_id OR device_role —
+    so the two never disagree. Per the build guide a heater/humidifier gets an
+    auto `plug-<hwid>` row (its real id) with `device_role` assigned, while the
+    seeded rule fires the friendly target `plug-heater` (which is only a role,
+    not that row's id). Resolving by id alone found nothing and no-op'd even
+    though the plug was paired and `target_is_present` reported it available.
+    The exact-id match wins the ORDER BY tie-break when both exist. (V3-1)
     """
+    role = plug_id[len("plug-"):] if plug_id.startswith("plug-") else None
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT plug_type, mqtt_topic_prefix FROM smart_plugs WHERE plug_id = ?",
-            (plug_id,),
+            "SELECT plug_type, mqtt_topic_prefix FROM smart_plugs "
+            "WHERE plug_id = ? OR device_role = ? "
+            "ORDER BY (plug_id = ?) DESC LIMIT 1",
+            (plug_id, role, plug_id),
         )
         row = await cursor.fetchone()
 
     if not row:
-        # Unregistered: infer from the plug-<shelly_device_id> convention.
-        device_id = plug_id.replace("plug-", "", 1)
-        return await _publish_raw(f"shellies/{device_id}/relay/0/command", state.lower())
+        # No paired plug for this id — the command can reach no actuator, so it
+        # is a no-op. Don't claim success (and don't spray a speculative publish
+        # at a device that isn't there): the caller records status 'failed',
+        # which is the truth.
+        log.warning(
+            "send_plug_command: no plug paired for %r — command %r is a no-op",
+            plug_id, state,
+        )
+        return False
 
     prefix = row["mqtt_topic_prefix"]
     if row["plug_type"] == "shelly":

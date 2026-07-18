@@ -4,10 +4,11 @@ import json
 import re
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 
 from ..db import get_db
+from ..species.profiles import canonical_species_id, species_id_candidates
 from ..species.service import get_profile
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
 
@@ -20,6 +21,11 @@ _PHASE_ORDER = [
 
 async def create_session(data: SessionCreate) -> dict:
     now = time.time()
+    # Normalize to the hyphenated UI spelling so the stored id matches what the
+    # cloud/mobile surfaces send and locally match on, regardless of whether the
+    # caller submitted the hyphenated or underscored form. get_profile() stays
+    # tolerant either way. See app.species.profiles.canonical_species_id.
+    species_id = canonical_species_id(data.species_profile_id)
     async with get_db() as db:
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
@@ -27,7 +33,7 @@ async def create_session(data: SessionCreate) -> dict:
                current_phase, container_type, tub_number, shelf_number, shelf_side, growth_form, pinning_tek,
                chamber_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (data.name, data.species_profile_id, data.substrate, data.substrate_volume,
+            (data.name, species_id, data.substrate, data.substrate_volume,
              data.substrate_prep_notes, data.inoculation_date, data.inoculation_method,
              data.spawn_source, data.current_phase, data.container_type, data.tub_number, data.shelf_number,
              data.shelf_side, data.growth_form, data.pinning_tek, data.chamber_id),
@@ -371,6 +377,112 @@ async def complete_session(session_id: int) -> dict | None:
     return await get_session(session_id)
 
 
+# ── Cloud → Pi remote command seam ───────────────────────────────
+
+
+async def handle_remote_command(channel: str, payload: dict) -> dict | None:
+    """Execute a cloud-relayed chamber "system" command against this service.
+
+    Dispatched by ``app.cloud.service._dispatch_system_command`` for the
+    ``session_start`` / ``session_end`` channels (target_kind="system"). That
+    dispatcher wraps this call in a try/except and reports the outcome in the
+    relay ``command_result`` ack, so any exception raised here surfaces to the
+    originating client as ``success=false`` with its reason.
+
+    - ``session_start``: create a grow session from ``payload`` (SessionCreate fields).
+    - ``session_end``:   mark the session ``payload['session_id']`` complete.
+
+    Reuses the existing ``create_session`` / ``complete_session`` service
+    functions verbatim. Returns the resulting session dict.
+    """
+    if channel == "session_start":
+        return await create_session(SessionCreate(**payload))
+    if channel == "session_end":
+        return await complete_session(payload["session_id"])
+    raise ValueError(f"unknown session command channel: {channel!r}")
+
+
+async def resolve_session_node_id(session_id: int, sensor: str | None = None) -> str | None:
+    """Resolve which hardware node's telemetry backs a session.
+
+    Backs the per-session telemetry endpoint, which previously hardcoded
+    ``climate-01`` and so returned the wrong node's series (or nothing) for any
+    node not named that, and for every session whose chamber is a different node.
+
+    Two strategies, in order:
+      1. Session-tagged telemetry — if any ``telemetry_readings`` rows carry this
+         ``session_id``, use the node that produced them (scoped to ``sensor``
+         when given, so a session spanning several nodes resolves to the one that
+         actually reports the requested sensor). This is authoritative.
+      2. Chamber topology — otherwise map session → ``chamber_id`` → the
+         chamber's ``node_ids`` and pick the climate/sensor node (``node_type``
+         'climate'/'sensor', or a node whose ``roles`` include one of those),
+         falling back to the chamber's first node.
+
+    Returns None when neither strategy yields a node (unknown session, or a
+    session with no chamber and no tagged telemetry) so the caller can return an
+    empty series.
+    """
+    async with get_db() as db:
+        # 1. Prefer telemetry actually tagged with this session.
+        if sensor:
+            cursor = await db.execute(
+                "SELECT node_id FROM telemetry_readings "
+                "WHERE session_id = ? AND sensor = ? "
+                "GROUP BY node_id ORDER BY COUNT(*) DESC, MAX(timestamp) DESC LIMIT 1",
+                (session_id, sensor),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT node_id FROM telemetry_readings WHERE session_id = ? "
+                "GROUP BY node_id ORDER BY COUNT(*) DESC, MAX(timestamp) DESC LIMIT 1",
+                (session_id,),
+            )
+        row = await cursor.fetchone()
+        if row:
+            return row["node_id"]
+
+        # 2. Fall back to the session's chamber's climate/sensor node.
+        cursor = await db.execute(
+            "SELECT chamber_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        srow = await cursor.fetchone()
+        if not srow or srow["chamber_id"] is None:
+            return None
+
+        cursor = await db.execute(
+            "SELECT node_ids FROM chambers WHERE id = ?", (srow["chamber_id"],)
+        )
+        crow = await cursor.fetchone()
+        if not crow:
+            return None
+        try:
+            node_ids = json.loads(crow["node_ids"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            node_ids = []
+        if not node_ids:
+            return None
+
+        # Pick the climate/sensor node among the chamber's nodes, mirroring the
+        # node_type/roles resolution in app.cloud.service._resolve_node_id_by_type.
+        placeholders = ",".join("?" for _ in node_ids)
+        cursor = await db.execute(
+            f"SELECT node_id FROM hardware_nodes "
+            f"WHERE node_id IN ({placeholders}) "
+            f"AND (node_type IN ('climate', 'sensor') "
+            f"     OR EXISTS (SELECT 1 FROM json_each(hardware_nodes.roles) "
+            f"                WHERE json_each.value IN ('climate', 'sensor'))) "
+            f"LIMIT 1",
+            node_ids,
+        )
+        nrow = await cursor.fetchone()
+        if nrow:
+            return nrow["node_id"]
+
+        # No registry classification — the chamber's first node is the best guess.
+        return node_ids[0]
+
+
 # ── Volume parsing helper ────────────────────────────────────────
 
 
@@ -574,6 +686,21 @@ def _ts_to_dt(ts: float | None) -> datetime | None:
     return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
+def _parse_inoculation_date(raw) -> date | None:
+    """Parse the session's free-text ``inoculation_date`` (a TEXT column) to a date.
+
+    The UI stores an ISO date ('YYYY-MM-DD'); a full ISO datetime is tolerated by
+    taking its date part. Returns None when unset or unparseable so the caller can
+    fall back to the session's creation date.
+    """
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw).strip()[:10])
+    except ValueError:
+        return None
+
+
 async def generate_ical() -> str:
     """Generate an iCal calendar with events for all sessions."""
     from icalendar import Calendar, Event  # lazy — only loaded when calendar is requested
@@ -653,55 +780,50 @@ async def generate_ical() -> str:
                 ev["uid"] = f"session-{sid}-harvest-{h['id']}@sporeprint"
                 cal.add_component(ev)
 
-            # Expected future events for active sessions
+            # Expected future events for active sessions. Dates come from the
+            # planner's species-derived cycle proposer (propose_cycle), anchored
+            # at this session's actual inoculation date (its creation date when no
+            # inoculation date was recorded). Driving the projection off the real
+            # per-phase durations keeps it consistent with /planner/propose and
+            # inherits get_profile's tolerant species-id resolution.
             if session["status"] == "active":
                 from ..species.service import get_profile as _get_species_profile
+                from ..planner.service import propose_cycle
 
                 profile = await _get_species_profile(session["species_profile_id"])
                 if profile and profile.phases:
-                    current_phase = session.get("current_phase", "")
-                    last_phase_entry = session["created_at"]
-                    for p in phases:
-                        if p["phase"] == current_phase and p.get("entered_at"):
-                            last_phase_entry = p["entered_at"]
+                    anchor = _parse_inoculation_date(session.get("inoculation_date")) or created_dt.date()
+                    cycle = propose_cycle(profile, anchor)
+                    proposed_by_phase = {p.phase: p for p in cycle.phases}
 
+                    current_phase = session.get("current_phase", "")
                     try:
                         current_idx = _PHASE_ORDER.index(current_phase)
                     except ValueError:
                         current_idx = -1
 
-                    predicted_time = last_phase_entry
-
+                    # Only phases still ahead of the current one get an "expected"
+                    # marker; phases already entered carry their real
+                    # phase-history events above.
                     for future_phase in _PHASE_ORDER[current_idx + 1:]:
                         if future_phase == "complete":
                             break
-                        phase_params = profile.phases.get(future_phase)
-                        if not phase_params:
+                        proposed = proposed_by_phase.get(future_phase)
+                        if not proposed:
                             continue
-                        dur = phase_params.expected_duration_days
-                        if dur and isinstance(dur, (list, tuple)) and len(dur) == 2:
-                            avg_days = (dur[0] + dur[1]) / 2
-                        else:
-                            avg_days = 7
-                        predicted_time += avg_days * 86400
-
                         ev = Event()
                         ev.add("summary", f"{name} — {future_phase.replace('_', ' ').title()} (Expected)")
-                        ev.add("dtstart", datetime.utcfromtimestamp(predicted_time).date())
+                        ev.add("dtstart", proposed.start_date)
                         ev["uid"] = f"session-{sid}-expected-{future_phase}@sporeprint"
                         cal.add_component(ev)
 
-                    # Expected harvest date (after fruiting phase)
-                    fruiting_params = profile.phases.get("fruiting")
-                    if fruiting_params:
-                        fruiting_dur = fruiting_params.expected_duration_days
-                        if fruiting_dur and isinstance(fruiting_dur, (list, tuple)) and len(fruiting_dur) == 2:
-                            harvest_time = predicted_time + ((fruiting_dur[0] + fruiting_dur[1]) / 2) * 86400
-                            ev = Event()
-                            ev.add("summary", f"{name} — Expected Harvest")
-                            ev.add("dtstart", datetime.utcfromtimestamp(harvest_time).date())
-                            ev["uid"] = f"session-{sid}-expected-harvest@sporeprint"
-                            cal.add_component(ev)
+                    # Expected harvest = end of the fruiting phase in the plan.
+                    if cycle.harvest_date:
+                        ev = Event()
+                        ev.add("summary", f"{name} — Expected Harvest")
+                        ev.add("dtstart", cycle.harvest_date)
+                        ev["uid"] = f"session-{sid}-expected-harvest@sporeprint"
+                        cal.add_component(ev)
 
             # Session completion
             completed_dt = _ts_to_dt(session.get("completed_at"))
@@ -757,12 +879,15 @@ def _generate_recommendations(
                 "periods or substrate supplements between flushes"
             )
 
-    # Flush count vs species expectation
+    # Flush count vs species expectation. Match tolerantly across the
+    # hyphen/underscore drift: the stored id is hyphenated ("lions-mane") while
+    # BUILTIN_PROFILES is keyed by the underscored id ("lions_mane").
     species_flush_typical = None
     from ..species.profiles import BUILTIN_PROFILES
     species_id = session.get("species_profile_id")
+    id_candidates = set(species_id_candidates(species_id)) if species_id else set()
     for p in BUILTIN_PROFILES:
-        if p.id == species_id:
+        if p.id in id_candidates:
             species_flush_typical = p.flush_count_typical
             break
     if species_flush_typical and len(flush_map) < species_flush_typical:

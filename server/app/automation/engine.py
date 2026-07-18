@@ -17,7 +17,7 @@ from .models import (
     ThresholdCondition,
     ManualOverride,
 )
-from .service import deserialize_rule_row
+from .service import deserialize_rule_row, get_rule, resolve_node_target
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,16 @@ _overrides: dict[str, ManualOverride] = {}
 _rule_cache: list[AutomationRule] = []
 _cache_ts: float = 0
 _overrides_loaded: bool = False
+
+# Whole-engine pause. When True, evaluate_rules short-circuits before any rule
+# runs, so no telemetry frame can drive an actuator. Persisted to user_settings
+# (key below) so a remote "pause automation" survives a Pi reboot — the same
+# durability manual_overrides and safety_watchdogs already have. Read on the hot
+# path without a lock (a single-bool read is atomic under the GIL, matching the
+# is_overridden convention); the DB load runs once, gated by _pause_loaded.
+_paused: bool = False
+_pause_loaded: bool = False
+_PAUSE_SETTING_KEY = "automation_paused"
 
 # Per-actuator auto-off tasks for safety_max_on_seconds enforcement.
 # Key is "target:channel"; value is the asyncio.Task waiting to publish OFF.
@@ -109,6 +119,7 @@ def _cold_storage_params():
         _COLD_STORAGE_PARAMS = PhaseParams(
             temp_min_f=35, temp_max_f=40,
             humidity_min=80, humidity_max=95,   # incidental; not actively driven
+            humidity_driven=False,               # a fridge's RH is not a fault to page on
             co2_max_ppm=100000, co2_tolerance="high",  # never vent a sealed fridge
             light_hours_on=0, light_hours_off=24, light_spectrum="none",
             fae_mode="none",                     # no fresh air — it's a fridge
@@ -189,6 +200,49 @@ async def ensure_overrides_loaded():
         await _load_overrides_from_db()
 
 
+async def _load_pause_from_db() -> None:
+    """Load the persisted automation-pause flag into memory (once).
+
+    The flag lives in the user_settings key-value table (same upsert shape
+    settings_service uses) so a remote pause outlives a reboot. An absent row
+    reads as not-paused — pause is strictly opt-in.
+    """
+    global _paused, _pause_loaded
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT value FROM user_settings WHERE key = ?", (_PAUSE_SETTING_KEY,)
+        )
+        row = await cursor.fetchone()
+    _paused = bool(row and row["value"] == "1")
+    _pause_loaded = True
+
+
+async def ensure_pause_loaded() -> None:
+    if not _pause_loaded:
+        await _load_pause_from_db()
+
+
+async def set_paused(paused: bool) -> None:
+    """Pause or resume this Pi's automation engine.
+
+    While paused, evaluate_rules returns before loading a single rule, so no
+    telemetry frame drives an actuator. Persisted to user_settings so the hold
+    survives a reboot. This is the target of the cloud relay's `system` /
+    `automation` command (payload ``{paused: bool}``) — see cloud/service.py.
+    """
+    global _paused, _pause_loaded
+    async with get_db() as db:
+        await db.execute(
+            """INSERT INTO user_settings (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=unixepoch('now')""",
+            (_PAUSE_SETTING_KEY, "1" if paused else "0"),
+        )
+        await db.commit()
+    _paused = bool(paused)
+    _pause_loaded = True
+    log.info("Automation engine %s", "PAUSED" if paused else "RESUMED")
+
+
 async def load_rules() -> list[AutomationRule]:
     global _rule_cache, _cache_ts
     now = time.time()
@@ -260,6 +314,39 @@ async def clear_override(target: str, channel: str | None):
     )
 
 
+async def suspend_rule(rule_id: str | int, minutes: int = 30) -> None:
+    """Temporarily suspend one automation rule, driven from the cloud relay.
+
+    Mirrors the Pi LAN UI's "suspend" button (POST /api/automation/overrides →
+    set_override): pin an expiring manual override on the rule's OWN action
+    target/channel so evaluate_rules skips it via is_overridden until the
+    override lapses. Reusing set_override means a cloud-suspended rule shows up
+    in the same /overrides list and is cleared the same way as a UI-suspended
+    one — one mechanism, not two.
+
+    ``expires_at`` is set to now + minutes, then clamped by ManualOverride to
+    its server-side TTL ceiling, so a bogus ``minutes`` can never pin the
+    actuator forever. Raises ValueError for an unknown or non-numeric rule id;
+    the caller (cloud/service.py) surfaces that as the command_result error.
+    """
+    rule = await get_rule(int(rule_id))
+    if rule is None:
+        raise ValueError(f"No automation rule with id {rule_id!r}")
+    action = AutomationRule.model_validate(rule).action
+    minutes = max(1, int(minutes))
+    await set_override(ManualOverride(
+        target=action.target,
+        channel=action.channel,
+        locked=True,
+        reason=f"rule '{rule['name']}' suspended {minutes}m via cloud",
+        expires_at=time.time() + minutes * 60,
+    ))
+    log.info(
+        "Suspended rule %s ('%s') for %dm → override %s:%s",
+        rule_id, rule["name"], minutes, action.target, action.channel,
+    )
+
+
 async def get_overrides() -> list[ManualOverride]:
     await ensure_overrides_loaded()
     now = time.time()
@@ -312,11 +399,15 @@ async def evaluate_rules(
     sio=None,
 ):
     """Evaluate all automation rules against new telemetry readings."""
-    await ensure_overrides_loaded()
-    rules = await load_rules()
-    if not rules:
-        return
+    await ensure_pause_loaded()
 
+    # Safety DETECTION is always-on — it runs BEFORE the pause and no-rules
+    # early returns below. Pause and "no enabled rules" suppress ACTUATION only;
+    # they must never mute the "closet is on fire" alerts. So the active-session
+    # lookup, phase-params resolution, and _check_safety_thresholds happen here,
+    # up front: a paused engine (or one with every rule disabled) still pages the
+    # operator when a reading drifts outside the active stage range but under the
+    # firmware absolute limit.
     session = await get_active_session()
     if not session:
         return
@@ -341,17 +432,29 @@ async def evaluate_rules(
         except (ValueError, KeyError):
             pass
 
+    # Proactive safety alerts — fire regardless of rule state. These are the
+    # "closet is on fire" alerts the operator must hear about even if no rule
+    # has been authored to handle them, or automation is paused.
+    if phase_params is not None:
+        await _check_safety_thresholds(node_id, phase_params, readings, session)
+
+    # ── Actuation gates. Pause and no-rules stop actuator DECISIONS here, after
+    # safety detection above has already run. A remote "pause automation"
+    # (cloud → set_paused) halts every actuator decision, not just filters
+    # individual rules; the flag is loaded from the DB once, then cached, so the
+    # hot path is a single bool read once warm. ──
+    if _paused:
+        return
+    await ensure_overrides_loaded()
+    rules = await load_rules()
+    if not rules:
+        return
+
     # If the substrate is in a sealed vessel the chamber can't sense or affect,
     # the chamber-environment rules (CO2/FAE/humidity/circulation/mist) are
     # no-ops. Skip them wholesale rather than churn actuators against a sealed
     # bag — the UI surfaces "sealed container: environmental control paused".
     container_sealed = _container_is_sealed(container_type, current_phase)
-
-    # Proactive safety alerts — fire regardless of rule state. These are the
-    # "closet is on fire" alerts the operator must hear about even if no rule
-    # has been authored to handle them.
-    if phase_params is not None:
-        await _check_safety_thresholds(node_id, phase_params, readings, session)
 
     for rule in rules:
         try:
@@ -383,7 +486,16 @@ async def evaluate_rules(
             if rule.requires_absent_target and await target_is_present(rule.requires_absent_target):
                 continue
 
-            if is_overridden(rule.action.target, rule.action.channel):
+            # A manual hold is stored under the target it was placed on. A cloud
+            # override pins the chamber's REAL node (a MAC-derived id resolved
+            # from the role), while a seeded rule still names the placeholder
+            # (relay-01 / light-01). Resolve the rule's target the same way
+            # _fire_rule does and treat the rule as held if EITHER the resolved
+            # node or the placeholder is overridden — otherwise the rule re-fires
+            # on the next telemetry tick and claws back the operator's hold. (V4-1)
+            resolved = await resolve_node_target(rule.action.target) or rule.action.target
+            if (is_overridden(resolved, rule.action.channel)
+                    or is_overridden(rule.action.target, rule.action.channel)):
                 continue
 
             now = time.time()
@@ -451,8 +563,14 @@ async def _check_safety_thresholds(node_id: str, phase_params, readings: dict, s
 
     humidity = readings.get("humidity")
     if isinstance(humidity, (int, float)):
+        # When the phase doesn't actively drive humidity (cold storage — a
+        # fridge idles at ~45% RH by design), only page on a HIGH excursion.
+        # A low reading is expected, not an emergency the chamber is failing to
+        # correct — same reasoning as the CO2 fae_mode="none" gate below.
+        hum_min = (phase_params.humidity_min
+                   if getattr(phase_params, "humidity_driven", True) else None)
         sev, direction = _band_severity(
-            humidity, phase_params.humidity_min, phase_params.humidity_max,
+            humidity, hum_min, phase_params.humidity_max,
             _HUMIDITY_WARN_MARGIN, _HUMIDITY_EMERG_MARGIN,
         )
         if sev:
@@ -879,6 +997,16 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
         if profile_duration is not None:
             duration_sec = int(profile_duration)
 
+    # Resolve a seeded native-node placeholder (relay-01 / light-01) to the
+    # chamber's real relay/lighting node before composing the topic or arming
+    # the safety watchdog — a real node registers under a MAC-derived id, so a
+    # command published to the placeholder reaches no subscriber and would log
+    # status='sent' while nothing moves. A non-placeholder target (a real node
+    # id, a plug-*, a vendor key) resolves to itself; an unresolvable
+    # placeholder falls back to itself so validate_action_channel's warning
+    # below still surfaces the "no node of this role" gap. (V3-2)
+    target = await resolve_node_target(action.target) or action.target
+
     payload = {"state": action.state}
     if action.pwm is not None:
         payload["pwm"] = action.pwm
@@ -912,11 +1040,11 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     # and calibration keys and ignores `scene` entirely — so every seeded
     # "Light Scene" rule published, logged status='sent', and did nothing.
     if action.channel:
-        topic = f"sporeprint/{action.target}/cmd/{action.channel}"
+        topic = f"sporeprint/{target}/cmd/{action.channel}"
     elif action.scene:
-        topic = f"sporeprint/{action.target}/cmd/scene"
+        topic = f"sporeprint/{target}/cmd/scene"
     else:
-        topic = f"sporeprint/{action.target}/cmd/config"
+        topic = f"sporeprint/{target}/cmd/config"
 
     condition_met = json.dumps({
         "readings": {k: readings.get(k) for k in
@@ -982,13 +1110,13 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
                 action.vendor_params or {},
             )
             status = "sent"
-        elif await is_plug_target(action.target):
+        elif await is_plug_target(target):
             # Smart plugs do NOT speak the sporeprint/<node>/cmd/* protocol —
             # Shelly listens on shellies/<id>/relay/0/command and Tasmota on
             # tasmota/<id>/cmnd/POWER. Publishing to sporeprint/plug-*/cmd/*
             # reached no subscriber at all, so every seeded humidifier / heater
             # / cooler rule fired into the void while logging status='sent'.
-            published = await send_plug_command(action.target, action.state)
+            published = await send_plug_command(target, action.state)
             status = "sent" if published else "failed"
             if not published:
                 error = "plug command not published (client disconnected?)"
@@ -1018,18 +1146,21 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict, sio=No
     # reboot rehydrates it and either re-arms or publishes OFF immediately if
     # expires_at has passed while we were down.
     if status == "sent":
-        _cancel_safety_task(action.target, action.channel)
+        # Key the watchdog on the RESOLVED target: its auto-OFF must go out on
+        # the same topic the ON did, or a stuck-on heater whose OFF is aimed at
+        # the placeholder never turns off. (V3-2)
+        _cancel_safety_task(target, action.channel)
         if action.state == "on" and rule.safety_max_on_seconds and rule.safety_max_on_seconds > 0:
-            key = _safety_key(action.target, action.channel)
+            key = _safety_key(target, action.channel)
             _safety_tasks[key] = asyncio.create_task(
-                _safety_auto_off(action.target, action.channel, rule.safety_max_on_seconds, rule.name)
+                _safety_auto_off(target, action.channel, rule.safety_max_on_seconds, rule.name)
             )
             await _persist_safety_watchdog(
-                action.target, action.channel, rule.name, rule.safety_max_on_seconds,
+                target, action.channel, rule.name, rule.safety_max_on_seconds,
             )
         elif action.state == "off":
             # OFF explicitly published — any pending watchdog is now redundant.
-            await _clear_persisted_safety_watchdog(action.target, action.channel)
+            await _clear_persisted_safety_watchdog(target, action.channel)
 
     if sio:
         await sio.emit("rule_fired", {

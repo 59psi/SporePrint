@@ -13,6 +13,7 @@ from .service import (
     get_frame_by_id,
     get_frames,
     insert_frame,
+    maybe_schedule_auto_analysis,
     update_analysis_claude,
     update_analysis_local,
 )
@@ -86,6 +87,18 @@ async def ingest_frame(
     local_result = await analyze_frame_local(file_path)
     if local_result:
         await update_analysis_local(frame_id, local_result)
+
+    # H4-1: the local CNN above is a permanent stub, so kick the real Claude
+    # detector on ingest to actually catch contamination / harvest windows.
+    # Cost-gated (BYOK key present + active session + per-session throttle) and
+    # non-blocking — it runs in the background and routes any detection through
+    # the existing alert + cloud-forward plumbing, so the response returns now.
+    await maybe_schedule_auto_analysis(
+        frame_id=frame_id,
+        session_id=session_id,
+        node_id=x_node_id,
+        file_path=str(file_path),
+    )
 
     return {
         "frame_id": frame_id,

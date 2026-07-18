@@ -27,6 +27,12 @@ class PhaseParams(BaseModel):
     temp_swing_delta_f: float | None = None
     humidity_min: float
     humidity_max: float
+    # Whether the chamber actively drives humidity in this phase. Default True
+    # (every cultivation phase mists/dehumidifies toward the band). Cold storage
+    # sets this False: a fridge's ~45% RH is incidental, not a fault, so the
+    # safety monitor must not page a low-humidity EMERGENCY every frame there.
+    # Mirrors the fae_mode="none" gate that already suppresses CO2 alerts.
+    humidity_driven: bool = True
     co2_max_ppm: int
     # Some species want CO2 held HIGH, not just capped — reishi antler formation
     # and king trumpet primordia both restrict FAE below a floor. This was two

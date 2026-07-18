@@ -16,7 +16,8 @@ Request (cloud → Pi):
     "action": "list" | "get_config" | "put_config" | "test"
               | "enable" | "disable" | "vendor_action"
               | "automation_list" | "automation_create"
-              | "automation_update" | "automation_delete",
+              | "automation_update" | "automation_delete"
+              | "chamber_automation_coverage" | "planner_propose",
     "slug": "grafana",                  # integrations actions only
     "payload": { ... }                  # action-specific
   }
@@ -57,6 +58,10 @@ _VALID_ACTIONS = {
     "automation_create",
     "automation_update",
     "automation_delete",
+    # v5.0.0 — pre-grow answers the cloud-web wizard/planner ask of the paired
+    # Pi (chamber-scoped, not integration-vendor-scoped, so no slug).
+    "chamber_automation_coverage",
+    "planner_propose",
 }
 
 
@@ -77,6 +82,7 @@ async def _dispatch_automation(
     """
     from ..automation import service as automation_service
     from ..automation.models import AutomationRule
+    from ..automation.service import normalize_rule_id
 
     if action == "automation_list":
         return await automation_service.list_rules_with_created_at()
@@ -93,9 +99,9 @@ async def _dispatch_automation(
         return rule.model_dump()
 
     if action == "automation_update":
-        rule_id = payload.get("rule_id")
+        rule_id = normalize_rule_id(payload.get("rule_id"))
         raw = payload.get("rule")
-        if not isinstance(rule_id, int):
+        if rule_id is None:
             raise ValueError("automation_update requires payload.rule_id")
         if not isinstance(raw, dict):
             raise ValueError("automation_update requires payload.rule")
@@ -107,8 +113,8 @@ async def _dispatch_automation(
         return rule.model_dump()
 
     if action == "automation_delete":
-        rule_id = payload.get("rule_id")
-        if not isinstance(rule_id, int):
+        rule_id = normalize_rule_id(payload.get("rule_id"))
+        if rule_id is None:
             raise ValueError("automation_delete requires payload.rule_id")
         ok = await automation_service.delete_rule(rule_id)
         if not ok:
@@ -118,11 +124,66 @@ async def _dispatch_automation(
     raise ValueError(f"unknown automation action {action!r}")
 
 
+async def _dispatch_pregrow(action: str, payload: dict[str, Any] | None) -> Any:
+    """v5.0.0 pre-grow dispatch — answers the cloud-web wizard/planner ask
+    with the same shape the Pi's own REST routes return, so a cloud operator
+    gets the real per-Pi verdict instead of a cloud stub.
+
+    Frames:
+      - chamber_automation_coverage → payload = {chamber_id, species}
+                                    returns {"phases": [...]}  (chamber_id is
+                                    the cloud device id and isn't needed for the
+                                    computation — coverage reads the live
+                                    hardware registries, not a local chamber)
+      - planner_propose            → payload = {species, start}  (start=YYYY-MM-DD)
+                                    returns the ProposedCycle dict, JSON-safe
+    """
+    payload = payload or {}
+
+    if action == "chamber_automation_coverage":
+        from ..species.service import get_profile
+        from ..automation.coverage import compute_coverage
+
+        species = payload.get("species")
+        if not isinstance(species, str) or not species:
+            raise ValueError("chamber_automation_coverage requires payload.species")
+        profile = await get_profile(species)
+        if profile is None:
+            raise HTTPException(404, f"Unknown species profile '{species}'")
+        return {"phases": await compute_coverage(profile)}
+
+    if action == "planner_propose":
+        from datetime import date
+
+        from ..planner.service import propose_cycle_for_species
+
+        species = payload.get("species")
+        start_raw = payload.get("start")
+        if not isinstance(species, str) or not species:
+            raise ValueError("planner_propose requires payload.species")
+        if not isinstance(start_raw, str) or not start_raw:
+            raise ValueError("planner_propose requires payload.start")
+        try:
+            start = date.fromisoformat(start_raw)
+        except ValueError:
+            raise ValueError(
+                f"planner_propose start must be YYYY-MM-DD, got {start_raw!r}"
+            )
+        cycle = await propose_cycle_for_species(species, start)
+        if cycle is None:
+            raise HTTPException(404, f"Unknown species profile '{species}'")
+        return cycle.model_dump(mode="json")
+
+    raise ValueError(f"unknown pre-grow action {action!r}")
+
+
 async def _dispatch(action: str, slug: str | None, payload: dict[str, Any] | None) -> Any:
     if action == "list":
         return await _registry.list_integrations()
     if action.startswith("automation_"):
         return await _dispatch_automation(action, payload)
+    if action in ("chamber_automation_coverage", "planner_propose"):
+        return await _dispatch_pregrow(action, payload)
     if slug is None:
         raise ValueError("slug is required for this action")
     if action == "get_config":

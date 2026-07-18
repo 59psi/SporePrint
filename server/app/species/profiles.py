@@ -1,5 +1,40 @@
 from .models import GrowPhase, PhaseParams, SpeciesProfile, SubstrateRecipe, TekStep
 
+# ── Species-id canonicalization ─────────────────────────────────────────────
+# The Pi seeds `species_profiles` with the ids below verbatim — underscored,
+# e.g. "lions_mane". The cloud/mobile view-model is DERIVED from these profiles
+# by scripts/port_species.py, which rewrites every id `_`→`-` ("lions-mane").
+# So the UI stores a hyphenated `species_profile_id` on the sessions it creates
+# while this table is keyed by the underscored form — a plain `WHERE id = ?`
+# misses 63 of 74 species, silently disabling species-driven setpoints, safety
+# alerts, planner warnings and the phase-timeline projection. Absorb the drift
+# in ONE place; do not scatter `.replace()` calls at the call sites.
+
+_SEPARATOR_SWAP = str.maketrans({"-": "_", "_": "-"})
+
+
+def species_id_candidates(profile_id: str) -> list[str]:
+    """Lookup candidates tolerant of the hyphen/underscore drift.
+
+    Tries the id exactly as given first (so an exact stored id always wins),
+    then the variant with '-' and '_' swapped in a single pass. Single-token
+    ids ("shiitake") collapse to one candidate.
+    """
+    swapped = profile_id.translate(_SEPARATOR_SWAP)
+    return [profile_id] if swapped == profile_id else [profile_id, swapped]
+
+
+def canonical_species_id(profile_id: str) -> str:
+    """The UI/storage-canonical spelling (hyphenated).
+
+    Matches what scripts/port_species.py emits and what the cloud/mobile UIs
+    send and locally match on. New session rows are normalized to this form so a
+    client that submits the underscored id still lands on the profile the UI
+    would render; the Pi table lookup stays tolerant via species_id_candidates.
+    """
+    return profile_id.replace("_", "-")
+
+
 BUILTIN_PROFILES: list[SpeciesProfile] = [
     # ─── ACTIVE SPECIES ─────────────────────────────────────────────────
     SpeciesProfile(

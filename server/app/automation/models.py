@@ -1,7 +1,8 @@
+import time
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ConditionType(str, Enum):
@@ -121,12 +122,34 @@ class AutomationRule(BaseModel):
     log_to_session: bool = True
 
 
+# A locked override pins an actuator OUT of automation's reach. Left open-ended
+# it silently disables climate control on that channel until someone remembers
+# to clear it — a forgotten "hold" becomes a dead heater or an un-vented chamber
+# for a live grow. So every override carries a hard server-side TTL ceiling:
+# a null ("until cancelled") or any longer-than-ceiling request is clamped down
+# to now + this. An operator who genuinely needs longer re-applies the hold —
+# a deliberate, logged act, not an indefinite silent one.
+MAX_OVERRIDE_TTL_SECONDS = 24 * 60 * 60  # 24h — covers any maintenance window
+
+
 class ManualOverride(BaseModel):
     target: str
     channel: str | None = None
     locked: bool = True
     reason: str = ""
-    expires_at: float | None = None  # unix timestamp, None = until cancelled
+    expires_at: float | None = None  # unix ts; clamped to now + MAX_OVERRIDE_TTL_SECONDS
+
+    @model_validator(mode="after")
+    def _clamp_expiry(self) -> "ManualOverride":
+        # Runs on every construction (unlike a field_validator, which pydantic
+        # skips for a defaulted None — the exact sticky-forever case we close).
+        # A null or over-long expiry is pulled back to the ceiling; a past
+        # expiry is left alone (it just reads as already-expired, which several
+        # override paths rely on).
+        ceiling = time.time() + MAX_OVERRIDE_TTL_SECONDS
+        if self.expires_at is None or self.expires_at > ceiling:
+            self.expires_at = ceiling
+        return self
 
 
 class RuleFiring(BaseModel):

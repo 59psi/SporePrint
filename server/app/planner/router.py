@@ -72,3 +72,41 @@ async def delete_event(event_id: int):
     if not deleted:
         raise HTTPException(404, "Planned event not found")
     return {"deleted": True}
+
+
+# ── Proposed cycle + iCal phase-timeline projection (V1-2) ───────
+
+from datetime import date  # noqa: E402
+
+from fastapi import Response  # noqa: E402
+
+from .ical import cycle_to_ical  # noqa: E402
+from .service import propose_cycle_for_species  # noqa: E402
+
+
+@router.get("/propose")
+async def propose(
+    species: str = Query(..., description="Species profile id, e.g. 'blue_oyster'"),
+    start: date | None = Query(None, description="Inoculation date (YYYY-MM-DD); defaults to today"),
+):
+    """Propose a species-derived dated per-phase grow cycle from an inoculation date."""
+    cycle = await propose_cycle_for_species(species, start or date.today())
+    if cycle is None:
+        raise HTTPException(404, f"Unknown species '{species}'")
+    return cycle
+
+
+@router.get("/propose.ics")
+async def propose_ics(
+    species: str = Query(..., description="Species profile id, e.g. 'blue_oyster'"),
+    start: date | None = Query(None, description="Inoculation date (YYYY-MM-DD); defaults to today"),
+):
+    """The proposed cycle as an iCal feed — one all-day event per phase + harvest."""
+    cycle = await propose_cycle_for_species(species, start or date.today())
+    if cycle is None:
+        raise HTTPException(404, f"Unknown species '{species}'")
+    return Response(
+        content=cycle_to_ical(cycle),
+        media_type="text/calendar",
+        headers={"Content-Disposition": f"attachment; filename={species}-plan.ics"},
+    )

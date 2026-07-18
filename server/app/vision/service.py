@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -99,22 +100,38 @@ async def analyze_frame_claude(frame: dict) -> dict | None:
         session_context = ""
         species_name = "Unknown"
         if frame.get("session_id"):
+            from ..species.service import get_profile
+
             async with get_db() as db:
                 cursor = await db.execute(
-                    "SELECT s.*, sp.data as profile_data FROM sessions s LEFT JOIN species_profiles sp ON s.species_profile_id = sp.id WHERE s.id = ?",
+                    "SELECT * FROM sessions WHERE id = ?",
                     (frame["session_id"],),
                 )
                 row = await cursor.fetchone()
-                if row:
-                    session = dict(row)
-                    profile = json.loads(session.get("profile_data", "{}")) if session.get("profile_data") else {}
-                    species_name = profile.get("common_name", session.get("species_profile_id", "Unknown"))
-                    session_context = f"""
+            if row:
+                session = dict(row)
+                species_id = session.get("species_profile_id")
+                # Resolve the species profile through the tolerant lookup instead
+                # of a raw `JOIN ... ON s.species_profile_id = sp.id`: the UI stores
+                # hyphenated ids ("blue-oyster") while species_profiles is seeded
+                # with the underscored builtin ids ("blue_oyster"), so the literal
+                # join missed ~63/74 species and dropped the species context from
+                # auto-analysis. get_profile() absorbs the drift via
+                # species_id_candidates. See app.species.profiles.
+                profile = await get_profile(species_id) if species_id else None
+                species_name = profile.common_name if profile else (species_id or "Unknown")
+                colonization_visual = (
+                    profile.colonization_visual_description if profile else "N/A"
+                )
+                contamination_notes = (
+                    profile.contamination_risk_notes if profile else "N/A"
+                )
+                session_context = f"""
 Session: {session.get('name', 'Unknown')}
 Species: {species_name}
 Current Phase: {session.get('current_phase', 'Unknown')}
-Colonization Visual: {profile.get('colonization_visual_description', 'N/A')}
-Contamination Notes: {profile.get('contamination_risk_notes', 'N/A')}
+Colonization Visual: {colonization_visual}
+Contamination Notes: {contamination_notes}
 """
 
         system_prompt = f"""You are an expert mycologist analyzing a mushroom cultivation image.
@@ -124,6 +141,8 @@ Provide a structured analysis in JSON format with these fields:
 - contamination_detected: null or {{ type, confidence, description }}
 - growth_stage: description of current growth stage
 - growth_rate: "expanding" | "slowing" | "stalled" | "n/a" — is the fruit body still visibly growing, or has it plateaued? Cues that growth has slowed/stalled: caps flattening or upturning, veils breaking, spores dropping, no size change expected between frames at this stage. A stalled/slowing fruit is at or past its harvest window.
+- colonization_percent: 0-100 or null — for a colonizing culture (grain/agar/substrate, no fruit bodies yet), the estimated percentage of the visible surface run through with white mycelium. 100 means fully colonized and ready to fruit. null when this isn't a colonization image (e.g. fruit bodies present).
+- surface: "bag" | "jar" | "agar" | "n/a" — the container/medium shown (grow bag, grain jar, or agar/petri plate); "n/a" if none applies.
 - morphology_notes: observations about mycelium/fruit body morphology
 - harvest_readiness: "not_ready" | "approaching" | "ready" | "overdue" | "n/a"
 - recommendations: list of actionable recommendations
@@ -193,6 +212,7 @@ Provide a structured analysis in JSON format with these fields:
                 log.warning("forward_event(contamination_alert) failed: %s", e)
 
         await _maybe_harvest_alert(frame, result, species_name)
+        await _maybe_colonization_alert(frame, result, species_name)
 
         return result
 
@@ -204,6 +224,35 @@ Provide a structured analysis in JSON format with these fields:
 _FRUITING_PHASES = {"primordia_induction", "fruiting"}
 _HARVEST_READY = {"ready", "overdue"}
 _GROWTH_SLOWED = {"slowing", "stalled"}
+
+# Phases where the culture is still running (mirrors sessions.service). Full
+# colonization is the "ready to fruit" milestone; only meaningful before the
+# bag/jar/plate is opened to fruit.
+_COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substrate_colonization"}
+# The visible surface must be essentially fully run before we page the operator.
+_COLONIZATION_COMPLETE_PERCENT = 95.0
+
+
+def colonization_signal(current_phase: str, colonization_percent) -> tuple[bool, str | None]:
+    """Should we tell the operator the culture is fully colonized? Pure + testable.
+
+    The spec's ask: surface the "ready to fruit" milestone the vision path never
+    raised. We only judge during a colonization phase (agar / LC / grain /
+    substrate) — once fruit bodies are present the fruiting-side signals take
+    over. The camera can't measure coverage to the percent, so the signal is the
+    model's per-frame ``colonization_percent`` read: at or above the completion
+    threshold, the medium is fully run and ready to move to fruiting conditions.
+    Advancing the phase is a separate product decision — this only alerts.
+    """
+    if current_phase not in _COLONIZATION_PHASES:
+        return False, None
+    try:
+        pct = float(colonization_percent)
+    except (TypeError, ValueError):
+        return False, None
+    if pct >= _COLONIZATION_COMPLETE_PERCENT:
+        return True, f"substrate is {pct:.0f}% colonized — ready to fruit"
+    return False, None
 
 
 def harvest_signal(current_phase: str, recent_analyses: list[dict]) -> tuple[bool, str | None]:
@@ -278,7 +327,7 @@ async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> 
         # Dedup: at most one harvest alert per session per 12h.
         existing = await (await db.execute(
             "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'harvest_ready' "
-            "AND created_at > unixepoch('now') - 43200 LIMIT 1",
+            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
             (session_id,),
         )).fetchone()
         if existing:
@@ -309,6 +358,72 @@ async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> 
         })
     except Exception as e:
         log.warning("forward_event(harvest_ready) failed: %s", e)
+
+
+async def _maybe_colonization_alert(frame: dict, result: dict, species_name: str) -> None:
+    """Fire a deduped colonization-complete alert when the culture is fully run.
+
+    Mirrors _maybe_harvest_alert: gate on the session's phase, dedup one alert
+    per session per 12h via session_events, then notify + forward to the cloud.
+    """
+    if not isinstance(result, dict):
+        return
+    session_id = frame.get("session_id")
+    if not session_id:
+        return
+
+    async with get_db() as db:
+        srow = await (await db.execute(
+            "SELECT current_phase FROM sessions WHERE id = ?", (session_id,)
+        )).fetchone()
+        if not srow:
+            return
+        phase = srow["current_phase"]
+
+    should, reason = colonization_signal(phase, result.get("colonization_percent"))
+    if not should:
+        return
+
+    async with get_db() as db:
+        # Dedup: at most one colonization-complete alert per session per 12h.
+        existing = await (await db.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'colonization_complete' "
+            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
+            (session_id,),
+        )).fetchone()
+        if existing:
+            return
+        await db.execute(
+            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "colonization_complete", "vision", f"Colonization complete: {reason}",
+             json.dumps({"reason": reason,
+                         "colonization_percent": result.get("colonization_percent"),
+                         "surface": result.get("surface"),
+                         "frame_id": frame.get("id")})),
+        )
+        await db.commit()
+
+    try:
+        await notify_warning(
+            f"Colonization complete — {species_name}",
+            f"Vision: {reason}. Ready to move to fruiting.",
+            dedup_key=f"colonization:{session_id}",
+        )
+    except Exception as e:
+        log.warning("colonization notify failed: %s", e)
+    try:
+        from ..cloud.service import forward_event
+        await forward_event("colonization_complete", {
+            "node_id": frame.get("node_id"),
+            "session_id": session_id,
+            "species": species_name,
+            "reason": reason,
+            "colonization_percent": result.get("colonization_percent"),
+            "surface": result.get("surface"),
+            "frame_id": frame.get("id"),
+        })
+    except Exception as e:
+        log.warning("forward_event(colonization_complete) failed: %s", e)
 
 
 async def get_frames(
@@ -413,3 +528,99 @@ async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> b
         )
         await db.commit()
         return True
+
+
+# ─── Auto-analysis on camera ingest (H4-1) ─────────────────────────────
+#
+# The local CNN (analyze_frame_local) is a permanent stub — every ingested
+# frame it scores comes back "healthy" 0.0, so auto contamination/harvest
+# detection never actually fired: green mold and overdue flushes went
+# unflagged unless an operator manually hit POST /frames/{id}/analyze. Rather
+# than ship a local model, we run the REAL detector (analyze_frame_claude) on
+# ingest — it already routes contamination (green mold/Trichoderma) and the
+# harvest-window signal (fruiting start/slowing/progressing, full colonization)
+# through the persisted-alert + ntfy + cloud forward_event plumbing.
+#
+# Anthropic calls cost money, so ingest analysis is cost-gated:
+#   - only when a Claude key is present. On the Pi, AI is BYOK — the operator's
+#     own key IS the premium/BYOK gate (the Pi has no tier concept of its own);
+#   - only for frames tied to an active grow session (nothing to monitor
+#     between grows), and
+#   - at most once per session per _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS, so a
+#     camera streaming a frame every few seconds can't run up a bill.
+_AUTO_ANALYSIS_MIN_INTERVAL_SECONDS = 15 * 60  # tunable cadence, per session
+_last_auto_analysis: dict[int, float] = {}
+# Strong refs to in-flight background tasks so the event loop can't GC them
+# mid-run (per asyncio.create_task docs). Cleared via the done-callback.
+_auto_analysis_tasks: set[asyncio.Task] = set()
+
+
+def _claim_auto_analysis_slot(session_id: int, now: float | None = None) -> bool:
+    """Atomically claim this session's throttle slot; True iff outside the window.
+
+    Check-and-record with no ``await`` in between, so under the single-threaded
+    event loop two frames arriving back-to-back can't both claim the slot. The
+    attempt time is recorded (not the success time), so a failed/slow analysis
+    still counts against the budget — the throttle strictly bounds API calls.
+    """
+    now = time.time() if now is None else now
+    last = _last_auto_analysis.get(session_id, 0.0)
+    if now - last < _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS:
+        return False
+    _last_auto_analysis[session_id] = now
+    return True
+
+
+async def _run_auto_analysis(frame: dict) -> None:
+    """Run the real Claude detector for an ingested frame and persist the result.
+
+    analyze_frame_claude fires the contamination + harvest alert/forward
+    plumbing itself; here we only persist the analysis blob so the frame row
+    carries it and the harvest-corroboration query (which reads analysis_claude
+    across recent frames) can see this frame next time.
+    """
+    try:
+        result = await analyze_frame_claude(frame)
+    except Exception as e:  # a background task must never die silently
+        log.warning("auto vision analysis failed for frame %s: %s", frame.get("id"), e)
+        return
+    if isinstance(result, dict) and "error" not in result:
+        try:
+            await update_analysis_claude(frame["id"], result)
+        except Exception as e:
+            log.warning("persisting auto vision analysis for frame %s failed: %s",
+                        frame.get("id"), e)
+
+
+async def maybe_schedule_auto_analysis(
+    frame_id: int,
+    session_id: int | None,
+    node_id: str,
+    file_path: str,
+) -> asyncio.Task | None:
+    """Kick the real Claude detector for a freshly-ingested frame, cost-gated.
+
+    Returns the scheduled task (so callers/tests can await it) or None when
+    gating declines: no active session, no Claude key (free / no BYOK), or
+    still inside the per-session throttle window. Non-blocking — the analysis
+    runs in the background so the ingest response returns immediately.
+    """
+    if session_id is None:
+        return None
+    # BYOK gate — the Pi's AI paygate. No key ⇒ don't even schedule (calling
+    # analyze_frame_claude would just return an error and waste a task).
+    if not settings.claude_api_key:
+        return None
+    if not _claim_auto_analysis_slot(session_id):
+        return None
+
+    frame = {
+        "id": frame_id,
+        "session_id": session_id,
+        "node_id": node_id,
+        "file_path": file_path,
+    }
+    task = asyncio.create_task(_run_auto_analysis(frame))
+    _auto_analysis_tasks.add(task)
+    task.add_done_callback(_auto_analysis_tasks.discard)
+    return task
