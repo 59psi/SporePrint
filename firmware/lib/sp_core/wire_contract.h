@@ -20,10 +20,10 @@
 //   switch report keys  -> Pi actuator_events (server/app/mqtt.py telemetry/<ch>)
 //   log entry keys      -> Pi logs consumer (ts_ms/level/msg)
 //
-// Native-safe: no <Arduino.h>. Uses ArduinoJson, which is header-only and
-// host-compilable (the CI Arduino-free grep matches only `include <Arduino.h>`,
-// never ArduinoJson.h). Numbers are rounded here so the wire format lives in
-// exactly one spot.
+// Native-safe: this header pulls in no Arduino core. It uses ArduinoJson, which
+// is header-only and host-compilable. (The CI native-safe guard greps sp_core /
+// sp_drivers for a bare Arduino-core header include; ArduinoJson.h never trips
+// it.) Numbers are rounded here so the wire format lives in exactly one spot.
 
 #include <ArduinoJson.h>
 
