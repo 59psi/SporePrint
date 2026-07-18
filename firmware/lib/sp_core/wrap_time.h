@@ -6,7 +6,7 @@
 // correct across the wrap for any window shorter than ~24.8 days; absolute
 // comparisons (`now >= deadline`) misbehave exactly once per wrap — which
 // for a relay driving a humidifier is the worst possible once. Covered by
-// boundary tests in test_core_time.
+// boundary tests in test_core_channel (test_wrap_helpers).
 //
 // Native-safe: no Arduino headers.
 

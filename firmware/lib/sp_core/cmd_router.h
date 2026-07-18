@@ -76,4 +76,30 @@ private:
     bool has_scene_ = false;
 };
 
+// Extract the command suffix from a raw inbound MQTT topic for node `id`.
+// The device receives `sporeprint/<id>/cmd/#`; the suffix after `.../cmd/` is
+// what CmdRouter::route() resolves. Returns a pointer INTO `topic` at the
+// suffix, or nullptr when the topic isn't a command for this node, the suffix
+// is empty (bare `.../cmd/`), or the suffix is nested (contains '/'). Extracted
+// from mqtt_link.cpp so this prefix-strip — the seam that feeds route() — is
+// host-tested instead of trapped in Arduino-only code where an off-by-one would
+// silently route every command to None.
+inline const char* cmd_suffix(const char* topic, const char* id) {
+    if (topic == nullptr || id == nullptr) return nullptr;
+    const char kHead[] = "sporeprint/";
+    const size_t kHeadLen = sizeof(kHead) - 1;
+    if (strncmp(topic, kHead, kHeadLen) != 0) return nullptr;
+    const char* p = topic + kHeadLen;
+    size_t id_len = strlen(id);
+    if (strncmp(p, id, id_len) != 0) return nullptr;
+    p += id_len;
+    const char kCmd[] = "/cmd/";
+    const size_t kCmdLen = sizeof(kCmd) - 1;
+    if (strncmp(p, kCmd, kCmdLen) != 0) return nullptr;
+    p += kCmdLen;
+    if (p[0] == '\0') return nullptr;                 // bare .../cmd/
+    if (strchr(p, '/') != nullptr) return nullptr;    // nested suffix
+    return p;
+}
+
 }  // namespace sp

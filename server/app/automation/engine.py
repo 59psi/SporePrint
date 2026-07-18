@@ -119,6 +119,7 @@ def _cold_storage_params():
         _COLD_STORAGE_PARAMS = PhaseParams(
             temp_min_f=35, temp_max_f=40,
             humidity_min=80, humidity_max=95,   # incidental; not actively driven
+            humidity_driven=False,               # a fridge's RH is not a fault to page on
             co2_max_ppm=100000, co2_tolerance="high",  # never vent a sealed fridge
             light_hours_on=0, light_hours_off=24, light_spectrum="none",
             fae_mode="none",                     # no fresh air — it's a fridge
@@ -562,8 +563,14 @@ async def _check_safety_thresholds(node_id: str, phase_params, readings: dict, s
 
     humidity = readings.get("humidity")
     if isinstance(humidity, (int, float)):
+        # When the phase doesn't actively drive humidity (cold storage — a
+        # fridge idles at ~45% RH by design), only page on a HIGH excursion.
+        # A low reading is expected, not an emergency the chamber is failing to
+        # correct — same reasoning as the CO2 fae_mode="none" gate below.
+        hum_min = (phase_params.humidity_min
+                   if getattr(phase_params, "humidity_driven", True) else None)
         sev, direction = _band_severity(
-            humidity, phase_params.humidity_min, phase_params.humidity_max,
+            humidity, hum_min, phase_params.humidity_max,
             _HUMIDITY_WARN_MARGIN, _HUMIDITY_EMERG_MARGIN,
         )
         if sev:

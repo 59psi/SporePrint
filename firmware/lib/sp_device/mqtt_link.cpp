@@ -1,5 +1,7 @@
 #include "mqtt_link.h"
 
+#include "cmd_router.h"  // sp::cmd_suffix
+
 namespace sp_device {
 
 MqttLink* MqttLink::instance_ = nullptr;
@@ -87,12 +89,9 @@ void MqttLink::handle_message(char* topic, uint8_t* payload,
                       length);
         return;
     }
-    std::string prefix = "sporeprint/" + node_id_ + "/cmd/";
-    if (strncmp(topic, prefix.c_str(), prefix.size()) != 0) return;
-    const char* suffix = topic + prefix.size();
-    if (suffix[0] == '\0' || strchr(suffix, '/') != nullptr) {
-        return;  // empty or nested suffixes are not commands
-    }
+    // sporeprint/<id>/cmd/<suffix> → suffix (host-tested in test_core_channel).
+    const char* suffix = sp::cmd_suffix(topic, node_id_.c_str());
+    if (suffix == nullptr) return;  // not a command for this node
 
     char json[kInboundCap];
     memcpy(json, payload, length);

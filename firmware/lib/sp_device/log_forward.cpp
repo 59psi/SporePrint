@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 
+#include "wire_contract.h"
 #include "wrap_time.h"
 
 namespace sp_device {
@@ -68,9 +69,7 @@ void loop(uint32_t now_ms) {
         if (cost > budget) break;
         budget -= cost;
         JsonObject obj = entries.add<JsonObject>();
-        obj["ts_ms"] = e.ts_ms;
-        obj["level"] = e.level;
-        obj["msg"] = e.msg;
+        sp::build_log_entry(obj, e.ts_ms, e.level, e.msg);
         g_tail = (g_tail + 1) % kRingCapacity;
         --g_count;
         ++drained;

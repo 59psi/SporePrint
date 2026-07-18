@@ -82,6 +82,7 @@ async def _dispatch_automation(
     """
     from ..automation import service as automation_service
     from ..automation.models import AutomationRule
+    from ..automation.service import normalize_rule_id
 
     if action == "automation_list":
         return await automation_service.list_rules_with_created_at()
@@ -98,9 +99,9 @@ async def _dispatch_automation(
         return rule.model_dump()
 
     if action == "automation_update":
-        rule_id = payload.get("rule_id")
+        rule_id = normalize_rule_id(payload.get("rule_id"))
         raw = payload.get("rule")
-        if not isinstance(rule_id, int):
+        if rule_id is None:
             raise ValueError("automation_update requires payload.rule_id")
         if not isinstance(raw, dict):
             raise ValueError("automation_update requires payload.rule")
@@ -112,8 +113,8 @@ async def _dispatch_automation(
         return rule.model_dump()
 
     if action == "automation_delete":
-        rule_id = payload.get("rule_id")
-        if not isinstance(rule_id, int):
+        rule_id = normalize_rule_id(payload.get("rule_id"))
+        if rule_id is None:
             raise ValueError("automation_delete requires payload.rule_id")
         ok = await automation_service.delete_rule(rule_id)
         if not ok:

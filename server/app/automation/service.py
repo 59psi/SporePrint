@@ -8,6 +8,29 @@ from .templates import BUILTIN_RULES
 _RULE_META_FIELDS = {"id", "name", "description", "enabled", "priority"}
 
 
+def normalize_rule_id(rule_id) -> int | None:
+    """Canonicalise a rule id to int (the type of AutomationRule.id and the
+    SQLite PK), accepting either an int or a numeric string.
+
+    Remote surfaces disagreed on the wire type — the cloud `system`/`rule`
+    suspend path required a str while the automation_update/delete CRUD path
+    required an int, so a caller sending a numeric id was accepted by one and
+    rejected by the other. Both now route id through here: a numeric id in
+    either form resolves to the same int, and non-numeric / empty / None
+    values return None so the caller can reject them uniformly.
+    """
+    if isinstance(rule_id, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(rule_id, int):
+        return rule_id
+    if isinstance(rule_id, str) and rule_id.strip():
+        try:
+            return int(rule_id.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def deserialize_rule_row(row) -> dict:
     """Deserialize a rule from a database row, merging rule_data JSON with metadata columns."""
     data = json.loads(row["rule_data"])

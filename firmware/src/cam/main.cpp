@@ -36,6 +36,7 @@
 #include "sha256.h"
 #include "hmac_verify.h"
 #include "wifi_provisioner.h"
+#include "wire_contract.h"
 #include "wrap_time.h"
 
 #ifndef SPOREPRINT_FW_VERSION
@@ -176,46 +177,53 @@ static void publish_health() {
 
 static void publish_heartbeat() {
     if (!mqtt->connected()) return;
+    // Keep the IP String alive until publish — build_heartbeat borrows it.
+    String ip = WiFi.localIP().toString();
+    const char* roles[1] = {"camera"};
+
+    sp::HeartbeatInputs in;
+    in.uptime_sec = millis() / 1000;
+    in.free_heap = ESP.getFreeHeap();
+    in.firmware_version = SPOREPRINT_FW_VERSION;
+    in.wifi_rssi = WiFi.RSSI();
+    in.ip = ip.c_str();
+    in.reset_reason = (int)esp_reset_reason();
+    in.emit_wifi_reconnects = false;  // cam heartbeat omits wifi_reconnects
+    in.mqtt_reconnects = mqtt->reconnect_count();
+    in.type = "camera";
+    in.roles = roles;
+    in.n_roles = 1;
+    in.fw_image = "cam";
+    in.migrated_from = cfg.migrated_from.c_str();
+
     JsonDocument doc;
-    doc["uptime_sec"] = millis() / 1000;
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["firmware_version"] = SPOREPRINT_FW_VERSION;
-    doc["wifi_rssi"] = WiFi.RSSI();
-    doc["ip"] = WiFi.localIP().toString();
-    doc["reset_reason"] = (int)esp_reset_reason();
-    doc["mqtt_reconnects"] = mqtt->reconnect_count();
-    doc["type"] = "camera";
-    JsonArray roles = doc["roles"].to<JsonArray>();
-    roles.add("camera");
-    doc["fw_image"] = "cam";
-    if (!cfg.migrated_from.empty())
-        doc["migrated_from"] = cfg.migrated_from.c_str();
+    sp::build_heartbeat(in, doc);
     mqtt->publish(mqtt->topic("status/heartbeat").c_str(), doc);
 }
 
 static bool verify_command(const char* raw, size_t raw_len,
                            const char* suffix) {
-    if (cfg.hmac_key.empty()) {
-        SP_LOG(LOG_WARN,
-               "[SEC] hmac_key not provisioned — accepting unsigned cmd/%s",
-               suffix);
-        return true;
+    // Shared, host-tested policy — identical to the node image (test_core_hmac).
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        raw, raw_len, cfg.hmac_key.c_str(), cfg.hmac_key.size(),
+        (uint64_t)time(nullptr), sp::hmac_sha256_host);
+    switch (r.decision) {
+        case sp::CmdAuthDecision::AcceptUnsigned:
+            SP_LOG(LOG_WARN,
+                   "[SEC] hmac_key not provisioned — accepting unsigned cmd/%s",
+                   suffix);
+            return true;
+        case sp::CmdAuthDecision::RejectClockUnsynced:
+            SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: clock not synced", suffix);
+            return false;
+        case sp::CmdAuthDecision::Reject:
+            SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: %s", suffix,
+                   sp::verify_status_str(r.status));
+            return false;
+        case sp::CmdAuthDecision::Accept:
+            return true;
     }
-    time_t now = time(nullptr);
-    if (now < 1577836800) {
-        SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: clock not synced", suffix);
-        return false;
-    }
-    sp::VerifyStatus st =
-        sp::verify_frame(raw, raw_len, cfg.hmac_key.c_str(),
-                         cfg.hmac_key.size(), (uint64_t)now,
-                         sp::hmac_sha256_host);
-    if (st != sp::VerifyStatus::Ok) {
-        SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: %s", suffix,
-               sp::verify_status_str(st));
-        return false;
-    }
-    return true;
+    return false;
 }
 
 static void on_command(const char* suffix, const char* raw, size_t raw_len,

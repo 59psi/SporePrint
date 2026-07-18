@@ -34,6 +34,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = REPO_ROOT / "firmware"
 NODE_MAIN = FIRMWARE / "src" / "node" / "main.cpp"
+# v5: the device→cloud JSON assembly was extracted out of the publish_*()
+# functions in main.cpp into pure builders in this header (publish_telemetry()
+# now just calls sp::build_telemetry(in, doc)). The wire keys live here now.
+WIRE_CONTRACT = FIRMWARE / "lib" / "sp_core" / "wire_contract.h"
 SERVER_APP = REPO_ROOT / "server" / "app"
 
 # doc["key"] / o["key"] / chans["key"] assignments in the publishers.
@@ -69,9 +73,13 @@ def _function_body(source: str, signature: str) -> str:
 
 
 def emitted_telemetry_keys() -> set[str]:
-    """Every key publish_telemetry() can put on the telemetry topic."""
-    keys = set(_KEY_RE.findall(_function_body(_read(NODE_MAIN), "static void publish_telemetry()")))
-    assert keys, "no doc[...] keys parsed from publish_telemetry — parser broken"
+    """Every key publish_telemetry() can put on the telemetry topic. The
+    doc[...] assignments were extracted into the pure build_telemetry() builder
+    in wire_contract.h (publish_telemetry() now just calls it), so parse there."""
+    keys = set(_KEY_RE.findall(
+        _function_body(_read(WIRE_CONTRACT), "build_telemetry(const TelemetryInputs")
+    ))
+    assert keys, "no doc[...] keys parsed from build_telemetry — parser broken"
     return keys
 
 
@@ -203,7 +211,9 @@ def test_mqtt_ingest_reads_are_emitted():
     src = _read(SERVER_APP / "mqtt.py")
 
     emitted: set[str] = set()
-    for path in (NODE_MAIN, FIRMWARE / "src" / "cam" / "main.cpp"):
+    # wire_contract.h holds the extracted build_telemetry/heartbeat/health/alert/
+    # switch/log builders — the bulk of the emitted keys now live there.
+    for path in (NODE_MAIN, FIRMWARE / "src" / "cam" / "main.cpp", WIRE_CONTRACT):
         emitted |= set(_KEY_RE.findall(_read(path)))
     for lib in ("mqtt_link.cpp", "ota_service.cpp", "coredump_uploader.cpp", "log_forward.cpp"):
         emitted |= set(_KEY_RE.findall(_read(FIRMWARE / "lib" / "sp_device" / lib)))

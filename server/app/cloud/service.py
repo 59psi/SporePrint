@@ -189,11 +189,15 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
     if channel == "rule":
         try:
             from ..automation.engine import suspend_rule
+            from ..automation.service import normalize_rule_id
         except ImportError:
             return False, "automation engine not available on this Pi"
-        rule_id = payload.get("rule_id")
+        # Accept a numeric rule id in either wire form (int or numeric string) —
+        # the automation CRUD paths use int, so normalising here keeps a single
+        # caller from being stranded by a type mismatch across surfaces.
+        rule_id = normalize_rule_id(payload.get("rule_id"))
         minutes = int(payload.get("minutes", 30))
-        if not isinstance(rule_id, str) or not rule_id:
+        if rule_id is None:
             return False, "rule_suspend requires payload.rule_id"
         try:
             await suspend_rule(rule_id, minutes)
@@ -394,6 +398,230 @@ async def _persist_replay_id(command_id: str) -> None:
         await db.commit()
 
 
+async def handle_cloud_command(sio, data):
+    """Receive a command from the cloud (relayed from a mobile app).
+
+    Every frame must be signed with HMAC-SHA256 over the canonical
+    form of the frame using the Pi's `cloud_token` as the key. An
+    unsigned or tampered frame is rejected before any other check —
+    signature verification sits outside the tier/target checks so a
+    compromised relay cannot reach `mqtt_publish` even with a valid
+    tier string.
+
+    Additional defense-in-depth layers applied after signature passes:
+    - tier must be 'premium'
+    - command id must be present and not replayed (in-memory FIFO cache,
+      1024 entries, O(1) OrderedDict with popitem(last=False) eviction —
+      oldest-inserted id is always the one that gets evicted)
+    - target must match a registered hardware node OR smart plug
+    - channel must match the safe-charset regex — no injection into topic
+
+    `sio` is the connected socket client every `command_result` ack is
+    emitted on — passed in (rather than read from the module global) so the
+    gate is importable and frame-testable with a stub client.
+    """
+    command_id = data.get("id")
+    try:
+        ok, reason = verify_frame(settings.cloud_token, data)
+        if not ok:
+            # v3.3.10 (P2-10 / E-2): classify rejection so cloud can tag the
+            # SLO sample. Clock-skew rejection is operationally different
+            # from a signature mismatch or a replay attack — the former
+            # means "Pi's clock has drifted past the 30s window" and the
+            # fix is NTP/chrony, not redeploying the cloud. A signature
+            # mismatch after the Pi's .env has the right cloud_token is a
+            # signing-contract drift between cloud + Pi — a release bug.
+            category = (
+                "clock_skew" if reason and "replay window" in reason
+                else "signature_mismatch" if reason and "signature" in reason
+                else "bad_frame"
+            )
+            log.warning(
+                "Cloud: rejecting command %s — %s (category=%s)",
+                command_id, reason, category,
+            )
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": False,
+                "error": f"Signature check failed: {reason}",
+                "reject_reason": category,
+            })
+            return
+
+        tier = data.get("tier", "free")
+        if tier != "premium":
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": False,
+                "error": "Remote control requires premium tier",
+            })
+            return
+
+        if not command_id or not isinstance(command_id, str):
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": False,
+                "error": "Missing or invalid command id",
+            })
+            return
+
+        # Atomic check-and-insert under the replay lock so two concurrent
+        # frames carrying the same command_id can't both pass the dedup
+        # test. Without the lock, both would see "not in cache" and both
+        # would proceed to execute the command. We do the socket emit
+        # OUTSIDE the lock to avoid holding it across a network await.
+        already_seen = False
+        async with _replay_lock:
+            if command_id in _seen_command_ids:
+                already_seen = True
+            else:
+                _seen_command_ids[command_id] = None
+                # Evict the OLDEST entry (FIFO) when the cache is over
+                # capacity. OrderedDict.popitem(last=False) is O(1) and —
+                # unlike set.pop() — removes the insertion-order-oldest,
+                # not an arbitrary element.
+                while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
+                    _seen_command_ids.popitem(last=False)
+        if already_seen:
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": False,
+                "error": "Replayed command id",
+            })
+            return
+        # v3.3.3 — persist so a restart inside the replay window still
+        # rejects the replay. Failure to persist is logged but does not
+        # reject the command; replay protection in that window falls back
+        # to the in-memory cache which is always consistent.
+        try:
+            await _persist_replay_id(command_id)
+        except Exception as e:
+            log.warning("Cloud: replay cache persist failed: %s", e)
+
+        # v3.4.x coordinated wire shape: every command frame carries
+        # `{device_id, target_kind, channel, payload}`. mobile, cloud
+        # relay, and Pi all speak this shape — no translation anywhere.
+        # The Pi resolves `target_kind` → MQTT node_id at publish time
+        # via the hardware_nodes registry (internal data lookup, not
+        # cross-shape mapping). `target_kind == "system"` is a Pi-
+        # internal pseudo-target for chamber-level commands handled by
+        # the Pi server itself (automation, session, rule, reboot,
+        # ota), routed in-process rather than to MQTT.
+        target_kind = data.get("target_kind")
+        channel = data.get("channel")
+        payload = data.get("payload", {})
+
+        if target_kind not in _VALID_TARGET_KINDS or (channel is not None and not _is_safe_channel(channel)):
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": False,
+                "error": f"Invalid target_kind or channel (target_kind={target_kind!r})",
+            })
+            return
+
+        # Resolve target_kind → MQTT node_id. "system" and "automation" are
+        # virtual in-process targets — no hardware node, no MQTT publish.
+        if target_kind in ("system", "automation"):
+            target = target_kind
+        else:
+            target = await _resolve_node_id_by_type(target_kind)
+            if not target:
+                await sio.emit("command_result", {
+                    "id": command_id,
+                    "success": False,
+                    "error": f"No registered {target_kind} node",
+                })
+                return
+            # Sanity check the resolved node id against the safety regex.
+            if not _is_safe_target(target):
+                await sio.emit("command_result", {
+                    "id": command_id,
+                    "success": False,
+                    "error": "Resolved node id failed safety check",
+                })
+                return
+
+        # `system` / `automation` skip the registered-target check — they're
+        # Pi-internal virtual targets, not hardware_nodes rows. The
+        # downstream MQTT publish path also treats them specially
+        # (see below).
+        if target not in ("system", "automation") and not await _target_is_registered(target):
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": False,
+                "error": f"Unknown target '{target}'",
+            })
+            return
+
+        # Dispatch:
+        #   - target == "system"     → in-process system handler
+        #     (automation pause/resume, session start/end, rule
+        #     suspend, reboot, ota). No MQTT publish.
+        #   - target == "automation" → in-process manual-override handler
+        #     (the /actuator override twin). No MQTT publish.
+        #   - hardware target        → MQTT publish to
+        #     `sporeprint/{node_id}/cmd/{channel}` per the existing
+        #     contract.
+        if target == "system":
+            ok, err = await _dispatch_system_command(channel, payload)
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": ok,
+                "target_kind": target_kind,
+                "channel": channel,
+                "error": err,
+            })
+            log.info(
+                "Cloud: %s system command %s from %s",
+                "executed" if ok else "rejected", channel, tier,
+            )
+        elif target == "automation":
+            ok, err = await _dispatch_automation_command(channel, payload)
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": ok,
+                "target_kind": target_kind,
+                "channel": channel,
+                "error": err,
+            })
+            log.info(
+                "Cloud: %s automation command %s from %s",
+                "executed" if ok else "rejected", channel, tier,
+            )
+        else:
+            # Late import to avoid circular dependency with mqtt.py
+            from ..mqtt import mqtt_publish
+
+            if channel:
+                topic = f"sporeprint/{target}/cmd/{channel}"
+            else:
+                topic = f"sporeprint/{target}/cmd/config"
+
+            published = await mqtt_publish(topic, payload)
+
+            await sio.emit("command_result", {
+                "id": command_id,
+                "success": bool(published),
+                "target_kind": target_kind,
+                "target": target,
+                "channel": channel,
+                "error": None if published else "mqtt_publish failed (broker disconnected?)",
+            })
+            log.info(
+                "Cloud: %s command %s/%s/%s from %s",
+                "executed" if published else "attempted",
+                target_kind, target, channel, tier,
+            )
+
+    except Exception as e:
+        log.error("Cloud: command execution failed: %s", e)
+        await sio.emit("command_result", {
+            "id": command_id,
+            "success": False,
+            "error": str(e),
+        })
+
+
 async def start_cloud_connector():
     """Background task started in main.py lifespan. No-op if cloud not configured."""
     global _sio, _connected, _start_time, _reconnect_attempts, _subscription_blocked
@@ -458,223 +686,11 @@ async def start_cloud_connector():
 
     @_sio.on("command")
     async def on_command(data):
-        """Receive a command from the cloud (relayed from a mobile app).
-
-        Every frame must be signed with HMAC-SHA256 over the canonical
-        form of the frame using the Pi's `cloud_token` as the key. An
-        unsigned or tampered frame is rejected before any other check —
-        signature verification sits outside the tier/target checks so a
-        compromised relay cannot reach `mqtt_publish` even with a valid
-        tier string.
-
-        Additional defense-in-depth layers applied after signature passes:
-        - tier must be 'premium'
-        - command id must be present and not replayed (in-memory FIFO cache,
-          1024 entries, O(1) OrderedDict with popitem(last=False) eviction —
-          oldest-inserted id is always the one that gets evicted)
-        - target must match a registered hardware node OR smart plug
-        - channel must match the safe-charset regex — no injection into topic
-        """
-        command_id = data.get("id")
-        try:
-            ok, reason = verify_frame(settings.cloud_token, data)
-            if not ok:
-                # v3.3.10 (P2-10 / E-2): classify rejection so cloud can tag the
-                # SLO sample. Clock-skew rejection is operationally different
-                # from a signature mismatch or a replay attack — the former
-                # means "Pi's clock has drifted past the 30s window" and the
-                # fix is NTP/chrony, not redeploying the cloud. A signature
-                # mismatch after the Pi's .env has the right cloud_token is a
-                # signing-contract drift between cloud + Pi — a release bug.
-                category = (
-                    "clock_skew" if reason and "replay window" in reason
-                    else "signature_mismatch" if reason and "signature" in reason
-                    else "bad_frame"
-                )
-                log.warning(
-                    "Cloud: rejecting command %s — %s (category=%s)",
-                    command_id, reason, category,
-                )
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": False,
-                    "error": f"Signature check failed: {reason}",
-                    "reject_reason": category,
-                })
-                return
-
-            tier = data.get("tier", "free")
-            if tier != "premium":
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": False,
-                    "error": "Remote control requires premium tier",
-                })
-                return
-
-            if not command_id or not isinstance(command_id, str):
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": False,
-                    "error": "Missing or invalid command id",
-                })
-                return
-
-            # Atomic check-and-insert under the replay lock so two concurrent
-            # frames carrying the same command_id can't both pass the dedup
-            # test. Without the lock, both would see "not in cache" and both
-            # would proceed to execute the command. We do the socket emit
-            # OUTSIDE the lock to avoid holding it across a network await.
-            already_seen = False
-            async with _replay_lock:
-                if command_id in _seen_command_ids:
-                    already_seen = True
-                else:
-                    _seen_command_ids[command_id] = None
-                    # Evict the OLDEST entry (FIFO) when the cache is over
-                    # capacity. OrderedDict.popitem(last=False) is O(1) and —
-                    # unlike set.pop() — removes the insertion-order-oldest,
-                    # not an arbitrary element.
-                    while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
-                        _seen_command_ids.popitem(last=False)
-            if already_seen:
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": False,
-                    "error": "Replayed command id",
-                })
-                return
-            # v3.3.3 — persist so a restart inside the replay window still
-            # rejects the replay. Failure to persist is logged but does not
-            # reject the command; replay protection in that window falls back
-            # to the in-memory cache which is always consistent.
-            try:
-                await _persist_replay_id(command_id)
-            except Exception as e:
-                log.warning("Cloud: replay cache persist failed: %s", e)
-
-            # v3.4.x coordinated wire shape: every command frame carries
-            # `{device_id, target_kind, channel, payload}`. mobile, cloud
-            # relay, and Pi all speak this shape — no translation anywhere.
-            # The Pi resolves `target_kind` → MQTT node_id at publish time
-            # via the hardware_nodes registry (internal data lookup, not
-            # cross-shape mapping). `target_kind == "system"` is a Pi-
-            # internal pseudo-target for chamber-level commands handled by
-            # the Pi server itself (automation, session, rule, reboot,
-            # ota), routed in-process rather than to MQTT.
-            target_kind = data.get("target_kind")
-            channel = data.get("channel")
-            payload = data.get("payload", {})
-
-            if target_kind not in _VALID_TARGET_KINDS or (channel is not None and not _is_safe_channel(channel)):
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": False,
-                    "error": f"Invalid target_kind or channel (target_kind={target_kind!r})",
-                })
-                return
-
-            # Resolve target_kind → MQTT node_id. "system" and "automation" are
-            # virtual in-process targets — no hardware node, no MQTT publish.
-            if target_kind in ("system", "automation"):
-                target = target_kind
-            else:
-                target = await _resolve_node_id_by_type(target_kind)
-                if not target:
-                    await _sio.emit("command_result", {
-                        "id": command_id,
-                        "success": False,
-                        "error": f"No registered {target_kind} node",
-                    })
-                    return
-                # Sanity check the resolved node id against the safety regex.
-                if not _is_safe_target(target):
-                    await _sio.emit("command_result", {
-                        "id": command_id,
-                        "success": False,
-                        "error": "Resolved node id failed safety check",
-                    })
-                    return
-
-            # `system` / `automation` skip the registered-target check — they're
-            # Pi-internal virtual targets, not hardware_nodes rows. The
-            # downstream MQTT publish path also treats them specially
-            # (see below).
-            if target not in ("system", "automation") and not await _target_is_registered(target):
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": False,
-                    "error": f"Unknown target '{target}'",
-                })
-                return
-
-            # Dispatch:
-            #   - target == "system"     → in-process system handler
-            #     (automation pause/resume, session start/end, rule
-            #     suspend, reboot, ota). No MQTT publish.
-            #   - target == "automation" → in-process manual-override handler
-            #     (the /actuator override twin). No MQTT publish.
-            #   - hardware target        → MQTT publish to
-            #     `sporeprint/{node_id}/cmd/{channel}` per the existing
-            #     contract.
-            if target == "system":
-                ok, err = await _dispatch_system_command(channel, payload)
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": ok,
-                    "target_kind": target_kind,
-                    "channel": channel,
-                    "error": err,
-                })
-                log.info(
-                    "Cloud: %s system command %s from %s",
-                    "executed" if ok else "rejected", channel, tier,
-                )
-            elif target == "automation":
-                ok, err = await _dispatch_automation_command(channel, payload)
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": ok,
-                    "target_kind": target_kind,
-                    "channel": channel,
-                    "error": err,
-                })
-                log.info(
-                    "Cloud: %s automation command %s from %s",
-                    "executed" if ok else "rejected", channel, tier,
-                )
-            else:
-                # Late import to avoid circular dependency with mqtt.py
-                from ..mqtt import mqtt_publish
-
-                if channel:
-                    topic = f"sporeprint/{target}/cmd/{channel}"
-                else:
-                    topic = f"sporeprint/{target}/cmd/config"
-
-                published = await mqtt_publish(topic, payload)
-
-                await _sio.emit("command_result", {
-                    "id": command_id,
-                    "success": bool(published),
-                    "target_kind": target_kind,
-                    "target": target,
-                    "channel": channel,
-                    "error": None if published else "mqtt_publish failed (broker disconnected?)",
-                })
-                log.info(
-                    "Cloud: %s command %s/%s/%s from %s",
-                    "executed" if published else "attempted",
-                    target_kind, target, channel, tier,
-                )
-
-        except Exception as e:
-            log.error("Cloud: command execution failed: %s", e)
-            await _sio.emit("command_result", {
-                "id": command_id,
-                "success": False,
-                "error": str(e),
-            })
+        # Thin socket wrapper — the whole security gate lives in the importable
+        # module-level handle_cloud_command so it can be frame-tested directly
+        # (the nested closure was untestable). Pass the live client so every
+        # command_result ack goes back over the same socket.
+        await handle_cloud_command(_sio, data)
 
     # Connection loop with exponential backoff
     while True:

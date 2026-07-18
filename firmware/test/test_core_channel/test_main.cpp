@@ -10,6 +10,7 @@
 #include "channel_runtime.h"
 #include "clamps.h"
 #include "cmd_router.h"
+#include "personality.h"
 #include "scene_table.h"
 #include "wrap_time.h"
 
@@ -346,6 +347,193 @@ void test_wrap_helpers() {
     TEST_ASSERT_EQUAL_UINT32(21, sp::elapsed_ms(5u, 0xFFFFFFF0u));
 }
 
+// ── personality (wire contract: node type + channel preset names) ──
+
+void test_personality_str_round_trip() {
+    // Every valid string round-trips through from_str → str.
+    struct {
+        const char* s;
+        sp::Personality p;
+    } cases[] = {
+        {"climate", sp::Personality::Climate},
+        {"relay", sp::Personality::RelayBank},
+        {"lighting", sp::Personality::LightingBank},
+    };
+    for (auto& c : cases) {
+        sp::Personality out;
+        TEST_ASSERT_TRUE_MESSAGE(sp::personality_from_str(c.s, &out), c.s);
+        TEST_ASSERT_EQUAL_INT((int)c.p, (int)out);
+        TEST_ASSERT_EQUAL_STRING(c.s, sp::personality_str(c.p));
+    }
+}
+
+void test_personality_from_str_rejects_unknown_and_null() {
+    sp::Personality out = sp::Personality::RelayBank;  // sentinel
+    TEST_ASSERT_FALSE(sp::personality_from_str("node", &out));
+    TEST_ASSERT_FALSE(sp::personality_from_str("camera", &out));
+    TEST_ASSERT_FALSE(sp::personality_from_str("", &out));
+    TEST_ASSERT_FALSE(sp::personality_from_str(nullptr, &out));
+    // On rejection, `out` is left untouched — the caller keeps its default.
+    TEST_ASSERT_EQUAL_INT((int)sp::Personality::RelayBank, (int)out);
+}
+
+void test_node_type_str_is_never_node() {
+    // The Pi routes commands by type and must receive climate/relay/lighting,
+    // NEVER the literal "node" (the header's central invariant).
+    TEST_ASSERT_EQUAL_STRING("climate",
+                             sp::node_type_str(sp::Personality::Climate));
+    TEST_ASSERT_EQUAL_STRING("relay",
+                             sp::node_type_str(sp::Personality::RelayBank));
+    TEST_ASSERT_EQUAL_STRING("lighting",
+                             sp::node_type_str(sp::Personality::LightingBank));
+    // node_type_str is exactly personality_str.
+    for (int i = 0; i <= (int)sp::Personality::LightingBank; ++i) {
+        sp::Personality p = (sp::Personality)i;
+        TEST_ASSERT_EQUAL_STRING(sp::personality_str(p), sp::node_type_str(p));
+        TEST_ASSERT_TRUE(strcmp(sp::node_type_str(p), "node") != 0);
+    }
+}
+
+void test_personality_channels_climate_has_no_bank() {
+    sp::ChannelConfig out[4];
+    TEST_ASSERT_EQUAL_INT(0, sp::personality_channels(sp::Personality::Climate,
+                                                      out));
+}
+
+void test_personality_channels_relay_bank_presets() {
+    sp::ChannelConfig out[4];
+    int n = sp::personality_channels(sp::Personality::RelayBank, out);
+    TEST_ASSERT_EQUAL_INT(4, n);
+    // Names are a Pi-automation wire contract (server/app/automation/
+    // templates.py routes channel="fae"/"exhaust"/"circulation"/"aux").
+    const char* names[] = {"fae", "exhaust", "circulation", "aux"};
+    for (int i = 0; i < 4; ++i) {
+        TEST_ASSERT_EQUAL_STRING(names[i], out[i].name);
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelMode::Switch, (int)out[i].mode);
+        // Switch channels carry the 30-min max-on backstop.
+        TEST_ASSERT_EQUAL_UINT32(sp::kDefaultMaxOnMs, out[i].max_on_ms);
+        // Preset names must survive channel-name validation (topic-safe, not
+        // shadowing a reserved endpoint).
+        TEST_ASSERT_TRUE(sp::channel_name_valid(out[i].name));
+    }
+}
+
+void test_personality_channels_lighting_bank_presets() {
+    sp::ChannelConfig out[4];
+    int n = sp::personality_channels(sp::Personality::LightingBank, out);
+    TEST_ASSERT_EQUAL_INT(4, n);
+    const char* names[] = {"white", "blue", "red", "far_red"};
+    for (int i = 0; i < 4; ++i) {
+        TEST_ASSERT_EQUAL_STRING(names[i], out[i].name);
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelMode::Dim, (int)out[i].mode);
+        // Lights legitimately run 12 h — no max-on cutoff.
+        TEST_ASSERT_EQUAL_UINT32(0, out[i].max_on_ms);
+        TEST_ASSERT_TRUE(sp::channel_name_valid(out[i].name));
+    }
+}
+
+// ── boundary backfills ─────────────────────────────────────────
+
+void test_cmd_router_ninth_channel_overflow() {
+    sp::CmdRouter router;
+    router.reset();
+    // kMaxChannels = 8 — the first 8 valid names register.
+    const char* names[] = {"fae", "exhaust", "circulation", "aux",
+                           "pump1", "pump2", "pump3", "pump4"};
+    for (int i = 0; i < 8; ++i)
+        TEST_ASSERT_TRUE_MESSAGE(router.add_channel(names[i], i), names[i]);
+    // The 9th is refused (table full) — it must NOT silently overwrite.
+    TEST_ASSERT_FALSE(router.add_channel("pump5", 8));
+    // The overflow name routes nowhere; the 8 registered still resolve.
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdTarget::None,
+                          (int)router.route("pump5").target);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdTarget::Channel,
+                          (int)router.route("pump4").target);
+    TEST_ASSERT_EQUAL_INT(7, router.route("pump4").channel_index);
+}
+
+void test_channel_duty10_switch_expansion() {
+    // Switch-mode duty10 expands the 8-bit pwm to 10 bits as
+    // (pwm<<2)|(pwm>>6) — full-scale maps to full-scale, not 1020.
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    ch.apply(on, 0);  // pwm8 = 255
+    TEST_ASSERT_EQUAL_UINT8(255, ch.pwm8());
+    TEST_ASSERT_EQUAL_UINT16(1023, ch.duty10());  // (255<<2)|(255>>6)=1023
+
+    sp::ChannelCommand pwm;
+    pwm.has_pwm = true;
+    pwm.pwm = 128;
+    ch.apply(pwm, 10);
+    TEST_ASSERT_EQUAL_UINT16((uint16_t)((128 << 2) | (128 >> 6)), ch.duty10());
+    // Dim-mode duty10 is the raw 10-bit level, no expansion.
+    sp::Channel dim;
+    dim.configure(dim_cfg());
+    sp::ChannelCommand lvl;
+    lvl.has_level = true;
+    lvl.level = 700;
+    dim.apply(lvl, 0);
+    TEST_ASSERT_EQUAL_UINT16(700, dim.duty10());
+}
+
+void test_cmd_suffix_split() {
+    // Happy path — the seam that feeds route().
+    const char* s = sp::cmd_suffix("sporeprint/relay-01/cmd/config", "relay-01");
+    TEST_ASSERT_NOT_NULL(s);
+    TEST_ASSERT_EQUAL_STRING("config", s);
+    TEST_ASSERT_EQUAL_STRING(
+        "fae", sp::cmd_suffix("sporeprint/relay-01/cmd/fae", "relay-01"));
+
+    // Feed the extracted suffix straight into route() — closes the seam the
+    // audit flagged (route was only ever tested with pre-split suffixes).
+    sp::CmdRouter router;
+    router.reset();
+    router.add_channel("fae", 0);
+    const char* suf = sp::cmd_suffix("sporeprint/relay-01/cmd/fae", "relay-01");
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdTarget::Channel,
+                          (int)router.route(suf).target);
+
+    // Bare .../cmd/ ⇒ empty suffix ⇒ nullptr (not "" that routes to None-by-luck).
+    TEST_ASSERT_NULL(sp::cmd_suffix("sporeprint/relay-01/cmd/", "relay-01"));
+    // No trailing slash after cmd ⇒ not a command.
+    TEST_ASSERT_NULL(sp::cmd_suffix("sporeprint/relay-01/cmd", "relay-01"));
+    // Nested suffix ⇒ rejected.
+    TEST_ASSERT_NULL(sp::cmd_suffix("sporeprint/relay-01/cmd/a/b", "relay-01"));
+    // Wrong node id (a prefix of the real segment must NOT match).
+    TEST_ASSERT_NULL(sp::cmd_suffix("sporeprint/relay-01/cmd/fae", "relay"));
+    // Different message type (telemetry, not cmd).
+    TEST_ASSERT_NULL(
+        sp::cmd_suffix("sporeprint/relay-01/telemetry", "relay-01"));
+    // Wrong root prefix.
+    TEST_ASSERT_NULL(sp::cmd_suffix("other/relay-01/cmd/fae", "relay-01"));
+    // An id that itself contains "cmd" resolves against the real id, not a
+    // stray "cmd" match.
+    TEST_ASSERT_EQUAL_STRING(
+        "scene", sp::cmd_suffix("sporeprint/cmd-node/cmd/scene", "cmd-node"));
+    TEST_ASSERT_NULL(sp::cmd_suffix(nullptr, "relay-01"));
+    TEST_ASSERT_NULL(sp::cmd_suffix("sporeprint/relay-01/cmd/fae", nullptr));
+}
+
+void test_scene_table_level_values() {
+    // Pin the actual level rows, not just non-null presence — a silently
+    // shifted scene changes what the lighting bank drives.
+    const sp::Scene* s;
+    s = sp::find_scene("colonization_dark");
+    TEST_ASSERT_NOT_NULL(s);
+    for (int i = 0; i < sp::kSceneChannels; ++i)
+        TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, s->levels[i], "colonization_dark");
+    s = sp::find_scene("cordyceps_blue");
+    TEST_ASSERT_NOT_NULL(s);
+    // Cordyceps is a blue-forward scene: blue (index 1) must lead white (0).
+    TEST_ASSERT_TRUE(s->levels[1] > s->levels[0]);
+    s = sp::find_scene("pinning_daylight");
+    TEST_ASSERT_NOT_NULL(s);
+    TEST_ASSERT_TRUE(s->levels[0] > 0);  // white on for daylight
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_switch_empty_payload_rejected);
@@ -364,5 +552,15 @@ int main(int, char**) {
     RUN_TEST(test_scene_table);
     RUN_TEST(test_clamp_helpers);
     RUN_TEST(test_wrap_helpers);
+    RUN_TEST(test_personality_str_round_trip);
+    RUN_TEST(test_personality_from_str_rejects_unknown_and_null);
+    RUN_TEST(test_node_type_str_is_never_node);
+    RUN_TEST(test_personality_channels_climate_has_no_bank);
+    RUN_TEST(test_personality_channels_relay_bank_presets);
+    RUN_TEST(test_personality_channels_lighting_bank_presets);
+    RUN_TEST(test_cmd_router_ninth_channel_overflow);
+    RUN_TEST(test_channel_duty10_switch_expansion);
+    RUN_TEST(test_cmd_suffix_split);
+    RUN_TEST(test_scene_table_level_values);
     return UNITY_END();
 }
