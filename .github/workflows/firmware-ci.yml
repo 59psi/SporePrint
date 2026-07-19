@@ -16,17 +16,12 @@ name: firmware-ci
 # committed by the operator via the release tooling. Safe against the
 # workflow-injection class.
 
+# RELEASE-GATED CI (2026-07): push/PR triggers removed org-wide — Actions
+# minutes are reserved for releases. Firmware validation happens locally
+# (`pio test -e native` + the three-image build) before merges, and
+# firmware-release.yml still runs on `firmware-v*` tags. On demand:
+#   gh workflow run firmware-ci.yml
 on:
-  push:
-    paths:
-      - 'firmware/**'
-      - 'server/tests/fixtures/signing_vectors.json'
-      - '.github/workflows/firmware-ci.yml'
-  pull_request:
-    paths:
-      - 'firmware/**'
-      - 'server/tests/fixtures/signing_vectors.json'
-      - '.github/workflows/firmware-ci.yml'
   workflow_dispatch: {}
 
 concurrency:
