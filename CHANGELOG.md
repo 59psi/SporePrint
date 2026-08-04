@@ -5,6 +5,13 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.1] - 2026-08-03
+
+### Changed
+- Version bump only. No Pi server or firmware changes in this release — the
+  version is kept in lockstep with the companion cloud release, so the Pi,
+  firmware, and cloud always report a matching version string.
+
 ## [Unreleased]
 
 ### Added

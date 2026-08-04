@@ -6,6 +6,13 @@ Kept in lockstep with the Pi server + cloud repo via `scripts/bump.sh`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.1] - 2026-08-03
+
+### Changed
+- Version bump only. No firmware changes — no pin, driver, protocol, or
+  channel-safety behaviour differs from 5.0.0. Reflashing is not required.
+  The version is kept in lockstep with the Pi server and cloud releases.
+
 ## [Unreleased]
 
 ### Added
