@@ -1,11 +1,17 @@
 import asyncio
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+log = logging.getLogger(__name__)
 
 # Socket.IO accepts wildcard origins because engineio's CORS implementation only
 # allows exact-string match (no regex/callable) and the Pi binds to a dynamic
@@ -226,7 +232,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="5.0.1", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -270,12 +276,79 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+# Host allow-list — the DNS-rebinding backstop.
+#
+# CORS alone does not protect this server. Starlette's CORSMiddleware controls
+# what a browser is allowed to READ from a response; it does not stop the
+# request from arriving and being executed. And a DNS-rebinding attack sidesteps
+# the origin check entirely: an attacker's page on evil.example re-resolves its
+# own hostname to the Pi's LAN address, so the browser now considers requests to
+# the Pi same-origin and sends them without any CORS preflight at all.
+#
+# That mattered because the Pi ships with SPOREPRINT_ALLOW_UNAUTHENTICATED=true
+# (install.sh), which makes ApiKeyMiddleware short-circuit — so on a default
+# install every /api route was reachable from any web page the owner happened to
+# visit, including the pairing + /api/cloud/configure chain that hands over the
+# credential used to sign relay commands.
+#
+# The Host header is the right control here: a browser sets it from the URL and
+# page JavaScript cannot override it, so a rebound request still carries
+# `Host: evil.example` and is rejected below. Same trust set as the CORS regex,
+# expressed against the host rather than the origin.
+_ALLOWED_HOST_RE = re.compile(
+    r"^("
+    r"localhost|127\.0\.0\.1|\[::1\]|"
+    r"[a-zA-Z0-9-]+\.local|"
+    r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+    r"192\.168\.\d{1,3}\.\d{1,3}|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r")(:\d+)?$"
+)
+
+
+class AllowedHostMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose Host is not a LAN name/address.
+
+    Set SPOREPRINT_TRUSTED_HOSTS to a comma-separated list to add names — a
+    reverse proxy, a Tailscale MagicDNS name, a custom local domain. Setting it
+    to "*" disables the check; do that only if something upstream already
+    validates Host, because it re-opens the rebinding path described above.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        # Imported here, not at module scope, to match this file's existing
+        # pattern and avoid pulling config in at import time.
+        from .config import settings
+
+        extra = [h.strip() for h in (settings.trusted_hosts or "").split(",") if h.strip()]
+        if "*" in extra:
+            return await call_next(request)
+        # Split off the port; `request.url.hostname` already lowercases.
+        host_header = (request.headers.get("host") or "").strip()
+        if not host_header:
+            # HTTP/1.1 requires Host. Absent means a non-browser client; the
+            # API-key check still applies to it.
+            return await call_next(request)
+        bare = host_header.rsplit(":", 1)[0] if host_header.count(":") == 1 else host_header
+        if _ALLOWED_HOST_RE.match(host_header) or bare in extra or host_header in extra:
+            return await call_next(request)
+        log.warning(
+            "Rejected request with untrusted Host %r for %s — possible DNS "
+            "rebinding. Add it to SPOREPRINT_TRUSTED_HOSTS if this is expected.",
+            host_header, request.url.path,
+        )
+        return JSONResponse({"error": "Untrusted Host header"}, status_code=421)
+
+
 from .auth import ApiKeyMiddleware, socketio_auth_ok
 from ._request_id_mw import RequestIdMiddleware
 
 # v3.4.9 Debt 5 — request-id middleware lives BEFORE the api key check
 # so even rejected-401 requests carry a correlatable id in the log.
 app.add_middleware(ApiKeyMiddleware)
+# Added last → runs FIRST. An untrusted Host is rejected before any handler,
+# and before the API-key check short-circuits on an unauthenticated install.
+app.add_middleware(AllowedHostMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
 from .telemetry.router import router as telemetry_router
@@ -357,7 +430,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "5.0.0"}
+    return {"status": "ok", "version": "5.0.1"}
 
 
 # Track Socket.IO clients for health reporting
