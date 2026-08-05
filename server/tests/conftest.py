@@ -11,6 +11,13 @@ from fastapi.testclient import TestClient
 # settings module imports — pydantic-settings reads the env at import time.
 os.environ.setdefault("SPOREPRINT_ALLOW_UNAUTHENTICATED", "true")
 
+# AllowedHostMiddleware rejects any Host outside the LAN set (localhost, *.local,
+# RFC1918) with 421 — the DNS-rebinding backstop. Starlette's TestClient sends
+# `Host: testserver`, which is correctly untrusted, so declare it here rather
+# than widening the production allow-list. The middleware's own behaviour is
+# covered directly in tests/test_allowed_host.py.
+os.environ.setdefault("SPOREPRINT_TRUSTED_HOSTS", "testserver")
+
 
 @pytest.fixture(autouse=True)
 async def _db(tmp_path, monkeypatch):

@@ -71,10 +71,31 @@ def _connect_rate_ok(remote_addr: str | None) -> bool:
     q.append(now)
     return True
 
-_PUBLIC_PATHS = frozenset({
-    "/api/health",
-    "/api/cloud/pair",
-    "/api/cloud/pairing-code",
+# (method, path) pairs — NOT bare paths.
+#
+# This set was previously matched on path alone, which made EVERY method on a
+# listed path public. `/api/cloud/pairing-code` serves two very different
+# operations, and only the path was ever considered:
+#
+#   GET  /api/cloud/pairing-code  → returns the active pairing code in plaintext
+#   POST /api/cloud/pairing-code  → mints a fresh code AND resets the failed-
+#                                   attempt counter and lockout
+#
+# Both were reachable without credentials, so an attacker never needed to guess
+# the code: mint one, read it back, redeem it at /api/cloud/pair for a
+# configure_token, then POST /api/cloud/configure to rewrite
+# SPOREPRINT_CLOUD_URL and SPOREPRINT_CLOUD_TOKEN — taking over the credential
+# that signs relay commands to mains-voltage hardware. Minting also cleared the
+# lockout, disarming the one control that would have slowed a guessing attempt.
+#
+# Minting and reading a pairing code are OPERATOR actions taken from the Pi's
+# own settings page, so they now authenticate like every other /api route.
+# Redeeming one is different: the code IS the bearer secret for that exchange
+# and the mobile app holds no API key, so POST /api/cloud/pair stays public by
+# design.
+_PUBLIC_ROUTES = frozenset({
+    ("GET", "/api/health"),
+    ("POST", "/api/cloud/pair"),
     # v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
     # SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
     # distribution channel from the Pi to each ESP32). The endpoint's
@@ -85,7 +106,7 @@ _PUBLIC_PATHS = frozenset({
     #   * storage path is resolve()+is_relative_to guarded
     # A stronger per-node auth is tracked for v3.5 (HMAC over the JPEG
     # with the same hmac_key we now enforce on MQTT commands).
-    "/api/vision/frame",
+    ("POST", "/api/vision/frame"),
 })
 
 
@@ -120,7 +141,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if path in _PUBLIC_PATHS:
+        if (request.method, path) in _PUBLIC_ROUTES:
             return await call_next(request)
 
         presented = _extract_bearer(request.headers.get("authorization"))

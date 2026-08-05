@@ -7,10 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [5.0.1] - 2026-08-03
 
+### Security
+- **The cloud-pairing chain was reachable from any web page the owner visited.**
+  Two independent gaps combined:
+
+  1. The unauthenticated-route allow-list was matched on **path only**, so every
+     method on a listed path was exempt. `/api/cloud/pairing-code` was listed,
+     which exempted both `GET` (returns the active pairing code in plaintext)
+     and `POST` (mints a fresh code **and** clears the failed-attempt lockout) —
+     when only *redeeming* a code was ever meant to be unauthenticated. An
+     attacker never had to guess: mint a code, read it back, redeem it for a
+     `configure_token`, then `POST /api/cloud/configure` to rewrite
+     `SPOREPRINT_CLOUD_URL` and `SPOREPRINT_CLOUD_TOKEN` — taking over the
+     credential that signs relay commands to mains-voltage hardware.
+  2. Nothing validated the `Host` header. CORS does not prevent this: it governs
+     what a browser may *read* from a response, not whether the request runs, and
+     a DNS-rebinding page bypasses the origin check entirely by re-resolving its
+     own hostname to the Pi's LAN address. Because the Pi ships with
+     `SPOREPRINT_ALLOW_UNAUTHENTICATED=true`, the API-key middleware
+     short-circuits on a default install and every `/api` route was open.
+
+  Fixed by making the allow-list `(method, path)` pairs — only
+  `POST /api/cloud/pair`, `POST /api/vision/frame`, and `GET /api/health` remain
+  public — and by adding `AllowedHostMiddleware`, which rejects any request whose
+  `Host` is outside the LAN set (localhost, `*.local`, RFC1918) with **421**.
+  A browser cannot override `Host` from page JavaScript, so a rebound request
+  still arrives as `Host: evil.example` and is refused.
+
+### Added
+- `SPOREPRINT_TRUSTED_HOSTS` — comma-separated extra `Host` values to accept
+  (a reverse proxy, a Tailscale MagicDNS name, a custom local domain). LAN
+  names and addresses are always allowed. `*` disables the check; only safe when
+  something upstream already validates `Host`.
+- 29 tests covering the above: rebinding-shaped hosts (`192.168.1.10.evil.example`,
+  `sporeprint.local.evil.example`), RFC1918 boundaries (`172.15`/`172.32` rejected,
+  `172.16`–`172.31` allowed), the escape hatch, the full pairing chain refusing a
+  foreign `Host`, and that an exempt path does not exempt its other methods.
+
 ### Changed
-- Version bump only. No Pi server or firmware changes in this release — the
-  version is kept in lockstep with the companion cloud release, so the Pi,
-  firmware, and cloud always report a matching version string.
+- Version bumped to 5.0.1, in lockstep with the companion cloud release so the
+  Pi, firmware, and cloud always report a matching version string.
+- **No firmware changes.** No pin, driver, protocol, or channel-safety
+  difference from 5.0.0 — reflashing is not required.
+
+### Upgrade notes
+- If you reach the Pi through a reverse proxy, a VPN hostname, or any name other
+  than `localhost`, `*.local`, or a private IP, set `SPOREPRINT_TRUSTED_HOSTS`
+  to that hostname before upgrading, or requests will be refused with 421.
 
 ## [Unreleased]
 

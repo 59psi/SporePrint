@@ -47,8 +47,19 @@ def gated_client(monkeypatch):
     async def health():
         return {"ok": True}
 
-    @app.get("/api/vision/frame")
+    # POST, matching the real route in vision/router.py. This stub was a GET
+    # while the exemption was matched on path alone, so the test asserted that
+    # an unauthenticated GET on a POST-only endpoint was allowed — a shape the
+    # server never actually served, and the same path-not-method blind spot
+    # that made GET /api/cloud/pairing-code publicly readable.
+    @app.post("/api/vision/frame")
     async def vision_frame():
+        return {"ok": True}
+
+    # Present so the test below can prove a non-exempt METHOD on an exempt
+    # PATH is still gated.
+    @app.get("/api/vision/frame")
+    async def vision_frame_get():
         return {"ok": True}
 
     @app.get("/public")   # non-/api path — outside the gate entirely
@@ -84,8 +95,19 @@ def test_public_health_path_bypasses_auth(gated_client):
 
 
 def test_public_vision_frame_path_bypasses_auth(gated_client):
-    # /api/vision/frame is whitelisted for the camera node (no key slot).
-    assert gated_client.get("/api/vision/frame").status_code == 200
+    # POST /api/vision/frame is whitelisted for the camera node (no key slot).
+    assert gated_client.post("/api/vision/frame").status_code == 200
+
+
+def test_exempt_path_does_not_exempt_other_methods(gated_client):
+    """Exemptions are (method, path), not path.
+
+    Matching on path alone meant listing one method exempted every method on
+    that path. That is how both GET (discloses the code) and POST (mints one
+    and clears the brute-force lockout) on /api/cloud/pairing-code ended up
+    unauthenticated when only redeeming a code was ever meant to be.
+    """
+    assert gated_client.get("/api/vision/frame").status_code == 401
 
 
 def test_non_api_path_is_not_gated(gated_client):

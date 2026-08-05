@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # shipping a production Pi with no auth because the operator never ran
     # setup.sh or forgot to set SPOREPRINT_API_KEY.
     allow_unauthenticated: bool = False
+    # Extra Host header values accepted by AllowedHostMiddleware, comma
+    # separated. LAN names/addresses (localhost, *.local, RFC1918) are always
+    # allowed; add a reverse-proxy hostname, a Tailscale MagicDNS name, or a
+    # custom local domain here. "*" disables the check entirely — only safe
+    # when something upstream already validates Host, since the check is what
+    # stops a DNS-rebinding page in the owner's browser from driving this API.
+    trusted_hosts: str = ""
     # HMAC-SHA256 key used to sign every cmd/* MQTT frame the Pi publishes
     # to an ESP32 node. v3.4.9 C-1. Must match the `hmac_key` stored in NVS
     # on each node. Use scripts/provision-node.sh to generate and deploy.
