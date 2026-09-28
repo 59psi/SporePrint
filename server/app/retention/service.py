@@ -30,6 +30,20 @@ RAW_RETENTION_DAYS = 7
 FIVEMIN_RETENTION_DAYS = 30
 HOURLY_RETENTION_DAYS = 365
 
+# Coarser rollups (hourly, daily) are built from finer ones, whose buckets hold
+# unequal counts (partial buckets, offline-buffer bursts, a changed publish
+# interval). They weight each bucket's mean by its count, as the 5-min step and
+# the upsert merge do:
+#   COALESCE(SUM(avg_value * count) / NULLIF(SUM(count), 0), AVG(avg_value))
+# Legacy rows without a count fall back to the plain mean.
+
+# PRAGMA auto_vacuum value for INCREMENTAL mode.
+_AUTO_VACUUM_INCREMENTAL = 2
+# The nightly job only pays for the one-time mode-switch VACUUM when at least
+# this much of the file is free pages (and at least ~1 MB of them).
+_CONVERT_MIN_FREE_FRACTION = 0.25
+_CONVERT_MIN_FREE_PAGES = 256
+
 
 async def start_retention_task():
     """Background task: run retention at 3 AM daily."""
@@ -111,7 +125,8 @@ async def _rollup_telemetry_hourly():
                 """INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
                     SELECT CAST(timestamp / 3600 AS INT) * 3600, node_id, sensor, 'hourly',
-                           AVG(avg_value), MIN(min_value), MAX(max_value), SUM(count)
+                           COALESCE(SUM(avg_value * count) / NULLIF(SUM(count), 0), AVG(avg_value)),
+                           MIN(min_value), MAX(max_value), SUM(count)
                       FROM telemetry_rollups
                      WHERE resolution = '5min' AND timestamp < ?
                      GROUP BY CAST(timestamp / 3600 AS INT), node_id, sensor
@@ -184,7 +199,8 @@ async def _cleanup_old_rollups():
                 """INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
                     SELECT CAST(timestamp / 86400 AS INT) * 86400, node_id, sensor, 'daily',
-                           AVG(avg_value), MIN(min_value), MAX(max_value), SUM(count)
+                           COALESCE(SUM(avg_value * count) / NULLIF(SUM(count), 0), AVG(avg_value)),
+                           MIN(min_value), MAX(max_value), SUM(count)
                       FROM telemetry_rollups
                      WHERE resolution = 'hourly' AND timestamp < ?
                      GROUP BY CAST(timestamp / 86400 AS INT), node_id, sensor
@@ -210,7 +226,57 @@ async def _cleanup_old_rollups():
             raise
 
 
-async def _vacuum():
-    """Reclaim disk space."""
+async def _pragma_int(db, pragma_sql: str) -> int:
+    cursor = await db.execute(pragma_sql)
+    return int((await cursor.fetchone())[0])
+
+
+async def ensure_incremental_auto_vacuum() -> bool:
+    """Switch the database to auto_vacuum=INCREMENTAL; True if it converted.
+
+    A database created without auto_vacuum can only change mode through a full
+    VACUUM, which rewrites the file (temporary disk up to the DB size) and
+    holds the write lock throughout. Concurrent writers (MQTT ingest, the rules
+    engine) wait out busy_timeout and then fail, so the ideal caller is startup,
+    before those tasks run. A no-op once the database is in incremental mode.
+    """
     async with get_db() as db:
-        await db.execute("PRAGMA incremental_vacuum")
+        if await _pragma_int(db, "PRAGMA auto_vacuum") == _AUTO_VACUUM_INCREMENTAL:
+            return False
+        t0 = time.monotonic()
+        log.info("Retention: converting database to auto_vacuum=INCREMENTAL (one-time VACUUM)")
+        await db.execute("PRAGMA auto_vacuum = INCREMENTAL")
+        await db.execute("VACUUM")
+        log.info("Retention: auto_vacuum conversion took %.1fs", time.monotonic() - t0)
+        return True
+
+
+async def _vacuum():
+    """Return the pages freed by the rollups to the filesystem.
+
+    `PRAGMA incremental_vacuum` does nothing unless the database is in
+    auto_vacuum=INCREMENTAL mode. In that mode it runs every night; it yields
+    one row per freed page and stops at the first unread row, so it is drained.
+
+    Otherwise, switching modes takes a full VACUUM that stalls every writer
+    while it runs (see ensure_incremental_auto_vacuum), which is not worth it
+    here for a normal night's churn: SQLite reuses free pages, so the file does
+    not grow. The conversion runs from here only when a large share of the
+    file is free (e.g. after a big purge), where handing the space back
+    justifies a brief ingest stall.
+    """
+    async with get_db() as db:
+        if await _pragma_int(db, "PRAGMA auto_vacuum") == _AUTO_VACUUM_INCREMENTAL:
+            cursor = await db.execute("PRAGMA incremental_vacuum")
+            await cursor.fetchall()
+            return
+        free = await _pragma_int(db, "PRAGMA freelist_count")
+        total = await _pragma_int(db, "PRAGMA page_count")
+    if free < _CONVERT_MIN_FREE_PAGES or free < total * _CONVERT_MIN_FREE_FRACTION:
+        log.info(
+            "Retention: %d free pages of %d will be reused; database is not in "
+            "auto_vacuum=INCREMENTAL mode, skipping the full VACUUM",
+            free, total,
+        )
+        return
+    await ensure_incremental_auto_vacuum()

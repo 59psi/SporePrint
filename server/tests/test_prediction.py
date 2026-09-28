@@ -2,7 +2,10 @@
 
 import time
 
+from app.db import get_db
 from app.weather.prediction import (
+    TRAINING_WINDOW_DAYS,
+    _build_training_data,
     _fit_linear_regression,
     _solve_linear_system,
     _predict,
@@ -71,3 +74,49 @@ async def test_model_status_learning():
 async def test_retrain_no_data():
     """Retrain with no data should not crash."""
     await retrain_models()
+
+
+async def test_training_data_spans_rolled_up_telemetry():
+    """srv-rest#25: training claimed a 30-day window but joined only RAW
+    telemetry, which retention rolls into 5-min buckets (and deletes) after 7
+    days — so only ~7 days of samples ever existed. Rolled-up history must
+    contribute too."""
+    now = time.time()
+    hour0 = now - (now % 3600)
+    weather_rows, raw_rows, rollup_rows = [], [], []
+    for h in range(1, 20 * 24):  # 20 days of hourly outdoor readings
+        ts = hour0 - h * 3600
+        weather_rows.append((ts, "openmeteo", 50.0 + (h % 24), 60.0))
+        indoor = 70.0 + (h % 24) / 10
+        if h < 7 * 24:  # still raw
+            raw_rows.append((ts + 30, "climate-01", "temp_f", indoor))
+            raw_rows.append((ts + 30, "climate-01", "humidity", 85.0))
+        else:  # already compressed by retention into 5-min rollups
+            bucket = ts - (ts % 300)
+            rollup_rows.append((bucket, "climate-01", "temp_f", "5min", indoor, indoor, indoor, 5))
+            rollup_rows.append((bucket, "climate-01", "humidity", "5min", 85.0, 85.0, 85.0, 5))
+
+    async with get_db() as db:
+        await db.executemany(
+            "INSERT INTO weather_readings (timestamp, provider, temp_f, humidity) VALUES (?, ?, ?, ?)",
+            weather_rows,
+        )
+        await db.executemany(
+            "INSERT INTO telemetry_readings (timestamp, node_id, sensor, value) VALUES (?, ?, ?, ?)",
+            raw_rows,
+        )
+        await db.executemany(
+            """INSERT INTO telemetry_rollups
+               (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            rollup_rows,
+        )
+        await db.commit()
+
+    data = await _build_training_data()
+    days = {int(d["timestamp"] // 86400) for d in data}
+    assert len(days) >= 19, f"only {len(days)} days of training data"
+    assert len(days) <= TRAINING_WINDOW_DAYS + 1
+    sample = data[0]
+    assert sample["indoor_humidity"] == 85.0
+    assert 70.0 <= sample["indoor_temp"] <= 72.4

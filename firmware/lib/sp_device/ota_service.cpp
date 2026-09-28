@@ -40,6 +40,10 @@ bool OtaService::begin() {
         const char* type =
             (ArduinoOTA.getCommand() == U_FLASH) ? "firmware" : "filesystem";
         Serial.printf("[OTA] Start updating %s\n", type);
+        // Safe state first: outputs off before the synchronous flash stops
+        // the loop (and with it every channel timer) for the whole upload.
+        if (instance_ && instance_->start_fn_)
+            instance_->start_fn_(instance_->start_ctx_);
         if (instance_) instance_->publish_event("start", "type", type);
     });
     ArduinoOTA.onEnd([]() {

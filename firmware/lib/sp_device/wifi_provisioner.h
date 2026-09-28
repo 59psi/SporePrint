@@ -21,6 +21,22 @@
 //   HMAC signing key (optional; empty keeps the warn+accept migration
 //     posture — the operator sees a warning per accepted command)
 //   NTP host (default pool.ntp.org; set to the Pi for airgapped rooms)
+//   Optional peripherals (node image only): MH-Z19C, HX711 scale, reed
+//     door switch — the NVS flags the node's setup() reads (docs#0)
+//
+// Form policy (sp_core/provisioning.h, host-tested): every pre-filled value
+// is HTML-escaped; blank password fields keep the stored secret (WiFi only
+// for the same SSID; "Open network" clears it); the node id must match the
+// server's NODE_ID_RE and equal the MQTT username when one is set (the
+// broker ACL scopes each node by username) — blank = the username. A
+// refused form is re-rendered with the error instead of being saved, carrying
+// back exactly what was submitted (secrets included — never the stored ones)
+// so a resubmit saves what was first intended.
+//
+// When the portal opens is the composition root's call. The node image
+// follows sp_core/boot_policy.h: a provisioned node whose WiFi has worked
+// before no longer falls into this open AP just because the router was slow
+// to come back (fw-node#9).
 
 #include <Arduino.h>
 
@@ -30,7 +46,10 @@ namespace sp_device {
 
 class WifiProvisioner {
 public:
-    explicit WifiProvisioner(NvsKvStore& kv) : kv_(kv) {}
+    // `peripheral_opts`: render + save the Tier-3 peripheral checkboxes. Only
+    // the node image builds those drivers — the camera keeps the default.
+    explicit WifiProvisioner(NvsKvStore& kv, bool peripheral_opts = false)
+        : kv_(kv), peripheral_opts_(peripheral_opts) {}
 
     // Try the stored credentials. Returns true when WL_CONNECTED inside
     // `timeout_ms`. Non-throwing, no reboot — caller decides what's next.
@@ -48,6 +67,7 @@ public:
 
 private:
     NvsKvStore& kv_;
+    bool peripheral_opts_;
 };
 
 }  // namespace sp_device

@@ -1,3 +1,4 @@
+import math
 import time
 
 from ..db import get_db
@@ -44,6 +45,52 @@ async def store_bulk_readings(node_id: str, readings: dict, timestamp: float, se
         await db.commit()
 
 
+# The grow a node's reading belongs to. Chambered sessions can run side by
+# side, so this is resolved per node, never "the newest active session":
+#   * a node listed in a chamber belongs only to that chamber's active session
+#     (never to another chamber's, nor to a chamberless one);
+#   * a node in no chamber belongs to the newest active chamberless session
+#     (the single-closet default, where no chambers exist at all).
+# Sessions that started after the reading (a replayed frame) don't claim it.
+# A chamber whose node_ids isn't valid JSON lists no nodes.
+_NODE_SESSION_SQL = """
+    WITH node_chambers AS (
+        SELECT c.id FROM chambers c,
+               json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j
+         WHERE j.value = :node
+    )
+    SELECT s.id FROM sessions s
+     WHERE s.status = 'active'
+       AND COALESCE(s.created_at, 0) <= :ts
+       AND CASE WHEN EXISTS (SELECT 1 FROM node_chambers)
+                THEN s.chamber_id IN (SELECT id FROM node_chambers)
+                ELSE s.chamber_id IS NULL
+                     OR s.chamber_id NOT IN (SELECT id FROM chambers)
+           END
+     ORDER BY s.created_at DESC, s.id DESC
+     LIMIT 1
+"""
+
+
+async def active_session_for_node(node_id: str, ts: float) -> int | None:
+    """Id of the active session a reading from `node_id` at `ts` belongs to."""
+    async with get_db() as db:
+        cursor = await db.execute(_NODE_SESSION_SQL, {"node": node_id, "ts": ts})
+        row = await cursor.fetchone()
+        return row["id"] if row else None
+
+
+async def latest_node_timestamp(node_id: str) -> float | None:
+    """Timestamp of the newest stored reading from `node_id`, or None."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT MAX(timestamp) AS ts FROM telemetry_readings WHERE node_id = ?",
+            (node_id,),
+        )
+        row = await cursor.fetchone()
+        return row["ts"] if row else None
+
+
 async def get_latest(node_id: str | None = None) -> list[dict]:
     query = """
         SELECT node_id, sensor, value, MAX(timestamp) as timestamp
@@ -63,6 +110,38 @@ async def get_latest(node_id: str | None = None) -> list[dict]:
 
 _RESOLUTION_BUCKETS = {"5min": 300, "hourly": 3600, "daily": 86400}
 
+# Open bounds are passed as 0 / +inf rather than NULL-guarded, so the range
+# stays sargable (the (sensor, timestamp) and (timestamp, ...) indexes).
+_HISTORY_WINDOW = (
+    "node_id = :node AND sensor = :sensor"
+    " AND timestamp >= :from_ts AND timestamp <= :to_ts"
+)
+
+# Raw points plus rollup rows at their native tier resolution.
+_HISTORY_NATIVE_SQL = f"""
+    SELECT timestamp, value FROM telemetry_readings WHERE {_HISTORY_WINDOW}
+    UNION ALL
+    SELECT timestamp, avg_value AS value FROM telemetry_rollups
+     WHERE :rollups AND avg_value IS NOT NULL AND {_HISTORY_WINDOW}
+    ORDER BY timestamp
+"""
+
+# Raw rows and rollup rows re-bucketed together, count-weighted.
+_HISTORY_BUCKETED_SQL = f"""
+    SELECT CAST(ts / :bucket AS INT) * :bucket AS timestamp,
+           SUM(total) / NULLIF(SUM(n), 0) AS value
+    FROM (
+        SELECT timestamp AS ts, value AS total, 1 AS n
+          FROM telemetry_readings WHERE {_HISTORY_WINDOW}
+        UNION ALL
+        SELECT timestamp, avg_value * COALESCE(count, 1), COALESCE(count, 1)
+          FROM telemetry_rollups
+         WHERE :rollups AND avg_value IS NOT NULL AND {_HISTORY_WINDOW}
+    )
+    GROUP BY CAST(ts / :bucket AS INT)
+    ORDER BY timestamp
+"""
+
 
 async def get_history(
     node_id: str,
@@ -71,50 +150,32 @@ async def get_history(
     to_ts: float | None = None,
     resolution: str | None = None,
 ) -> list[dict]:
-    params: list = [node_id, sensor]
-    time_filters = ""
-    if from_ts:
-        time_filters += " AND timestamp >= ?"
-        params.append(from_ts)
-    if to_ts:
-        time_filters += " AND timestamp <= ?"
-        params.append(to_ts)
+    """Time series for one node + sensor, raw and rolled-up.
 
+    Retention MOVES each reading down the tiers (raw for 7 days, 5-min rollups
+    to 30 days, hourly to a year, daily after that), so every reading lives in
+    exactly one table/tier at a time. When the window reaches past the raw
+    cutoff, all rollup tiers are merged in without any double counting.
+
+    With a known `resolution`, raw rows and rollup rows are re-bucketed
+    together using a count-weighted average (a bucket that is part raw, part
+    rolled-up comes back as one point). Without one, raw points and rollup rows
+    are returned at their native resolution, oldest first.
+    """
+    raw_cutoff = time.time() - RAW_RETENTION_DAYS * 86400
     bucket = _RESOLUTION_BUCKETS.get(resolution)
+    params = {
+        "node": node_id,
+        "sensor": sensor,
+        "from_ts": from_ts or 0.0,
+        "to_ts": to_ts or math.inf,
+        # Rollups only hold data older than the raw window; skip that half of
+        # the query when the window can't reach it.
+        "rollups": 1 if (not from_ts or from_ts < raw_cutoff) else 0,
+        "bucket": bucket,
+    }
+    query = _HISTORY_BUCKETED_SQL if bucket else _HISTORY_NATIVE_SQL
 
     async with get_db() as db:
-        # Query raw telemetry first
-        if bucket:
-            query = f"""
-                SELECT CAST(timestamp / {bucket} AS INT) * {bucket} as timestamp, AVG(value) as value
-                FROM telemetry_readings WHERE node_id = ? AND sensor = ?{time_filters}
-                GROUP BY CAST(timestamp / {bucket} AS INT)
-                ORDER BY timestamp
-            """
-        else:
-            query = f"SELECT timestamp, value FROM telemetry_readings WHERE node_id = ? AND sensor = ?{time_filters} ORDER BY timestamp"
-
         cursor = await db.execute(query, params)
-        results = [dict(r) for r in await cursor.fetchall()]
-
-        # Supplement with rollups for older data that's been compressed
-        raw_cutoff = time.time() - RAW_RETENTION_DAYS * 86400
-        if from_ts is not None and from_ts < raw_cutoff:
-            rollup_resolution = resolution or "hourly"
-            rollup_params: list = [node_id, sensor, rollup_resolution]
-            rollup_filters = " AND timestamp >= ?"
-            rollup_params.append(from_ts)
-            rollup_filters += " AND timestamp < ?"
-            rollup_params.append(raw_cutoff)
-
-            cursor = await db.execute(
-                f"SELECT timestamp, avg_value as value FROM telemetry_rollups "
-                f"WHERE node_id = ? AND sensor = ? AND resolution = ?{rollup_filters} "
-                f"ORDER BY timestamp",
-                rollup_params,
-            )
-            rollup_rows = [dict(r) for r in await cursor.fetchall()]
-            # Prepend rollup data before raw data
-            results = rollup_rows + results
-
-        return results
+        return [dict(r) for r in await cursor.fetchall()]

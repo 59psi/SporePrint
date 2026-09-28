@@ -18,7 +18,9 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "link_budget.h"
 #include "node_config.h"
+#include "provisioning.h"
 
 namespace sp_device {
 
@@ -34,6 +36,13 @@ inline MqttTransport select_mqtt_transport(NodeConfig& cfg, NvsKvStore& kv,
                                            WiFiClient& plain,
                                            WiFiClientSecure& secure) {
     MqttTransport t;
+    // Bound every connect attempt (link_budget.h): the core defaults — 30 s
+    // TCP connect, 120 s TLS handshake — outlast the 30 s loop WDT, so an
+    // unreachable broker panic-rebooted the node about once a minute.
+    // Both setters take SECONDS on arduino-esp32 2.x.
+    plain.setTimeout(sp::kTcpConnectTimeoutS);
+    secure.setTimeout(sp::kTcpConnectTimeoutS);
+    secure.setHandshakeTimeout(sp::kTlsHandshakeTimeoutS);
     if (!cfg.tls_enabled) {
         t.client = &plain;
         t.port = (uint16_t)cfg.broker_port;
@@ -41,7 +50,12 @@ inline MqttTransport select_mqtt_transport(NodeConfig& cfg, NvsKvStore& kv,
     }
 
     std::string ca = kv.get_string("broker_ca", "");
-    if (ca.empty()) {
+    if (ca.empty() && WiFi.status() != WL_CONNECTED) {
+        // Offline boot (boot_policy.h). A portal save of Secure MQTT without
+        // a pinned CA forces a WiFi connect at the next boot, so this is only
+        // reached by a node that already ran TLS-intended on the fallback.
+        Serial.println("[TLS] WiFi down at boot - CA not fetched this session.");
+    } else if (ca.empty()) {
         // TOFU fetch — once, over plain HTTP, at provision time.
         HTTPClient http;
         std::string url = "http://" + cfg.broker_host + ":8000/api/provision/ca";
@@ -75,6 +89,16 @@ inline MqttTransport select_mqtt_transport(NodeConfig& cfg, NvsKvStore& kv,
         t.client = &plain;
         t.port = (uint16_t)cfg.broker_port;
         return t;
+    }
+
+    if (sp::is_ipv4_literal(cfg.broker_host)) {
+        // WiFiClientSecure verifies the certificate against this exact
+        // string; mbedTLS 2.28 matches it only against a DNS-type SAN entry
+        // (install.sh lists the Pi's IPs as both IP: and DNS: entries).
+        Serial.printf("[TLS] Broker host %s is an IP: the handshake only "
+                      "verifies if the Pi's certificate lists it — prefer "
+                      "sporeprint.local.\n",
+                      cfg.broker_host.c_str());
     }
 
     // setCACert keeps the POINTER — the static buffer below persists it.

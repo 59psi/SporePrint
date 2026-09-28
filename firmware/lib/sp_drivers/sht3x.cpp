@@ -14,16 +14,16 @@ constexpr uint32_t kMeasureMs = 16;      // datasheet: max 15.5 ms high-rep
 
 bool Sht3x::probe() {
     if (!xport_.cmd(kCmdSoftReset)) return false;
-    // Settle, then serial read with CRC — a CRC-valid reply is the
-    // presence criterion (a NACKing or garbage device fails here).
+    // The reset must complete BEFORE the next transaction: the SHT3x NACKs
+    // its address until it is back in idle (up to 1.5 ms), and a serial
+    // read issued straight after the reset ACK (~0.1 ms later at 100 kHz)
+    // would NACK and make a present SHT31-D look absent. cmd_read's own
+    // settle runs AFTER its command write, so it cannot cover this gap.
+    clock_.delay_ms(kSoftResetMs);
+    // Serial read with CRC — a CRC-valid reply is the presence criterion
+    // (a NACKing or garbage device fails here).
     uint16_t serial[2];
-    if (!xport_.cmd_read(kCmdReadSerial, kSerialDelayMs, serial, 2)) {
-        // delay for reset happens inside cmd_read's settle; if the reset
-        // itself needs longer, one retry after the documented max.
-        return false;
-    }
-    (void)kSoftResetMs;
-    return true;
+    return xport_.cmd_read(kCmdReadSerial, kSerialDelayMs, serial, 2);
 }
 
 bool Sht3x::measure(float* temp_c, float* rh) {

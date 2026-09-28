@@ -19,6 +19,8 @@ const char* verify_status_str(VerifyStatus s) {
         case VerifyStatus::NoTimestamp:     return "missing or non-numeric ts";
         case VerifyStatus::StaleTimestamp:  return "ts outside replay window";
         case VerifyStatus::Mismatch:        return "signature mismatch";
+        case VerifyStatus::TopicMismatch:   return "signed topic does not match";
+        case VerifyStatus::Replayed:        return "replayed frame";
     }
     return "unknown";
 }
@@ -38,9 +40,50 @@ void to_hex_lower(const uint8_t* bytes, size_t len, char* out) {
     out[2 * len] = '\0';
 }
 
-VerifyStatus verify_frame(const char* payload, size_t len,
-                          const char* key, size_t key_len,
-                          uint64_t now_epoch_s, HmacSha256Fn hmac) {
+uint32_t topic_hash(const char* topic) {
+    uint32_t h = 2166136261u;
+    if (topic == nullptr) return 0;
+    for (const char* p = topic; *p; ++p) {
+        h ^= (uint8_t)*p;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+bool ReplayGuard::seen(uint32_t topic, const uint8_t mac[32],
+                       uint64_t now_epoch_s) const {
+    for (const Entry& e : slots_) {
+        if (e.used && e.topic == topic && now_epoch_s <= e.expires_s &&
+            memcmp(e.mac, mac, sizeof(e.mac)) == 0)
+            return true;
+    }
+    return false;
+}
+
+void ReplayGuard::remember(uint32_t topic, const uint8_t mac[32],
+                           uint64_t now_epoch_s) {
+    // Reuse a free / expired slot first; otherwise evict the oldest entry.
+    Entry* slot = nullptr;
+    for (Entry& e : slots_) {
+        if (!e.used || now_epoch_s > e.expires_s) {
+            slot = &e;
+            break;
+        }
+        if (slot == nullptr || e.seq < slot->seq) slot = &e;
+    }
+    slot->used = true;
+    slot->seq = next_seq_++;
+    slot->topic = topic;
+    slot->expires_s = now_epoch_s + kRememberSeconds;
+    memcpy(slot->mac, mac, sizeof(slot->mac));
+}
+
+namespace {
+
+// Signature + timestamp + MAC check. On Ok, `mac_out` holds the verified MAC.
+VerifyStatus verify_mac(const char* payload, size_t len, const char* key,
+                        size_t key_len, uint64_t now_epoch_s,
+                        HmacSha256Fn hmac, uint8_t mac_out[32]) {
     if (key == nullptr || key_len == 0) return VerifyStatus::NoKey;
 
     // signature — must be a string member of exactly 64 hex chars.
@@ -84,12 +127,12 @@ VerifyStatus verify_frame(const char* payload, size_t len,
     if (canonicalize(payload, len, canonical, "signature") != CanonStatus::Ok)
         return VerifyStatus::BadFrame;
 
-    uint8_t mac[32];
+    uint8_t* mac = mac_out;
     hmac((const uint8_t*)key, key_len,
          (const uint8_t*)canonical.data(), canonical.size(), mac);
 
     char computed[65];
-    to_hex_lower(mac, sizeof(mac), computed);
+    to_hex_lower(mac, 32, computed);
 
     // Normalize incoming hex to lowercase for the constant-time compare.
     uint8_t theirs[64];
@@ -103,9 +146,42 @@ VerifyStatus verify_frame(const char* payload, size_t len,
     return VerifyStatus::Ok;
 }
 
+// A signed "topic" member, when present, must be exactly the arrival topic.
+bool topic_member_matches(const char* payload, size_t len, const char* topic) {
+    const char* span;
+    size_t span_len;
+    if (!find_member_span(payload, len, "topic", &span, &span_len))
+        return true;  // unbound (legacy) frame
+    size_t tl = strlen(topic);
+    return span_len == tl + 2 && span[0] == '"' && span[span_len - 1] == '"' &&
+           memcmp(span + 1, topic, tl) == 0;
+}
+
+}  // namespace
+
+VerifyStatus verify_frame(const char* payload, size_t len,
+                          const char* key, size_t key_len,
+                          uint64_t now_epoch_s, HmacSha256Fn hmac,
+                          const char* topic, ReplayGuard* replay) {
+    uint8_t mac[32];
+    VerifyStatus st =
+        verify_mac(payload, len, key, key_len, now_epoch_s, hmac, mac);
+    if (st != VerifyStatus::Ok) return st;
+    // Checked only after the MAC verifies: the member is authentic.
+    if (topic != nullptr && !topic_member_matches(payload, len, topic))
+        return VerifyStatus::TopicMismatch;
+    if (replay != nullptr) {
+        uint32_t th = topic_hash(topic);
+        if (replay->seen(th, mac, now_epoch_s)) return VerifyStatus::Replayed;
+        replay->remember(th, mac, now_epoch_s);
+    }
+    return VerifyStatus::Ok;
+}
+
 CmdAuthResult command_auth_decision(const char* payload, size_t len,
                                     const char* key, size_t key_len,
-                                    uint64_t now_epoch_s, HmacSha256Fn hmac) {
+                                    uint64_t now_epoch_s, HmacSha256Fn hmac,
+                                    const char* topic, ReplayGuard* replay) {
     // No provisioned key: accept unsigned (fail-open migration posture). An
     // empty std::string yields key_len 0 here.
     if (key == nullptr || key_len == 0)
@@ -114,7 +190,8 @@ CmdAuthResult command_auth_decision(const char* payload, size_t len,
     // gated, so refuse rather than trust an unbounded timestamp window.
     if (now_epoch_s < kMinValidEpoch)
         return {CmdAuthDecision::RejectClockUnsynced, VerifyStatus::StaleTimestamp};
-    VerifyStatus st = verify_frame(payload, len, key, key_len, now_epoch_s, hmac);
+    VerifyStatus st = verify_frame(payload, len, key, key_len, now_epoch_s,
+                                   hmac, topic, replay);
     return {st == VerifyStatus::Ok ? CmdAuthDecision::Accept
                                    : CmdAuthDecision::Reject,
             st};

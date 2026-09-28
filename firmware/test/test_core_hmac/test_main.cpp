@@ -394,6 +394,203 @@ void test_command_auth_rejects_unsynced_clock_before_verifying() {
     TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::StaleTimestamp, (int)r.status);
 }
 
+// ── destination binding + replay guard (fw-node#11) ────────────
+// The MAC covers only the payload, so a captured signed frame could be
+// re-published verbatim to another channel/node, or replayed repeatedly,
+// inside the ±30 s window. Two backward-compatible defenses:
+//   * a signer MAY add "topic": "<full topic>" to the signed body; when
+//     present the node rejects it anywhere but that topic (legacy frames
+//     without the member still verify — no signer change is required)
+//   * every accepted (topic, MAC) is remembered for the replay window and a
+//     second delivery is rejected
+
+static const char* kExhaust = "sporeprint/relay-01/cmd/exhaust";
+static const uint64_t kNow = 1700000000ULL;
+
+// Sign an already-canonical body (sorted keys, compact) with kKey.
+static std::string sign_body(const std::string& canonical) {
+    uint8_t mac[32];
+    sp::hmac_sha256_host((const uint8_t*)kKey, strlen(kKey),
+                         (const uint8_t*)canonical.data(), canonical.size(),
+                         mac);
+    char hex[65];
+    sp::to_hex_lower(mac, 32, hex);
+    std::string wire = "{\"signature\":\"";
+    wire += hex;
+    wire += "\",";
+    wire.append(canonical.begin() + 1, canonical.end());
+    return wire;
+}
+
+static sp::VerifyStatus verify_at(const std::string& wire, const char* topic,
+                                  sp::ReplayGuard* guard,
+                                  uint64_t now = kNow) {
+    return sp::verify_frame(wire.data(), wire.size(), kKey, strlen(kKey), now,
+                            sp::hmac_sha256_host, topic, guard);
+}
+
+void test_topic_member_binds_frame_to_its_destination() {
+    std::string wire = sign_body(
+        "{\"duration_sec\":600,\"pwm\":255,\"state\":\"on\","
+        "\"topic\":\"sporeprint/relay-01/cmd/exhaust\",\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(wire, kExhaust, nullptr));
+    // Same signed bytes re-published to the misting pump channel…
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::TopicMismatch,
+        (int)verify_at(wire, "sporeprint/relay-01/cmd/aux", nullptr));
+    // …or to a sibling node.
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::TopicMismatch,
+        (int)verify_at(wire, "sporeprint/relay-02/cmd/exhaust", nullptr));
+    // A prefix of the bound topic is not a match either.
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::TopicMismatch,
+        (int)verify_at(wire, "sporeprint/relay-01/cmd/exhaus", nullptr));
+    TEST_ASSERT_NOT_NULL(sp::verify_status_str(sp::VerifyStatus::TopicMismatch));
+}
+
+void test_non_string_topic_member_is_a_mismatch() {
+    std::string wire = sign_body(
+        "{\"state\":\"on\",\"topic\":null,\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::TopicMismatch,
+                          (int)verify_at(wire, kExhaust, nullptr));
+}
+
+void test_frames_without_topic_member_still_verify() {
+    // Today's Pi signer (server/app/mqtt.py::_sign_cmd_payload) signs
+    // {state,pwm,duration_sec,ts} only — it must keep working unchanged.
+    std::string wire = sign_body(
+        "{\"duration_sec\":600,\"pwm\":255,\"state\":\"on\",\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(wire, kExhaust, nullptr));
+    // And the golden vectors (no topic member) still verify with a topic.
+    for (const Vector& v : load_vectors()) {
+        std::string w = wire_with_signature(v);
+        TEST_ASSERT_EQUAL_INT(
+            (int)sp::VerifyStatus::Ok,
+            (int)verify_at(w, kExhaust, nullptr, (uint64_t)v.ts + 1));
+    }
+}
+
+void test_no_topic_argument_skips_binding() {
+    // Callers that don't pass the received topic (the cam image) keep the
+    // pre-binding behavior.
+    std::string wire = sign_body(
+        "{\"state\":\"on\",\"topic\":\"sporeprint/other/cmd/x\","
+        "\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(wire, nullptr, nullptr));
+}
+
+void test_replay_guard_rejects_second_delivery() {
+    sp::ReplayGuard guard;
+    std::string wire = sign_body(
+        "{\"duration_sec\":600,\"pwm\":255,\"state\":\"on\",\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(wire, kExhaust, &guard));
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed,
+                          (int)verify_at(wire, kExhaust, &guard, kNow + 5));
+    TEST_ASSERT_NOT_NULL(sp::verify_status_str(sp::VerifyStatus::Replayed));
+
+    // Uppercase-hex re-encoding of the same signature is the same frame.
+    std::string upper = wire;
+    size_t at = upper.find("\"signature\":\"") + 13;
+    for (size_t i = at; i < at + 64; ++i)
+        upper[i] = (char)toupper((unsigned char)upper[i]);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed,
+                          (int)verify_at(upper, kExhaust, &guard, kNow + 6));
+}
+
+void test_replay_guard_allows_identical_legacy_body_on_another_channel() {
+    // Legacy (unbound) frames: the Pi can legitimately send the identical
+    // body to two channels in the same second (e.g. fae + exhaust on) — the
+    // second channel's command must not be mistaken for a replay.
+    sp::ReplayGuard guard;
+    std::string wire = sign_body(
+        "{\"pwm\":255,\"state\":\"on\",\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(wire, kExhaust, &guard));
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::Ok,
+        (int)verify_at(wire, "sporeprint/relay-01/cmd/fae", &guard));
+    // …but each channel still only once.
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::Replayed,
+        (int)verify_at(wire, "sporeprint/relay-01/cmd/fae", &guard));
+}
+
+void test_rejected_frames_are_not_remembered() {
+    sp::ReplayGuard guard;
+    std::string wire = sign_body(
+        "{\"state\":\"on\",\"topic\":\"sporeprint/relay-01/cmd/exhaust\","
+        "\"ts\":1700000000}");
+    // Misdirected copy arrives first: rejected, and must not poison the
+    // cache for the genuine delivery.
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::TopicMismatch,
+        (int)verify_at(wire, "sporeprint/relay-01/cmd/aux", &guard));
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(wire, kExhaust, &guard));
+    // Stale frames are rejected before the cache is consulted.
+    TEST_ASSERT_EQUAL_INT(
+        (int)sp::VerifyStatus::StaleTimestamp,
+        (int)verify_at(wire, kExhaust, &guard, kNow + 31));
+}
+
+void test_replay_guard_expiry_and_capacity() {
+    sp::ReplayGuard guard;
+    uint8_t mac[32] = {0};
+    const uint32_t topic = sp::topic_hash(kExhaust);
+    guard.remember(topic, mac, kNow);
+    TEST_ASSERT_TRUE(guard.seen(topic, mac, kNow));
+    TEST_ASSERT_TRUE(guard.seen(topic, mac, kNow + 2 * sp::kReplayWindowSeconds));
+    // Past any ts that could still pass the ±30 s window: forgotten.
+    TEST_ASSERT_FALSE(
+        guard.seen(topic, mac, kNow + 2 * sp::kReplayWindowSeconds + 1));
+    TEST_ASSERT_FALSE(guard.seen(topic + 1, mac, kNow));
+
+    // Ring: the oldest entry is evicted once every slot is taken.
+    sp::ReplayGuard ring;
+    for (size_t i = 0; i < sp::ReplayGuard::kSlots + 1; ++i) {
+        uint8_t m[32] = {0};
+        m[0] = (uint8_t)i;
+        m[1] = (uint8_t)(i >> 8);
+        ring.remember(topic, m, kNow);
+    }
+    uint8_t first[32] = {0};
+    TEST_ASSERT_FALSE(ring.seen(topic, first, kNow));
+    uint8_t second[32] = {0};
+    second[0] = 1;
+    TEST_ASSERT_TRUE(ring.seen(topic, second, kNow));
+    TEST_ASSERT_TRUE(sp::topic_hash("a") != sp::topic_hash("b"));
+}
+
+void test_command_auth_threads_topic_and_replay_guard() {
+    sp::ReplayGuard guard;
+    std::string wire = sign_body(
+        "{\"state\":\"off\",\"topic\":\"sporeprint/relay-01/cmd/exhaust\","
+        "\"ts\":1700000000}");
+    sp::CmdAuthResult r = sp::command_auth_decision(
+        wire.data(), wire.size(), kKey, strlen(kKey), kNow,
+        sp::hmac_sha256_host, kExhaust, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    r = sp::command_auth_decision(wire.data(), wire.size(), kKey, strlen(kKey),
+                                  kNow, sp::hmac_sha256_host, kExhaust, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed, (int)r.status);
+    r = sp::command_auth_decision(wire.data(), wire.size(), kKey, strlen(kKey),
+                                  kNow, sp::hmac_sha256_host,
+                                  "sporeprint/relay-01/cmd/aux", &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::TopicMismatch, (int)r.status);
+    // Unprovisioned key: still the fail-open migration posture.
+    r = sp::command_auth_decision(wire.data(), wire.size(), "", 0, kNow,
+                                  sp::hmac_sha256_host, kExhaust, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::AcceptUnsigned,
+                          (int)r.decision);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_sha256_standard_vectors);
@@ -407,5 +604,14 @@ int main(int, char**) {
     RUN_TEST(test_command_auth_provisioned_key_accepts_valid_frame);
     RUN_TEST(test_command_auth_provisioned_key_rejects_bad_signature);
     RUN_TEST(test_command_auth_rejects_unsynced_clock_before_verifying);
+    RUN_TEST(test_topic_member_binds_frame_to_its_destination);
+    RUN_TEST(test_non_string_topic_member_is_a_mismatch);
+    RUN_TEST(test_frames_without_topic_member_still_verify);
+    RUN_TEST(test_no_topic_argument_skips_binding);
+    RUN_TEST(test_replay_guard_rejects_second_delivery);
+    RUN_TEST(test_replay_guard_allows_identical_legacy_body_on_another_channel);
+    RUN_TEST(test_rejected_frames_are_not_remembered);
+    RUN_TEST(test_replay_guard_expiry_and_capacity);
+    RUN_TEST(test_command_auth_threads_topic_and_replay_guard);
     return UNITY_END();
 }

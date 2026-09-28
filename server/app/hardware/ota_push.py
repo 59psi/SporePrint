@@ -18,6 +18,12 @@ LAN, exactly like Arduino's espota.py sender:
    node flashed; the final ack is ``OK`` once Update.end() succeeds and the
    node reboots into the new image.
 
+<host_port> is the fixed ``CALLBACK_PORT`` (3233), not an ephemeral port:
+under docker-compose the server sits on a bridge network, the node's
+connect-back reaches the Pi host, and only a port published in
+docker-compose.yml is forwarded into the container. One port means one
+push at a time — concurrent pushes queue on ``_callback_port_lock``.
+
 The node reports its own lifecycle over MQTT (msg_type "ota" -> ``node_ota``
 events), but Pi-side failures — wrong password, unreachable node, stalled
 transfer — happen before/around that and never reach MQTT. Those are tracked
@@ -44,7 +50,18 @@ DEFAULT_OTA_PORT = 3232
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024  # hard cap; a 4 MB-flash node is ~2 MB
 CHUNK_SIZE = 1024    # espota chunk size; the node buffers at most 1460
 INVITE_TIMEOUT_S = 10.0
+# Wait this long for a reply before re-inviting (on a fresh socket). Long on
+# purpose — see _invite(): duplicate invitations queued at a busy node make
+# ArduinoOTA hand out nonces the Pi then answers out of order.
+INVITE_RETRY_S = 3.0
 STALL_TIMEOUT_S = 120.0
+# TCP port the node connects back to (published in docker-compose.yml as
+# "3233:3233"). 0 = ephemeral, only usable when the node can reach the
+# server's own network namespace directly (bare metal, tests).
+CALLBACK_PORT = 3233
+
+# One fixed callback port → one transfer at a time across all nodes.
+_callback_port_lock = asyncio.Lock()
 
 
 class OtaPushError(Exception):
@@ -138,25 +155,63 @@ class _UdpExchange(asyncio.DatagramProtocol):
         self.replies.put_nowait(data)
 
 
-async def _invite(transport, proto: _UdpExchange, invitation: bytes,
-                  timeout: float) -> bytes:
-    """Send the invitation, re-sending every ~1s (espota retries too — the
-    node may miss a datagram while servicing WiFi), until a reply or the
-    deadline."""
+async def _invite(ip: str, port: int, invitation: bytes, timeout: float,
+                  retry_every: float):
+    """Invite the node; return ``(transport, proto, first_reply)``.
+
+    ArduinoOTA handles one datagram per handle() call with a strict state
+    machine: an invitation that arrives while it waits for the AUTH answer
+    drops it back to IDLE, and the next queued invitation earns a fresh
+    nonce. Re-sending every second therefore breaks exactly when the node
+    is busy (camera mid-JPEG-POST, PubSubClient blocked reconnecting):
+    duplicates queue up, the node answers them in turn, and the Pi answers
+    a nonce the node already discarded → a false "authentication rejected"
+    or a silent timeout. So, like espota.py: ONE invitation per UDP socket,
+    a long wait before re-inviting, and every retry on a FRESH socket (new
+    source port) so a late reply to an abandoned invitation can never be
+    mistaken for the current exchange.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
-        transport.sendto(invitation)
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise OtaPushError("no reply from node (invitation timed out)")
+        transport, proto = await loop.create_datagram_endpoint(
+            _UdpExchange, remote_addr=(ip, port))
+        transport.sendto(invitation)
         try:
-            return await asyncio.wait_for(proto.replies.get(),
-                                          min(1.0, remaining))
+            reply = await asyncio.wait_for(proto.replies.get(),
+                                           min(retry_every, remaining))
         except asyncio.TimeoutError:
-            if loop.time() >= deadline:
-                raise OtaPushError(
-                    "no reply from node (invitation timed out)")
+            transport.close()
+            continue
+        except BaseException:
+            transport.close()
+            raise
+        return transport, proto, reply
+
+
+async def _await_auth_result(proto: _UdpExchange, timeout: float) -> str:
+    """After answering the challenge, wait for ``OK`` (or the node's
+    failure text). A further ``AUTH <nonce>`` here is a stale duplicate
+    challenge (a duplicated invitation datagram) — answering it would only
+    desync the node again, so it is skipped."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise OtaPushError("no reply to authentication (timed out)")
+        try:
+            reply = (await asyncio.wait_for(proto.replies.get(),
+                                            remaining)).decode(
+                                                errors="replace").strip()
+        except asyncio.TimeoutError:
+            raise OtaPushError("no reply to authentication (timed out)")
+        if reply.startswith("AUTH"):
+            continue
+        return reply
 
 
 async def push_firmware(node_id: str, ip: str, port: int, password: str,
@@ -165,8 +220,31 @@ async def push_firmware(node_id: str, ip: str, port: int, password: str,
                         stall_timeout: float = STALL_TIMEOUT_S,
                         progress_cb: Callable[[int], None] | None = None,
                         bind_host: str = "0.0.0.0",
+                        invite_retry: float = INVITE_RETRY_S,
+                        callback_port: int | None = None,
                         ) -> None:
-    """Run one espota push. Raises OtaPushError on any failure."""
+    """Run one espota push. Raises OtaPushError on any failure.
+
+    ``callback_port`` defaults to the module's CALLBACK_PORT; pushes that
+    share a fixed port are serialized (only one listener can own it)."""
+    cb_port = CALLBACK_PORT if callback_port is None else callback_port
+    args = (node_id, ip, port, password, image, invite_timeout,
+            invite_retry, stall_timeout, progress_cb, bind_host, cb_port)
+    if cb_port == 0:
+        await _push_once(*args)
+        return
+    if _callback_port_lock.locked():
+        log.info("OTA push to %s waiting for another push to release "
+                 "callback port %d", node_id, cb_port)
+    async with _callback_port_lock:
+        await _push_once(*args)
+
+
+async def _push_once(node_id: str, ip: str, port: int, password: str,
+                     image: bytes, invite_timeout: float,
+                     invite_retry: float, stall_timeout: float,
+                     progress_cb: Callable[[int], None] | None,
+                     bind_host: str, cb_port: int) -> None:
     loop = asyncio.get_running_loop()
     size = len(image)
     file_md5 = hashlib.md5(image).hexdigest()
@@ -181,17 +259,20 @@ async def push_firmware(node_id: str, ip: str, port: int, password: str,
             return
         conn_fut.set_result((reader, writer))
 
-    server = await asyncio.start_server(_on_connect, host=bind_host, port=0)
+    try:
+        server = await asyncio.start_server(_on_connect, host=bind_host,
+                                            port=cb_port)
+    except OSError as e:
+        raise OtaPushError(
+            f"cannot listen on OTA callback port {cb_port}: {e.strerror or e}")
     try:
         host_port = server.sockets[0].getsockname()[1]
 
-        transport, proto = await loop.create_datagram_endpoint(
-            _UdpExchange, remote_addr=(ip, port))
+        invitation = f"{FLASH_CMD} {host_port} {size} {file_md5}\n"
+        transport, proto, raw = await _invite(
+            ip, port, invitation.encode(), invite_timeout, invite_retry)
         try:
-            invitation = f"{FLASH_CMD} {host_port} {size} {file_md5}\n"
-            reply = (await _invite(transport, proto, invitation.encode(),
-                                   invite_timeout)).decode(
-                                       errors="replace").strip()
+            reply = raw.decode(errors="replace").strip()
             if reply.startswith("AUTH"):
                 parts = reply.split()
                 if len(parts) != 2:
@@ -201,13 +282,7 @@ async def push_firmware(node_id: str, ip: str, port: int, password: str,
                 answer = (f"{AUTH_CMD} {cnonce} "
                           f"{auth_response(password, nonce, cnonce)}\n")
                 transport.sendto(answer.encode())
-                try:
-                    reply = (await asyncio.wait_for(
-                        proto.replies.get(), invite_timeout)).decode(
-                            errors="replace").strip()
-                except asyncio.TimeoutError:
-                    raise OtaPushError(
-                        "no reply to authentication (timed out)")
+                reply = await _await_auth_result(proto, invite_timeout)
                 if reply != "OK":
                     # Node says "Authentication Failed" — wrong password.
                     raise OtaPushError(

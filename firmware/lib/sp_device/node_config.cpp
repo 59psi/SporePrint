@@ -46,6 +46,7 @@ NodeConfig NodeConfig::load(sp::KvStore& kv) {
     c.hx711_scale = (float)kv.get_int("hx711_scale_m", 0) / 1000.0f;
     c.reed_enabled = kv.get_bool("reed_en", false);
     c.mhz19_enabled = kv.get_bool("mhz19_en", false);
+    c.wifi_verified = kv.get_bool("wifi_ok", true);
     c.migrated_from = kv.get_string("migrated_from", "");
     return c;
 }
@@ -69,6 +70,7 @@ void NodeConfig::save(sp::KvStore& kv) const {
     kv.set_int("hx711_scale_m", (int32_t)lroundf(hx711_scale * 1000.0f));
     kv.set_bool("reed_en", reed_enabled);
     kv.set_bool("mhz19_en", mhz19_enabled);
+    kv.set_bool("wifi_ok", wifi_verified);
 }
 
 std::string migrate_legacy(sp::KvStore& kv) {

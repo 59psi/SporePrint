@@ -70,3 +70,52 @@ async def test_expected_phase_events_anchored_at_inoculation_via_propose_cycle()
     # The current phase is not re-emitted as an "expected" event (only phases
     # still ahead of it are projected).
     assert f"session-{sid}-expected-substrate_colonization@sporeprint" not in by_uid
+
+
+async def test_expected_dates_skip_pre_substrate_phases_the_session_never_ran():
+    """srv-auto#23: a session that starts at substrate_colonization (the default)
+    must not have its projection pushed out by the optional agar -> LC -> grain
+    phases the species profile also lists.
+
+    cubensis_golden_teacher lists agar(10d) + liquid_culture(16d) + grain(12d)
+    before substrate_colonization(10d) -> primordia(8d) -> fruiting(10d). A
+    substrate-start session inoculated 2026-06-01 is expected to reach primordia
+    on 06-11 and fruiting on 06-19, with harvest (end of fruiting) on 06-29 —
+    not ~38 days later.
+    """
+    await seed_builtins()
+    session = await create_session(_make_session_data(
+        name="GT Tub",
+        species_profile_id="cubensis_golden_teacher",
+        inoculation_date="2026-06-01",
+    ))
+    sid = session["id"]
+
+    cal = Calendar.from_ical(await generate_ical())
+    by_uid = {str(ev["uid"]): ev for ev in cal.walk("VEVENT")}
+
+    def start(uid_phase):
+        return by_uid[f"session-{sid}-expected-{uid_phase}@sporeprint"].get("dtstart").dt
+
+    assert start("primordia_induction") == date(2026, 6, 11)
+    assert start("fruiting") == date(2026, 6, 19)
+    assert start("harvest") == date(2026, 6, 29)
+
+
+async def test_expected_dates_for_agar_start_session_include_early_phases():
+    """A session that genuinely starts at agar keeps the full timeline."""
+    await seed_builtins()
+    session = await create_session(_make_session_data(
+        name="GT From Agar",
+        species_profile_id="cubensis_golden_teacher",
+        inoculation_date="2026-06-01",
+        current_phase="agar",
+    ))
+    sid = session["id"]
+
+    cal = Calendar.from_ical(await generate_ical())
+    by_uid = {str(ev["uid"]): ev for ev in cal.walk("VEVENT")}
+
+    # agar 10d -> LC starts 06-11.
+    lc = by_uid[f"session-{sid}-expected-liquid_culture@sporeprint"]
+    assert lc.get("dtstart").dt == date(2026, 6, 11)

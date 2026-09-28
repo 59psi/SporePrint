@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from ...telemetry.service import store_reading
 from .client import PulseCloudClient, PulseError
@@ -137,7 +137,13 @@ async def poll_loop(
     *,
     record_outcome: Callable[[bool, str | None], None],
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    client_provider: Callable[[PulseConfig], Any] | None = None,
 ) -> None:
+    """Poll forever. ``client_provider(cfg)`` returns a long-lived transport
+    to reuse across cycles (or None to build a fresh one) — the cloud client
+    must be reused so its session token survives between polls instead of
+    POSTing email+password to the rate-limited login endpoint every cycle.
+    """
     while True:
         cfg = cfg_provider()
         # Cloud transport needs creds before starting; local transport
@@ -147,7 +153,8 @@ async def poll_loop(
             await sleep(cfg.poll_seconds)
             continue
         try:
-            await run_one_poll(cfg)
+            client = client_provider(cfg) if client_provider is not None else None
+            await run_one_poll(cfg, client=client)
             record_outcome(True, None)
         except PulseError as exc:
             logger.warning("pulse poll failed: %s", exc)

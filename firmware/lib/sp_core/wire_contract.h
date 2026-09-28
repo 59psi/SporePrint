@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hmac_verify.h"  // kMinValidEpoch — the one "clock is synced" floor
+
 namespace sp {
 
 // Round a float to one decimal place — the telemetry wire precision.
@@ -41,8 +43,19 @@ inline float wire_round1(float v) { return roundf(v * 10.0f) / 10.0f; }
 // sensor is present. `scale_raw` is the uncalibrated HX711 fallback — emitted
 // but NOT in SENSOR_FIELDS (the Pi tolerates-but-drops it), mutually exclusive
 // with `weight_g`.
+//
+// Envelope keys (not sensor fields, never persisted as readings):
+//   ts      Unix-epoch seconds once NTP has synced; uptime seconds before
+//           that (see telemetry_ts). The Pi treats ts < 1e9 as unsynced and
+//           stamps arrival time.
+//   replay  OPTIONAL, emitted only as `true` — the frame was buffered while
+//           the broker was unreachable and is being replayed late. The Pi
+//           stores it (at its own ts) but never evaluates automation rules
+//           on it and never lets it overwrite a newer latest reading.
+//           Absent on live frames, so pre-replay consumers see no change.
 struct TelemetryInputs {
-    uint32_t ts = 0;  // uptime seconds; the Pi stamps real time
+    uint32_t ts = 0;  // telemetry_ts(): epoch when synced, else uptime
+    bool replay = false;  // buffered frame replayed after an outage
 
     bool have_temp_rh = false;
     float temp_c = 0.0f;   // raw °C — builder derives temp_f + dew_point_f
@@ -64,8 +77,17 @@ struct TelemetryInputs {
     bool door_open = false;
 };
 
+// The telemetry `ts`: wall-clock epoch seconds when the clock has synced
+// (>= kMinValidEpoch, 2020-01-01), otherwise the uptime seconds the Pi has
+// always accepted (and re-stamps at arrival). The two ranges cannot overlap:
+// uptime would need ~50 years to reach the epoch floor.
+inline uint32_t telemetry_ts(uint64_t epoch_s, uint32_t uptime_s) {
+    return epoch_s >= kMinValidEpoch ? (uint32_t)epoch_s : uptime_s;
+}
+
 inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
     doc["ts"] = in.ts;
+    if (in.replay) doc["replay"] = true;
     if (in.have_temp_rh) {
         float tf = in.temp_c * 9.0f / 5.0f + 32.0f;
         doc["temp_f"] = wire_round1(tf);
@@ -119,8 +141,10 @@ inline void build_dim_levels(const DimLevel* levels, int n, JsonDocument& doc) {
 
 // ── heartbeat (publish_heartbeat) ──────────────────────────────
 // `type` + `roles` drive the Pi upsert and cloud command routing. The node
-// image emits wifi_reconnects (always 0 — core owns WiFi recovery); the cam
-// image omits it. `migrated_from` is present only post-migration.
+// image emits wifi_reconnects (its app-level WiFi re-begin count — the core's
+// auto-reconnect gives up on some disconnect reasons, so the node's link
+// watchdog retries itself); the cam image omits it. `migrated_from` is
+// present only post-migration.
 struct HeartbeatInputs {
     uint32_t uptime_sec = 0;
     uint32_t free_heap = 0;
@@ -129,6 +153,7 @@ struct HeartbeatInputs {
     const char* ip = "";
     int32_t reset_reason = 0;
     bool emit_wifi_reconnects = true;  // node: true, cam: false
+    uint32_t wifi_reconnects = 0;
     uint32_t mqtt_reconnects = 0;
     const char* type = "";  // node_type_str(personality) | "camera"
     const char* const* roles = nullptr;
@@ -144,7 +169,7 @@ inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
     doc["wifi_rssi"] = in.wifi_rssi;
     doc["ip"] = in.ip;
     doc["reset_reason"] = in.reset_reason;
-    if (in.emit_wifi_reconnects) doc["wifi_reconnects"] = 0;
+    if (in.emit_wifi_reconnects) doc["wifi_reconnects"] = in.wifi_reconnects;
     doc["mqtt_reconnects"] = in.mqtt_reconnects;
     doc["type"] = in.type;
     JsonArray roles = doc["roles"].to<JsonArray>();

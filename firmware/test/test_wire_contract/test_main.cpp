@@ -152,6 +152,45 @@ void test_telemetry_uncalibrated_emits_scale_raw_not_weight() {
     TEST_ASSERT_FALSE(in_list(kSensorFields, 8, "scale_raw"));
 }
 
+void test_telemetry_replay_flag_is_optional_envelope_key() {
+    // fw-node#3 / shared contract: frames replayed from the offline buffer
+    // carry "replay": true so the Pi stores them but never runs rules on
+    // them or lets them overwrite the latest reading. Live frames omit the
+    // key entirely (backward compatible with every existing consumer).
+    sp::TelemetryInputs in;
+    in.ts = 1700000000u;
+    in.have_co2 = true;
+    in.co2_ppm = 700;
+
+    JsonDocument live;
+    sp::build_telemetry(in, live);
+    TEST_ASSERT_FALSE(keys_of(live.as<JsonObject>()).count("replay") == 1);
+
+    in.replay = true;
+    JsonDocument replayed;
+    sp::build_telemetry(in, replayed);
+    std::set<std::string> k = keys_of(replayed.as<JsonObject>());
+    TEST_ASSERT_EQUAL_INT(3, (int)k.size());  // ts + co2_ppm + replay
+    TEST_ASSERT_TRUE(replayed["replay"].is<bool>());
+    TEST_ASSERT_TRUE(replayed["replay"].as<bool>());
+    // Envelope, not a sensor field: never persisted as a reading.
+    TEST_ASSERT_FALSE(in_list(kSensorFields, 8, "replay"));
+    TEST_ASSERT_FALSE(in_list(kTelemetryKeys, 8, "replay"));
+}
+
+void test_telemetry_ts_epoch_when_synced_else_uptime() {
+    // Shared contract: Unix-epoch seconds once NTP has synced; the old
+    // uptime ts before that. The Pi treats ts < 1e9 as unsynced and stamps
+    // arrival time, so the two ranges must never overlap.
+    TEST_ASSERT_EQUAL_UINT32(1700000000u, sp::telemetry_ts(1700000000ULL, 42u));
+    TEST_ASSERT_EQUAL_UINT32(1577836800u, sp::telemetry_ts(1577836800ULL, 42u));
+    // Unsynced clock (ESP32 boots at epoch 0 + uptime).
+    TEST_ASSERT_EQUAL_UINT32(42u, sp::telemetry_ts(42ULL, 42u));
+    TEST_ASSERT_EQUAL_UINT32(42u, sp::telemetry_ts(1577836799ULL, 42u));
+    TEST_ASSERT_TRUE(sp::telemetry_ts(0ULL, 3600u) < 1000000000u);
+    TEST_ASSERT_TRUE(sp::telemetry_ts(1700000000ULL, 3600u) >= 1000000000u);
+}
+
 // ── alert ──────────────────────────────────────────────────────
 
 void test_alert_keys_and_types() {
@@ -265,6 +304,14 @@ void test_node_heartbeat_contract() {
                              "heartbeat type must be a COMPONENT_TYPE");
     TEST_ASSERT_EQUAL_INT(0, doc["wifi_reconnects"].as<int>());
     TEST_ASSERT_EQUAL_INT(3, doc["mqtt_reconnects"].as<int>());
+    // wifi_reconnects now carries the node's app-level WiFi re-begin count
+    // (fw-node#7) — same key, same int type.
+    in.wifi_reconnects = 5;
+    JsonDocument doc_w;
+    sp::build_heartbeat(in, doc_w);
+    TEST_ASSERT_EQUAL_INT(5, doc_w["wifi_reconnects"].as<int>());
+    assert_exact_keys(doc_w.as<JsonObject>(), expected, 11,
+                      "node heartbeat (wifi_reconnects > 0)");
     // roles array carries the transcribed capability set.
     JsonArray r = doc["roles"].as<JsonArray>();
     TEST_ASSERT_EQUAL_INT(2, (int)r.size());
@@ -409,6 +456,8 @@ int main(int, char**) {
     RUN_TEST(test_telemetry_all_present_matches_contract);
     RUN_TEST(test_telemetry_partial_presence_omits_absent_keys);
     RUN_TEST(test_telemetry_uncalibrated_emits_scale_raw_not_weight);
+    RUN_TEST(test_telemetry_replay_flag_is_optional_envelope_key);
+    RUN_TEST(test_telemetry_ts_epoch_when_synced_else_uptime);
     RUN_TEST(test_alert_keys_and_types);
     RUN_TEST(test_alert_every_firmware_type_is_a_known_alert_type);
     RUN_TEST(test_switch_report_contract);

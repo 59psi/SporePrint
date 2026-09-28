@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta
 
 from ..config import settings
 from ..db import get_db
@@ -22,6 +23,11 @@ _forecast_cache_ts: float = 0
 
 _providers = None
 _providers_key = None
+
+# Forecast alerts are re-evaluated on every poll (default 10 min). The same
+# forecast event (session + kind + forecast day) pages at most once per window;
+# the window must exceed the poll interval or it never dedups at all.
+_FORECAST_ALERT_DEDUP_SECONDS = 6 * 3600
 
 
 def _build_provider_cascade() -> list:
@@ -128,11 +134,18 @@ async def _update_current_cache(weather: dict, provider_name: str):
     weather["timestamp"] = time.time()
     weather["provider"] = provider_name
 
-    # Compute forecast high/low from cached forecast
+    # Compute TODAY's forecast high/low (the operator's local calendar day —
+    # host TZ, UTC in the Docker image). The old filter's upper bound was the
+    # end of TOMORROW with no lower bound, so a hot tomorrow drove the
+    # "Pre-cool for Hot Forecast" rule all through a mild today.
     if _forecast_cache:
-        now = time.time()
-        today_end = now - (now % 86400) + 86400
-        today_temps = [e["temp_f"] for e in _forecast_cache if e["timestamp"] < today_end + 86400]
+        day_start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        start_ts = day_start.timestamp()
+        end_ts = (day_start + timedelta(days=1)).timestamp()
+        today_temps = [
+            e["temp_f"] for e in _forecast_cache
+            if start_ts <= e["timestamp"] < end_ts and e.get("temp_f") is not None
+        ]
         if today_temps:
             weather["forecast_high_f"] = round(max(today_temps), 1)
             weather["forecast_low_f"] = round(min(today_temps), 1)
@@ -202,7 +215,15 @@ async def _prune_old_forecasts():
 
 
 async def _check_forecast_alerts(current: dict | None, forecast: list[dict]):
-    """Scan next 72h for conditions dangerous to active session species."""
+    """Scan the next 72h for predicted closet conditions dangerous to the active species.
+
+    Alerts only when a weather→closet model has been trained: the outdoor
+    forecast alone says nothing about an indoor closet, so comparing raw
+    outdoor temps to closet setpoints produced bogus CRITICALs for the first
+    week of every install (and all winter for tropical species). Hours already
+    elapsed are skipped (Open-Meteo returns hours from 00:00 today), and each
+    event is deduped per session/kind/day for longer than the poll interval.
+    """
     session = await get_active_session()
     if not session:
         return
@@ -219,45 +240,65 @@ async def _check_forecast_alerts(current: dict | None, forecast: list[dict]):
     if not phase_params:
         return
 
-    predictions = await predict_indoor_conditions(forecast[:72])
-
     now = time.time()
     max_horizon = now + 72 * 3600
+    upcoming = [
+        e for e in forecast
+        if now - 3600 < (e.get("timestamp") or 0) <= max_horizon
+    ]
+    if not upcoming:
+        return
 
-    for entry in (predictions or forecast[:72]):
-        ts = entry.get("forecast_time") or entry.get("timestamp", 0)
-        if ts > max_horizon:
-            break
+    predictions = await predict_indoor_conditions(upcoming)
+    if not predictions:
+        log.debug("Forecast alerts skipped: no weather→closet prediction model yet")
+        return
 
-        temp = entry.get("predicted_indoor_temp_f") or entry.get("temp_f", 72)
-        hours_out = max(0, (ts - now) / 3600)
+    session_id = session.get("id")
+    phase_label = current_phase.replace("_", " ")
 
-        # Check if temp exceeds species targets
+    def _points():
+        for entry in predictions:
+            temp = entry.get("predicted_indoor_temp_f")
+            if temp is None:
+                continue
+            ts = entry.get("forecast_time") or 0
+            yield ts, temp, max(0, (ts - now) / 3600), int(ts // 86400)
+
+    # CRITICAL first across the whole horizon, so an earlier advisory can't
+    # mask a later danger (one alert per poll cycle).
+    for ts, temp, hours_out, day in _points():
         if temp > phase_params.temp_max_f + 10:
             await notify_critical(
                 f"CRITICAL: {profile.common_name} heat danger in {hours_out:.0f}h",
-                f"Predicted closet temp {temp:.0f}°F exceeds {current_phase.replace('_', ' ')} "
+                f"Predicted closet temp {temp:.0f}°F exceeds {phase_label} "
                 f"max ({phase_params.temp_max_f}°F) by {temp - phase_params.temp_max_f:.0f}°F. "
                 f"Consider pausing session or adding active cooling.",
                 tags=["thermometer", "warning"],
-            )
-            return  # One alert per poll cycle
-
-        if temp > phase_params.temp_max_f + 5:
-            await notify_warning(
-                f"Heat advisory: {profile.common_name} in {hours_out:.0f}h",
-                f"Predicted closet temp {temp:.0f}°F may exceed {current_phase.replace('_', ' ')} "
-                f"max ({phase_params.temp_max_f}°F). Pre-cooling recommended.",
-                dedup_key=f"heat-warn-{int(ts / 3600)}",
+                dedup_key=f"wx-heat-{session_id}-{day}",
+                dedup_seconds=_FORECAST_ALERT_DEDUP_SECONDS,
             )
             return
 
         if temp < phase_params.temp_min_f - 10:
             await notify_critical(
                 f"CRITICAL: {profile.common_name} cold danger in {hours_out:.0f}h",
-                f"Predicted closet temp {temp:.0f}°F below {current_phase.replace('_', ' ')} "
+                f"Predicted closet temp {temp:.0f}°F below {phase_label} "
                 f"min ({phase_params.temp_min_f}°F) by {phase_params.temp_min_f - temp:.0f}°F.",
                 tags=["thermometer", "warning"],
+                dedup_key=f"wx-cold-{session_id}-{day}",
+                dedup_seconds=_FORECAST_ALERT_DEDUP_SECONDS,
+            )
+            return
+
+    for ts, temp, hours_out, day in _points():
+        if temp > phase_params.temp_max_f + 5:
+            await notify_warning(
+                f"Heat advisory: {profile.common_name} in {hours_out:.0f}h",
+                f"Predicted closet temp {temp:.0f}°F may exceed {phase_label} "
+                f"max ({phase_params.temp_max_f}°F). Pre-cooling recommended.",
+                dedup_key=f"wx-heatwarn-{session_id}-{day}",
+                dedup_seconds=_FORECAST_ALERT_DEDUP_SECONDS,
             )
             return
 

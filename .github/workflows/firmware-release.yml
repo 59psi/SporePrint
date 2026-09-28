@@ -9,6 +9,14 @@
 # env var before any shell use, never interpolated directly into a run:
 # string. github.ref_name is bounded by the firmware-v* trigger filter and
 # follows the same env-var pattern.
+#
+# workflow_dispatch builds the REQUESTED tag (checkout ref), not the default
+# branch — the tag must already exist; its version is stamped into the images.
+#
+# Supply chain: the token is read-only everywhere except the release job, and
+# checkouts never persist it, so PlatformIO / library build scripts in the
+# build matrix cannot push tags or edit releases. Actions are pinned to commit
+# SHAs (tag in the trailing comment) and PlatformIO to an exact version.
 
 name: Firmware Release
 
@@ -23,29 +31,35 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         env: [node_esp32, node_esp32s3, cam]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Dispatch builds the requested tag; a tag push builds its own ref.
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Cache PlatformIO toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio==6.2.0
 
       - name: Build ${{ matrix.env }}
         working-directory: firmware
@@ -74,7 +88,7 @@ jobs:
             zip -j "$GITHUB_WORKSPACE/firmware-dist/${BUILD_ENV}.zip" firmware.bin
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: firmware-${{ matrix.env }}
           path: firmware-dist/${{ matrix.env }}.zip
@@ -83,11 +97,13 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # The only job that may write: it creates the release and uploads assets.
+    # No checkout — it needs nothing from the repository.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all firmware artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: firmware-*
           path: firmware-dist
@@ -106,7 +122,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Firmware ${{ steps.tag.outputs.tag }}

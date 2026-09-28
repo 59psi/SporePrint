@@ -16,6 +16,24 @@
 #   1883  MQTT           — credentialed; ESP32 firmware nodes connect here
 #   8883  MQTT over TLS  — opt-in per node (portal "Secure MQTT" toggle)
 #   8080  ntfy           — local push notifications
+#   3233  OTA push       — TCP port ESP32 nodes connect BACK to during a
+#                          Pi-initiated firmware push (espota; see
+#                          server/app/hardware/ota_push.py CALLBACK_PORT)
+#
+# Images are pinned to exact versions: install.sh runs `compose pull` on every
+# update, and a floating tag once moved the broker 2.0.x → 2.1.x underneath a
+# running install. Bump deliberately (and keep install.sh +
+# scripts/lib/broker.sh on the same eclipse-mosquitto tag — tests/test_docker.py
+# checks).
+
+# Bounded container logs: the json-file driver is unbounded by default and
+# the broker logs every connect/disconnect; left alone that fills the Pi's SD
+# card and SQLite starts failing with "database or disk is full".
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   # One-shot: the server runs as non-root appuser (uid 1000 — see
@@ -28,12 +46,17 @@ services:
     volumes:
       - sporeprint_db:/data/db
       - sporeprint_vision:/data/vision
+    logging: *default-logging
     restart: "no"
 
   server:
     build: ./server
     ports:
       - "8000:8000"
+      # espota connect-back. The server advertises this fixed port in the UDP
+      # invitation; behind the bridge network an ephemeral port would never
+      # be reachable from the node. Must equal ota_push.CALLBACK_PORT.
+      - "3233:3233"
     volumes:
       # Runtime data → named volumes so it survives `docker compose down`
       # and container rebuilds. SQLite DB + the Fernet integration key live
@@ -46,6 +69,19 @@ services:
       - ./models:/models:ro
       - ./firmware:/firmware:ro
       - ./docs:/docs:ro
+      # The broker's PUBLIC CA certificate only, for GET /api/provision/ca
+      # (the "Secure MQTT" trust-on-first-use fetch; app/provision.py). Never
+      # mount the certs directory: it holds ca.key and server.key, and the
+      # server's appuser (uid 1000) is usually the installing host user.
+      # create_host_path: false — install.sh generates it before `up`; a
+      # bare `docker compose up` without it fails loudly instead of Docker
+      # creating a root-owned directory named ca.crt.
+      - type: bind
+        source: ./config/mosquitto/certs/ca.crt
+        target: /certs/ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       - SPOREPRINT_DATABASE_PATH=/data/db/sporeprint.db
       - SPOREPRINT_VISION_STORAGE=/data/vision
@@ -82,6 +118,19 @@ services:
       - SPOREPRINT_CLOUD_URL=${SPOREPRINT_CLOUD_URL:-}
       - SPOREPRINT_CLOUD_TOKEN=${SPOREPRINT_CLOUD_TOKEN:-}
       - SPOREPRINT_CLOUD_DEVICE_ID=${SPOREPRINT_CLOUD_DEVICE_ID:-}
+      # cmd/* command signing. server/.dockerignore excludes .env and there
+      # is no env_file:, so these reach the container ONLY via this list —
+      # scripts/provision-node.sh writes the key to the repo-root .env that
+      # compose interpolates. Apply with `docker compose up -d server`
+      # (`restart` does not re-read .env). REQUIRE_SIGNING keeps an explicit
+      # `auto` default: an empty value fails the auto|always|never check.
+      - SPOREPRINT_MQTT_HMAC_KEY=${SPOREPRINT_MQTT_HMAC_KEY:-}
+      - SPOREPRINT_MQTT_REQUIRE_SIGNING=${SPOREPRINT_MQTT_REQUIRE_SIGNING:-auto}
+      # OTA self-update verify key (base64 Ed25519 public key). The _B64 name
+      # is the setting; SPOREPRINT_OTA_PUBKEY is the name
+      # scripts/generate-ota-keypair.py prints (cloud/ota.py falls back to it).
+      - SPOREPRINT_OTA_PUBKEY_B64=${SPOREPRINT_OTA_PUBKEY_B64:-}
+      - SPOREPRINT_OTA_PUBKEY=${SPOREPRINT_OTA_PUBKEY:-}
     healthcheck:
       # The health route is /api/health (public — bypasses the api-key gate).
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]
@@ -100,10 +149,11 @@ services:
         condition: service_started
       ntfy:
         condition: service_started
+    logging: *default-logging
     restart: unless-stopped
 
   mqtt:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.1.2-alpine
     # LAN-scoped, credentialed broker (allow_anonymous false + per-user ACL).
     # 1883 is published on the LAN so firmware nodes can reach it; 8883 adds
     # TLS for nodes that opt in. Never expose either port to the public
@@ -115,10 +165,25 @@ services:
       - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./config/mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
       # passwd + certs are generated on first run by install.sh. They MUST
-      # exist before `up`: a missing bind-mount file would be created by Docker
-      # as a directory and break the broker.
-      - ./config/mosquitto/passwd:/mosquitto/config/passwd:ro
-      - ./config/mosquitto/certs:/mosquitto/certs:ro
+      # exist before `up`: with the short `./a:/b` syntax Docker would create
+      # a missing source as a root-owned directory, which kills the broker
+      # and blocks a later install.sh from writing the file. Long syntax with
+      # create_host_path: false fails the `up` loudly instead.
+      # Ownership: mosquitto drops to its `mosquitto` user (uid/gid 1883 in
+      # this image) BEFORE it opens password_file and the TLS keyfile, so
+      # install.sh hands passwd + certs/server.key to 1883:1883 (mode 0600).
+      - type: bind
+        source: ./config/mosquitto/passwd
+        target: /mosquitto/config/passwd
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./config/mosquitto/certs
+        target: /mosquitto/certs
+        read_only: true
+        bind:
+          create_host_path: false
       - mosquitto_data:/mosquitto/data
     environment:
       # Consumed only by the healthcheck below (the broker's own `server` creds).
@@ -131,10 +196,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
   ntfy:
-    image: binwiederhier/ntfy
+    image: binwiederhier/ntfy:v2.28.0
     command: serve
     ports:
       - "8080:80"
@@ -146,6 +212,7 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
   ui:
@@ -158,6 +225,7 @@ services:
       # /api/health, which is reliable once the process is up.
       server:
         condition: service_healthy
+    logging: *default-logging
     restart: unless-stopped
 
 volumes:

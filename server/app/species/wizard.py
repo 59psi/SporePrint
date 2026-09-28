@@ -33,6 +33,9 @@ EXPERIENCE_TAGS: dict[str, list[str]] = {
     "advanced": ["beginner", "intermediate", "advanced"],
 }
 
+# Environments with no chamber; every other choice is an indoor chamber.
+_OUTDOOR_ENVIRONMENTS = ("outdoor_beds", "logs")
+
 # ── Commitment thresholds (total grow days) ─────────────────────────
 # Maps commitment level to a maximum number of total expected grow days
 # that the user is comfortable with.  Species whose total cycle exceeds
@@ -145,7 +148,7 @@ def score_profile(
         reasons.append("May be above your current experience level")
 
     # ── 2. Environment match (0-20) ─────────────────────────────────
-    is_outdoor = environment in ("outdoor_beds", "logs")
+    is_outdoor = environment in _OUTDOOR_ENVIRONMENTS
     species_outdoor = any(
         kw in " ".join(profile.substrate_types).lower()
         for kw in ("log", "garden", "outdoor", "compost", "soil")
@@ -286,6 +289,11 @@ def recommend(
     limit: int = 5,
 ) -> list[dict]:
     """Score all profiles and return the top *limit* results, sorted descending."""
+    if environment not in _OUTDOOR_ENVIRONMENTS:
+        # Reference-only species (chaga: a decade-long sclerotium on a living
+        # birch; an endophyte with no fruit body) can't be grown in a closet or
+        # tent at all — never offer them for an indoor chamber.
+        profiles = [p for p in profiles if p.chamber_cultivable]
     scored = [
         score_profile(
             p,

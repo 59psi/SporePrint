@@ -42,7 +42,10 @@ struct DetectedSensors {
 
 // Probe the climate-sensor addresses (0x44/0x45 SHT, 0x62 SCD4x, 0x61
 // SCD30, 0x23/0x5C BH1750). Each probe is CRC- or ACK-gated and bounded by
-// the bus timeout — total worst case a few ms per address.
+// the bus timeout — a few ms per address, plus the SCD4x's datasheet
+// 500 ms stop_periodic wait when one is present (boot-only, pre-WDT: the
+// probe must stop a periodic mode left running by a warm reboot before
+// get_serial will answer).
 DetectedSensors autodetect_i2c(I2cBus& bus, Clock& clock);
 
 const char* temp_rh_kind_str(TempRhKind k);

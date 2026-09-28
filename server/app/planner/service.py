@@ -47,14 +47,25 @@ async def aggregate_daily_weather():
         )
         outdoor = dict(await cursor.fetchone())
 
-        # Chamber data from telemetry_readings
+        # Chamber data from telemetry_readings. ESP32 nodes publish temp_f;
+        # integration sensors (Aranet, Pulse, Trane...) only write temp_c.
         cursor = await db.execute(
             """SELECT AVG(value) as avg_temp, MIN(value) as min_temp, MAX(value) as max_temp
                FROM telemetry_readings
-               WHERE sensor = 'temperature' AND timestamp >= ? AND timestamp < ?""",
+               WHERE sensor = 'temp_f' AND timestamp >= ? AND timestamp < ?""",
             (day_start, day_end),
         )
         chamber_temp = dict(await cursor.fetchone())
+        if chamber_temp["avg_temp"] is None:
+            cursor = await db.execute(
+                """SELECT AVG(value) * 9.0 / 5.0 + 32 as avg_temp,
+                          MIN(value) * 9.0 / 5.0 + 32 as min_temp,
+                          MAX(value) * 9.0 / 5.0 + 32 as max_temp
+                   FROM telemetry_readings
+                   WHERE sensor = 'temp_c' AND timestamp >= ? AND timestamp < ?""",
+                (day_start, day_end),
+            )
+            chamber_temp = dict(await cursor.fetchone())
 
         cursor = await db.execute(
             """SELECT AVG(value) as avg_humidity
@@ -215,11 +226,14 @@ async def get_calendar_data() -> list[dict]:
     Returns 12 months with top 10 species per month.
     """
     async with get_db() as db:
+        # Chamber-only days (no weather provider configured) have NULL outdoor
+        # temps; species scoring is outdoor-driven, so they don't count.
         cursor = await db.execute(
             """SELECT strftime('%m', date) as month,
                       AVG(outdoor_temp_avg_f) as avg_temp,
                       AVG(outdoor_humidity_avg) as avg_humidity
                FROM weather_history
+               WHERE outdoor_temp_avg_f IS NOT NULL
                GROUP BY strftime('%m', date)
                ORDER BY month"""
         )

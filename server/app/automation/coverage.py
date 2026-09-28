@@ -22,7 +22,12 @@ smart-plug row or node channel says so.
 from ..db import get_db
 from ..hardware.service import get_node
 from .models import AutomationRule
-from .service import deserialize_rule_row, resolve_node_target, validate_action_channel
+from .service import (
+    deserialize_rule_row,
+    resolve_node_target,
+    rule_applies_to_species,
+    validate_action_channel,
+)
 from .smart_plugs import target_is_present
 
 
@@ -46,9 +51,7 @@ def _rule_applies(rule: AutomationRule, species_id: str, phase: str) -> bool:
     """Same phase/species gate the engine applies (evaluate_rules)."""
     if rule.applies_to_phases and phase not in rule.applies_to_phases:
         return False
-    if rule.applies_to_species and species_id not in rule.applies_to_species:
-        return False
-    return True
+    return rule_applies_to_species(rule.applies_to_species, species_id)
 
 
 def _actuator_label(action) -> str:

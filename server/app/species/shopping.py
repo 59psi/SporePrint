@@ -8,7 +8,7 @@ quantities scaled for the requested number of grows and container size.
 from __future__ import annotations
 
 from .models import SpeciesProfile
-from .substrate import BASE_DENSITY_KG_PER_LITER, _parse_quantity, _format_quantity
+from .substrate import BASE_DENSITY_KG_PER_LITER, _format_quantity, calculate_recipe
 
 
 # ── Supplier links by item category / keyword ─────────────────────
@@ -119,33 +119,17 @@ def generate_shopping_list(
 
     items = []
 
-    # Substrate ingredients — scale from recipe baseline
-    ref_total_g = 0.0
-    parsed = []
-    for name, qty_str in recipe.ingredients.items():
-        value, unit = _parse_quantity(qty_str)
-        parsed.append((name, value, unit))
-        # rough conversion to grams for reference total
-        if unit.lower() in ("g",):
-            ref_total_g += value
-        elif unit.lower() in ("kg",):
-            ref_total_g += value * 1000
-        else:
-            ref_total_g += value * 100  # rough estimate for non-weight units
-
-    if ref_total_g > 0:
-        scale = (total_dry_substrate_g / ref_total_g)
-    else:
-        scale = float(grows)
-
-    for name, value, unit in parsed:
-        item = {"name": name, "category": "substrate",
-                "supplier_links": _find_supplier_links(name)}
-        if value == 0.0:
-            item["quantity"] = unit
-        else:
-            item["quantity"] = _format_quantity(round(value * scale, 1), unit)
-        items.append(item)
+    # Substrate ingredients — the substrate calculator's own scaling for the
+    # combined volume of every grow, so the two endpoints always agree (this
+    # used to weigh every non-gram unit as 100 g, over-stating lb recipes ~4.5x).
+    scaled = calculate_recipe(recipe, container_liters * grows)["ingredients"]
+    for name, quantity in scaled.items():
+        items.append({
+            "name": name,
+            "category": "substrate",
+            "quantity": quantity,
+            "supplier_links": _find_supplier_links(name),
+        })
 
     # Spawn
     spawn_name = "Grain spawn"

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from typing import Literal
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
+
+from .._net import split_host_port
 
 
 TapoTransport = Literal["local", "cloud"]
@@ -24,9 +25,7 @@ class TapoDeviceMapping(BaseModel):
     def _check_ip(cls, v: str) -> str:
         if not v:
             return v
-        parsed = urlparse(f"//{v}")
-        if not parsed.hostname:
-            raise ValueError(f"invalid ip {v!r}")
+        split_host_port(v)
         return v
 
 

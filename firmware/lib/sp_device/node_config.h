@@ -100,6 +100,14 @@ struct NodeConfig {
     float hx711_scale = 0.0f;  // counts per gram; 0 = uncalibrated
     bool reed_enabled = false;
     bool mhz19_enabled = false;
+    // The stored WiFi credentials have connected at least once (NVS
+    // "wifi_ok"). The portal clears it when the SSID/password change, or
+    // when it saves Secure MQTT with no CA pinned yet (the CA fetch needs the
+    // link; boot_policy.h portal_save_needs_first_connect); the first
+    // successful connect sets it. A MISSING key reads as true: every
+    // node provisioned before this flag existed was running (it received
+    // the OTA over WiFi). Drives boot_policy.h's portal fallback.
+    bool wifi_verified = true;
     std::string migrated_from;  // legacy namespace name, "" if fresh
 
     static NodeConfig load(sp::KvStore& kv);

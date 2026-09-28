@@ -6,8 +6,14 @@ import anthropic
 
 from ..config import settings
 from ..db import get_db
+from ..vision.service import claude_response_text, claude_stop_reason
 
 log = logging.getLogger(__name__)
+
+# A 9-section guide with firmware + OpenSCAD code, plus the model's thinking,
+# overran the old 4096 cap. This is above the SDK's non-streaming ceiling, so
+# the request is streamed.
+_GUIDE_MAX_TOKENS = 32_000
 
 
 async def _build_system_context() -> str:
@@ -121,14 +127,31 @@ Be thorough, practical, and specific. The operator is experienced with ESP32 and
         if constraints:
             user_msg += f"\n\nConstraints: {constraints}"
 
-        message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
+        async with client.messages.stream(
+            model=settings.claude_model,
+            max_tokens=_GUIDE_MAX_TOKENS,
             system=system_prompt,
             messages=[{"role": "user", "content": user_msg}],
-        )
+        ) as stream:
+            message = await stream.get_final_message()
 
-        guide_text = message.content[0].text
+        stop_reason = claude_stop_reason(message)
+        if stop_reason == "refusal":
+            return {"error": "Claude declined to generate this guide (refusal)"}
+        guide_text = claude_response_text(message)
+        if stop_reason == "max_tokens":
+            # A guide cut off mid-section must not be saved as if complete.
+            log.warning("Builder guide truncated at max_tokens; not saved")
+            return {
+                "error": "The guide was cut off at the output limit and was not saved. "
+                         "Try narrowing the request.",
+                "truncated": True,
+                "request": request,
+                "constraints": constraints,
+                "guide": guide_text,
+            }
+        if not guide_text.strip():
+            return {"error": "Claude returned an empty guide"}
 
         # Save guide
         guide_id = await _save_guide(request, constraints, guide_text)

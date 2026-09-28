@@ -10,9 +10,13 @@
 // coredump chunk into unparseable JSON.
 //
 // Inbound stays at a 1024-byte cap with an explicit oversize drop (logged,
-// never truncated). Reconnect is non-blocking-ish: one connect attempt per
-// 5 s window (PubSubClient's socket timeout bounds the attempt; the WDT
-// budget accounts for it). LWT publishes a retained offline status; the
+// never truncated). Reconnect is non-blocking-ish: at most one connect
+// attempt per pass, at least 5 s after the previous attempt ENDED (so a
+// failing attempt is always followed by 5 s of unblocked passes), skipped
+// while WiFi is down. The attempt is synchronous, so its worst case (DNS +
+// TCP + TLS handshake + CONNACK) is budgeted against the loop WDT in
+// sp_core/link_budget.h — the transport timeouts are set in tls_transport.h,
+// the CONNACK wait here. LWT publishes a retained offline status; the
 // connect callback re-publishes retained online status and re-subscribes.
 //
 // The transport Client* is injected so phase 6 can swap a WiFiClientSecure
@@ -44,8 +48,11 @@ public:
     void begin(const char* host, uint16_t port, const char* user,
                const char* pass);
 
-    // Pump: reconnect window + PubSubClient loop. Call every loop pass.
-    void loop(uint32_t now_ms);
+    // Pump: reconnect window + PubSubClient loop. Call every loop pass with
+    // a `now` taken at the top of the pass. `may_connect` = false skips
+    // starting a (blocking) connect attempt this pass — the node passes it
+    // while the BOOT button is held so the hold is sampled densely.
+    void loop(uint32_t now_ms, bool may_connect = true);
 
     bool connected() { return mqtt_.connected(); }
     uint32_t reconnect_count() const { return reconnects_; }

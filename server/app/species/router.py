@@ -52,7 +52,10 @@ async def create_profile(profile: SpeciesProfile):
 
 @router.put("/{profile_id}")
 async def update_profile(profile_id: str, profile: SpeciesProfile):
-    result = await service.update_profile(profile_id, profile)
+    try:
+        result = await service.update_profile(profile_id, profile)
+    except service.BuiltinProfileReadOnly as e:
+        raise HTTPException(409, str(e))
     if not result:
         raise HTTPException(404, "Species profile not found")
     return result.model_dump()

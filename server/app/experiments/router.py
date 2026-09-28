@@ -40,8 +40,11 @@ async def get_comparison(experiment_id: int):
     return comparison
 
 
-@router.get("/{experiment_id}/analyze")
+@router.post("/{experiment_id}/analyze")
+@router.get("/{experiment_id}/analyze")  # deprecated: kept for the shipped UI
 async def analyze_experiment(experiment_id: int):
+    """Run a (paid) Claude analysis of the experiment. Prefer POST — it is not a
+    safe/idempotent read; GET remains only for clients that still use it."""
     result = await service.analyze_experiment(experiment_id)
     if not result:
         raise HTTPException(404, "Experiment not found")

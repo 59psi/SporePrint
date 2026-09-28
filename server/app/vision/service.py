@@ -2,13 +2,16 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 import anthropic
 
 from ..config import settings
+from ..contamination.service import record_event
 from ..db import get_db
 from ..notifications.service import contamination_alert, notify_warning
 
@@ -40,17 +43,130 @@ def _ai_timing_span(op: str, **tags):
 
 
 def parse_claude_json(text: str) -> dict:
-    """Parse JSON from a Claude response, handling markdown code blocks."""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        if "```json" in text:
-            json_str = text.split("```json")[1].split("```")[0].strip()
-            return json.loads(json_str)
-        elif "```" in text:
-            json_str = text.split("```")[1].split("```")[0].strip()
-            return json.loads(json_str)
-        return {"raw_response": text}
+    """Parse a JSON object out of a Claude response. Never raises.
+
+    Tries, in order: the whole text, the first fenced block (```json or ```),
+    then the span between the first '{' and the last '}' (prose-wrapped JSON).
+    Anything that doesn't yield a JSON *object* — including a response
+    truncated at max_tokens mid-fence — degrades to {"raw_response": text}, so
+    callers take their documented fallback path instead of a 500.
+    """
+    if not isinstance(text, str):
+        return {"raw_response": str(text)}
+
+    candidates = [text]
+    if "```" in text:
+        after = text.split("```json", 1)[1] if "```json" in text else text.split("```", 1)[1]
+        candidates.append(after.split("```", 1)[0])
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start:end + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate.strip())
+        except ValueError:  # JSONDecodeError is a ValueError subclass
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {"raw_response": text}
+
+
+# Output ceiling for the non-streaming Claude calls. Current models think by
+# default and thinking tokens count against max_tokens, so the old 1000-2048
+# budgets truncated the JSON answer. Only tokens actually generated are billed;
+# 16K stays under the SDK's non-streaming limit.
+CLAUDE_MAX_TOKENS = 16_000
+
+
+def claude_response_text(message) -> str:
+    """Joined text of a Messages API response's text blocks. Never raises.
+
+    `content[0]` is not necessarily text: models that think by default put a
+    `thinking` block first, and a refusal can carry no text at all. Blocks with
+    no string `type` but a string `text` count as text.
+    """
+    parts = []
+    for block in getattr(message, "content", None) or ():
+        text = getattr(block, "text", None)
+        block_type = getattr(block, "type", None)
+        if isinstance(text, str) and (block_type == "text" or not isinstance(block_type, str)):
+            parts.append(text)
+    return "".join(parts)
+
+
+def claude_stop_reason(message) -> str | None:
+    """The response's stop_reason ("end_turn", "max_tokens", "refusal", ...)."""
+    reason = getattr(message, "stop_reason", None)
+    return reason if isinstance(reason, str) else None
+
+
+# Image types the Claude Messages API accepts, keyed by stored-file extension.
+_MEDIA_BY_SUFFIX = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+EXT_BY_MEDIA = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def sniff_image_media_type(data: bytes) -> str | None:
+    """Identify JPEG/PNG/WebP/GIF from magic bytes; None for anything else.
+
+    The bytes are the authority — a Content-Type header or file suffix can lie
+    (and early frames were stored as .jpg whatever their real type). The
+    Messages API rejects a request whose declared media_type doesn't match the
+    image, and only accepts these four types (so HEIC etc. sniff to None).
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return None
+
+
+# ─── Frame ingest helpers (timestamp + storage name) ────────────────────
+#
+# Contract with the cam firmware: X-Timestamp carries Unix-epoch seconds only
+# when the cam is NTP-synced. A missing value, or one below 1e9 (the uptime
+# counter older firmware sends when unsynced), is stamped with arrival time.
+_EPOCH_SYNCED_MIN = 1_000_000_000
+# A synced clock far ahead of the Pi is as wrong as an unsynced one: it would
+# sort as the newest frame forever and break the harvest-corroboration query.
+_MAX_FUTURE_SKEW_SECONDS = 300
+
+
+def resolve_frame_timestamp(raw: str | None, now: float | None = None) -> float:
+    """Frame timestamp from the X-Timestamp header. Raises ValueError on garbage."""
+    now = time.time() if now is None else now
+    if not raw:
+        return now
+    ts = float(raw)
+    if not math.isfinite(ts) or ts < _EPOCH_SYNCED_MIN or ts > now + _MAX_FUTURE_SKEW_SECONDS:
+        return now
+    return ts
+
+
+def frame_storage_name(node_id: str, ts: float, media_type: str) -> str:
+    """Unique on-disk name for a frame: node + second + random suffix.
+
+    `{node}_{int(ts)}.jpg` collided whenever two frames shared a second
+    (uptime values recur after every reboot), silently overwriting an older
+    frame's image while its DB row still pointed at the path.
+    """
+    ext = EXT_BY_MEDIA.get(media_type, ".jpg")
+    return f"{node_id}_{int(ts)}_{uuid.uuid4().hex[:12]}{ext}"
 
 
 async def analyze_frame_local(file_path: Path) -> dict | None:
@@ -95,10 +211,14 @@ async def analyze_frame_claude(frame: dict) -> dict | None:
     try:
         client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
 
-        image_data = base64.standard_b64encode(file_path.read_bytes()).decode("utf-8")
+        raw_image = file_path.read_bytes()
+        media_type = (sniff_image_media_type(raw_image)
+                      or _MEDIA_BY_SUFFIX.get(file_path.suffix.lower(), "image/jpeg"))
+        image_data = base64.standard_b64encode(raw_image).decode("utf-8")
 
         session_context = ""
         species_name = "Unknown"
+        chamber_id = None
         if frame.get("session_id"):
             from ..species.service import get_profile
 
@@ -110,6 +230,7 @@ async def analyze_frame_claude(frame: dict) -> dict | None:
                 row = await cursor.fetchone()
             if row:
                 session = dict(row)
+                chamber_id = session.get("chamber_id")
                 species_id = session.get("species_profile_id")
                 # Resolve the species profile through the tolerant lookup instead
                 # of a raw `JOIN ... ON s.species_profile_id = sp.id`: the UI stores
@@ -159,8 +280,8 @@ Provide a structured analysis in JSON format with these fields:
             image_b64_bytes=image_bytes_len,
         ):
             message = await client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
+                model=settings.claude_model,
+                max_tokens=CLAUDE_MAX_TOKENS,
                 messages=[
                     {
                         "role": "user",
@@ -169,7 +290,7 @@ Provide a structured analysis in JSON format with these fields:
                                 "type": "image",
                                 "source": {
                                     "type": "base64",
-                                    "media_type": "image/jpeg",
+                                    "media_type": media_type,
                                     "data": image_data,
                                 },
                             },
@@ -183,33 +304,23 @@ Provide a structured analysis in JSON format with these fields:
                 system=system_prompt,
             )
 
-        result = parse_claude_json(message.content[0].text)
+        stop_reason = claude_stop_reason(message)
+        if stop_reason == "refusal":
+            log.warning("Claude declined to analyze frame %s (refusal)", frame.get("id"))
+            return {"error": "Claude declined to analyze this frame (refusal)"}
+        text = claude_response_text(message)
+        result = parse_claude_json(text)
+        if stop_reason == "max_tokens":
+            log.warning("Claude vision response truncated at max_tokens (frame %s)", frame.get("id"))
+            if "raw_response" in result:
+                # An error result is never persisted over the frame's last good analysis.
+                return {"error": "Claude response was cut off at max_tokens", "raw_response": text}
 
-        contam = result.get("contamination_detected") if isinstance(result, dict) else None
-        if isinstance(contam, dict):
-            contam_type = str(contam.get("type", "unknown"))
-            confidence = float(contam.get("confidence") or 0.0)
-            try:
-                await contamination_alert(
-                    species=species_name,
-                    contam_type=contam_type,
-                    confidence=confidence,
-                )
-            except Exception as e:
-                log.warning("contamination_alert failed: %s", e)
-            # Also forward to cloud so premium mobile subscribers get the push.
-            try:
-                from ..cloud.service import forward_event
-                await forward_event("contamination_alert", {
-                    "node_id": frame.get("node_id"),
-                    "session_id": frame.get("session_id"),
-                    "species": species_name,
-                    "contamination_type": contam_type,
-                    "confidence": confidence,
-                    "frame_id": frame.get("id"),
-                })
-            except Exception as e:
-                log.warning("forward_event(contamination_alert) failed: %s", e)
+        tier, contam_type, confidence = contamination_signal(result)
+        if tier:
+            await _handle_contamination(
+                frame, tier, contam_type, confidence, species_name, chamber_id,
+            )
 
         await _maybe_harvest_alert(frame, result, species_name)
         await _maybe_colonization_alert(frame, result, species_name)
@@ -219,6 +330,134 @@ Provide a structured analysis in JSON format with these fields:
     except Exception as e:
         log.error("Claude vision analysis failed: %s", e)
         return {"error": str(e)}
+
+
+# Claude's per-detection confidence at/above which a vision contamination read
+# pages CRITICAL, is forwarded to the cloud and is logged to contamination_events.
+_CONTAM_ALERT_MIN_CONFIDENCE = 0.6
+# Borderline reads (at/above this, below the alert bar) get one deduped WARNING
+# so a plausible early detection isn't silently dropped.
+_CONTAM_WARN_MIN_CONFIDENCE = 0.3
+# `contamination_detected` objects that mean "nothing found".
+_NO_CONTAMINATION_TYPES = {"", "none", "null", "n/a", "na", "no", "false", "healthy"}
+# The same contamination (session + type) is paged/logged at most once per window.
+_CONTAM_DEDUP_SECONDS = 12 * 3600
+
+
+def _as_confidence(value) -> float | None:
+    try:
+        conf = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(conf):
+        return None
+    if 1.0 < conf <= 100.0:  # percentage-style ("85")
+        conf /= 100.0
+    return max(0.0, min(conf, 1.0))
+
+
+def contamination_signal(result) -> tuple[str | None, str, float]:
+    """Classify a Claude vision result's contamination read. Pure + testable.
+
+    Returns (tier, type, confidence) where tier is "critical", "warning" or
+    None. Any object in `contamination_detected` used to page CRITICAL —
+    including {type: "none", confidence: 0} — with no threshold at all.
+    """
+    if not isinstance(result, dict):
+        return None, "", 0.0
+    contam = result.get("contamination_detected")
+    if not isinstance(contam, dict):
+        return None, "", 0.0
+    contam_type = str(contam.get("type") or "unknown").strip()
+    if contam_type.lower() in _NO_CONTAMINATION_TYPES:
+        return None, contam_type, 0.0
+    confidence = _as_confidence(contam.get("confidence"))
+    if confidence is None and str(result.get("health_assessment", "")).lower() == "contaminated":
+        confidence = _as_confidence(result.get("confidence"))
+    confidence = confidence or 0.0
+    if confidence >= _CONTAM_ALERT_MIN_CONFIDENCE:
+        return "critical", contam_type, confidence
+    if confidence >= _CONTAM_WARN_MIN_CONFIDENCE:
+        return "warning", contam_type, confidence
+    return None, contam_type, confidence
+
+
+async def _handle_contamination(
+    frame: dict,
+    tier: str,
+    contam_type: str,
+    confidence: float,
+    species_name: str,
+    chamber_id: int | None,
+) -> None:
+    """Route a vision contamination read: log to history, page, forward to cloud.
+
+    A confident detection is written to contamination_events (source='vision',
+    linked to the frame) so the Contamination page, RCA flow and chamber
+    contamination rates see auto-detected contamination too — then paged
+    CRITICAL and forwarded. It's deduped per session + type via that same
+    table, so an unresolved contamination re-seen on every analysis doesn't
+    re-page. Borderline reads only get a deduped WARNING.
+    """
+    session_id = frame.get("session_id")
+    scope = session_id if session_id is not None else frame.get("node_id")
+
+    if tier == "warning":
+        try:
+            await notify_warning(
+                f"Possible contamination — {species_name}",
+                f"Vision flagged possible {contam_type} ({confidence:.0%} confidence). "
+                f"Inspect the chamber.",
+                dedup_key=f"contam-warn:{scope}:{contam_type.lower()}",
+                dedup_seconds=_CONTAM_DEDUP_SECONDS,
+            )
+        except Exception as e:
+            log.warning("possible-contamination notify failed: %s", e)
+        return
+
+    async with get_db() as db:
+        existing = await (await db.execute(
+            "SELECT 1 FROM contamination_events WHERE source = 'vision' "
+            "AND session_id IS ? AND lower(contamination_type) = ? AND detected_at > ? LIMIT 1",
+            (session_id, contam_type.lower(), time.time() - _CONTAM_DEDUP_SECONDS),
+        )).fetchone()
+    if existing:
+        return
+
+    try:
+        await record_event(
+            source="vision",
+            session_id=session_id,
+            chamber_id=chamber_id,
+            contamination_type=contam_type,
+            confidence=confidence,
+            frame_id=frame.get("id"),
+        )
+    except Exception as e:
+        log.warning("Failed to persist vision contamination event: %s", e)
+
+    try:
+        await contamination_alert(
+            species=species_name,
+            contam_type=contam_type,
+            confidence=confidence,
+            dedup_key=f"contam:{scope}:{contam_type.lower()}",
+        )
+    except Exception as e:
+        log.warning("contamination_alert failed: %s", e)
+    # Also forward to cloud so premium mobile subscribers get the push.
+    try:
+        from ..cloud.service import forward_event
+        await forward_event("contamination_alert", {
+            "node_id": frame.get("node_id"),
+            "session_id": session_id,
+            "species": species_name,
+            "contamination_type": contam_type,
+            "confidence": confidence,
+            "frame_id": frame.get("id"),
+        })
+    except Exception as e:
+        log.warning("forward_event(contamination_alert) failed: %s", e)
 
 
 _FRUITING_PHASES = {"primordia_induction", "fruiting"}
@@ -548,15 +787,34 @@ async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> b
 #     between grows), and
 #   - at most once per session per _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS, so a
 #     camera streaming a frame every few seconds can't run up a bill.
-_AUTO_ANALYSIS_MIN_INTERVAL_SECONDS = 15 * 60  # tunable cadence, per session
+# The default is the spec's 6h cadence (CLAUDE.md §6 "Layer 2 — every 6h +
+# on-demand"); at 15 min every capture was analysed, ~24x the specified spend.
+# `settings.vision_auto_interval_min`, when the config defines it, overrides it.
+# A phase transition (the spec's other Layer-2 trigger) bypasses the window
+# once, so the first frame of a new phase is read straight away.
+_AUTO_ANALYSIS_MIN_INTERVAL_SECONDS = 6 * 3600
 _last_auto_analysis: dict[int, float] = {}
+_last_auto_phase: dict[int, str] = {}
 # Strong refs to in-flight background tasks so the event loop can't GC them
 # mid-run (per asyncio.create_task docs). Cleared via the done-callback.
 _auto_analysis_tasks: set[asyncio.Task] = set()
 
 
-def _claim_auto_analysis_slot(session_id: int, now: float | None = None) -> bool:
-    """Atomically claim this session's throttle slot; True iff outside the window.
+def _auto_analysis_interval_seconds() -> float:
+    minutes = getattr(settings, "vision_auto_interval_min", None)
+    try:
+        if minutes is not None and float(minutes) > 0:
+            return float(minutes) * 60
+    except (TypeError, ValueError):
+        pass
+    return _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS
+
+
+def _claim_auto_analysis_slot(
+    session_id: int, now: float | None = None, phase: str | None = None,
+) -> bool:
+    """Atomically claim this session's throttle slot; True iff outside the window
+    or the session's phase changed since the last auto analysis.
 
     Check-and-record with no ``await`` in between, so under the single-threaded
     event loop two frames arriving back-to-back can't both claim the slot. The
@@ -565,10 +823,22 @@ def _claim_auto_analysis_slot(session_id: int, now: float | None = None) -> bool
     """
     now = time.time() if now is None else now
     last = _last_auto_analysis.get(session_id, 0.0)
-    if now - last < _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS:
+    seen_phase = _last_auto_phase.get(session_id)
+    phase_changed = phase is not None and seen_phase is not None and phase != seen_phase
+    if not phase_changed and now - last < _auto_analysis_interval_seconds():
         return False
     _last_auto_analysis[session_id] = now
+    if phase is not None:
+        _last_auto_phase[session_id] = phase
     return True
+
+
+async def _session_phase(session_id: int) -> str | None:
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT current_phase FROM sessions WHERE id = ?", (session_id,)
+        )).fetchone()
+    return row["current_phase"] if row else None
 
 
 async def _run_auto_analysis(frame: dict) -> None:
@@ -611,7 +881,7 @@ async def maybe_schedule_auto_analysis(
     # analyze_frame_claude would just return an error and waste a task).
     if not settings.claude_api_key:
         return None
-    if not _claim_auto_analysis_slot(session_id):
+    if not _claim_auto_analysis_slot(session_id, phase=await _session_phase(session_id)):
         return None
 
     frame = {
@@ -623,4 +893,209 @@ async def maybe_schedule_auto_analysis(
     task = asyncio.create_task(_run_auto_analysis(frame))
     _auto_analysis_tasks.add(task)
     task.add_done_callback(_auto_analysis_tasks.discard)
+    return task
+
+
+# ─── Frame retention (srv-rest#9) ───────────────────────────────────────
+#
+# Each camera writes ~96 UXGA frames/day onto the same volume as the SQLite
+# DB, and nothing ever deleted them. Frames younger than
+# VISION_FULL_RETENTION_DAYS are kept in full; older whole days are thinned to
+# the last frame per node per day, plus every frame worth keeping: a
+# non-healthy / contamination Claude read, an active-learning label, or a
+# reference from a contamination event, session note or harvest. The pass is
+# idempotent and piggy-backs on ingest (at most once per interval) — frames
+# only accumulate while a camera is posting.
+#
+# A frame's age is the LATER of its capture timestamp and its arrival time
+# (created_at). Before the ingest fix, an unsynced cam's uptime X-Timestamp
+# (e.g. 900) was stored verbatim, so `timestamp` alone would date a frame
+# ingested minutes ago to 1970 and prune it.
+VISION_FULL_RETENTION_DAYS = 30
+_VISION_PRUNE_INTERVAL_SECONDS = 24 * 3600
+# Rows examined per batch. The first pass on an existing install can face
+# months of frames; batching bounds memory (analysis blobs) and keeps each
+# write transaction short.
+_VISION_PRUNE_BATCH = 500
+_last_vision_prune: float = 0.0
+_vision_prune_tasks: set[asyncio.Task] = set()
+
+# Age expression: MAX(timestamp, COALESCE(created_at, timestamp)).
+# The last frame of each expired (node, UTC day) — computed once per pass.
+_PRUNE_KEEPERS_SQL = """
+    SELECT MAX(id) AS id FROM vision_frames
+     WHERE MAX(timestamp, COALESCE(created_at, timestamp)) < :cutoff
+     GROUP BY node_id,
+              CAST(MAX(timestamp, COALESCE(created_at, timestamp)) / 86400 AS INT)
+"""
+# One page of expired frames, walked by rowid.
+_PRUNE_BATCH_SQL = """
+    SELECT id, file_path, analysis_local, analysis_claude
+      FROM vision_frames
+     WHERE id > :after_id
+       AND MAX(timestamp, COALESCE(created_at, timestamp)) < :cutoff
+     ORDER BY id
+     LIMIT :batch
+"""
+
+
+def _frame_is_notable(row) -> bool:
+    """Keep frames with a non-healthy Claude read or an operator label."""
+    try:
+        local = json.loads(row["analysis_local"]) if row["analysis_local"] else {}
+        claude = json.loads(row["analysis_claude"]) if row["analysis_claude"] else {}
+    except (TypeError, ValueError):
+        return True  # can't tell — keep it
+    if isinstance(local, dict) and (local.get("user_label") is not None
+                                    or "user_confirmed" in local):
+        return True
+    if isinstance(claude, dict):
+        if str(claude.get("health_assessment", "")).lower() in ("concern", "contaminated"):
+            return True
+        if contamination_signal(claude)[0] is not None:
+            return True
+    return False
+
+
+def _partition_prunable(
+    rows: list[dict], keep_ids: set[int], storage: Path,
+) -> tuple[list[tuple[int, Path]], int]:
+    """Worker-thread half of a batch: JSON checks + path resolution.
+
+    Returns ([(frame id, resolved file path)] safe to delete, number of
+    expired frames kept because their file is outside the storage dir). Those
+    are kept rather than row-deleted: dropping only the row would orphan an
+    image no later pass could find, and their files are never touched.
+    """
+    doomed: list[tuple[int, Path]] = []
+    outside = 0
+    for r in rows:
+        if r["id"] in keep_ids or _frame_is_notable(r):
+            continue
+        try:
+            path = Path(r["file_path"]).resolve()
+        except (OSError, RuntimeError):
+            outside += 1
+            continue
+        if not path.is_relative_to(storage):
+            outside += 1
+            continue
+        doomed.append((r["id"], path))
+    return doomed, outside
+
+
+def _unlink_frame_files(paths: list[Path]) -> int:
+    """Delete frame files (runs in a worker thread). Returns bytes freed."""
+    freed = 0
+    for path in paths:
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            freed += size
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            log.warning("Vision retention: could not remove %s: %s", path, e)
+    return freed
+
+
+async def prune_vision_frames(now: float | None = None) -> dict:
+    """Thin vision frames older than the full-retention window. Idempotent.
+
+    Filesystem work (resolving paths, stat/unlink) and the per-row JSON checks
+    run in a worker thread so a large backlog can't stall the event loop.
+    """
+    now = time.time() if now is None else now
+    # Whole UTC days only, so each day's keeper (its highest id) is stable
+    # across runs instead of shifting as the cutoff crosses the day.
+    cutoff = now - VISION_FULL_RETENTION_DAYS * 86400
+    cutoff -= cutoff % 86400
+    storage = await asyncio.to_thread(Path(settings.vision_storage).resolve)
+
+    frames_deleted = 0
+    bytes_freed = 0
+    kept_outside = 0
+    # One connection for the whole pass, committed per batch so a long first
+    # pass never holds a write transaction across the whole backlog.
+    async with get_db() as db:
+        # Never pruned: each expired day's keeper, and any frame referenced by
+        # a contamination event, a session note or a harvest.
+        keep_ids: set[int] = {
+            r["id"] for r in await (await db.execute(
+                _PRUNE_KEEPERS_SQL, {"cutoff": cutoff},
+            )).fetchall()
+        }
+        for sql in ("SELECT frame_id FROM contamination_events WHERE frame_id IS NOT NULL",
+                    "SELECT image_id FROM session_notes WHERE image_id IS NOT NULL"):
+            keep_ids.update(r[0] for r in await (await db.execute(sql)).fetchall())
+        harvest_rows = await (await db.execute(
+            "SELECT image_ids FROM harvests WHERE image_ids IS NOT NULL"
+        )).fetchall()
+        for h in harvest_rows:
+            try:
+                ids = json.loads(h["image_ids"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(ids, list):
+                keep_ids.update(i for i in ids if isinstance(i, int))
+
+        after_id = 0
+        while True:
+            rows = [dict(r) for r in await (await db.execute(
+                _PRUNE_BATCH_SQL,
+                {"cutoff": cutoff, "after_id": after_id, "batch": _VISION_PRUNE_BATCH},
+            )).fetchall()]
+            if not rows:
+                break
+            after_id = rows[-1]["id"]
+            doomed, outside = await asyncio.to_thread(
+                _partition_prunable, rows, keep_ids, storage,
+            )
+            kept_outside += outside
+            if not doomed:
+                continue
+            await db.executemany(
+                "DELETE FROM vision_frames WHERE id = ?", [(fid,) for fid, _ in doomed]
+            )
+            await db.commit()
+            # Rows first, files second: a failed unlink leaves an orphan file,
+            # never a row pointing at a missing image.
+            bytes_freed += await asyncio.to_thread(
+                _unlink_frame_files, [path for _, path in doomed],
+            )
+            frames_deleted += len(doomed)
+
+    if frames_deleted:
+        log.info("Vision retention: pruned %d frames, freed %.1f MB",
+                 frames_deleted, bytes_freed / 1024 / 1024)
+    if kept_outside:
+        log.warning(
+            "Vision retention: kept %d expired frames whose files are outside %s "
+            "(storage moved?); remove them manually if no longer needed",
+            kept_outside, storage,
+        )
+    return {
+        "frames_deleted": frames_deleted,
+        "bytes_freed": bytes_freed,
+        "frames_kept_outside_storage": kept_outside,
+    }
+
+
+async def _run_vision_prune() -> None:
+    try:
+        await prune_vision_frames()
+    except Exception as e:  # a background task must never die silently
+        log.warning("Vision retention pass failed: %s", e)
+
+
+async def maybe_schedule_vision_prune(now: float | None = None) -> asyncio.Task | None:
+    """Kick a background retention pass at most once per interval (from ingest)."""
+    global _last_vision_prune
+    now = time.time() if now is None else now
+    if now - _last_vision_prune < _VISION_PRUNE_INTERVAL_SECONDS:
+        return None
+    _last_vision_prune = now
+    task = asyncio.create_task(_run_vision_prune())
+    _vision_prune_tasks.add(task)
+    task.add_done_callback(_vision_prune_tasks.discard)
     return task

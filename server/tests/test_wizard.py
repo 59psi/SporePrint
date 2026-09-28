@@ -1,3 +1,5 @@
+import pytest
+
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins, get_all_profiles
 from app.species.wizard import recommend
@@ -103,3 +105,38 @@ async def test_medicinal_goal_favors_medicinal_category():
     # At least one medicinal species should appear in the top 5
     categories = [r["category"] for r in results]
     assert "medicinal" in categories
+
+
+_NOT_CULTIVABLE = {p.id for p in BUILTIN_PROFILES if not p.chamber_cultivable}
+
+
+@pytest.mark.parametrize("env", ["indoor_closet", "indoor_tent"])
+def test_indoor_recommendations_exclude_non_chamber_cultivable_species(env):
+    """srv-rest#30: chaga (a ~10-year sclerotium on living birch) was ranked #4
+    for an indoor closet with the reason 'Suitable for closet growing'."""
+    assert "chaga" in _NOT_CULTIVABLE
+    results = recommend(
+        BUILTIN_PROFILES,
+        experience="advanced",
+        environment=env,
+        temp_range="warm",
+        substrates=["all"],
+        goal="research",
+        commitment="dedicated_hobbyist",
+        limit=len(BUILTIN_PROFILES),
+    )
+    assert not _NOT_CULTIVABLE & {r["species_id"] for r in results}
+
+
+def test_outdoor_recommendations_may_include_reference_species():
+    results = recommend(
+        BUILTIN_PROFILES,
+        experience="advanced",
+        environment="outdoor_beds",
+        temp_range="warm",
+        substrates=["all"],
+        goal="research",
+        commitment="dedicated_hobbyist",
+        limit=len(BUILTIN_PROFILES),
+    )
+    assert "giant_puffball" in {r["species_id"] for r in results}

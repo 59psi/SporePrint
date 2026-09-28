@@ -1,22 +1,60 @@
 import csv
 import io
 import json
+import logging
 import re
 import time
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 
+# NOTE: app.automation.engine imports this module at its top, so nothing
+# imported here may import app.sessions.service at module level in turn.
+from ..automation.service import deserialize_rule_row, resolve_node_target
+from ..automation.smart_plugs import is_plug_target, send_plug_command, target_is_present
 from ..db import get_db
+from ..mqtt import mqtt_publish
+from ..notifications.service import phase_reminder, pink_oyster_harvest
+from ..species.models import GrowPhase, SpeciesProfile
 from ..species.profiles import canonical_species_id, species_id_candidates
 from ..species.service import get_profile
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
+
+log = logging.getLogger(__name__)
 
 _PHASE_ORDER = [
     "agar", "liquid_culture", "grain_colonization",
     "substrate_colonization", "cold_storage", "primordia_induction",
     "fruiting", "rest", "complete",
 ]
+
+
+def _params_snapshot(profile: SpeciesProfile | None, phase: str) -> str | None:
+    """JSON of the species setpoints in force for ``phase`` (phase_history.params_snapshot).
+
+    Frozen at phase entry so a later edit to a custom profile can't rewrite what
+    transcripts/analysis believe the targets were. None when the profile is
+    unknown or has no parameters for this phase (e.g. cold_storage).
+    """
+    if profile is None:
+        return None
+    try:
+        params = profile.phases.get(GrowPhase(phase))
+    except ValueError:
+        return None
+    return params.model_dump_json() if params is not None else None
+
+
+def _decode_phase_row(row) -> dict:
+    """A phase_history row with its params_snapshot JSON decoded to a dict."""
+    ph = dict(row)
+    raw = ph.get("params_snapshot")
+    if isinstance(raw, str):
+        try:
+            ph["params_snapshot"] = json.loads(raw)
+        except json.JSONDecodeError:
+            ph["params_snapshot"] = None
+    return ph
 
 
 async def create_session(data: SessionCreate) -> dict:
@@ -26,6 +64,7 @@ async def create_session(data: SessionCreate) -> dict:
     # caller submitted the hyphenated or underscored form. get_profile() stays
     # tolerant either way. See app.species.profiles.canonical_species_id.
     species_id = canonical_species_id(data.species_profile_id)
+    snapshot = _params_snapshot(await get_profile(species_id), data.current_phase)
     async with get_db() as db:
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
@@ -47,8 +86,9 @@ async def create_session(data: SessionCreate) -> dict:
             )
 
         await db.execute(
-            "INSERT INTO phase_history (session_id, phase, entered_at, trigger) VALUES (?, ?, ?, ?)",
-            (session_id, data.current_phase, now, "session_created"),
+            "INSERT INTO phase_history (session_id, phase, entered_at, trigger, params_snapshot) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, data.current_phase, now, "session_created", snapshot),
         )
         await db.execute(
             "INSERT INTO session_events (session_id, type, source, description) VALUES (?, ?, ?, ?)",
@@ -85,7 +125,7 @@ async def list_sessions(status: str | None = None, species: str | None = None,
             )
             history_by_session = defaultdict(list)
             for r in await cursor.fetchall():
-                row = dict(r)
+                row = _decode_phase_row(r)
                 history_by_session[row["session_id"]].append(row)
             for s in sessions:
                 s["phase_history"] = history_by_session[s["id"]]
@@ -104,7 +144,7 @@ async def get_session(session_id: int) -> dict | None:
         cursor = await db.execute(
             "SELECT * FROM phase_history WHERE session_id = ? ORDER BY entered_at", (session_id,)
         )
-        session["phase_history"] = [dict(r) for r in await cursor.fetchall()]
+        session["phase_history"] = [_decode_phase_row(r) for r in await cursor.fetchall()]
         return session
 
 
@@ -187,7 +227,6 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
     if current_phase == "rest":
         return "fruiting" if more_flushes_expected else "complete"
     # Non-fork transitions follow the ordinary linear progression.
-    from ..species.models import GrowPhase
     order = [p.value for p in GrowPhase]
     try:
         i = order.index(current_phase)
@@ -199,15 +238,25 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
 async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
     now = time.time()
     async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT species_profile_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    snapshot = _params_snapshot(await get_profile(row["species_profile_id"]), data.phase)
+
+    async with get_db() as db:
         # Close current phase
         await db.execute(
             "UPDATE phase_history SET exited_at = ? WHERE session_id = ? AND exited_at IS NULL",
             (now, session_id),
         )
-        # Open new phase
+        # Open new phase, freezing the setpoints it starts under.
         await db.execute(
-            "INSERT INTO phase_history (session_id, phase, entered_at, trigger) VALUES (?, ?, ?, ?)",
-            (session_id, data.phase, now, data.trigger),
+            "INSERT INTO phase_history (session_id, phase, entered_at, trigger, params_snapshot) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, data.phase, now, data.trigger, snapshot),
         )
         await db.execute(
             "UPDATE sessions SET current_phase = ? WHERE id = ?",
@@ -238,8 +287,28 @@ async def add_note(session_id: int, data: NoteCreate) -> dict:
         return dict(await cursor.fetchone())
 
 
+_PINK_OYSTER_ID = "pink_oyster"
+_PINK_OYSTER_SCIENTIFIC = "pleurotus djamor"
+
+
+async def _harvest_needs_immediate_processing(species_id: str | None) -> bool:
+    """Pink oyster (Pleurotus djamor) dies below 40°F — a harvest can't go in the
+    fridge. CLAUDE.md §4b makes the post-harvest notice mandatory. Matches the
+    built-in id in either spelling and any custom profile of the same species."""
+    if not species_id:
+        return False
+    if _PINK_OYSTER_ID in species_id_candidates(species_id):
+        return True
+    profile = await get_profile(species_id)
+    return bool(profile and profile.scientific_name.lower().startswith(_PINK_OYSTER_SCIENTIFIC))
+
+
 async def add_harvest(session_id: int, data: HarvestCreate) -> dict:
     async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT species_profile_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        srow = await cursor.fetchone()
         cursor = await db.execute(
             """INSERT INTO harvests (session_id, flush_number, wet_weight_g, dry_weight_g,
                quality_rating, notes, image_ids) VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -266,7 +335,11 @@ async def add_harvest(session_id: int, data: HarvestCreate) -> dict:
         await db.commit()
         harvest_id = cursor.lastrowid
         cursor = await db.execute("SELECT * FROM harvests WHERE id = ?", (harvest_id,))
-        return dict(await cursor.fetchone())
+        harvest = dict(await cursor.fetchone())
+
+    if srow and await _harvest_needs_immediate_processing(srow["species_profile_id"]):
+        await pink_oyster_harvest()
+    return harvest
 
 
 async def flush_status(session_id: int) -> dict:
@@ -339,42 +412,191 @@ async def get_events(session_id: int, limit: int | None = None) -> list[dict]:
         return [dict(r) for r in await cursor.fetchall()]
 
 
-async def abort_session(session_id: int) -> dict | None:
+# Lighting scene a session-less closet is parked in — the same scene the
+# "Photoperiod — Lights Off" rule publishes.
+_SESSION_END_SCENE = "colonization_dark"
+
+
+def _is_held(held: set[tuple[str, str | None]], targets: set[str], channel: str | None) -> bool:
+    """Mirror of the engine's is_overridden(): a hold on the exact channel or a
+    whole-target hold, on either the rule's placeholder or its resolved node."""
+    return any((t, channel) in held or (t, None) in held for t in targets)
+
+
+async def _safe_actuators_after_session_end(session_id: int) -> list[dict] | None:
+    """Command automation-driven actuators OFF once no active session remains.
+
+    evaluate_rules() returns before any rule runs when there is no active
+    session, so whatever automation last switched ON — a cooler plug from
+    "Pre-cool for Hot Forecast" (no safety_max_on), the fruiting light scene —
+    would otherwise stay ON indefinitely after the grow ends. Every actuator an
+    automation rule can switch ON gets an explicit OFF (lights go to the dark
+    scene), except those under an operator's manual hold. Vendor-integration
+    actions have no generic OFF and are left alone.
+
+    Skipped entirely while another session is still active: the engine keeps
+    driving the closet for it and a blanket OFF would fight it. Returns the
+    per-actuator results, or None when skipped.
+    """
+    if await get_active_session() is not None:
+        return None
+
     now = time.time()
     async with get_db() as db:
-        await db.execute(
-            "UPDATE sessions SET status = 'aborted', completed_at = ? WHERE id = ?",
-            (now, session_id),
+        cursor = await db.execute(
+            "SELECT id, name, description, enabled, priority, rule_data "
+            "FROM automation_rules ORDER BY priority DESC, id"
         )
+        rules = [deserialize_rule_row(r) for r in await cursor.fetchall()]
+        cursor = await db.execute(
+            "SELECT target, channel FROM manual_overrides "
+            "WHERE locked = 1 AND (expires_at IS NULL OR expires_at >= ?)",
+            (now,),
+        )
+        held = {(r["target"], r["channel"]) for r in await cursor.fetchall()}
+
+    results: list[dict] = []
+    seen: set[tuple[str, str | None, str]] = set()
+    for rule in rules:
+        action = rule.get("action") or {}
+        target = action.get("target")
+        channel = action.get("channel")
+        if not target or action.get("vendor_slug") or action.get("state") != "on":
+            continue
+        # Same target resolution as the engine's _fire_rule, so the OFF lands
+        # on the node/plug the ON went to.
+        resolved = await resolve_node_target(target) or target
+        if _is_held(held, {target, resolved}, channel):
+            continue
+        if await is_plug_target(resolved):
+            kind, key_channel = "plug", None
+        elif channel:
+            kind, key_channel = "channel", channel
+        elif action.get("scene"):
+            kind, key_channel = "scene", None
+        else:
+            continue  # cmd/config carries no on/off state
+        key = (resolved, key_channel, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        published = False
+        try:
+            if kind == "plug":
+                if not await target_is_present(resolved):
+                    continue  # no paired plug for this role — nothing to switch
+                published = await send_plug_command(resolved, "off")
+            elif kind == "channel":
+                published = await mqtt_publish(
+                    f"sporeprint/{resolved}/cmd/{channel}",
+                    {"state": "off", "reason": "session_ended"},
+                )
+            else:
+                published = await mqtt_publish(
+                    f"sporeprint/{resolved}/cmd/scene",
+                    {"state": "off", "scene": _SESSION_END_SCENE},
+                )
+        except Exception as e:  # one unreachable actuator must not strand the rest
+            log.warning("session-end OFF for %s:%s failed: %s", resolved, key_channel, e)
+        results.append({
+            "target": resolved, "channel": key_channel, "kind": kind,
+            "published": bool(published),
+        })
+
+    if results:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO session_events (session_id, type, source, description, data) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, "actuators_safed", "system",
+                 f"Session ended — {len(results)} automation actuator(s) commanded off",
+                 json.dumps({"actuators": results})),
+            )
+            await db.commit()
+    return results
+
+
+async def _end_session(session_id: int, status: str, event_type: str, description: str) -> dict | None:
+    """Close a session: status + open phase + chamber link + event in ONE
+    transaction, then safe the actuators the engine will no longer manage."""
+    now = time.time()
+    async with get_db() as db:
+        cursor = await db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+        if await cursor.fetchone() is None:
+            return None
+        if status == "completed":
+            await db.execute(
+                "UPDATE sessions SET status = 'completed', current_phase = 'complete', completed_at = ? "
+                "WHERE id = ?",
+                (now, session_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE sessions SET status = ?, completed_at = ? WHERE id = ?",
+                (status, now, session_id),
+            )
         await db.execute(
             "UPDATE phase_history SET exited_at = ? WHERE session_id = ? AND exited_at IS NULL",
             (now, session_id),
         )
+        # The chamber no longer hosts a live grow.
+        await db.execute(
+            "UPDATE chambers SET active_session_id = NULL WHERE active_session_id = ?",
+            (session_id,),
+        )
         await db.execute(
             "INSERT INTO session_events (session_id, type, source, description) VALUES (?, ?, ?, ?)",
-            (session_id, "session_aborted", "user", "Session aborted"),
+            (session_id, event_type, "user", description),
         )
         await db.commit()
+    await _safe_actuators_after_session_end(session_id)
     return await get_session(session_id)
+
+
+async def abort_session(session_id: int) -> dict | None:
+    return await _end_session(session_id, "aborted", "session_aborted", "Session aborted")
 
 
 async def complete_session(session_id: int) -> dict | None:
-    now = time.time()
+    return await _end_session(session_id, "completed", "session_completed", "Session completed")
+
+
+async def check_phase_reminders(now: float | None = None) -> int:
+    """INFO-tier nudge for each active session that has overrun its phase.
+
+    Fires phase_reminder() when days in the current phase exceed the species'
+    expected_duration_days max (the notifier dedups per session+phase). Meant
+    to be run periodically (e.g. daily) by a background task. Returns the
+    number of reminders sent.
+    """
+    now = time.time() if now is None else now
     async with get_db() as db:
-        await db.execute(
-            "UPDATE sessions SET status = 'completed', current_phase = 'complete', completed_at = ? WHERE id = ?",
-            (now, session_id),
+        cursor = await db.execute(
+            "SELECT s.name, s.species_profile_id, s.current_phase, ph.entered_at "
+            "FROM sessions s JOIN phase_history ph "
+            "  ON ph.session_id = s.id AND ph.exited_at IS NULL AND ph.phase = s.current_phase "
+            "WHERE s.status = 'active'"
         )
-        await db.execute(
-            "UPDATE phase_history SET exited_at = ? WHERE session_id = ? AND exited_at IS NULL",
-            (now, session_id),
-        )
-        await db.execute(
-            "INSERT INTO session_events (session_id, type, source, description) VALUES (?, ?, ?, ?)",
-            (session_id, "session_completed", "user", "Session completed"),
-        )
-        await db.commit()
-    return await get_session(session_id)
+        rows = [dict(r) for r in await cursor.fetchall()]
+
+    sent = 0
+    for row in rows:
+        profile = await get_profile(row["species_profile_id"])
+        if profile is None:
+            continue
+        try:
+            params = profile.phases.get(GrowPhase(row["current_phase"]))
+        except ValueError:
+            continue
+        if params is None:
+            continue
+        expected_max = int(params.expected_duration_days[1])
+        days_in_phase = int((now - row["entered_at"]) // 86400)
+        if days_in_phase > expected_max:
+            await phase_reminder(row["name"], row["current_phase"], days_in_phase, expected_max)
+            sent += 1
+    return sent
 
 
 # ── Cloud → Pi remote command seam ───────────────────────────────
@@ -701,6 +923,26 @@ def _parse_inoculation_date(raw) -> date | None:
         return None
 
 
+def _cycle_shift(cycle, start_phase: str | None, anchor: date) -> timedelta:
+    """How far a proposed cycle must move so ``start_phase`` begins at ``anchor``.
+
+    The first planned phase at or after the session's starting phase (canonical
+    order) is the one the anchor date refers to. Unknown/unplanned start → 0.
+    """
+    try:
+        start_idx = _PHASE_ORDER.index(start_phase)
+    except ValueError:
+        return timedelta(0)
+    for planned in cycle.phases:
+        try:
+            idx = _PHASE_ORDER.index(planned.phase)
+        except ValueError:
+            continue
+        if idx >= start_idx:
+            return planned.start_date - anchor
+    return timedelta(0)
+
+
 async def generate_ical() -> str:
     """Generate an iCal calendar with events for all sessions."""
     from icalendar import Calendar, Event  # lazy — only loaded when calendar is requested
@@ -794,6 +1036,12 @@ async def generate_ical() -> str:
                 if profile and profile.phases:
                     anchor = _parse_inoculation_date(session.get("inoculation_date")) or created_dt.date()
                     cycle = propose_cycle(profile, anchor)
+                    # propose_cycle lays out every phase the species lists,
+                    # including optional agar/LC/grain. A session that started
+                    # later (substrate_colonization by default) never ran those,
+                    # so shift the plan until its first phase starts at the anchor.
+                    start_phase = phases[0]["phase"] if phases else session.get("current_phase")
+                    shift = _cycle_shift(cycle, start_phase, anchor)
                     proposed_by_phase = {p.phase: p for p in cycle.phases}
 
                     current_phase = session.get("current_phase", "")
@@ -813,7 +1061,7 @@ async def generate_ical() -> str:
                             continue
                         ev = Event()
                         ev.add("summary", f"{name} — {future_phase.replace('_', ' ').title()} (Expected)")
-                        ev.add("dtstart", proposed.start_date)
+                        ev.add("dtstart", proposed.start_date - shift)
                         ev["uid"] = f"session-{sid}-expected-{future_phase}@sporeprint"
                         cal.add_component(ev)
 
@@ -821,7 +1069,7 @@ async def generate_ical() -> str:
                     if cycle.harvest_date:
                         ev = Event()
                         ev.add("summary", f"{name} — Expected Harvest")
-                        ev.add("dtstart", cycle.harvest_date)
+                        ev.add("dtstart", cycle.harvest_date - shift)
                         ev["uid"] = f"session-{sid}-expected-harvest@sporeprint"
                         cal.add_component(ev)
 
@@ -1066,7 +1314,7 @@ async def generate_session_report_csv(session_id: int) -> str | None:
             h.get("wet_weight_g", ""),
             h.get("dry_weight_g", ""),
             h.get("quality_rating", ""),
-            datetime.utcfromtimestamp(h["timestamp"]).isoformat() if h.get("timestamp") else "",
+            _ts_to_dt(h["timestamp"]).isoformat() if h.get("timestamp") else "",
             h.get("notes", ""),
         ])
     return buf.getvalue()

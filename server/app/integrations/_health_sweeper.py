@@ -19,9 +19,11 @@ Two responsibilities:
    integrations-proxy cache so ``/devices/fleet`` can show per-chamber
    driver counts without round-tripping back to the Pi.
 
-Both flows degrade gracefully when the cloud connector is offline —
-events queue inside ``cloud.service.forward_event`` and drain on
-reconnect (same as telemetry).
+Cloud-offline behaviour: ``forward_event`` does NOT queue (it drops
+events while the socket is down and returns False). So the sweeper only
+records a transition as seen once it was delivered — an undelivered
+transition is re-attempted on every sweep until the cloud is back — and
+the connector re-pushes the state snapshot on every (re)connect.
 """
 
 from __future__ import annotations
@@ -60,28 +62,40 @@ async def push_state_snapshot() -> None:
         logger.debug("integrations health: snapshot forward skipped")
 
 
-async def _emit_transition(slug: str, old_state: str, new_state: str) -> None:
+async def _emit_transition(slug: str, old_state: str, new_state: str) -> bool:
+    """Emit the event for a transition, if it needs one.
+
+    Returns True when the transition is fully handled (delivered, or no
+    event needed) and False when an event could not be delivered — the
+    caller then keeps the old state so the next sweep retries.
+    """
     from ..cloud.service import forward_event
-    if new_state == "ok" and old_state != "ok":
+    resolves = (
+        (new_state == "ok" and old_state != "ok")
+        # Disabling a failing driver ends the incident too — otherwise the
+        # cloud escalation stays open forever.
+        or (new_state == "disabled" and old_state in ("error", "degraded"))
+    )
+    if resolves:
         # Cleared — resolve any pending escalation in the cloud.
-        await forward_event(
+        return bool(await forward_event(
             "vendor_health_degraded",
             {
                 "vendor": slug,
                 "previous_state": old_state,
                 "resolved": True,
             },
-        )
-        return
+        ))
     if new_state in ("error", "degraded") and old_state != new_state:
-        await forward_event(
+        return bool(await forward_event(
             "vendor_health_degraded",
             {
                 "vendor": slug,
                 "state": new_state,
                 "resolved": False,
             },
-        )
+        ))
+    return True
 
 
 async def _sweep_once() -> None:
@@ -104,8 +118,13 @@ async def _sweep_once() -> None:
             _last_state[slug] = new_state
             continue
         if new_state != old_state:
-            await _emit_transition(slug, old_state, new_state)
-            _last_state[slug] = new_state
+            if await _emit_transition(slug, old_state, new_state):
+                _last_state[slug] = new_state
+            else:
+                logger.debug(
+                    "integrations health: %s %s→%s not delivered (cloud "
+                    "offline) — will retry", slug, old_state, new_state,
+                )
 
 
 async def run_health_sweeper() -> None:

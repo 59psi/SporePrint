@@ -34,7 +34,10 @@ public:
 
     Scd4x(I2cBus& bus, Clock& clock) : xport_(bus, clock, kAddr), clock_(clock) {}
 
-    // Serial-number probe (works in idle mode only — call before begin()).
+    // Serial-number probe. get_serial only works in idle mode, so the probe
+    // first sends stop_periodic_measurement (and waits the datasheet 500 ms
+    // when it is ACKed) — a sensor left in periodic mode by a warm reboot
+    // is otherwise invisible. Boot-only; call before begin().
     bool probe();
 
     // Stop any stale periodic mode, disable ASC, persist the ASC setting

@@ -58,6 +58,62 @@ def _secret_fields_map() -> dict[str, set[str]]:
     return {slug: drv.secret_fields for slug, drv in _drivers.items()}
 
 
+def _merge_unchanged_secrets(
+    raw_config: dict[str, Any],
+    stored_config: dict[str, Any],
+    secret_fields: set[str],
+) -> dict[str, Any]:
+    """Resolve "unchanged" secret values in an incoming config against the
+    stored (decrypted) config.
+
+    GET redacts secrets to ``••••last4``; a form that PUTs the whole config
+    back (or a cloud-web get_config → put_config round-trip) must not store
+    that preview as the credential. Rules per secret field:
+
+    - omitted              → keep the stored value
+    - the ``••••last4`` preview of the stored value → keep the stored value
+    - any other ``••••…`` value → 400 (stale preview of a different secret)
+    - ``""``               → explicit clear
+    - anything else        → the new secret
+    """
+    merged = dict(raw_config)
+    for name in secret_fields:
+        stored = stored_config.get(name)
+        if name not in merged:
+            if stored not in (None, ""):
+                merged[name] = stored
+            continue
+        value = merged[name]
+        if isinstance(value, str) and value.startswith(store.REDACTED_PREFIX):
+            stored_preview = (
+                store.redact_for_response({name: stored}, {name}).get(name)
+                if isinstance(stored, str) and stored
+                else None
+            )
+            if stored_preview is None or value != stored_preview:
+                raise HTTPException(
+                    400,
+                    f"{name}: the masked value does not match the stored secret — "
+                    "re-enter it",
+                )
+            merged[name] = stored
+    return merged
+
+
+async def _apply_config(driver: IntegrationDriver, raw_config: Any) -> BaseModel:
+    """Validate ``raw_config`` against the driver schema and push it into the
+    driver. ValidationError / DriverConfigError surface as HTTP 400."""
+    try:
+        validated: BaseModel = driver.config_schema.model_validate(raw_config)
+    except ValidationError as exc:
+        raise HTTPException(400, exc.errors())
+    try:
+        await driver.configure(validated)
+    except DriverConfigError as exc:
+        raise HTTPException(400, str(exc))
+    return validated
+
+
 router = APIRouter()
 
 
@@ -134,15 +190,13 @@ async def put_config(slug: str, payload: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(payload.get("enabled", False))
     raw_config = payload.get("config") or {}
 
-    try:
-        validated: BaseModel = driver.config_schema.model_validate(raw_config)
-    except ValidationError as exc:
-        raise HTTPException(400, exc.errors())
+    if driver.secret_fields and isinstance(raw_config, dict):
+        existing = await store.load(slug, driver.secret_fields)
+        raw_config = _merge_unchanged_secrets(
+            raw_config, existing.config if existing else {}, driver.secret_fields,
+        )
 
-    try:
-        await driver.configure(validated)
-    except DriverConfigError as exc:
-        raise HTTPException(400, str(exc))
+    validated = await _apply_config(driver, raw_config)
 
     await store.save(slug, enabled, validated.model_dump(), driver.secret_fields)
 
@@ -172,6 +226,11 @@ async def enable(slug: str) -> dict[str, Any]:
     row = await store.load(slug, driver.secret_fields)
     if row is None:
         raise HTTPException(409, "configure before enabling")
+    # Apply the STORED config before starting. After a restart a driver that
+    # was persisted disabled still holds its constructor defaults (only
+    # enabled rows are configured at boot), so starting it bare would serve
+    # e.g. Grafana /metrics without its bearer token, or poll an empty URL.
+    await _apply_config(driver, row.config)
     await store.save(slug, True, row.config, driver.secret_fields)
     await driver.start()
     await _push_state_snapshot_safe()

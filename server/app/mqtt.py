@@ -9,17 +9,48 @@ import aiomqtt
 
 from .cloud.service import forward_telemetry, forward_event, forward_component_health
 from .config import settings
-from .telemetry.service import store_bulk_readings
+from .notifications.service import notify
+from .telemetry.service import (
+    active_session_for_node,
+    latest_node_timestamp,
+    store_bulk_readings,
+)
 from .db import get_db
 
 log = logging.getLogger(__name__)
 
 _client: aiomqtt.Client | None = None
 
-# Any ts < 2020-01-01 is firmware uptime-seconds, not real epoch. Clamp to now.
-_EPOCH_2020 = 1577836800
+# Telemetry `ts` wire contract (firmware <-> Pi):
+#   * ts is Unix-epoch seconds once the node's clock is NTP-synced. Anything
+#     below 1e9 (2001-09-09) is an unsynced node's uptime, never a real epoch,
+#     and is replaced with the Pi's arrival time.
+#   * Frames replayed from the node's offline buffer carry "replay": true.
+#   * Replayed frames, and synced frames older than _STALE_FRAME_SECONDS, are
+#     stored but are not live: the rules engine never evaluates them, they
+#     never overwrite a newer "latest reading", and they never reach the local
+#     live socket. The cloud relay still receives them (as it always has) with
+#     their real ts and "replay": true, so its history has no gaps.
+_UNSYNCED_TS_BELOW = 1_000_000_000
+_STALE_FRAME_SECONDS = 120
 _uptime_ts_clamp_count = 0
 _mqtt_restart_count = 0
+
+# Shelly / Tasmota publish on their own topic trees, often as bare text.
+_VENDOR_PLUG_PREFIXES = ("shellies/", "tasmota/")
+
+# Node-side alert types (firmware check_alerts / reed edges) -> ntfy tier.
+# Deployed firmware re-emits a standing condition every read cycle (~30 s);
+# current firmware latches (entry + hourly). Each (node, type, sensor) is
+# deduplicated, so one failed sensor never masks another on the same node.
+_NODE_ALERT_PRIORITY = {
+    "temperature": "critical",
+    "co2": "critical",
+    "sensor_failure": "critical",
+    "humidity": "warning",
+    "door": "info",
+}
+_NODE_ALERT_DEDUP_SECONDS = {"critical": 900, "warning": 300, "info": 3600}
 
 
 def get_reliability_counters() -> dict:
@@ -184,6 +215,34 @@ def _handle_sys_message(topic: str, raw: bytes) -> None:
         pass
 
 
+def _is_vendor_plug_topic(topic: str) -> bool:
+    return topic.startswith(_VENDOR_PLUG_PREFIXES)
+
+
+def _decode_payload(topic: str, raw: bytes):
+    """Decode one MQTT payload for routing; None means drop the frame.
+
+    sporeprint/* frames are JSON objects, nothing else. Shelly and Tasmota
+    publish their relay state as bare text (`on`/`off`, `ON`/`OFF`), so for
+    those topics a payload that isn't JSON is passed through as the stripped
+    string. Numeric power reports and Tasmota's JSON telemetry still parse.
+    """
+    try:
+        text = raw.decode()
+    except UnicodeDecodeError:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        if not _is_vendor_plug_topic(topic):
+            return None
+        # Empty/whitespace (e.g. a retained message being cleared) is no state.
+        return text.strip() or None
+    if not _is_vendor_plug_topic(topic) and not isinstance(payload, dict):
+        return None
+    return payload
+
+
 async def start_mqtt(sio):
     global _client, _mqtt_restart_count
     from .health.service import update_task
@@ -229,9 +288,8 @@ async def start_mqtt(sio):
                     if topic.startswith("$SYS/"):
                         _handle_sys_message(topic, bytes(message.payload or b""))
                         continue
-                    try:
-                        payload = json.loads(message.payload.decode())
-                    except (json.JSONDecodeError, UnicodeDecodeError):
+                    payload = _decode_payload(topic, bytes(message.payload or b""))
+                    if payload is None:
                         continue
 
                     try:
@@ -256,8 +314,15 @@ async def start_mqtt(sio):
             await asyncio.sleep(5)
 
 
-async def _handle_message(sio, topic: str, payload: dict):
+async def _handle_message(sio, topic: str, payload):
     global _uptime_ts_clamp_count
+    # Smart plug messages (Shelly / Tasmota) live on the vendor's own topic
+    # tree and are often bare text; they never enter the sporeprint/* branches.
+    if _is_vendor_plug_topic(topic):
+        from .automation.smart_plugs import handle_plug_message
+        await handle_plug_message(sio, topic, payload)
+        return
+
     parts = topic.split("/")
     if len(parts) < 3:
         return
@@ -293,18 +358,49 @@ async def _handle_message(sio, topic: str, payload: dict):
 
     elif msg_type == "telemetry":
         received_at = time.time()
+        replay = payload.get("replay") is True
         raw_ts = payload.get("ts", received_at)
         try:
             ts = float(raw_ts)
         except (TypeError, ValueError):
             ts = received_at
-        if ts < _EPOCH_2020:
+        if ts < _UNSYNCED_TS_BELOW:
+            # Unsynced node clock: the ts is uptime, not wall time.
             _uptime_ts_clamp_count += 1
-            log.warning("uptime-style ts %s from %s, replacing with server time", raw_ts, node_id)
+            log.debug("unsynced ts %s from %s, stamping arrival time", raw_ts, node_id)
             ts = received_at
+            if replay:
+                # A replayed unsynced frame's real time is unrecoverable but is
+                # certainly older than what the node already reported live.
+                # Never let it land after (and so shadow) the latest reading.
+                newest = await latest_node_timestamp(node_id)
+                if newest is not None and newest <= ts:
+                    ts = newest - 0.001
+        live = not replay and received_at - ts <= _STALE_FRAME_SECONDS
         payload["ts"] = ts
 
-        await store_bulk_readings(node_id, payload, ts)
+        # Tag the reading with the grow its node was part of at `ts`
+        # (transcripts and the per-session telemetry endpoint resolve by
+        # session_id). Per node: chambered grows can run side by side.
+        session_id = await active_session_for_node(node_id, ts)
+
+        try:
+            await store_bulk_readings(node_id, payload, ts, session_id=session_id)
+        except Exception as e:
+            # e.g. "database is locked" while the nightly retention job holds
+            # the write lock. Losing the history row must not also cost a live
+            # frame its rules evaluation (safety cutoffs included).
+            log.warning("storing telemetry from %s failed: %s", node_id, e)
+        if not live:
+            # History only: the local socket feed renders each frame as the
+            # current reading and the rules engine acts on it, so a late frame
+            # would roll the displayed/acted-on state back. The cloud relay has
+            # always received late frames (with their real ts), so keep its
+            # history whole and mark the frame as not live.
+            log.debug("stored %s telemetry from %s (ts %.0f, %.0fs old); not live",
+                      "replayed" if replay else "stale", node_id, ts, received_at - ts)
+            await forward_telemetry(node_id, {**payload, "replay": True})
+            return
         await sio.emit("telemetry", {"node_id": node_id, **payload})
         await forward_telemetry(node_id, payload)
 
@@ -403,6 +499,13 @@ async def _handle_message(sio, topic: str, payload: dict):
         log.warning("Alert from node=%s kind=%s", node_id, alert_kind)
         await sio.emit("alert", {"node_id": node_id, **payload})
         await forward_event("alert", {"node_id": node_id, **payload})
+        # Local push: the engine's species-range alerts need an active session,
+        # so these firmware absolute-limit alerts are the only page a headless
+        # Pi sends between grows (or for a dead sensor).
+        try:
+            await _notify_node_alert(node_id, str(alert_kind), payload)
+        except Exception as e:
+            log.warning("node alert notification failed: %s", e)
 
     elif msg_type == "logs":
         # v4.2 — firmware log batches ({entries:[{ts_ms,level,msg}],dropped?}).
@@ -458,7 +561,37 @@ async def _handle_message(sio, topic: str, payload: dict):
         await sio.emit("node_ota", evt)
         await forward_event("node_ota", evt)
 
-    # Handle smart plug messages (Shelly / Tasmota)
-    if topic.startswith("shellies/") or topic.startswith("tasmota/"):
-        from .automation.smart_plugs import handle_plug_message
-        await handle_plug_message(sio, topic, payload)
+
+async def _notify_node_alert(node_id: str, alert_type: str, payload: dict) -> None:
+    """Push a firmware alert frame to ntfy, tiered and deduplicated.
+
+    temperature / co2 / sensor_failure page CRITICAL, humidity WARNING, and a
+    door opening INFO (a door closing is not pushed). Unknown types from newer
+    firmware page WARNING rather than being dropped. The dedup key includes the
+    frame's `sensor`, since one alert type (sensor_failure) covers several.
+    """
+    if alert_type == "door":
+        try:
+            opened = float(payload.get("value", 0)) >= 1.0
+        except (TypeError, ValueError):
+            opened = False
+        if not opened:
+            return
+    priority = _NODE_ALERT_PRIORITY.get(alert_type, "warning")
+    message = str(payload.get("message") or alert_type.replace("_", " "))
+    value = payload.get("value")
+    has_reading = alert_type not in ("door", "sensor_failure")
+    if has_reading and isinstance(value, (int, float)) and not isinstance(value, bool):
+        message = f"{message} (value {value:g})"
+    sensor = str(payload.get("sensor") or "")[:32]
+    title = f"Node {node_id}: {alert_type.replace('_', ' ')} alert"
+    if sensor:
+        title += f" ({sensor})"
+    await notify(
+        title,
+        message,
+        priority=priority,
+        tags=["warning"] if priority == "critical" else ["mushroom"],
+        dedup_key=f"node_alert:{node_id}:{alert_type}:{sensor}",
+        dedup_seconds=_NODE_ALERT_DEDUP_SECONDS[priority],
+    )

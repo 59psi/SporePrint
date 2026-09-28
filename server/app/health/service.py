@@ -6,6 +6,7 @@ Socket.IO client tracking via connect/disconnect events.
 Background task status via registry.
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -56,7 +57,8 @@ def update_task(name: str, status: str, error: str | None = None):
 
 async def get_system_metrics() -> dict:
     """CPU, memory, disk, temperature, uptime, DB size."""
-    cpu_percent = psutil.cpu_percent(interval=0.1)
+    # cpu_percent(interval=0.1) sleeps 100 ms to sample — keep it off the loop.
+    cpu_percent = await asyncio.to_thread(psutil.cpu_percent, interval=0.1)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     boot_time = psutil.boot_time()

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import socket
 import threading
 import time
 
@@ -26,17 +27,34 @@ PASSWORD = "correct-horse-battery-1"
 
 
 @pytest.fixture(autouse=True)
-def _reset_push_state():
-    """Per-node push status is module-level in-memory state — start clean."""
+def _reset_push_state(monkeypatch):
+    """Per-node push status is module-level in-memory state — start clean.
+
+    Production binds the fixed, compose-published CALLBACK_PORT; tests use
+    ephemeral ports (0) unless they pass callback_port explicitly, so they
+    never collide with anything on the host or with each other."""
     ota_push._status.clear()
     ota_push._tasks.clear()
+    monkeypatch.setattr(ota_push, "CALLBACK_PORT", 0)
+    monkeypatch.setattr(ota_push, "_callback_port_lock", asyncio.Lock())
     yield
+
+
+def _free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 # ─── Loopback fake device (ArduinoOTA side of espota) ────────────────────
 
 
 class _FakeDeviceProtocol(asyncio.DatagramProtocol):
+    """Mirrors ArduinoOTAClass::_onRx() (arduino-esp32 2.x): ONE datagram
+    per handle() tick, IDLE → (invitation) → WAITAUTH → (answer) → IDLE.
+    Anything but a U_AUTH (200) datagram in WAITAUTH silently drops the
+    state back to IDLE; a non-FLASH datagram in IDLE is ignored."""
+
     def __init__(self, dev: "FakeOtaDevice"):
         self.dev = dev
         self.state = "idle"
@@ -46,26 +64,38 @@ class _FakeDeviceProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr) -> None:
+        if self.dev.respond:
+            self.dev._inbox.put_nowait((data, addr))
+
+    def handle(self, data: bytes, addr) -> None:
         dev = self.dev
-        if not dev.respond:
-            return
-        text = data.decode().strip()
+        tokens = data.decode(errors="replace").split()
+        try:
+            cmd = int(tokens[0])
+        except (IndexError, ValueError):
+            cmd = -1
         if self.state == "idle":
             # Invitation: "<cmd> <host_port> <size> <md5>"
-            cmd, host_port, size, md5 = text.split()
-            dev.invitation = {"cmd": int(cmd), "host_port": int(host_port),
-                              "size": int(size), "md5": md5}
+            if cmd != ota_push.FLASH_CMD or len(tokens) != 4 or len(tokens[3]) != 32:
+                return
+            dev.invitations_seen += 1
+            dev.invitation = {"cmd": cmd, "host_port": int(tokens[1]),
+                              "size": int(tokens[2]), "md5": tokens[3]}
             self.nonce = hashlib.md5(os.urandom(8)).hexdigest()
-            self.transport.sendto(f"AUTH {self.nonce}".encode(), addr)
+            for _ in range(2 if dev.duplicate_auth else 1):
+                self.transport.sendto(f"AUTH {self.nonce}".encode(), addr)
             self.state = "wait_auth"
         elif self.state == "wait_auth":
+            if cmd != ota_push.AUTH_CMD or len(tokens) != 3:
+                self.state = "idle"  # e.g. a duplicate invitation
+                return
             # Auth answer: "200 <cnonce> <md5(md5(pass):nonce:cnonce)>"
-            cmd, cnonce, response = text.split()
+            _, cnonce, response = tokens
             pwd_hash = hashlib.md5(dev.password.encode()).hexdigest()
             expected = hashlib.md5(
                 f"{pwd_hash}:{self.nonce}:{cnonce}".encode()).hexdigest()
             self.state = "idle"
-            if int(cmd) == ota_push.AUTH_CMD and response == expected:
+            if response == expected:
                 dev.auth_ok = True
                 self.transport.sendto(b"OK", addr)
                 dev._pull_tasks.append(asyncio.get_running_loop().create_task(
@@ -81,29 +111,51 @@ class FakeOtaDevice:
     respond=False   — never answer the invitation (device unreachable).
     ack_chunks=False — accept the TCP connection, read data, never ack
                        (stalled transfer; connection held open).
+    busy_s          — the loop is blocked (camera JPEG POST, MQTT reconnect)
+                       for this long after start(): datagrams queue in the
+                       socket and are then handled one per tick, in order.
+    duplicate_auth  — every AUTH challenge datagram arrives twice.
     """
 
     def __init__(self, password: str = PASSWORD, *, respond: bool = True,
-                 ack_chunks: bool = True):
+                 ack_chunks: bool = True, busy_s: float = 0.0,
+                 duplicate_auth: bool = False):
         self.password = password
         self.respond = respond
         self.ack_chunks = ack_chunks
+        self.busy_s = busy_s
+        self.duplicate_auth = duplicate_auth
         self.invitation: dict | None = None
+        self.invitations_seen = 0
         self.auth_ok: bool | None = None
         self.received = b""
         self.udp_port: int | None = None
         self._transport = None
+        self._proto: _FakeDeviceProtocol | None = None
+        self._inbox: asyncio.Queue = asyncio.Queue()
+        self._loop_task: asyncio.Task | None = None
         self._pull_tasks: list[asyncio.Task] = []
         self._closed = asyncio.Event()
 
     async def start(self) -> "FakeOtaDevice":
         loop = asyncio.get_running_loop()
-        self._transport, _ = await loop.create_datagram_endpoint(
+        self._transport, self._proto = await loop.create_datagram_endpoint(
             lambda: _FakeDeviceProtocol(self), local_addr=("127.0.0.1", 0))
         self.udp_port = self._transport.get_extra_info("sockname")[1]
+        self._loop_task = loop.create_task(self._handle_loop())
         return self
 
+    async def _handle_loop(self) -> None:
+        if self.busy_s:
+            await asyncio.sleep(self.busy_s)
+        while True:
+            data, addr = await self._inbox.get()
+            self._proto.handle(data, addr)
+            await asyncio.sleep(0.005)  # next loop() → ArduinoOTA.handle()
+
     async def stop(self) -> None:
+        if self._loop_task is not None:
+            self._loop_task.cancel()
         if self._transport is not None:
             self._transport.close()
         self._closed.set()
@@ -207,6 +259,118 @@ async def test_push_stalled_transfer_times_out():
                 "climate-01", "127.0.0.1", device.udp_port, PASSWORD,
                 os.urandom(4096), invite_timeout=2.0, stall_timeout=0.3,
                 bind_host="127.0.0.1")
+    finally:
+        await device.stop()
+
+
+# ─── Fixed callback port (docker-compose bridge networking) ──────────────
+
+
+async def test_push_advertises_and_listens_on_the_fixed_callback_port():
+    """Behind the compose bridge the node's connect-back reaches the Pi host;
+    only a PUBLISHED port is forwarded into the container. The invitation
+    must advertise the fixed port and the server must listen on it."""
+    fixed = _free_tcp_port()
+    device = await FakeOtaDevice().start()
+    try:
+        image = os.urandom(2500)
+        await push_firmware(
+            "climate-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1",
+            callback_port=fixed)
+        assert device.invitation["host_port"] == fixed
+        assert device.received == image
+    finally:
+        await device.stop()
+
+
+async def test_concurrent_pushes_share_the_fixed_callback_port():
+    """Two nodes pushed at once cannot both own port 3233 — the second must
+    wait for the first instead of failing with EADDRINUSE."""
+    fixed = _free_tcp_port()
+    dev_a = await FakeOtaDevice().start()
+    dev_b = await FakeOtaDevice().start()
+    try:
+        img_a, img_b = os.urandom(3000), os.urandom(2000)
+        await asyncio.gather(
+            push_firmware("climate-01", "127.0.0.1", dev_a.udp_port, PASSWORD,
+                          img_a, invite_timeout=2.0, stall_timeout=2.0,
+                          bind_host="127.0.0.1", callback_port=fixed),
+            push_firmware("relay-01", "127.0.0.1", dev_b.udp_port, PASSWORD,
+                          img_b, invite_timeout=2.0, stall_timeout=2.0,
+                          bind_host="127.0.0.1", callback_port=fixed),
+        )
+        assert dev_a.received == img_a
+        assert dev_b.received == img_b
+    finally:
+        await dev_a.stop()
+        await dev_b.stop()
+
+
+async def test_callback_port_in_use_is_a_clean_push_error():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as squatter:
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen()
+        taken = squatter.getsockname()[1]
+        with pytest.raises(OtaPushError, match="callback port"):
+            await push_firmware(
+                "climate-01", "127.0.0.1", 9, PASSWORD, b"\xe9" * 64,
+                invite_timeout=0.3, stall_timeout=0.3, bind_host="127.0.0.1",
+                callback_port=taken)
+
+
+# ─── Invitation robustness against a busy node ───────────────────────────
+
+
+async def test_busy_node_with_queued_invitations_still_authenticates():
+    """A node blocked for 1.5 s (camera JPEG POST, PubSubClient reconnect)
+    queues whatever the Pi sent meanwhile. Re-inviting every second queued
+    a duplicate: ArduinoOTA answered the first with AUTH, the duplicate
+    knocked it back to IDLE, and the Pi's answer was then ignored → a false
+    failure with the right password. Default timings must survive this."""
+    device = await FakeOtaDevice(busy_s=1.5).start()
+    try:
+        image = os.urandom(2500)
+        await push_firmware(
+            "cam-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=4.0, stall_timeout=2.0, bind_host="127.0.0.1")
+        assert device.auth_ok is True
+        assert device.received == image
+    finally:
+        await device.stop()
+
+
+async def test_node_busy_across_several_retries_still_authenticates():
+    """Busy longer than the retry interval: several invitations queue up and
+    the node answers them in order (AUTH, IDLE, AUTH, …). Each retry uses a
+    fresh socket, so replies to abandoned invitations never reach the
+    current exchange, and the push still completes."""
+    device = await FakeOtaDevice(busy_s=0.5).start()
+    try:
+        image = os.urandom(1500)
+        await push_firmware(
+            "cam-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=3.0, invite_retry=0.2, stall_timeout=2.0,
+            bind_host="127.0.0.1")
+        assert device.invitations_seen >= 2
+        assert device.auth_ok is True
+        assert device.received == image
+    finally:
+        await device.stop()
+
+
+async def test_duplicate_auth_challenge_is_not_mistaken_for_rejection():
+    """After answering the challenge, a stale second 'AUTH <nonce>' must be
+    skipped while waiting for OK — not reported as 'authentication
+    rejected: AUTH …'."""
+    device = await FakeOtaDevice(duplicate_auth=True).start()
+    try:
+        image = os.urandom(1200)
+        await push_firmware(
+            "climate-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1")
+        assert device.auth_ok is True
+        assert device.received == image
     finally:
         await device.stop()
 

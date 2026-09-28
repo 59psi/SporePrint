@@ -30,8 +30,12 @@ async def get_node(node_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def send_command(node_id: str, command: dict) -> str:
-    """Publish a command to a specific node, returning the topic used.
+async def send_command(node_id: str, command: dict) -> tuple[str, bool]:
+    """Publish a command to a specific node.
+
+    Returns `(topic, published)`. `published` is False when mqtt_publish
+    refused or failed the frame (no broker connection, publish error, or
+    cmd signing enforced with no HMAC key) — the command never left the Pi.
 
     Caller must have already validated `node_id`. This helper strips any
     caller-supplied `topic` and `channel` from `command` to prevent injection,
@@ -43,5 +47,5 @@ async def send_command(node_id: str, command: dict) -> str:
     if not CHANNEL_RE.match(str(channel)):
         raise ValueError("Invalid channel")
     topic = f"sporeprint/{node_id}/cmd/{channel}"
-    await mqtt_publish(topic, command)
-    return topic
+    published = await mqtt_publish(topic, command)
+    return topic, bool(published)

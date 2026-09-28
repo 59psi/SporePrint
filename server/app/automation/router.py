@@ -1,8 +1,12 @@
+import time
+
 from fastapi import APIRouter, HTTPException
 
 from ..db import get_db
 from .models import AutomationRule, ManualOverride
-from .engine import set_override, get_overrides, clear_override as clear_override_engine
+from .engine import (
+    set_override, get_overrides, clear_override as clear_override_engine, note_actuator_off,
+)
 from .service import deserialize_rule_row, serialize_rule_data, validate_action_channel
 from .smart_plugs import get_all_plugs, register_plug, send_plug_command
 
@@ -144,5 +148,14 @@ async def add_plug(data: dict):
 @router.post("/plugs/{plug_id}/command")
 async def command_plug(plug_id: str, data: dict):
     state = data.get("state", "off")
-    await send_plug_command(plug_id, state)
+    sent_at = time.time()
+    published = await send_plug_command(plug_id, state)
+    if not published:
+        # send_plug_command returns False for a plug with no paired row or a
+        # disconnected broker — nothing switched, so don't report success.
+        raise HTTPException(409, f"Plug '{plug_id}' is not paired or MQTT is disconnected")
+    if str(state).lower() == "off":
+        # A manual OFF ends whatever automation ON a safety ceiling was timing;
+        # without this the next automation ON keeps the stale deadline.
+        await note_actuator_off(plug_id, None, sent_at=sent_at)
     return {"status": "sent", "plug_id": plug_id, "state": state}

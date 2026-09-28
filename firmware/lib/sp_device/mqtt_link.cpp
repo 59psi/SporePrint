@@ -1,6 +1,9 @@
 #include "mqtt_link.h"
 
-#include "cmd_router.h"  // sp::cmd_suffix
+#include <WiFi.h>
+
+#include "cmd_router.h"   // sp::cmd_suffix
+#include "link_budget.h"  // connect-attempt time budget vs the loop WDT
 
 namespace sp_device {
 
@@ -15,21 +18,34 @@ void MqttLink::begin(const char* host, uint16_t port, const char* user,
     pass_ = pass;
     mqtt_.setServer(host_.c_str(), port_);
     mqtt_.setBufferSize(kInboundCap + 128);  // inbound cap + header headroom
+    // CONNACK wait (default 15 s) — part of the link_budget.h attempt budget.
+    mqtt_.setSocketTimeout((uint16_t)sp::kMqttSocketTimeoutS);
     mqtt_.setCallback(static_callback);
     connect_attempt();
+    last_attempt_ms_ = millis();
 }
 
-void MqttLink::loop(uint32_t now_ms) {
-    if (!mqtt_.connected()) {
+void MqttLink::loop(uint32_t now_ms, bool may_connect) {
+    if (!mqtt_.connected() && may_connect) {
         if (now_ms - last_attempt_ms_ > kRetryWindowMs) {
-            last_attempt_ms_ = now_ms;
             connect_attempt();
+            // Stamp the END of the attempt: a failed one can block for
+            // seconds (DNS / TCP / TLS timeouts), and stamping its start let
+            // the next pass launch another at once — loop() spent nearly all
+            // its time blocked while the broker was unreachable. Callers pass
+            // a `now` taken at the top of the following pass, so it is never
+            // earlier than this stamp.
+            last_attempt_ms_ = millis();
         }
     }
     mqtt_.loop();
 }
 
 void MqttLink::connect_attempt() {
+    // No STA link: a connect would only burn the DNS timeout inside loop().
+    // WiFi recovery is the composition root's job (node: link watchdog).
+    if (WiFi.status() != WL_CONNECTED) return;
+
     std::string lwt_topic = topic("status");
     const char* lwt_payload = "{\"status\":\"offline\"}";
     const char* user_ptr = user_.empty() ? nullptr : user_.c_str();

@@ -154,7 +154,9 @@ CREATE TABLE IF NOT EXISTS automation_firings (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_firings_time ON automation_firings(timestamp);
-CREATE INDEX IF NOT EXISTS idx_firings_status ON automation_firings(status);
+-- idx_firings_status is created in init_db() AFTER the v3.3.0 `status`
+-- column migration: on a pre-3.3.0 database this CREATE TABLE is a no-op,
+-- so indexing `status` here would fail with "no such column".
 
 -- Safety watchdog registry. Each row represents a currently-ARMED
 -- safety_max_on_seconds auto-off. Survives Pi restart: on boot we scan
@@ -507,6 +509,11 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(automation_firings)", "error",
             "ALTER TABLE automation_firings ADD COLUMN error TEXT",
+        )
+        # Indexes over migrated columns go after their migration (see SCHEMA).
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_firings_status "
+            "ON automation_firings(status)"
         )
         # v4.2: combined-node role routing (firmware v2 heartbeats).
         await _add_column_if_missing(

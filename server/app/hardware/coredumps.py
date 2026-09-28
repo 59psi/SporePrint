@@ -3,7 +3,8 @@
 ESP32 nodes drain panic dumps at boot as base64 chunks on
 ``sporeprint/<id>/coredump/chunk`` ({seq, total, size, b64_data}).
 This module reassembles them in memory and writes the completed ELF to
-``data/coredumps/<node_id>-<utc_ts>.elf`` for offline decoding with
+``<database dir>/coredumps/<node_id>-<utc_ts>.elf`` (``/data/db/coredumps``
+in Docker — the persistent, appuser-owned volume) for offline decoding with
 espcoredump.py (decoding needs the matching firmware ELF — we store, not
 parse).
 
@@ -21,9 +22,15 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..config import settings
+
 log = logging.getLogger(__name__)
 
-COREDUMP_DIR = Path("data/coredumps")
+# Explicit override (tests). None = derive from settings.database_path at call
+# time, so dumps land on the same persistent volume as the SQLite DB. A
+# CWD-relative default resolved to /app/data/coredumps in the image, which the
+# non-root appuser cannot create and which a rebuild would wipe anyway.
+COREDUMP_DIR: Path | None = None
 ASSEMBLY_TIMEOUT_S = 600
 MAX_DUMP_BYTES = 256 * 1024  # 4x the largest partition we ship — sanity cap
 
@@ -39,6 +46,13 @@ class _Assembly:
 
 
 _assemblies: dict[str, _Assembly] = {}
+
+
+def coredump_dir() -> Path:
+    """Directory completed dumps are written to and served from."""
+    if COREDUMP_DIR is not None:
+        return Path(COREDUMP_DIR)
+    return Path(settings.database_path).parent / "coredumps"
 
 
 def _reap_stale(now: float) -> None:
@@ -71,14 +85,20 @@ def ingest_chunk(node_id: str, payload: dict) -> Path | None:
     if asm is None or asm.total != total or seq in asm.chunks:
         # New upload (or a node rebooted mid-upload and restarted) — begin
         # fresh on seq 0, otherwise drop the orphan chunk.
-        if seq != 0 and asm is None:
-            log.warning("coredump chunk from %s out of order (seq %d, no "
-                        "assembly)", node_id, seq)
-            return None
         if seq == 0:
             asm = _Assembly(total=total)
             _assemblies[node_id] = asm
-        if asm is None:
+        elif asm is None:
+            log.warning("coredump chunk from %s out of order (seq %d, no "
+                        "assembly)", node_id, seq)
+            return None
+        elif asm.total != total:
+            # A different upload whose seq 0 we never saw (QoS0 loss). Never
+            # splice it into the in-flight assembly — that writes an ELF mixing
+            # two dumps, or KeyErrors on a seq beyond the old total.
+            log.warning("coredump chunk from %s dropped (seq %d/total %d does "
+                        "not match in-flight upload of %d chunks)",
+                        node_id, seq, total, asm.total)
             return None
 
     if asm.size_bytes() + len(data) > MAX_DUMP_BYTES:
@@ -92,14 +112,21 @@ def ingest_chunk(node_id: str, payload: dict) -> Path | None:
         return None
 
     # Complete — write in sequence order.
-    COREDUMP_DIR.mkdir(parents=True, exist_ok=True)
+    del _assemblies[node_id]
+    out_dir = coredump_dir()
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now))
     safe_node = "".join(ch for ch in node_id if ch.isalnum() or ch in "-_")
-    out = COREDUMP_DIR / f"{safe_node}-{ts}.elf"
-    with out.open("wb") as f:
-        for i in range(asm.total):
-            f.write(asm.chunks[i])
-    del _assemblies[node_id]
+    out = out_dir / f"{safe_node}-{ts}.elf"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with out.open("wb") as f:
+            for i in range(asm.total):
+                f.write(asm.chunks[i])
+    except OSError as e:
+        log.error("coredump from %s could not be written to %s: %s — the dump "
+                  "is lost; make the directory writable by the server user",
+                  node_id, out_dir, e)
+        return None
     log.warning("coredump from %s written to %s (%d bytes) — node panicked "
                 "last boot; decode with espcoredump.py + the matching ELF",
                 node_id, out, out.stat().st_size)
@@ -107,10 +134,11 @@ def ingest_chunk(node_id: str, payload: dict) -> Path | None:
 
 
 def list_dumps() -> list[dict]:
-    if not COREDUMP_DIR.exists():
+    base = coredump_dir()
+    if not base.exists():
         return []
     out = []
-    for p in sorted(COREDUMP_DIR.glob("*.elf"), reverse=True):
+    for p in sorted(base.glob("*.elf"), reverse=True):
         out.append({
             "filename": p.name,
             "size_bytes": p.stat().st_size,
@@ -120,8 +148,8 @@ def list_dumps() -> list[dict]:
 
 
 def dump_path(filename: str) -> Path | None:
-    """Resolve a dump filename safely inside COREDUMP_DIR."""
+    """Resolve a dump filename safely inside the coredump directory."""
     if "/" in filename or "\\" in filename or ".." in filename:
         return None
-    p = COREDUMP_DIR / filename
+    p = coredump_dir() / filename
     return p if p.is_file() else None

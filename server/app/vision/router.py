@@ -1,5 +1,4 @@
 import re
-import time
 from pathlib import Path
 
 from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
@@ -9,11 +8,15 @@ from .service import (
     analyze_frame_claude,
     analyze_frame_local,
     apply_user_label,
+    frame_storage_name,
     get_active_session_id,
     get_frame_by_id,
     get_frames,
     insert_frame,
     maybe_schedule_auto_analysis,
+    maybe_schedule_vision_prune,
+    resolve_frame_timestamp,
+    sniff_image_media_type,
     update_analysis_claude,
     update_analysis_local,
 )
@@ -56,22 +59,33 @@ async def ingest_frame(
     if not content:
         raise HTTPException(400, "Empty frame body")
 
+    # Unsynced cams (missing / uptime-based X-Timestamp) get arrival time.
     try:
-        ts = float(x_timestamp) if x_timestamp else time.time()
+        ts = resolve_frame_timestamp(x_timestamp)
     except ValueError:
         raise HTTPException(400, "Invalid X-Timestamp")
+
+    if len(content) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "File too large (max 20MB)")
 
     storage = Path(settings.vision_storage).resolve()
     storage.mkdir(parents=True, exist_ok=True)
 
-    filename = f"{x_node_id}_{int(ts)}.jpg"
-    file_path = (storage / filename).resolve()
-    if not file_path.is_relative_to(storage):
-        raise HTTPException(400, "Invalid frame path")
-
-    if len(content) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "File too large (max 20MB)")
-    file_path.write_bytes(content)
+    # Keep the real image type (bytes win over the header) so the extension —
+    # and the media_type later declared to Claude — match the content.
+    stored_type = sniff_image_media_type(content) or media_type
+    for _ in range(3):
+        file_path = (storage / frame_storage_name(x_node_id, ts, stored_type)).resolve()
+        if not file_path.is_relative_to(storage):
+            raise HTTPException(400, "Invalid frame path")
+        try:
+            with file_path.open("xb") as fh:  # exclusive: never overwrite a frame
+                fh.write(content)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise HTTPException(500, "Could not allocate a unique frame filename")
 
     session_id = await get_active_session_id()
     frame_id = await insert_frame(
@@ -99,6 +113,8 @@ async def ingest_frame(
         node_id=x_node_id,
         file_path=str(file_path),
     )
+    # Thin frames past the retention window (throttled, background).
+    await maybe_schedule_vision_prune()
 
     return {
         "frame_id": frame_id,
@@ -131,7 +147,11 @@ async def trigger_claude_analysis(frame_id: int):
         raise HTTPException(404, "Frame not found")
 
     result = await analyze_frame_claude(frame)
-    if result:
+    # Persist only a real analysis: analyze_frame_claude returns a truthy
+    # {"error": ...} on failure (no key, rate limit), which used to overwrite
+    # the frame's previous good analysis. The error is still returned so the
+    # UI can show it.
+    if isinstance(result, dict) and result and "error" not in result:
         await update_analysis_claude(frame_id, result)
 
     return result

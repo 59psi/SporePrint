@@ -59,7 +59,16 @@ class HttpVendorDriver(IntegrationDriver):
     # ── IntegrationDriver lifecycle ────────────────────────────────────
 
     async def configure(self, config: BaseModel) -> None:
+        previous = self._cfg
         self._cfg = config
+        if previous is not None and previous != config:
+            # Settings changed (possibly a different account / rotated
+            # password): never keep acting with auth minted for the old one.
+            self._reset_auth()
+
+    def _reset_auth(self) -> None:
+        """Hook: drop cached vendor auth (bearer tokens, sessions) after a
+        config change. Drivers that cache auth state override this."""
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():

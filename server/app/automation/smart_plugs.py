@@ -105,6 +105,30 @@ async def target_is_present(target: str) -> bool:
     return False
 
 
+async def plug_aliases(target: str) -> set[str]:
+    """Every automation target that reaches the same paired plug as `target`.
+
+    A rule can name a plug by its id (`plug-a1b2c3`) or by its role
+    (`plug-heater`); both reach one physical plug, resolved exactly as
+    send_plug_command resolves it. Always includes `target` itself.
+    """
+    role = target[len("plug-"):] if target.startswith("plug-") else None
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT plug_id, device_role FROM smart_plugs "
+            "WHERE plug_id = ? OR device_role = ? "
+            "ORDER BY (plug_id = ?) DESC LIMIT 1",
+            (target, role, target),
+        )
+        row = await cursor.fetchone()
+    aliases = {target}
+    if row:
+        aliases.add(row["plug_id"])
+        if row["device_role"]:
+            aliases.add(f"plug-{row['device_role']}")
+    return aliases
+
+
 async def send_plug_command(plug_id: str, state: str) -> bool:
     """Send an on/off command to a smart plug. True only when it was delivered
     to a PAIRED plug; an unpaired plug is a reported no-op (False).

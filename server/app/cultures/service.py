@@ -4,13 +4,38 @@ from ..db import get_db
 from .models import CultureCreate, CultureUpdate
 
 
+class ParentCultureNotFound(Exception):
+    """create_culture was given a parent_id that does not exist (FK violation)."""
+
+    def __init__(self, parent_id: int):
+        super().__init__(f"Parent culture {parent_id} not found")
+        self.parent_id = parent_id
+
+
+class CultureHasDescendants(Exception):
+    """delete_culture on a culture other cultures were transferred from.
+
+    cultures.parent_id REFERENCES cultures(id) with foreign_keys=ON, so the
+    DELETE would fail — and deleting it would orphan the lineage anyway.
+    """
+
+    def __init__(self, culture_id: int, count: int):
+        super().__init__(
+            f"Culture {culture_id} has {count} child culture(s); archive it "
+            "(PATCH status='archived') instead of deleting it"
+        )
+        self.culture_id = culture_id
+        self.count = count
+
+
 async def create_culture(data: CultureCreate) -> dict:
     """Create a culture. Auto-calculates generation from parent chain."""
     generation = 0
     if data.parent_id is not None:
         parent = await get_culture(data.parent_id)
-        if parent:
-            generation = parent["generation"] + 1
+        if parent is None:
+            raise ParentCultureNotFound(data.parent_id)
+        generation = parent["generation"] + 1
 
     async with get_db() as db:
         cursor = await db.execute(
@@ -79,8 +104,17 @@ async def update_culture(culture_id: int, data: CultureUpdate) -> dict | None:
 
 
 async def delete_culture(culture_id: int) -> bool:
-    """Delete a culture. Returns True if a row was deleted."""
+    """Delete a culture. Returns True if a row was deleted.
+
+    Raises CultureHasDescendants when other cultures descend from it.
+    """
     async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS n FROM cultures WHERE parent_id = ?", (culture_id,)
+        )
+        children = (await cursor.fetchone())["n"]
+        if children:
+            raise CultureHasDescendants(culture_id, children)
         cursor = await db.execute("DELETE FROM cultures WHERE id = ?", (culture_id,))
         await db.commit()
         return cursor.rowcount > 0

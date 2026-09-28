@@ -31,11 +31,13 @@ public:
     static constexpr uint8_t kAddrAlt = 0x45;
 
     Sht3x(I2cBus& bus, Clock& clock, uint8_t addr = kAddrPrimary)
-        : xport_(bus, clock, addr) {}
+        : xport_(bus, clock, addr), clock_(clock) {}
 
-    // Soft-reset then read the serial word pair — CRC-valid serial = present.
-    // The soft reset also clears any half-parsed command state left by an
-    // SHT4x probe on the same address (the 0x44 disambiguation dance).
+    // Soft-reset, wait out the reset (datasheet t_SR max 1.5 ms — the part
+    // NACKs its address until it is idle again), then read the serial word
+    // pair — CRC-valid serial = present. The soft reset also clears any
+    // half-parsed command state left by an SHT4x probe on the same address
+    // (the 0x44 disambiguation dance).
     bool probe();
 
     // Single-shot high-repeatability measurement (polling mode, ~16 ms).
@@ -45,6 +47,7 @@ public:
 
 private:
     SensirionTransport xport_;
+    Clock& clock_;
     DriverHealth health_;
 };
 

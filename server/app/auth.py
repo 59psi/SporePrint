@@ -3,12 +3,17 @@
 Enabled when `SPOREPRINT_API_KEY` is set. When unset (dev mode) all requests
 pass through — the LAN-scoped CORS middleware remains the only gate.
 
-Whitelist of always-public paths:
-- `/api/health`        — the UI's existence probe must work before auth is set up
-- `/api/cloud/pairing-code` (GET) — displayed in the web UI for an operator who is about to pair
-- `/api/cloud/pair`    — pairing handshake (code + lockout is the gate here)
+Requests that pass without the bearer:
+- `/api/health` (any method) — the UI's existence probe must work before auth is set up
+- `POST /api/cloud/pair`      — pairing handshake (code + lockout is the gate here)
+- `POST /api/vision/frame`    — ESP32-CAM uploads (the camera has no slot for the
+  key), ONLY for an X-Node-Id registered in `hardware_nodes` and with a declared
+  Content-Length within the 20 MB cap (checked before the body is read)
 
-Everything else requires `Authorization: Bearer <SPOREPRINT_API_KEY>`.
+`/api/cloud/pairing-code` (GET and POST) is NOT public: unauthenticated minting
+replaced the operator's code and reset the pairing lockout at will, and the GET
+leaked the live code. Everything else requires
+`Authorization: Bearer <SPOREPRINT_API_KEY>`.
 
 ## LAN-trust model (v3.3.3 documentation)
 
@@ -40,6 +45,7 @@ from __future__ import annotations
 import collections
 import hmac
 import logging
+import re
 import time
 
 from fastapi import Request
@@ -47,6 +53,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import settings
+from .db import get_db
 
 log = logging.getLogger(__name__)
 
@@ -71,22 +78,58 @@ def _connect_rate_ok(remote_addr: str | None) -> bool:
     q.append(now)
     return True
 
+# Public for every method.
 _PUBLIC_PATHS = frozenset({
     "/api/health",
-    "/api/cloud/pair",
-    "/api/cloud/pairing-code",
-    # v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
-    # SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
-    # distribution channel from the Pi to each ESP32). The endpoint's
-    # existing defenses already gate abuse:
-    #   * X-Node-Id header must match [a-zA-Z0-9_-]{1,32}
-    #   * node_id must exist in hardware_nodes (registered device only)
-    #   * 20 MB upload cap
-    #   * storage path is resolve()+is_relative_to guarded
-    # A stronger per-node auth is tracked for v3.5 (HMAC over the JPEG
-    # with the same hmac_key we now enforce on MQTT commands).
-    "/api/vision/frame",
 })
+
+# Public only for the listed method (method-aware: the old path-only
+# whitelist also exposed e.g. POST /api/cloud/pairing-code).
+_PUBLIC_ROUTES = frozenset({
+    ("POST", "/api/cloud/pair"),
+})
+
+# v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
+# SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
+# distribution channel from the Pi to each ESP32). A keyless upload is
+# accepted only when (enforced in _camera_frame_rejection):
+#   * X-Node-Id matches [a-zA-Z0-9_-]{1,32}
+#   * that node_id exists in hardware_nodes (registered device only — the
+#     camera registers itself over MQTT with its heartbeat)
+#   * Content-Length is declared and within the 20 MB cap, checked BEFORE
+#     the body is read into RAM
+# The route itself keeps its resolve()+is_relative_to storage guard. A
+# stronger per-node auth (HMAC over the JPEG with the node's hmac_key) is
+# still future work.
+_CAMERA_FRAME_ROUTE = ("POST", "/api/vision/frame")
+_MAX_FRAME_UPLOAD_BYTES = 20 * 1024 * 1024
+_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+
+
+async def _node_is_registered(node_id: str) -> bool:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM hardware_nodes WHERE node_id = ? LIMIT 1", (node_id,)
+        )
+        return (await cursor.fetchone()) is not None
+
+
+async def _camera_frame_rejection(request: Request) -> JSONResponse | None:
+    """Gate a keyless camera frame upload; None means let it through."""
+    node_id = request.headers.get("x-node-id") or ""
+    if not _NODE_ID_RE.match(node_id):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    length = request.headers.get("content-length")
+    if length is None:
+        return JSONResponse({"error": "Content-Length required"}, status_code=411)
+    if not length.isdigit():
+        return JSONResponse({"error": "Invalid Content-Length"}, status_code=400)
+    if int(length) > _MAX_FRAME_UPLOAD_BYTES:
+        return JSONResponse({"error": "File too large (max 20MB)"}, status_code=413)
+    if not await _node_is_registered(node_id):
+        log.warning("Rejected frame upload from unregistered node %r", node_id)
+        return JSONResponse({"error": "Unknown camera node"}, status_code=403)
+    return None
 
 
 def _extract_bearer(header_value: str | None) -> str | None:
@@ -111,7 +154,10 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if not settings.api_key:
             return await call_next(request)
 
-        path = request.url.path
+        # The ASGI scope path is what the router dispatches on. request.url
+        # is rebuilt from the Host header, which older Starlette let a
+        # crafted `Host: x/api/health?` rewrite into a public path.
+        path = request.scope.get("path") or request.url.path
         if not path.startswith("/api/"):
             return await call_next(request)
 
@@ -120,14 +166,20 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if path in _PUBLIC_PATHS:
+        if path in _PUBLIC_PATHS or (request.method, path) in _PUBLIC_ROUTES:
             return await call_next(request)
 
         presented = _extract_bearer(request.headers.get("authorization"))
-        if not _valid_token(presented):
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        if _valid_token(presented):
+            return await call_next(request)
 
-        return await call_next(request)
+        if (request.method, path) == _CAMERA_FRAME_ROUTE:
+            rejection = await _camera_frame_rejection(request)
+            if rejection is not None:
+                return rejection
+            return await call_next(request)
+
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
 
 def socketio_auth_ok(auth: dict | None, remote_addr: str | None = None) -> bool:

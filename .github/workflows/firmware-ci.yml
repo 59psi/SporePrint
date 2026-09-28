@@ -15,6 +15,8 @@ name: firmware-ci
 # bodies, head refs, commit messages) — only VERSION.txt, which is
 # committed by the operator via the release tooling. Safe against the
 # workflow-injection class.
+# Actions are pinned to commit SHAs (tag in the trailing comment), checkouts
+# do not persist the token, and PlatformIO is pinned to an exact version.
 
 # RELEASE-GATED CI (2026-07): push/PR triggers removed org-wide — Actions
 # minutes are reserved for releases. Firmware validation happens locally
@@ -36,16 +38,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.platformio
@@ -55,7 +59,7 @@ jobs:
       - name: Install PlatformIO
         run: |
           python -m pip install --upgrade pip
-          python -m pip install platformio
+          python -m pip install platformio==6.2.0
 
       - name: Native test suite
         working-directory: firmware
@@ -86,16 +90,18 @@ jobs:
       matrix:
         env: [node_esp32, node_esp32s3, cam]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Cache PlatformIO platform + libdeps
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.platformio
@@ -105,7 +111,7 @@ jobs:
       - name: Install PlatformIO + esptool prereq
         run: |
           python -m pip install --upgrade pip
-          python -m pip install platformio intelhex
+          python -m pip install platformio==6.2.0 intelhex==2.3.0
 
       - name: Read firmware version
         id: fwver

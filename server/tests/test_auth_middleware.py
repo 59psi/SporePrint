@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.auth as auth
+import app.cloud.router as cloud_router_mod
 from app.auth import (
     ApiKeyMiddleware,
     _connect_rate_ok,
@@ -26,6 +27,7 @@ from app.auth import (
     socketio_auth_ok,
 )
 from app.config import settings
+from app.db import get_db
 
 
 _KEY = "s3cret-lan-key"
@@ -83,9 +85,104 @@ def test_public_health_path_bypasses_auth(gated_client):
     assert gated_client.get("/api/health").status_code == 200
 
 
-def test_public_vision_frame_path_bypasses_auth(gated_client):
-    # /api/vision/frame is whitelisted for the camera node (no key slot).
-    assert gated_client.get("/api/vision/frame").status_code == 200
+# ── /api/vision/frame — the camera's keyless upload path ───────────────────
+#
+# The ESP32-CAM has no slot for the API key, so the frame upload is exempt
+# from the bearer — but ONLY for a node registered in hardware_nodes, and
+# with the body size bounded BEFORE it is read into RAM (the whitelist
+# comment always claimed this; the check didn't exist).
+
+@pytest.fixture
+def frame_client(monkeypatch):
+    monkeypatch.setattr(settings, "api_key", _KEY)
+    app = FastAPI()
+    app.add_middleware(ApiKeyMiddleware)
+
+    @app.post("/api/vision/frame")
+    async def vision_frame():
+        return {"ok": True}
+
+    return TestClient(app)
+
+
+async def _register_node(node_id: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, last_seen) VALUES (?, 'camera', 0)",
+            (node_id,),
+        )
+        await db.commit()
+
+
+async def test_registered_camera_frame_bypasses_bearer(frame_client):
+    await _register_node("cam-attic")
+    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
+                          headers={"X-Node-Id": "cam-attic", "Content-Type": "image/jpeg"})
+    assert r.status_code == 200
+
+
+def test_unregistered_camera_frame_is_rejected(frame_client):
+    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
+                          headers={"X-Node-Id": "rogue-cam", "Content-Type": "image/jpeg"})
+    assert r.status_code == 403
+
+
+def test_camera_frame_without_node_id_is_401(frame_client):
+    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
+                          headers={"Content-Type": "image/jpeg"})
+    assert r.status_code == 401
+
+
+async def test_oversized_camera_frame_rejected_before_body_read(frame_client):
+    await _register_node("cam-attic")
+    r = frame_client.post(
+        "/api/vision/frame", content=b"x",
+        headers={"X-Node-Id": "cam-attic", "Content-Type": "image/jpeg",
+                 "Content-Length": str(auth._MAX_FRAME_UPLOAD_BYTES + 1)},
+    )
+    assert r.status_code == 413
+
+
+def test_bearer_holder_can_upload_frames_for_any_node(frame_client):
+    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
+                          headers={"X-Node-Id": "ui-upload", **_auth(_KEY)})
+    assert r.status_code == 200
+
+
+def test_vision_frame_get_is_not_public(gated_client):
+    assert gated_client.get("/api/vision/frame").status_code == 401
+
+
+# ── cloud pairing endpoints — method-aware whitelist ───────────────────────
+
+@pytest.fixture
+def pairing_client(monkeypatch):
+    monkeypatch.setattr(settings, "api_key", _KEY)
+    monkeypatch.setattr(cloud_router_mod, "_pairing_code", None)
+    app = FastAPI()
+    app.add_middleware(ApiKeyMiddleware)
+    app.include_router(cloud_router_mod.router, prefix="/api/cloud")
+    return TestClient(app)
+
+
+def test_pairing_code_mint_requires_bearer(pairing_client):
+    # Unauthenticated minting replaced the operator's code and reset the
+    # 8-attempt lockout at will.
+    assert pairing_client.post("/api/cloud/pairing-code").status_code == 401
+    assert pairing_client.post("/api/cloud/pairing-code",
+                               headers=_auth(_KEY)).status_code == 200
+
+
+def test_pairing_code_read_requires_bearer(pairing_client):
+    assert pairing_client.get("/api/cloud/pairing-code").status_code == 401
+    assert pairing_client.get("/api/cloud/pairing-code",
+                              headers=_auth(_KEY)).status_code == 200
+
+
+def test_pair_handshake_stays_public(pairing_client):
+    # No code active → the handler's own 400, not the auth gate's 401.
+    r = pairing_client.post("/api/cloud/pair", json={"code": "000000"})
+    assert r.status_code == 400
 
 
 def test_non_api_path_is_not_gated(gated_client):

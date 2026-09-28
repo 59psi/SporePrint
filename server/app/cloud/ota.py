@@ -28,6 +28,8 @@ from pathlib import Path
 
 import httpx
 
+from .version import server_version, version_triple
+
 log = logging.getLogger(__name__)
 
 # SSRF guard — the only host we'll talk to for firmware bundles.
@@ -51,6 +53,12 @@ _DOWNLOAD_TIMEOUT_S = 120
 _DOWNLOAD_CONNECT_TIMEOUT_S = 15
 
 _SYSTEMD_UNIT = os.environ.get("SPOREPRINT_SYSTEMD_UNIT", "sporeprint-server")
+
+# Present in every Docker container. The shipped install (install.sh →
+# docker compose) runs the server as a non-root user in an immutable image
+# with no systemd, no sudo and no /opt/sporeprint layout, so the swap +
+# `systemctl restart` pipeline below can never apply there.
+_DOCKERENV = Path("/.dockerenv")
 
 
 class OTAError(Exception):
@@ -97,12 +105,20 @@ def _state_dir() -> Path:
 
 
 def _write_state(state: dict) -> None:
-    # Atomic rename over state.json so concurrent readers never see a half-written file.
-    path = _state_dir() / "state.json"
-    tmp = path.with_suffix(".json.tmp")
-    payload = {**state, "ts": time.time()}
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    tmp.replace(path)
+    """Persist pipeline progress to state.json (atomic rename).
+
+    Diagnostic only — never fatal. An unwritable state dir used to raise
+    from OUTSIDE the pipeline's try (no `failed` event, cloud stuck on an
+    accepted OTA) and again from inside the except handlers.
+    """
+    try:
+        path = _state_dir() / "state.json"
+        tmp = path.with_suffix(".json.tmp")
+        payload = {**state, "ts": time.time()}
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        tmp.replace(path)
+    except OSError as e:
+        log.warning("OTA: could not persist state.json: %s", e)
 
 
 def _validate_inputs(version: str, channel: str) -> None:
@@ -114,6 +130,48 @@ def _validate_inputs(version: str, channel: str) -> None:
         raise OTAError(
             f"version must match {_VERSION_RE.pattern!r}, got {version!r}"
         )
+
+
+def self_update_unsupported_reason() -> str | None:
+    """Why this install cannot self-update, or None when it can.
+
+    Checked before the OTA command is acknowledged so the cloud gets a clear
+    failure instead of an accepted update that never happens.
+    """
+    if _DOCKERENV.exists():
+        return (
+            "Pi self-update is not supported in the Docker deployment — update "
+            "on the Pi with `git pull && docker compose up -d --build`"
+        )
+    current = _DEFAULT_INSTALL_ROOT / "current"
+    if not current.is_symlink():
+        return (
+            f"Pi self-update needs the {_DEFAULT_INSTALL_ROOT}/current install "
+            "layout (systemd unit), which this Pi does not use"
+        )
+    return None
+
+
+def validate_request(version: str, channel: str) -> str | None:
+    """Pre-ack validation of an OTA command. Returns an error or None.
+
+    Besides the channel/version format checks, refuses a DOWNGRADE: the
+    bundle signature covers only the bundle bytes (not its version/channel),
+    so without this anyone able to issue a signed OTA command could roll the
+    Pi back to an older, validly signed but vulnerable release.
+    """
+    try:
+        _validate_inputs(version, channel)
+    except OTAError as e:
+        return str(e)
+    requested = version_triple(version)
+    installed = version_triple(server_version())
+    if requested is not None and installed is not None and requested < installed:
+        return (
+            f"refusing OTA downgrade from {server_version()} to {version} — "
+            "roll back manually on the Pi if this is intended"
+        )
+    return None
 
 
 def _bundle_url(channel: str, version: str) -> str:
@@ -252,10 +310,23 @@ def _promote(staging: Path, version: str) -> None:
 def _restart_unit() -> None:
     # --no-block returns before the restart completes so the ack can flush.
     # Static argv (no shell) — _SYSTEMD_UNIT is a configured constant, never user input.
-    subprocess.run(
-        ["sudo", "systemctl", "restart", "--no-block", _SYSTEMD_UNIT],
-        check=False,
-    )
+    # -n: never prompt — without NOPASSWD sudo this fails fast instead of
+    # hanging, and the non-zero exit is reported instead of "complete, ok".
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "systemctl", "restart", "--no-block", _SYSTEMD_UNIT],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as e:
+        raise OTAError(f"restart failed: {e}") from e
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()[:200]
+        raise OTAError(
+            f"restart failed: systemctl exited {result.returncode}"
+            + (f" ({detail})" if detail else "")
+        )
 
 
 def _count_extracted_files(staging: Path) -> int:
@@ -290,9 +361,9 @@ async def run_ota_update(version: str, channel: str) -> dict:
         "step": "validate",
         "ok": False,
     }
-    _write_state(state)
 
     try:
+        _write_state(state)
         _validate_inputs(version, channel)
 
         # Pre-flight pubkey check — fail fast before downloading 15 MB.

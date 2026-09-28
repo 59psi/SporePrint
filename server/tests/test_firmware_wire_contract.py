@@ -237,9 +237,16 @@ def test_no_emitted_telemetry_field_is_dropped():
     from app.telemetry.service import SENSOR_FIELDS
 
     IGNORED = {
-        # Uptime-seconds stamp. The server replaces it with wall-clock time
-        # (mqtt.py clamps anything before 2020), so it is consumed, not stored.
+        # Envelope timestamp: Unix-epoch seconds once the node's NTP clock has
+        # synced, uptime seconds before that (the server treats anything below
+        # the epoch floor as unsynced and stamps arrival time). Consumed as the
+        # row timestamp, not stored as a reading.
         "ts",
+        # Envelope flag, emitted only as `true` on frames replayed from the
+        # node's offline buffer after a broker outage. The server stores those
+        # frames but must not evaluate rules on them or let them overwrite a
+        # newer latest reading — it is metadata about the frame, not a reading.
+        "replay",
         # Uncalibrated HX711 counts, emitted only when the scale has no
         # calibration yet. The firmware marks it tolerated-not-stored: it
         # exists so an operator can watch the tare/calibrate flow move the

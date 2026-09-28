@@ -74,7 +74,11 @@ async def metrics(authorization: str | None = Header(default=None)) -> Response:
     cfg = drv.config
     if cfg.bearer_token:
         presented = _extract_bearer(authorization)
-        if not presented or not hmac.compare_digest(presented, cfg.bearer_token):
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str,
+        # which would turn a wrong/odd token into a 500 instead of a 401.
+        if not presented or not hmac.compare_digest(
+            presented.encode("utf-8"), cfg.bearer_token.encode("utf-8")
+        ):
             raise HTTPException(401, "invalid bearer token")
 
     try:

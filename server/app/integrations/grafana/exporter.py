@@ -144,14 +144,35 @@ async def _actuator_event_counts() -> list[tuple[str, str, str, int]]:
 
 
 async def _contamination_counts() -> list[tuple[str, int]]:
-    """count contaminations per chamber_id (extracted from the session)."""
+    """Count contamination per chamber.
+
+    Contamination is recorded in ``contamination_events`` (identify
+    detections + manual marks); an event without its own chamber_id is
+    attributed to its session's chamber. Sessions carrying the legacy
+    ``status = 'contaminated'`` with no logged event are counted once each,
+    so nothing is double-counted.
+    """
     async with get_db() as db:
         cursor = await db.execute(
             """
-            SELECT s.chamber_id AS chamber_id, COUNT(*) AS n
-            FROM sessions s
-            WHERE s.status = 'contaminated' AND s.chamber_id IS NOT NULL
-            GROUP BY s.chamber_id
+            SELECT chamber_id, SUM(n) AS n FROM (
+                SELECT COALESCE(ce.chamber_id, s.chamber_id) AS chamber_id,
+                       COUNT(*) AS n
+                FROM contamination_events ce
+                LEFT JOIN sessions s ON s.id = ce.session_id
+                WHERE COALESCE(ce.chamber_id, s.chamber_id) IS NOT NULL
+                GROUP BY COALESCE(ce.chamber_id, s.chamber_id)
+                UNION ALL
+                SELECT s.chamber_id AS chamber_id, COUNT(*) AS n
+                FROM sessions s
+                WHERE s.status = 'contaminated' AND s.chamber_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM contamination_events ce
+                      WHERE ce.session_id = s.id
+                  )
+                GROUP BY s.chamber_id
+            )
+            GROUP BY chamber_id
             """
         )
         rows = await cursor.fetchall()
@@ -224,7 +245,7 @@ async def collect_samples(cfg: GrafanaConfig, *, version: str) -> bytes:
     if cfg.include_contamination_metrics:
         contam = Counter(
             "sporeprint_contamination_events_total",
-            "Lifetime sessions ended in 'contaminated' status, by chamber",
+            "Lifetime contamination events (detections + manual marks), by chamber",
             ("chamber_id",),
             registry=registry,
         )

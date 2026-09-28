@@ -1,9 +1,13 @@
 # Placeholder for the mosquitto password file.
 #
-# DO NOT commit the real passwd file. setup.sh generates one on first run
-# by invoking `mosquitto_passwd` with random credentials for the `server`
-# user and each known node role. Firmware nodes read their password from
-# NVS (set via captive portal on first boot).
+# DO NOT commit the real passwd file. install.sh generates it on first run
+# (`server` = the Pi server, `sp-3p` = smart plugs) with random passwords
+# stored in the repo-root .env; each ESP32 node gets its own user from
+# ./scripts/add-node-mqtt-user.sh <node_id>. Firmware nodes read their
+# password from NVS (set via the captive portal on first boot).
 #
-# Regenerate the server credential with:
-#   docker compose exec mqtt mosquitto_passwd -b /mosquitto/config/passwd server <new-password>
+# On Linux the real file is owned by the broker's uid 1883 (mode 0600) —
+# mosquitto opens it after dropping privileges — so edit it with the scripts
+# (they run mosquitto_passwd inside the broker image), not by hand:
+#   ./scripts/add-node-mqtt-user.sh <node_id>     # add / re-key one node
+#   ./scripts/rotate-mqtt-creds.sh [server|sp-3p|sp-cmd|sp-telemetry]

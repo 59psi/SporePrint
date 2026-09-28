@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import path_segment
 from ...telemetry.service import store_reading
 
 
@@ -76,6 +77,7 @@ class BiosDriver(HttpVendorDriver):
     async def set_dim(self, fixture_id: str, percent: int) -> dict[str, Any]:
         if not 0 <= percent <= 100:
             raise ValueError("percent must be in [0, 100]")
+        segment = path_segment(fixture_id, field="fixture_id")
         cfg: BiosConfig = self._cfg  # type: ignore[assignment]
         if not cfg or not cfg.base_url:
             raise RuntimeError("bios not configured")
@@ -86,7 +88,7 @@ class BiosDriver(HttpVendorDriver):
             timeout=cfg.request_timeout_seconds, follow_redirects=False
         ) as client:
             resp = await client.put(
-                f"{cfg.base_url}/api/fixtures/{fixture_id}/dim",
+                f"{cfg.base_url}/api/fixtures/{segment}/dim",
                 headers=headers,
                 json={"dim": percent},
             )

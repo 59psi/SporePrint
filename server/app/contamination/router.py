@@ -5,7 +5,13 @@ import anthropic
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..config import settings
-from ..vision.service import parse_claude_json
+from ..vision.service import (
+    CLAUDE_MAX_TOKENS,
+    claude_response_text,
+    claude_stop_reason,
+    parse_claude_json,
+    sniff_image_media_type,
+)
 from . import service
 from .library import CONTAMINANTS, IDENTIFICATION_SYSTEM_PROMPT
 from .models import ContaminationEventCreate, RootCauseUpdate
@@ -54,14 +60,21 @@ async def identify_contamination(
             413, f"Image too large ({len(content)} bytes). Maximum size is 10 MB."
         )
 
-    media_type = file.content_type or "image/jpeg"
+    # The bytes decide the type: the Messages API accepts only JPEG/PNG/GIF/WebP
+    # and rejects a declared media_type that doesn't match the image. A HEIC
+    # phone photo or unknown blob gets a clear 415 instead of an opaque 502.
+    media_type = sniff_image_media_type(content)
+    if media_type is None:
+        raise HTTPException(
+            415, "Unsupported image type. Upload a JPEG, PNG, WebP or GIF image."
+        )
     image_data = base64.standard_b64encode(content).decode("utf-8")
 
     try:
         client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
         message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
+            model=settings.claude_model,
+            max_tokens=CLAUDE_MAX_TOKENS,
             system=IDENTIFICATION_SYSTEM_PROMPT,
             messages=[
                 {
@@ -84,11 +97,22 @@ async def identify_contamination(
             ],
         )
 
-        raw_text = message.content[0].text
+        stop_reason = claude_stop_reason(message)
+        if stop_reason == "refusal":
+            raise HTTPException(
+                502, "Contamination identification failed: Claude declined to analyze this image"
+            )
+        truncated = stop_reason == "max_tokens"
+        if truncated:
+            log.warning("Contamination identify response truncated at max_tokens")
+        raw_text = claude_response_text(message)
         result = parse_claude_json(raw_text)
 
         if "raw_response" in result:
-            return {"parse_error": True, "raw_response": result["raw_response"]}
+            parse_error = {"parse_error": True, "raw_response": result["raw_response"]}
+            if truncated:
+                parse_error["truncated"] = True
+            return parse_error
 
         # Persist positive detections. A DB hiccup must not turn a successful
         # identification into a 500 — the identify response contract is unchanged.

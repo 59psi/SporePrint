@@ -1,5 +1,10 @@
 """Tests for system health endpoints."""
 
+import asyncio
+import subprocess
+
+import app.health.router as health_router
+import app.health.service as health_service
 from app.health.service import (
     track_client_connect,
     track_client_disconnect,
@@ -65,3 +70,44 @@ async def test_tasks_api(client):
     r = client.get("/api/health/detail/tasks")
     assert r.status_code == 200
     assert isinstance(r.json(), dict)
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def test_clock_runs_chronyc_off_the_event_loop(client, monkeypatch):
+    """srv-rest#36: a blocking subprocess.run (timeout 1.5 s) inside the async
+    handler froze MQTT ingest / automation / Socket.IO on every poll."""
+    calls: list[bool] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(_on_event_loop())
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="Reference ID    : 0A000001 (10.0.0.1)\nStratum         : 3\n", stderr="",
+        )
+
+    monkeypatch.setattr(health_router.subprocess, "run", fake_run)
+    r = client.get("/api/health/detail/clock")
+    assert r.status_code == 200, r.text
+    assert calls == [False], "chronyc must run in a worker thread, not on the loop"
+    assert r.json()["chrony"]["available"] is True
+    assert r.json()["chrony"]["stratum"] == "3"
+
+
+def test_system_metrics_sample_cpu_off_the_event_loop(client, monkeypatch):
+    calls: list[bool] = []
+
+    def fake_cpu_percent(*args, **kwargs):
+        calls.append(_on_event_loop())
+        return 12.5
+
+    monkeypatch.setattr(health_service.psutil, "cpu_percent", fake_cpu_percent)
+    r = client.get("/api/health/detail/system")
+    assert r.status_code == 200, r.text
+    assert r.json()["cpu_percent"] == 12.5
+    assert calls == [False], "the 100 ms cpu sample must not block the loop"

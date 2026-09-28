@@ -18,6 +18,7 @@ from app.automation.models import (
     RuleCondition,
     ThresholdCondition,
 )
+from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 
@@ -102,8 +103,10 @@ async def test_off_action_cancels_pending_watchdog(monkeypatch, mock_mqtt):
     assert pending.cancelled() or pending.done()
 
 
-async def test_manual_override_cancels_watchdog(monkeypatch, mock_mqtt):
-    """set_override cancels any pending safety auto-off (operator owns timing)."""
+async def test_manual_override_keeps_watchdog_armed(monkeypatch, mock_mqtt):
+    """A hold stops automation sending NEW commands; it must not remove the
+    fire-risk ceiling on an actuator automation already switched ON (srv-auto#2).
+    The in-process task keeps running and its persisted row survives a reboot."""
     async def never_finishes(_delay):
         await asyncio.Event().wait()
 
@@ -116,8 +119,14 @@ async def test_manual_override_cancels_watchdog(monkeypatch, mock_mqtt):
 
     await set_override(ManualOverride(target="relay-01", channel="heater", reason="operator holds"))
 
-    await _wait_done(pending)
-    assert pending.cancelled() or pending.done()
+    await _wait_done(pending, timeout=0.05)
+    assert not pending.done(), "override must not cancel the safety watchdog"
+    assert _safety_tasks.get("relay-01:heater") is pending
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS n FROM safety_watchdogs WHERE target = 'relay-01' AND channel = 'heater'"
+        )
+        assert (await cursor.fetchone())["n"] == 1
 
 
 async def test_no_watchdog_when_publish_failed(monkeypatch, mock_mqtt):

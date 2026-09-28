@@ -118,6 +118,18 @@ def test_server_can_make_every_subscription_the_code_makes():
     )
 
 
+def test_server_can_subscribe_to_the_broker_stats_it_asks_for():
+    """mqtt.py subscribes to each `_SYS_TOPICS` entry in a loop over a
+    variable, so the string-literal parser above never saw them. Without a
+    $SYS grant Mosquitto refuses every one silently (aiomqtt does not raise
+    on a failure SUBACK) and GET /api/health/detail/mqtt stays {}."""
+    from app.mqtt import _SYS_TOPICS
+
+    assert _SYS_TOPICS, "no $SYS topics — the stats feed was removed?"
+    denied = [t for t in _SYS_TOPICS if not can_subscribe("server", t)]
+    assert not denied, f"the ACL denies the server's $SYS subscriptions: {denied}"
+
+
 def test_server_can_publish_node_commands():
     # Engine command routing (automation/engine.py): cmd/<channel>, cmd/scene, cmd/config
     for topic in (
@@ -182,13 +194,54 @@ def test_node_is_scoped_to_its_own_namespace():
         f"sporeprint/{node}/health",
         f"sporeprint/{node}/alert",
         f"sporeprint/{node}/ota",
+        # log_forward.cpp batches SP_LOG lines here (→ node_logs table)
+        f"sporeprint/{node}/logs",
+        # coredump_uploader.cpp streams the panic dump here, then ERASES the
+        # partition — a denied (silently dropped) chunk loses it for good.
+        f"sporeprint/{node}/coredump/chunk",
     ):
         assert can_publish(node, topic), f"node denied publish to its own {topic}"
     assert can_subscribe(node, f"sporeprint/{node}/cmd/#")
     # …and never a sibling's:
     assert not can_publish(node, "sporeprint/relay-01/telemetry")
+    assert not can_publish(node, "sporeprint/relay-01/logs")
+    assert not can_publish(node, "sporeprint/relay-01/coredump/chunk")
     assert not can_subscribe(node, "sporeprint/relay-01/cmd/#")
     assert not can_subscribe(node, "sporeprint/#")
+
+
+FIRMWARE = REPO_ROOT / "firmware"
+
+
+def _firmware_topic_suffixes() -> set[str]:
+    """Every `topic("<suffix>")` the firmware builds (MqttLink::topic()
+    prefixes `sporeprint/<node_id>/`)."""
+    suffixes: set[str] = set()
+    for sub in ("lib", "src"):
+        for path in (FIRMWARE / sub).rglob("*"):
+            if path.suffix not in (".cpp", ".h", ".hpp"):
+                continue
+            suffixes.update(re.findall(r'\btopic\("([^"]*)"\)', path.read_text(errors="replace")))
+    return suffixes
+
+
+def test_every_firmware_topic_is_granted_to_the_node():
+    """Parsed from the firmware itself: adding a new node publish topic
+    without granting it in acl.conf fails here instead of shipping as a
+    feature that silently never reaches the Pi."""
+    node = "climate-01"
+    suffixes = _firmware_topic_suffixes()
+    assert {"telemetry", "status", "logs", "coredump/chunk"} <= suffixes, (
+        f"firmware topic parser broken — found only {sorted(suffixes)}"
+    )
+    for suffix in sorted(suffixes):
+        topic = f"sporeprint/{node}/{suffix}"
+        if suffix.endswith("/"):
+            topic += "fae"  # dynamic per-channel topic, e.g. telemetry/<ch>
+        if suffix == "cmd" or suffix.startswith("cmd/"):
+            assert can_subscribe(node, topic), f"node denied subscribe to {topic}"
+        else:
+            assert can_publish(node, topic), f"node denied publish to {topic}"
 
 
 # ── provisioning actually creates the accounts the ACL names ─────────────
@@ -203,6 +256,14 @@ def test_setup_provisions_the_accounts():
         "setup.sh no longer provisions the sp-3p (smart plug) broker user — "
         "plugs cannot authenticate without it"
     )
+
+
+def test_install_provisions_the_accounts():
+    """install.sh is the supported Pi installer — it must create the same
+    two accounts the ACL names (in place, keeping per-node users)."""
+    body = (REPO_ROOT / "install.sh").read_text()
+    assert 'server "$MQTT_PASS" sp-3p "$MQTT_3P_PASS"' in body
+    assert 'grep -q "^server:" /work/passwd' in body
 
 
 def test_per_node_credential_script_exists():

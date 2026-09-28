@@ -1,6 +1,10 @@
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+# Model used by every Claude feature unless SPOREPRINT_CLAUDE_MODEL overrides it.
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
 
 
 class Settings(BaseSettings):
@@ -13,6 +17,11 @@ class Settings(BaseSettings):
     ntfy_topic: str = "sporeprint"
     vision_storage: str = "data/vision"
     claude_api_key: str = ""
+    # Model id for every Claude call (vision frame analysis, contamination
+    # identify, transcript + experiment analysis, Builder's Assistant). One
+    # knob so a model retirement is an env change, not a code change. Blank
+    # (e.g. compose's `${SPOREPRINT_CLAUDE_MODEL:-}`) means the default.
+    claude_model: str = DEFAULT_CLAUDE_MODEL
     weather_provider: str = "openmeteo"  # "openmeteo" | "openweathermap" | "nws"
     weather_api_key: str = ""  # only needed for openweathermap
     weather_lat: str = ""
@@ -67,6 +76,13 @@ class Settings(BaseSettings):
     integration_key_path: str = "data/db/.integration-key"
 
     model_config = {"env_prefix": "SPOREPRINT_", "env_file": ".env"}
+
+    @field_validator("claude_model", mode="before")
+    @classmethod
+    def _blank_claude_model_is_default(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return DEFAULT_CLAUDE_MODEL
+        return value.strip() if isinstance(value, str) else value
 
 
 settings = Settings()

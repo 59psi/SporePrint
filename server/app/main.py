@@ -60,20 +60,6 @@ async def lifespan(app: FastAPI):
     await seed_builtins()
     await seed_builtin_rules()
 
-    # Re-arm any safety watchdogs that were in-flight before the Pi restarted.
-    # If an actuator's safety_max_on_seconds elapsed while the Pi was down,
-    # rehydrate_safety_watchdogs publishes OFF immediately to get the device
-    # back to a safe state.
-    try:
-        from .automation.engine import rehydrate_safety_watchdogs
-        count = await rehydrate_safety_watchdogs()
-        if count:
-            logging.getLogger(__name__).info(
-                "Rehydrated %d safety watchdog(s) from prior process", count
-            )
-    except Exception as e:
-        logging.getLogger(__name__).warning("safety watchdog rehydration failed: %s", e)
-
     # v3.4.9 Debt 4 — wire the previously-orphaned task registry. Each
     # long-running supervisor registers on boot; the admin dashboard now
     # shows real status instead of derived best-guess.
@@ -103,6 +89,20 @@ async def lifespan(app: FastAPI):
         # so the cloud's push-rules + escalation chains can fire.
         asyncio.create_task(run_health_sweeper()),
     ]
+
+    # Re-arm any safety watchdogs that were in-flight before the Pi restarted.
+    # Runs after start_mqtt is scheduled: every row (including one that expired
+    # while the Pi was down) becomes a watchdog task that sends its OFF over the
+    # actuator's own transport, retrying until MQTT / the vendor drivers are up,
+    # and deletes the row only once the OFF actually went out.
+    try:
+        from .automation.engine import rehydrate_safety_watchdogs
+        count = await rehydrate_safety_watchdogs()
+        if count:
+            log.info("Rehydrated %d safety watchdog(s) from prior process", count)
+    except Exception as e:
+        log.warning("safety watchdog rehydration failed: %s", e)
+
     # v4.1 integrations — boot every driver persisted as enabled. Failures
     # are isolated per-driver in the registry so a misconfigured Aranet
     # base station can't take down the Pi.

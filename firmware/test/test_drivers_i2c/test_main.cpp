@@ -3,7 +3,10 @@
 
 #include <unity.h>
 
+#include <stdint.h>
 #include <string.h>
+
+#include <vector>
 
 #include "autodetect.h"
 #include "bh1750.h"
@@ -26,6 +29,44 @@ static void push_word(std::vector<uint8_t>& v, uint16_t w) {
     v.push_back(b[0]);
     v.push_back(b[1]);
     v.push_back(sp::crc8_sensirion(b, 2));
+}
+
+// MockI2cBus that also stamps every write with the mock clock, so tests can
+// assert datasheet gaps BETWEEN transactions (a settle that happens after
+// the wrong write is invisible to total_delayed_ms).
+class TimedI2cBus : public MockI2cBus {
+public:
+    explicit TimedI2cBus(MockClock& clock) : clock_(clock) {}
+
+    struct Stamp {
+        uint8_t addr;
+        std::vector<uint8_t> bytes;
+        uint32_t at_ms;
+    };
+    std::vector<Stamp> writes;
+
+    bool write(uint8_t addr, const uint8_t* wbuf, size_t wlen) override {
+        writes.push_back({addr, std::vector<uint8_t>(wbuf, wbuf + wlen),
+                          clock_.now_ms});
+        return MockI2cBus::write(addr, wbuf, wlen);
+    }
+
+    // Time of the first write of `bytes` to `addr`; UINT32_MAX if never sent.
+    uint32_t at(uint8_t addr, const std::vector<uint8_t>& bytes) const {
+        for (const Stamp& w : writes)
+            if (w.addr == addr && w.bytes == bytes) return w.at_ms;
+        return UINT32_MAX;
+    }
+
+private:
+    MockClock& clock_;
+};
+
+static std::vector<uint8_t> float_word_bytes(uint16_t hi, uint16_t lo) {
+    std::vector<uint8_t> v;
+    push_word(v, hi);
+    push_word(v, lo);
+    return v;
 }
 
 // ── transport ──────────────────────────────────────────────────
@@ -99,6 +140,39 @@ void test_sht3x_read_fail_counts() {
     TEST_ASSERT_EQUAL_STRING("read error", sht.health().last_error);
 }
 
+void test_sht3x_probe_waits_out_soft_reset_before_serial_read() {
+    // Datasheet t_SR max 1.5 ms: the SHT3x NACKs its address until the
+    // soft reset completes. The serial read must not be issued inside that
+    // window, or a present SHT31-D probes as absent.
+    MockClock clock;
+    TimedI2cBus bus(clock);
+    sp::Sht3x sht(bus, clock);
+
+    bus.expect_write(0x44, {0x30, 0xA2});
+    bus.expect_write(0x44, {0x37, 0x80});
+    std::vector<uint8_t> serial;
+    push_word(serial, 0xBEEF);
+    push_word(serial, 0xCAFE);
+    bus.expect_read(0x44, serial);
+
+    TEST_ASSERT_TRUE(sht.probe());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+    const uint32_t reset_at = bus.at(0x44, {0x30, 0xA2});
+    const uint32_t serial_at = bus.at(0x44, {0x37, 0x80});
+    TEST_ASSERT_NOT_EQUAL(UINT32_MAX, serial_at);
+    TEST_ASSERT_TRUE(serial_at - reset_at >= 2);
+}
+
+void test_sht3x_probe_reset_nack_is_absent() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Sht3x sht(bus, clock);
+    bus.expect_write_nack(0x44);  // nothing at the address
+    TEST_ASSERT_FALSE(sht.probe());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+}
+
 // ── SHT4x ──────────────────────────────────────────────────────
 
 void test_sht4x_single_byte_protocol_and_rh_formula() {
@@ -158,6 +232,74 @@ void test_scd4x_begin_skips_persist_when_asc_already_off() {
     bus.expect_write(0x62, {0x21, 0xB1});  // straight to start — no EEPROM wear
     TEST_ASSERT_TRUE(scd.begin());
     TEST_ASSERT_TRUE(bus.script_consumed());
+}
+
+void test_scd4x_begin_forces_asc_off_when_asc_read_fails() {
+    // A NACK/CRC failure on get_automatic_self_calibration_enabled leaves
+    // the stored value unknown — the factory default is ASC ON, so begin()
+    // must still write ASC off (RAM) instead of skipping the block. No
+    // persist: an EEPROM write isn't spent on a guess.
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd4x scd(bus, clock);
+    bus.expect_write(0x62, {0x3F, 0x86});
+    bus.expect_write(0x62, {0x23, 0x13});
+    bus.expect_read(0x62, {}, /*ack=*/false);                // ASC read fails
+    bus.expect_write(0x62, {0x24, 0x16, 0x00, 0x00, 0x81});  // ASC off anyway
+    bus.expect_write(0x62, {0x21, 0xB1});                    // then start
+    TEST_ASSERT_TRUE(scd.begin());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+}
+
+void test_scd4x_begin_asc_write_failure_is_reported() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd4x scd(bus, clock);
+    bus.expect_write(0x62, {0x3F, 0x86});
+    bus.expect_write(0x62, {0x23, 0x13});
+    bus.expect_read(0x62, {}, /*ack=*/false);
+    bus.expect_write_nack(0x62);  // set ASC NACKs
+    TEST_ASSERT_FALSE(scd.begin());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("asc off failed", scd.health().last_error);
+}
+
+void test_scd4x_probe_stops_stale_periodic_mode_first() {
+    // Warm reboot: the SCD4x is still in periodic mode (begin() started it
+    // last boot and nothing cut its power). get_serial is idle-only, so
+    // the probe must stop periodic mode and wait the datasheet 500 ms
+    // BEFORE asking for the serial number.
+    MockClock clock;
+    TimedI2cBus bus(clock);
+    sp::Scd4x scd(bus, clock);
+    bus.expect_write(0x62, {0x3F, 0x86});
+    bus.expect_write(0x62, {0x36, 0x82});
+    std::vector<uint8_t> serial;
+    push_word(serial, 1);
+    push_word(serial, 2);
+    push_word(serial, 3);
+    bus.expect_read(0x62, serial);
+
+    TEST_ASSERT_TRUE(scd.probe());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+    const uint32_t stop_at = bus.at(0x62, {0x3F, 0x86});
+    const uint32_t serial_at = bus.at(0x62, {0x36, 0x82});
+    TEST_ASSERT_NOT_EQUAL(UINT32_MAX, serial_at);
+    TEST_ASSERT_TRUE(serial_at - stop_at >= 500);
+}
+
+void test_scd4x_probe_absent() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd4x scd(bus, clock);
+    bus.expect_write_nack(0x62);  // stop_periodic
+    bus.expect_write_nack(0x62);  // get_serial
+    TEST_ASSERT_FALSE(scd.probe());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    // No 500 ms stall for a part that isn't there.
+    TEST_ASSERT_EQUAL_UINT32(0, clock.total_delayed_ms);
 }
 
 void test_scd4x_data_ready_and_read() {
@@ -323,6 +465,34 @@ void test_scd30_out_of_range_rejected() {
     TEST_ASSERT_EQUAL_STRING("out-of-range", scd.health().last_error);
 }
 
+void test_scd30_nan_rejected() {
+    // A CRC-valid quiet-NaN word pair (0x7FC0 0x0000) makes every "<"/">"
+    // comparison false — it must still fail the range check, in each slot.
+    const uint16_t kNanHi = 0x7FC0, kNanLo = 0x0000;
+    uint32_t ok_bits[3];
+    const float ok[3] = {812.5f, 21.4f, 88.2f};
+    memcpy(ok_bits, ok, sizeof(ok_bits));
+    for (int slot = 0; slot < 3; ++slot) {
+        MockI2cBus bus;
+        MockClock clock;
+        sp::Scd30 scd(bus, clock);
+        bus.expect_write(0x61, {0x03, 0x00});
+        std::vector<uint8_t> meas;
+        for (int i = 0; i < 3; ++i) {
+            std::vector<uint8_t> w =
+                (i == slot) ? float_word_bytes(kNanHi, kNanLo)
+                            : float_word_bytes((uint16_t)(ok_bits[i] >> 16),
+                                               (uint16_t)(ok_bits[i] & 0xFFFF));
+            meas.insert(meas.end(), w.begin(), w.end());
+        }
+        bus.expect_read(0x61, meas);
+        float co2 = 1, t = 1, rh = 1;
+        TEST_ASSERT_FALSE(scd.read(&co2, &t, &rh));
+        TEST_ASSERT_EQUAL_STRING("out-of-range", scd.health().last_error);
+        TEST_ASSERT_EQUAL_UINT32(1, scd.health().fails);
+    }
+}
+
 // ── BH1750 ─────────────────────────────────────────────────────
 
 void test_bh1750_lux_conversion() {
@@ -348,7 +518,9 @@ void test_autodetect_sht4x_wins_at_0x44() {
     push_word(serial, 0x1234);
     push_word(serial, 0x5678);
     bus.expect_read(0x44, serial);
-    // SCD4x probe (0x62 get_serial) NACKs; SCD30 probe NACKs.
+    // SCD4x probe (0x62 stop_periodic, then get_serial) NACKs; SCD30
+    // probe NACKs.
+    bus.expect_write_nack(0x62);
     bus.expect_write_nack(0x62);
     bus.expect_write_nack(0x61);
     // BH1750 at 0x23 ACKs power-on.
@@ -364,8 +536,8 @@ void test_autodetect_sht4x_wins_at_0x44() {
 }
 
 void test_autodetect_sht3x_after_sht4x_miss() {
-    MockI2cBus bus;
     MockClock clock;
+    TimedI2cBus bus(clock);
     // 0x44: SHT4x probe gets garbage (an SHT3x ignores 0x89 → NACK on read);
     // the SHT3x probe must then open with the SOFT RESET (0x30A2) before
     // its serial read — the state-clearing step the plan requires.
@@ -377,7 +549,8 @@ void test_autodetect_sht3x_after_sht4x_miss() {
     push_word(serial, 0xBEEF);
     push_word(serial, 0xCAFE);
     bus.expect_read(0x44, serial);
-    // SCD4x answers.
+    // SCD4x answers — after the stale-periodic-mode stop.
+    bus.expect_write(0x62, {0x3F, 0x86});
     bus.expect_write(0x62, {0x36, 0x82});
     std::vector<uint8_t> scd_serial;
     push_word(scd_serial, 1);
@@ -394,17 +567,22 @@ void test_autodetect_sht3x_after_sht4x_miss() {
     TEST_ASSERT_FALSE(d.bh1750);
     TEST_ASSERT_TRUE(bus.script_consumed());
     TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+    // Datasheet gaps between transactions: SHT3x soft reset (1.5 ms max)
+    // before the serial read; SCD4x stop_periodic (500 ms) before get_serial.
+    TEST_ASSERT_TRUE(bus.at(0x44, {0x37, 0x80}) - bus.at(0x44, {0x30, 0xA2}) >= 2);
+    TEST_ASSERT_TRUE(bus.at(0x62, {0x36, 0x82}) - bus.at(0x62, {0x3F, 0x86}) >= 500);
 }
 
 void test_autodetect_nothing_attached() {
     MockI2cBus bus;
     MockClock clock;
     // Every probe NACKs: SHT4x@44, SHT3x reset@44, SHT4x@45, SHT3x reset@45,
-    // SCD4x@62, SCD30@61, BH1750@23, BH1750@5C.
+    // SCD4x stop@62 + get_serial@62, SCD30@61, BH1750@23, BH1750@5C.
     bus.expect_write_nack(0x44);
     bus.expect_write_nack(0x44);
     bus.expect_write_nack(0x45);
     bus.expect_write_nack(0x45);
+    bus.expect_write_nack(0x62);
     bus.expect_write_nack(0x62);
     bus.expect_write_nack(0x61);
     bus.expect_write_nack(0x23);
@@ -424,9 +602,15 @@ int main(int, char**) {
     RUN_TEST(test_transport_cmd_arg_frames_crc);
     RUN_TEST(test_sht3x_measure_conversion);
     RUN_TEST(test_sht3x_read_fail_counts);
+    RUN_TEST(test_sht3x_probe_waits_out_soft_reset_before_serial_read);
+    RUN_TEST(test_sht3x_probe_reset_nack_is_absent);
     RUN_TEST(test_sht4x_single_byte_protocol_and_rh_formula);
     RUN_TEST(test_scd4x_begin_disables_asc_and_persists_once);
     RUN_TEST(test_scd4x_begin_skips_persist_when_asc_already_off);
+    RUN_TEST(test_scd4x_begin_forces_asc_off_when_asc_read_fails);
+    RUN_TEST(test_scd4x_begin_asc_write_failure_is_reported);
+    RUN_TEST(test_scd4x_probe_stops_stale_periodic_mode_first);
+    RUN_TEST(test_scd4x_probe_absent);
     RUN_TEST(test_scd4x_data_ready_and_read);
     RUN_TEST(test_scd4x_frc_success_and_failure);
     RUN_TEST(test_scd30_float_decode);
@@ -434,6 +618,7 @@ int main(int, char**) {
     RUN_TEST(test_scd30_stretch_timeout_is_read_fail);
     RUN_TEST(test_scd30_frc_success_and_failure);
     RUN_TEST(test_scd30_out_of_range_rejected);
+    RUN_TEST(test_scd30_nan_rejected);
     RUN_TEST(test_bh1750_lux_conversion);
     RUN_TEST(test_autodetect_sht4x_wins_at_0x44);
     RUN_TEST(test_autodetect_sht3x_after_sht4x_miss);

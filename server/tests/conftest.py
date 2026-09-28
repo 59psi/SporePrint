@@ -129,6 +129,10 @@ def _reset_engine_state():
     engine._rule_cache.clear()
     engine._cache_ts = 0
     engine._overrides_loaded = False
+    engine._rule_seen.clear()
+    engine._alert_last_sent.clear()
+    engine._last_off_sent.clear()
+    engine._phase_fallback_logged.clear()
     for task in list(engine._safety_tasks.values()):
         if not task.done():
             task.cancel()

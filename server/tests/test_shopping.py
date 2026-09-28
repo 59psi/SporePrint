@@ -1,5 +1,7 @@
+from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins, get_profile
 from app.species.shopping import generate_shopping_list
+from app.species.substrate import calculate_recipe
 
 
 async def test_shopping_list_returns_categorized_items():
@@ -45,3 +47,25 @@ async def test_shopping_list_scales_with_grows():
     spawn_3 = next(i for i in result_3["items"] if i["category"] == "spawn")
     # Both should have quantity strings; the 3-grow one should be larger
     assert spawn_1["quantity"] != spawn_3["quantity"]
+
+
+# ── srv-rest#22: shopping list agrees with the substrate calculator ──────
+
+
+def test_blue_oyster_straw_matches_substrate_calculator():
+    """Non-gram units used to count as 100 g each: 5 lbs straw → '15 lbs' on the
+    list vs '3.3 lbs' from the calculator for the same 5 L grow."""
+    profile = next(p for p in BUILTIN_PROFILES if p.id == "blue_oyster")
+    result = generate_shopping_list(profile, grows=1, container_liters=5.0)
+    straw = next(i for i in result["items"] if i["name"] == "chopped wheat/oat straw")
+    assert straw["quantity"] == "3.3 lbs"
+
+
+def test_every_builtin_shopping_list_matches_calculator():
+    for profile in BUILTIN_PROFILES:
+        if not profile.substrate_recipes:
+            continue
+        result = generate_shopping_list(profile, grows=3, container_liters=4.0)
+        expected = calculate_recipe(profile.substrate_recipes[0], 12.0)["ingredients"]
+        got = {i["name"]: i["quantity"] for i in result["items"] if i["category"] == "substrate"}
+        assert got == expected, profile.id

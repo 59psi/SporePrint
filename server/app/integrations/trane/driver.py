@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import path_segment
 from ...telemetry.service import store_reading
 
 
@@ -41,6 +42,9 @@ class TraneDriver(HttpVendorDriver):
     def __init__(self) -> None:
         super().__init__()
         self._token: str | None = None
+
+    def _reset_auth(self) -> None:
+        self._token = None
 
     async def test_connection(self) -> IntegrationHealth:
         cfg: TraneConfig | None = self._cfg  # type: ignore[assignment]
@@ -83,6 +87,7 @@ class TraneDriver(HttpVendorDriver):
     async def set_setpoint(
         self, thermostat_id: str, target_c: float, mode: str | None = None
     ) -> dict[str, Any]:
+        segment = path_segment(thermostat_id, field="thermostat_id")
         cfg: TraneConfig = self._cfg  # type: ignore[assignment]
         if not cfg or not cfg.email or not cfg.password:
             raise RuntimeError("trane not configured")
@@ -95,7 +100,7 @@ class TraneDriver(HttpVendorDriver):
             timeout=cfg.request_timeout_seconds, follow_redirects=False
         ) as client:
             resp = await client.put(
-                f"{_TRANE_API_BASE}/thermostats/{thermostat_id}/setpoint",
+                f"{_TRANE_API_BASE}/thermostats/{segment}/setpoint",
                 headers={"Authorization": f"Bearer {self._token}"},
                 json=body,
             )

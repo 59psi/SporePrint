@@ -4,7 +4,15 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from .service import get_cloud_status, write_cloud_env
+from ..config import settings
+from .integrations_proxy import reset_signing_latch
+from .service import (
+    cloud_url_transport_ok,
+    get_cloud_status,
+    request_reconnect,
+    write_cloud_env,
+)
+from .version import server_version
 
 router = APIRouter()
 
@@ -52,10 +60,16 @@ async def cloud_status():
 
 @router.post("/reconnect")
 async def cloud_reconnect():
+    """Retry the cloud connection now instead of waiting out the backoff.
+
+    ``status``: ``reconnecting`` (retry triggered), ``connected`` (nothing to
+    do), ``restart_required`` (the connector isn't running in this process —
+    e.g. credentials were paired after boot), or ``not_configured``.
+    """
     status = get_cloud_status()
     if not status["configured"]:
         return {"status": "not_configured", "message": "Set SPOREPRINT_CLOUD_URL and _TOKEN to enable"}
-    return {"status": "reconnecting", "current": status}
+    return {"status": request_reconnect(), "current": get_cloud_status()}
 
 
 @router.post("/pairing-code")
@@ -113,7 +127,6 @@ async def pair_device(data: dict):
             raise HTTPException(429, "Too many failed attempts. Pairing locked for 10 minutes.")
         raise HTTPException(400, "Invalid pairing code.")
 
-    from ..config import settings
     _pairing_code = None  # one-time use
     _pairing_attempts = 0
 
@@ -128,7 +141,7 @@ async def pair_device(data: dict):
         "device": {
             "cloud_device_id": settings.cloud_device_id or secrets.token_hex(16),
             "name": "SporePrint Pi",
-            "firmware_version": "0.3.0",
+            "firmware_version": server_version(),
         },
     }
 
@@ -155,7 +168,6 @@ async def pair_verify(configure_token: str = ""):
     if now > entry["expires_at"]:
         _configure_tokens.pop(configure_token, None)
         raise HTTPException(401, "configure_token expired")
-    from ..config import settings
     return {
         "valid": True,
         "cloud_device_id": settings.cloud_device_id or "",
@@ -192,6 +204,14 @@ async def configure_cloud(data: dict):
 
     if cloud_url and not _CLOUD_URL_RE.match(cloud_url):
         raise HTTPException(400, "Invalid cloud_url")
+    if cloud_url and not cloud_url_transport_ok(cloud_url):
+        # The device token doubles as the command-signing HMAC key — never
+        # let it be sent in plaintext across the internet.
+        raise HTTPException(
+            400,
+            "cloud_url must use https:// (plain http:// is only allowed for a "
+            "LAN/loopback development relay)",
+        )
 
     updates = {
         "SPOREPRINT_CLOUD_DEVICE_ID": device_id,
@@ -210,5 +230,9 @@ async def configure_cloud(data: dict):
     # One-time use — burn the token so a replay (caught webhook body) can't
     # re-configure the Pi.
     _configure_tokens.pop(token, None)
+
+    # A (re)pairing may be a different cloud: re-learn whether it signs
+    # integrations_request frames.
+    await reset_signing_latch()
 
     return {"status": "configured", "message": "Cloud credentials saved. Restart to connect."}

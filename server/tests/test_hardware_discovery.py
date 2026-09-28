@@ -112,13 +112,12 @@ def test_discover_and_claim_registered_at_exact_setuppage_paths():
     # unwire them again.
     from app.main import app
 
-    routes = {
-        (r.path, method)
-        for r in app.routes
-        for method in (getattr(r, "methods", None) or ())
-    }
-    assert ("/api/hardware/discover", "GET") in routes
-    assert ("/api/hardware/claim", "POST") in routes
+    # The OpenAPI schema is the public view of the composed paths. (FastAPI
+    # >= 0.137 keeps included routers as a tree, so app.routes is no longer a
+    # flat list of every path operation.)
+    paths = app.openapi()["paths"]
+    assert "get" in paths.get("/api/hardware/discover", {})
+    assert "post" in paths.get("/api/hardware/claim", {})
 
 
 async def test_setup_first_chamber_flow_discover_unclaimed_then_claim(client):

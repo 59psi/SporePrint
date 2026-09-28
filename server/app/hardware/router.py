@@ -56,9 +56,16 @@ async def post_command(node_id: str, command: dict):
     if not NODE_ID_RE.match(node_id):
         raise HTTPException(400, "Invalid node_id")
     try:
-        topic = await send_command(node_id, command)
+        topic, published = await send_command(node_id, command)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if not published:
+        raise HTTPException(
+            503,
+            "Command not published — MQTT broker unavailable, or command "
+            "signing is enforced and SPOREPRINT_MQTT_HMAC_KEY is unset "
+            "(see GET /api/health/detail/mqtt)",
+        )
     return {"status": "sent", "topic": topic}
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import time
@@ -56,8 +57,11 @@ async def clock_drift():
     chrony: dict[str, object] = {"available": False}
     try:
         # -n: numeric addresses (no DNS), -c: comma-separated CSV mode.
-        # 1.5 s is well inside any reasonable healthcheck budget.
-        result = subprocess.run(
+        # 1.5 s is well inside any reasonable healthcheck budget. Run in a
+        # worker thread: a blocking call here would stall MQTT ingest,
+        # automation and Socket.IO for up to the timeout on every poll.
+        result = await asyncio.to_thread(
+            subprocess.run,
             ["chronyc", "-n", "tracking"],
             capture_output=True, text=True, timeout=1.5,
         )

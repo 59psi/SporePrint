@@ -1057,7 +1057,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=70, temp_max_f=85, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1000, co2_tolerance="low",
+                co2_max_ppm=700, co2_tolerance="low",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="continuous", expected_duration_days=(5, 7),
                 notes="CRITICAL: Dies below 40°F. Cannot be refrigerated. Process immediately post-harvest.",
@@ -1121,7 +1121,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=58, temp_max_f=65, humidity_min=80, humidity_max=90,
-                co2_max_ppm=2000, co2_tolerance="high",
+                co2_max_ppm=1000, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2555,7 +2555,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=60, temp_max_f=65, humidity_min=90, humidity_max=95,
-                co2_max_ppm=1500, co2_tolerance="moderate",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=12, light_hours_off=12, light_spectrum="blue_450nm",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(7, 14),
@@ -2563,7 +2563,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             ),
             GrowPhase.FRUITING: PhaseParams(
                 temp_min_f=60, temp_max_f=68, humidity_min=85, humidity_max=95,
-                co2_max_ppm=1500, co2_tolerance="moderate",
+                co2_max_ppm=800, co2_tolerance="moderate",
                 light_hours_on=16, light_hours_off=8, light_spectrum="blue_450nm",
                 fae_mode="scheduled", fae_interval_min=30, fae_duration_sec=300,
                 expected_duration_days=(30, 45),

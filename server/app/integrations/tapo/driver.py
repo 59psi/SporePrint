@@ -11,21 +11,64 @@ from pydantic import BaseModel
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import split_host_port, url_host
 from ...telemetry.service import store_reading
 from .config import TapoConfig, TapoDeviceMapping
 from .klap import KlapSession, auth_hash, derive_session, random_seed
 
 
+# "us" used to point at the APAC (aps1) host. The global endpoint serves US
+# accounts, so "us" now shares it with "auto".
 _TAPO_CLOUD_BASE_BY_REGION: dict[str, str] = {
     "auto": "https://wap.tplinkcloud.com",
-    "us": "https://aps1-wap.tplinkcloud.com",
+    "us": "https://wap.tplinkcloud.com",
     "eu": "https://eu-wap.tplinkcloud.com",
     "aps": "https://aps1-wap.tplinkcloud.com",
 }
 
+# Handshake1 sets this cookie; the device rejects handshake2 and every
+# encrypted request that doesn't present it.
+_SESSION_COOKIE = "TP_SESSIONID"
+
+_CLOUD_TELEMETRY_UNSUPPORTED = (
+    "Tapo cloud transport does not collect telemetry yet — switch to "
+    "transport=local with the plugs' LAN IPs"
+)
+
+
+def _session_cookies(resp: httpx.Response) -> dict[str, str]:
+    """Extract TP_SESSIONID from handshake1's Set-Cookie header(s).
+
+    Parsed from the raw header (Tapo sends ``TP_SESSIONID=…;TIMEOUT=86400``)
+    rather than ``resp.cookies`` so it works for any response object.
+    """
+    for header in resp.headers.get_list("set-cookie"):
+        for part in header.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name == _SESSION_COOKIE:
+                return {_SESSION_COOKIE: value}
+    return {}
+
+
+def _device_base(ip: str) -> str:
+    host, port = split_host_port(ip)
+    return f"http://{url_host(host)}" + (f":{port}" if port else "")
+
 
 class TapoError(RuntimeError):
     pass
+
+
+def _require_lan_ip(ip: object) -> None:
+    """Writes always go over local KLAP (cloud passthrough is not
+    implemented), so a device ip is mandatory — including for
+    transport="cloud" configs."""
+    if not isinstance(ip, str) or not ip.strip():
+        raise ValueError(
+            "ip is required: Tapo writes use the local KLAP transport "
+            "(cloud passthrough is not supported)"
+        )
+    split_host_port(ip)
 
 
 class TapoDriver(HttpVendorDriver):
@@ -42,6 +85,12 @@ class TapoDriver(HttpVendorDriver):
         self._cloud_token: str | None = None
         # Local transport state — per-IP KLAP session cache
         self._sessions: dict[str, KlapSession] = {}
+
+    def _reset_auth(self) -> None:
+        # Credentials changed — sessions/tokens minted for the old ones
+        # must not keep being used.
+        self._sessions.clear()
+        self._cloud_token = None
 
     async def test_connection(self) -> IntegrationHealth:
         cfg: TapoConfig | None = self._cfg  # type: ignore[assignment]
@@ -93,11 +142,13 @@ class TapoDriver(HttpVendorDriver):
         rows = 0
         now = time.time()
         if cfg.transport == "cloud":
-            # Skeleton: the cloud passthrough surface is documented but
-            # vendor-payload-shape variance is high; record raw shapes
-            # we observe so the parser can be refined incrementally.
-            await self._cloud_login(cfg)
-            return rows, {"transport": "cloud", "rows": rows}
+            # The cloud passthrough is not implemented. Log in at most once
+            # (token cached — a credential login every poll risks a TP-Link
+            # lockout) and fail the poll loudly so health shows the real
+            # state instead of "ok" with zero telemetry.
+            if self._cloud_token is None:
+                await self._cloud_login(cfg)
+            raise TapoError(_CLOUD_TELEMETRY_UNSUPPORTED)
 
         for d in cfg.devices:
             try:
@@ -136,6 +187,7 @@ class TapoDriver(HttpVendorDriver):
     # ── Write paths ────────────────────────────────────────────────
 
     async def set_power(self, ip: str, on: bool) -> dict[str, Any]:
+        _require_lan_ip(ip)
         cfg: TapoConfig = self._cfg  # type: ignore[assignment]
         await self._klap_call(
             cfg, ip, {"method": "set_device_info", "params": {"device_on": on}}
@@ -145,6 +197,7 @@ class TapoDriver(HttpVendorDriver):
     async def set_dim(self, ip: str, percent: int) -> dict[str, Any]:
         if not 0 <= percent <= 100:
             raise ValueError("percent must be in [0, 100]")
+        _require_lan_ip(ip)
         cfg: TapoConfig = self._cfg  # type: ignore[assignment]
         await self._klap_call(
             cfg,
@@ -191,7 +244,8 @@ class TapoDriver(HttpVendorDriver):
 
     async def _klap_handshake(self, cfg: TapoConfig, ip: str) -> KlapSession:
         local_seed = random_seed()
-        url = f"http://{ip}/app/handshake1"
+        base = _device_base(ip)
+        url = f"{base}/app/handshake1"
         async with httpx.AsyncClient(
             timeout=cfg.request_timeout_seconds, follow_redirects=False
         ) as client:
@@ -212,19 +266,24 @@ class TapoDriver(HttpVendorDriver):
             raise TapoError(
                 f"Tapo handshake1 auth_hash mismatch from {ip} — bad credentials?"
             )
-        # Handshake2: post sha256(remote_seed || local_seed || user_hash).
+        cookies = _session_cookies(resp1)
+        # Handshake2: post sha256(remote_seed || local_seed || user_hash),
+        # presenting handshake1's session cookie.
         client_hash = auth_hash(remote_seed, local_seed, cfg.email, cfg.password)
         async with httpx.AsyncClient(
-            timeout=cfg.request_timeout_seconds, follow_redirects=False
+            timeout=cfg.request_timeout_seconds,
+            follow_redirects=False,
+            cookies=cookies,
         ) as client:
             resp2 = await client.post(
-                f"http://{ip}/app/handshake2", content=client_hash
+                f"{base}/app/handshake2", content=client_hash
             )
         if resp2.status_code >= 400:
             raise TapoError(
                 f"Tapo handshake2 HTTP {resp2.status_code} from {ip}"
             )
         session = derive_session(local_seed, remote_seed, cfg.email, cfg.password)
+        session.cookies = cookies
         self._sessions[ip] = session
         return session
 
@@ -237,10 +296,12 @@ class TapoDriver(HttpVendorDriver):
         plaintext = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         frame, seq = session.encrypt(plaintext)
         async with httpx.AsyncClient(
-            timeout=cfg.request_timeout_seconds, follow_redirects=False
+            timeout=cfg.request_timeout_seconds,
+            follow_redirects=False,
+            cookies=session.cookies,
         ) as client:
             resp = await client.post(
-                f"http://{ip}/app/request?seq={seq}", content=frame
+                f"{_device_base(ip)}/app/request?seq={seq}", content=frame
             )
         if resp.status_code == 403:
             # Session expired — drop it and let the caller retry once.
