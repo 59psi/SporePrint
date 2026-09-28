@@ -95,10 +95,17 @@ struct NodeConfig {
     std::string paired_pi_host;
     sp::Personality personality = sp::Personality::Climate;
     bool tls_enabled = false;  // Secure MQTT: pin the Pi CA, broker :8883
+    // NVS "tls_req": with Secure MQTT on and no CA pinned, keep MQTT DOWN
+    // (fail closed) instead of the loud plaintext fallback (tls_policy.h).
+    // Missing key = false = the fallback every earlier node ran with.
+    bool tls_required = false;
     bool hx711_enabled = false;
     int32_t hx711_tare = 0;    // raw counts with the scale empty
     float hx711_scale = 0.0f;  // counts per gram; 0 = uncalibrated
     bool reed_enabled = false;
+    // NVS "reed_inv": door contact wired on its NO lead (pin HIGH = door
+    // shut). Missing key = false = LOW-closed, the original convention.
+    bool reed_invert = false;
     bool mhz19_enabled = false;
     // The stored WiFi credentials have connected at least once (NVS
     // "wifi_ok"). The portal clears it when the SSID/password change, or

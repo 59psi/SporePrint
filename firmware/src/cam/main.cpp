@@ -19,6 +19,22 @@
 // sent only when the clock is NTP-synced (the Pi stamps arrival time
 // otherwise). X-Camera-Sensor names the detected sensor.
 //
+// Boot / link policy — the same host-tested sp_core policy as the node:
+//   * setup portal (an OPEN AP) only when unprovisioned, on request (reset
+//     button GPIO 13 held 3-10 s, then released), or when freshly-typed
+//     credentials never connected; a cam whose WiFi has worked before boots
+//     offline and re-begins the STA link every 60 s (boot_policy.h,
+//     link_watchdog.h) — fw-node#9
+//   * reset button held > 10 s → factory reset, timed only over densely
+//     sampled passes (a 10-15 s capture/POST used to stretch a short press
+//     into a reset); no capture or MQTT connect starts while it is held
+//   * OTA probation + rollback (image_rollback.h) — fw-node#12
+//   * signed commands bound to their arrival topic + replay guard
+//     (hmac_verify.h) — fw-node#11
+//   * status heartbeat + health every 5 min on their own clock
+//     (publish_cadence.h); Secure MQTT with no pinned CA is a loud fallback
+//     or fails closed (tls_policy.h) — fw-node#2
+//
 // v2 fixes over the v1 cam:
 //   * factory reset moves GPIO 0 → 13 (v1 shared GPIO 0 with the camera
 //     XCLK — the reset pullup fought the pixel clock)
@@ -41,15 +57,21 @@
 #include "board_profile_esp32cam.h"
 #include "cam_policy.h"
 
+#include "alert_latch.h"
+#include "boot_policy.h"
 #include "coredump_uploader.h"
+#include "image_rollback.h"
+#include "link_watchdog.h"
 #include "log_forward.h"
 #include "mqtt_link.h"
 #include "node_config.h"
 #include "tls_transport.h"
 #include "ota_service.h"
+#include "publish_cadence.h"
 #include "server_url_allow.h"
 #include "sha256.h"
 #include "hmac_verify.h"
+#include "tls_policy.h"
 #include "wifi_provisioner.h"
 #include "wire_contract.h"
 #include "wrap_time.h"
@@ -59,6 +81,11 @@
 #endif
 
 static constexpr uint32_t kCaptureIntervalMs = 15UL * 60UL * 1000UL;
+// Health + heartbeat cadence: the cam has no operator-tunable publish
+// interval, so both run at the 5-min heartbeat ceiling.
+static constexpr uint32_t kStatusIntervalMs =
+    sp::PublishCadence::kMaxHeartbeatIntervalMs;
+static constexpr uint32_t kRestartDelayMs = 1500;  // let logs/MQTT flush
 
 // Flash-on settle before the kept exposure: the sensor free-runs while the
 // driver holds its one buffer, so AE/AWB converge on the flash-lit scene
@@ -78,15 +105,31 @@ static sp_device::NodeConfig cfg;
 static sp_device::WifiProvisioner provisioner(kv);
 static WiFiClient wifi_client;
 static WiFiClientSecure wifi_client_secure;
+static sp_device::TlsSupervisor tls_link(cfg, kv, wifi_client,
+                                         wifi_client_secure);
 static sp_device::MqttLink* mqtt = nullptr;
 static sp_device::OtaService* ota = nullptr;
 
 static std::string server_url;
 static uint32_t last_capture_ms = 0;
-static uint32_t factory_hold_start_ms = 0;
 static uint32_t capture_success = 0, capture_fail = 0;
 static float avg_latency_ms = 0;
-static uint32_t last_health_ms = 0;
+static sp::PublishCadence status_cadence(kStatusIntervalMs);
+
+// Reset button (GPIO 13): 3-10 s hold + release → setup portal, >10 s →
+// factory reset — densely-sampled holds only (boot_policy.h).
+static sp::ButtonHold reset_button;
+// Signed commands: each accepted (topic, MAC) once per replay window.
+static sp::ReplayGuard cmd_replay_guard;
+// OTA probation + deliberate, deferred restarts.
+static sp::ImageConfirm image_confirm;
+static bool restart_pending = false;
+static uint32_t restart_requested_ms = 0;
+// WiFi re-begin after an offline boot / a disconnect the core won't retry
+// (the cam has no channels, so the watchdog's safe-mode actions are unused).
+static sp::LinkWatchdog link_wd;
+static uint32_t wifi_reconnects = 0;
+static sp::AlertLatch tls_downgrade_alert;
 
 static bool camera_ok = false;
 static sp_cam::SensorProfile sensor = sp_cam::sensor_profile_none();
@@ -310,6 +353,10 @@ static void publish_heartbeat() {
     in.n_roles = 1;
     in.fw_image = "cam";
     in.migrated_from = cfg.migrated_from.c_str();
+    in.emit_tls = true;  // additive: the MQTT transport in use (fw-node#2)
+    in.tls = tls_link.tls();
+    in.tls_fallback = tls_link.fallback();
+    in.board = SP_BOARD_NAME;
 
     JsonDocument doc;
     sp::build_heartbeat(in, doc);
@@ -319,12 +366,43 @@ static void publish_heartbeat() {
     mqtt->publish(mqtt->topic("status/heartbeat").c_str(), doc);
 }
 
+// Returns true only when the alert was actually published (the latch counts
+// an alert as delivered only then).
+static bool emit_alert(const char* type, float value, const char* message) {
+    if (!mqtt->connected()) return false;
+    JsonDocument doc;
+    sp::build_alert(type, value, message, nullptr, doc);
+    return mqtt->publish(mqtt->topic("alert").c_str(), doc);
+}
+
+// ── OTA image confirmation (fw-node#12) ─────────────────────────
+// Without this hook the Arduino core marks a freshly-OTA'd image valid before
+// setup(), so a bad cam OTA crash-looped on the new slot forever
+// (sp_device/image_rollback.h).
+extern "C" bool verifyRollbackLater() { return true; }
+
+// Operator-requested reboot (portal gesture): confirm a probation image only
+// if it reached MQTT this boot, then restart after a short flush delay.
+static void request_restart(const char* why) {
+    SP_LOG(LOG_WARN, "[SYSTEM] restarting: %s", why);
+    sp_device::confirm_before_deliberate_restart(image_confirm, mqtt, why);
+    restart_pending = true;
+    restart_requested_ms = millis();
+}
+
 static bool verify_command(const char* raw, size_t raw_len,
                            const char* suffix) {
-    // Shared, host-tested policy — identical to the node image (test_core_hmac).
+    // Shared, host-tested policy — identical to the node image
+    // (test_core_hmac), including destination binding (a signed "topic"
+    // member must name this arrival topic) and the replay guard (a second
+    // delivery of the same signed frame to the same topic is rejected) —
+    // fw-node#11.
+    std::string topic = mqtt->topic("cmd/");
+    topic += suffix;
     sp::CmdAuthResult r = sp::command_auth_decision(
         raw, raw_len, cfg.hmac_key.c_str(), cfg.hmac_key.size(),
-        (uint64_t)time(nullptr), sp::hmac_sha256_host);
+        (uint64_t)time(nullptr), sp::hmac_sha256_host, topic.c_str(),
+        &cmd_replay_guard);
     switch (r.decision) {
         case sp::CmdAuthDecision::AcceptUnsigned:
             SP_LOG(LOG_WARN,
@@ -398,8 +476,32 @@ void setup() {
     camera_ok = init_camera();
     if (!camera_ok) Serial.println("[CAM] Continuing WITHOUT camera — check module");
 
-    if (!cfg.provisioned()) provisioner.run_portal(cfg);
-    if (!provisioner.connect(cfg)) provisioner.run_portal(cfg);
+    // Provisioning / WiFi — pre-WDT (boot_policy.h, fw-node#9). The setup AP
+    // is OPEN and its form rewrites the broker host, HMAC key and OTA
+    // password, so a working cam never falls into it on its own: it used to
+    // open on ANY boot-time WiFi failure (a router slow to return after a
+    // power blip parked the cam in the portal for 10 minutes).
+    bool portal_requested = kv.get_bool("portal_req", false);
+    if (portal_requested) kv.set_bool("portal_req", false);  // one-shot
+    if (sp::portal_at_boot(cfg.provisioned(), portal_requested)) {
+        provisioner.run_portal(cfg);  // never returns (10-min ceiling)
+    }
+    if (provisioner.connect(cfg)) {
+        if (!cfg.wifi_verified) {
+            cfg.wifi_verified = true;
+            kv.set_bool("wifi_ok", true);
+        }
+    } else if (sp::portal_after_connect_failure(cfg.wifi_verified)) {
+        // Credentials just typed in the portal never connected — likely a
+        // typo, and the operator is right there: give the form back.
+        provisioner.run_portal(cfg);  // never returns
+    } else {
+        // These credentials have worked before: boot offline. The link
+        // watchdog re-begins the STA connection every 60 s.
+        Serial.println("[WIFI] Network unreachable - booting offline and "
+                       "retrying. Hold the reset button (GPIO 13) 3-10 s, "
+                       "then release, to open the setup portal.");
+    }
     provisioner.start_ntp(cfg);
 
     // Stored server_url (MQTT cmd / v1 migration) wins; otherwise the Pi
@@ -409,14 +511,13 @@ void setup() {
                                             cfg.broker_host);
     Serial.printf("[CAM] Frame upload URL: %s\n", server_url.c_str());
 
-    sp_device::MqttTransport xport =
-        sp_device::select_mqtt_transport(cfg, kv, wifi_client,
-                                         wifi_client_secure);
+    sp_device::MqttTransport xport = tls_link.select();
     mqtt = new sp_device::MqttLink(*xport.client, cfg.node_id.c_str(), "camera",
                                    SPOREPRINT_FW_VERSION);
     mqtt->on_command(on_command, nullptr);
     mqtt->begin(cfg.broker_host.c_str(), xport.port,
-                cfg.mqtt_user.c_str(), cfg.mqtt_pass.c_str());
+                cfg.mqtt_user.c_str(), cfg.mqtt_pass.c_str(),
+                /*connect_now=*/sp::tls_mode_allows_mqtt(xport.mode));
 
     sp_device::logfwd::attach(mqtt);
     sp_device::coredump::upload_if_present(*mqtt);
@@ -430,8 +531,12 @@ void setup() {
         SP_LOG(LOG_ERROR, "[CAM] camera init FAILED — captures disabled");
         ++capture_fail;
     }
-    SP_LOG(LOG_INFO, "[BOOT] cam ready: id=%s camera=%d sensor=%s reset=%d",
-           cfg.node_id.c_str(), camera_ok, sensor.name, (int)esp_reset_reason());
+    SP_LOG(LOG_INFO,
+           "[BOOT] cam ready: id=%s camera=%d sensor=%s mqtt=%s reset=%d",
+           cfg.node_id.c_str(), camera_ok, sensor.name,
+           sp::tls_mode_str(xport.mode), (int)esp_reset_reason());
+    sp_device::note_probation_at_boot(image_confirm);
+    link_wd.begin(millis());
 
     // Arm last: 90 s — an on-demand capture's POST can hold 10-15 s and
     // retries are legitimate.
@@ -443,27 +548,74 @@ void loop() {
     esp_task_wdt_reset();
     uint32_t now = millis();
 
-    mqtt->loop(now);
+    // Reset button, read first with this pass's fresh `now`: held > 10 s →
+    // factory reset; released after 3-10 s → reboot into the setup portal
+    // (the only way a working, provisioned cam opens it). ButtonHold times
+    // only densely-sampled stretches — the old timer, stamped before a
+    // 10-15 s capture/POST or MQTT connect, could turn a short press into a
+    // factory reset — and nothing blocking starts while the button is down.
+    const bool reset_down = digitalRead(SP_PIN_FACTORY_RESET) == LOW;
+    switch (reset_button.update(now, reset_down)) {
+        case sp::ButtonHold::Action::FactoryReset:
+            SP_LOG(LOG_ERROR, "[SYSTEM] Factory reset triggered");
+            sp_device::confirm_before_deliberate_restart(image_confirm, mqtt,
+                                                         "factory reset");
+            sp_device::factory_reset_all();  // restarts
+            break;
+        case sp::ButtonHold::Action::OpenPortal:
+            if (!restart_pending) {
+                kv.set_bool("portal_req", true);
+                request_restart("setup portal requested (reset held 3-10 s)");
+            }
+            break;
+        default:
+            break;
+    }
+
+    // Secure MQTT with no pinned CA: at most one bounded CA fetch per pass;
+    // no MQTT connect attempt in the same pass (tls_policy.h).
+    const bool ca_fetched = tls_link.loop(now, reset_down, *mqtt);
+    mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, reset_down));
     ota->loop();
     sp_device::logfwd::loop(now);
 
-    if (sp::elapsed_ms(now, last_capture_ms) >= kCaptureIntervalMs) {
+    // OTA probation: a new image proves itself with 60 s of continuous MQTT.
+    if (image_confirm.update(now, mqtt->connected()))
+        sp_device::confirm_running_image(image_confirm, "60 s of MQTT after boot");
+
+    if (restart_pending &&
+        sp::elapsed_ms(millis(), restart_requested_ms) >= kRestartDelayMs) {
+        ESP.restart();
+    }
+
+    // WiFi recovery (offline boot, or a disconnect reason the core's
+    // auto-reconnect gives up on): re-begin the STA link every 60 s.
+    if (link_wd.update(now, WiFi.status() == WL_CONNECTED, mqtt->connected())
+            .wifi_retry) {
+        ++wifi_reconnects;
+        SP_LOG(LOG_WARN, "[WIFI] link down - re-begin STA (retry %u)",
+               (unsigned)wifi_reconnects);
+        WiFi.disconnect();
+        WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+    }
+
+    if (!reset_down && !restart_pending &&
+        sp::elapsed_ms(now, last_capture_ms) >= kCaptureIntervalMs) {
         last_capture_ms = now;
         capture_and_post(true);
     }
-    if (sp::elapsed_ms(now, last_health_ms) >= 300000) {
-        last_health_ms = now;
-        publish_health();
-        publish_heartbeat();
-    }
 
-    if (digitalRead(SP_PIN_FACTORY_RESET) == LOW) {
-        if (factory_hold_start_ms == 0) factory_hold_start_ms = now;
-        if (sp::elapsed_ms(now, factory_hold_start_ms) > 10000) {
-            SP_LOG(LOG_ERROR, "[SYSTEM] Factory reset triggered");
-            sp_device::factory_reset_all();
-        }
-    } else {
-        factory_hold_start_ms = 0;
-    }
+    // Health + heartbeat every 5 min on their own clock (no coupling to the
+    // capture schedule).
+    const sp::PublishCadence::Due due = status_cadence.update(now);
+    if (due.telemetry) publish_health();
+    if (due.heartbeat) publish_heartbeat();
+
+    // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly.
+    if (mqtt->connected() && tls_downgrade_alert.due(tls_link.fallback(), now) &&
+        emit_alert(sp::kAlertTlsDowngrade, (float)cfg.broker_port,
+                   "Secure MQTT is on but no Pi CA is pinned - running on "
+                   "plaintext (credentials unencrypted); retrying the CA "
+                   "fetch"))
+        tls_downgrade_alert.emitted(now);
 }

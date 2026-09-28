@@ -22,6 +22,31 @@ _LEGACY_MATCH_FIELDS = {
 }
 
 
+# Duty-value keys a node command may carry (relay pwm 0-255, lighting level
+# 0-1023 — the lighting bank also takes pwm as a level alias).
+_DUTY_KEYS = ("pwm", "level")
+
+
+def is_off_command(payload: dict) -> bool:
+    """Does this node/plug command switch its actuator OFF?"""
+    return str(payload.get("state", "")).strip().lower() == "off"
+
+
+def drop_duty_from_off(payload: dict) -> dict:
+    """The command to publish: an OFF loses any pwm / level, anything else is unchanged.
+
+    Node firmware released before the hardware audit let a duty value in the
+    same command win over the state, so {"state": "off", "pwm": 180} switched
+    the channel ON at duty 180. Current firmware lets "off" win, but deployed
+    nodes still run the old image, so an OFF must never carry a duty value on
+    the wire. Returns a copy when anything is dropped; the caller's dict is
+    never modified.
+    """
+    if not is_off_command(payload) or not any(k in payload for k in _DUTY_KEYS):
+        return payload
+    return {k: v for k, v in payload.items() if k not in _DUTY_KEYS}
+
+
 def rule_applies_to_species(applies_to_species: list[str] | None, species_id: str | None) -> bool:
     """Does a rule scoped to `applies_to_species` apply to this session's species?
 

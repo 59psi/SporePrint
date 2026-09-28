@@ -323,3 +323,68 @@ def test_socketio_auth_rate_limited_even_with_valid_token(monkeypatch):
         assert socketio_auth_ok({"token": _KEY}, remote_addr=ip) is True
     # A valid token no longer helps once the IP is over the cap.
     assert socketio_auth_ok({"token": _KEY}, remote_addr=ip) is False
+
+
+# ── Socket.IO peer address (deps-infra#25) ─────────────────────────────────
+#
+# python-engineio's ASGI driver hardcodes environ['REMOTE_ADDR'] = '127.0.0.1',
+# so keying the connect rate-limit on it put every dashboard in ONE bucket.
+# These build the environ with the real driver so the placeholder is exercised.
+
+async def _engineio_environ(client, headers=()):
+    from engineio.async_drivers.asgi import translate_request
+
+    scope = {
+        "type": "http",
+        "path": "/socket.io/",
+        "query_string": b"EIO=4&transport=polling",
+        "headers": list(headers),
+        "client": client,
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message):
+        return None
+
+    return await translate_request(scope, receive, send)
+
+
+async def test_socketio_client_addr_is_the_asgi_peer_not_the_placeholder():
+    environ = await _engineio_environ(("192.168.1.50", 50123))
+    assert environ["REMOTE_ADDR"] == "127.0.0.1"  # the driver's placeholder
+    assert auth.socketio_client_addr(environ) == "192.168.1.50"
+
+
+async def test_socketio_client_addr_ignores_a_forged_forwarded_for():
+    # uvicorn rewrites scope['client'] from X-Forwarded-For only for a trusted
+    # proxy hop; the raw header from a LAN client on :8000 must not be trusted.
+    environ = await _engineio_environ(
+        ("192.168.1.50", 50123), [(b"x-forwarded-for", b"10.9.9.9")])
+    assert auth.socketio_client_addr(environ) == "192.168.1.50"
+
+
+def test_socketio_client_addr_falls_back_to_remote_addr():
+    assert auth.socketio_client_addr({"REMOTE_ADDR": "192.168.1.10"}) == "192.168.1.10"
+    assert auth.socketio_client_addr({}) is None
+    assert auth.socketio_client_addr(None) is None
+
+
+async def test_sio_connect_rate_limits_each_client_separately():
+    import app.health.service as health_service
+    from app import main
+
+    health_service._sio_clients.clear()
+    try:
+        first = await _engineio_environ(("192.168.1.50", 40000))
+        for i in range(auth._CONNECT_RATE_CAP):
+            assert await main._sio_connect(f"a{i}", first) is None
+        assert await main._sio_connect("a-over", first) is False
+
+        # A second dashboard has its own budget, and is tracked by its own IP.
+        second = await _engineio_environ(("192.168.1.51", 40001))
+        assert await main._sio_connect("b0", second) is None
+        assert health_service._sio_clients["b0"]["ip"] == "192.168.1.51"
+    finally:
+        health_service._sio_clients.clear()

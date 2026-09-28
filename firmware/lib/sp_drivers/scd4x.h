@@ -44,7 +44,9 @@ public:
     // if it changed (EEPROM-wear-aware), start periodic measurement.
     bool begin();
 
-    // True when a fresh measurement is available.
+    // True when a fresh measurement is available. A bus failure (NACK / CRC)
+    // returns false AND counts as a health failure ("data_ready error");
+    // "no sample yet" is healthy and leaves the counters alone.
     bool data_ready();
 
     // Read the current measurement (call only when data_ready()).

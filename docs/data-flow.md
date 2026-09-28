@@ -9,8 +9,8 @@ flowchart TB
     subgraph TelemetryFlow["① Telemetry Flow (sensor → storage → consumers)"]
         ESP["ESP32 Sensors<br/>SHT31 · SCD41 · BH1750"]
         Mosq["Mosquitto<br/>auth'd broker (v3.3.0)"]
-        PiSrv["Pi Server<br/>FastAPI · mqtt._handle_message<br/>uptime-ts clamp (v3.3.0)"]
-        SQLite["SQLite<br/>26 tables · WAL mode<br/>foreign_keys ON (v3.3.0)"]
+        PiSrv["Pi Server<br/>FastAPI · mqtt._handle_message<br/>ts below 1e9 = unsynced · replay frames stored, not evaluated"]
+        SQLite["SQLite<br/>33 tables · WAL mode<br/>foreign_keys ON · incremental auto-vacuum"]
         Retention["Retention rollup<br/>3am · weighted-merge upsert"]
         SIO["Socket.IO"]
         WebUI["Web UI<br/>Live telemetry"]
@@ -39,11 +39,11 @@ flowchart TB
 
     subgraph UserFlow["③ User Action Flow"]
         User["User Actions<br/>Configure · Control · View"]
-        REST["REST API<br/>106 endpoints · 17 routers<br/>Bearer: SPOREPRINT_API_KEY"]
+        REST["REST API<br/>150 endpoints · 20 modules<br/>optional bearer: SPOREPRINT_API_KEY"]
         Sessions["Session Manager"]
         Auto["Automation Engine<br/>+ safety_max_on_seconds (v3.3.0)"]
         Vision["Vision Pipeline<br/>AsyncAnthropic (v3.3.0)"]
-        MQTTCmd["MQTT Commands<br/>sporeprint/<node>/cmd/<ch>"]
+        MQTTCmd["MQTT Commands<br/>sporeprint/{node}/cmd/{ch}<br/>HMAC-signed · topic + nonce"]
         Claude["Anthropic Claude"]
 
         User -->|HTTP + bearer| REST
@@ -56,7 +56,7 @@ flowchart TB
     end
 
     subgraph ControlLoop["④ Hardware Control Loop (closed-loop)"]
-        Sense["Sensor Read<br/>every 10 s"]
+        Sense["Sensor Read<br/>every 30 s · publish 60 s"]
         Eval["Evaluate Rules<br/>threshold + schedule"]
         Compute["Compute Action<br/>pwm · duration · ramp"]
         Publish["MQTT Publish"]
@@ -97,3 +97,13 @@ flowchart TB
 - **Firmware log forwarding ring buffer** — `log_forward.{h,cpp}` exposes `SP_LOG()` backed by a 32-entry × 200-byte ring drained over MQTT. Lets us see what a node logged in the seconds before a crash without an attached serial cable.
 - **OTA bundle signatures** — Ed25519 helpers in the submodule's `scripts/`: `generate-ota-keypair.py` mints the keypair, `sign-ota-bundle.py` signs each shipped bundle. Cloud verifies before promotion; Pi verifies during `_promote`.
 - **Lockstep version bump** — Pi server / firmware / Pi UI / cloud all carry `4.0.0` simultaneously. The protocol surface against pre-v4 clouds is unchanged; the bump is bookkeeping for the parent monorepo's release cadence.
+
+## Changes from the 2026-09 audit (unreleased)
+
+- **Telemetry timestamps** — the Pi now treats `ts < 1e9` as unsynced firmware uptime and stamps arrival time (the old cut-off was 2020-01-01). Frames flagged `"replay": true`, and synced frames more than 120 s old, are stored at their own time but are not pushed to the live socket and never evaluated by the rules.
+- **Session tagging** — each reading is tagged with the grow its node belongs to: a node listed in a chamber belongs to that chamber's grow; a node in no chamber belongs to the newest grow bound to no chamber.
+- **Node liveness** — nodes send their heartbeat every min(publish interval, 5 min), and any telemetry frame from a registered node also refreshes `last_seen`.
+- **Rule evaluation** — the highest-priority rule whose condition holds owns an actuator; `safety_max_on_seconds` counts from the first ON and a trip locks automation out of that actuator for 15 min; life-safety rules (priority ≥ 20, absolute thresholds) run even with no active session.
+- **Commands** — every `cmd/*` frame is HMAC-signed with the destination `topic` and a random `nonce` bound in; an OFF never carries `pwm`/`level`.
+- **Vision** — Claude auto-analysis runs every 6 h per session (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`) plus the first frame after each phase change; frames older than 30 days are thinned to one per camera per day.
+- **Retention** — the nightly job also prunes `automation_firings` older than 90 days that belong to no session, and new databases use incremental auto-vacuum.

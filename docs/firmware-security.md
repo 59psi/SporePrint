@@ -1,166 +1,183 @@
 # Firmware security — command signing, TLS, provisioning, OTA
 
 The v2 security model for the unified node image (`node_esp32` /
-`node_esp32s3`) and the camera image (`cam`). The opt-in secure-boot /
-flash-encryption stack at the bottom is unchanged from v3.4.9 — eFuse
-procedures don't move.
+`node_esp32s3` / `node_esp32s3_n32r16v`) and the camera image (`cam`).
 
 ## Threat model
 
 LAN-resident attacker: anything that can reach the Pi's MQTT broker or
 sniff WiFi. The Pi is the trust root; the cloud reaches nodes only through
-the Pi's signed-command relay. Physical access is out of scope without the
-secure-boot/flash-encryption opt-in below.
+the Pi's signed-command relay. Physical access is out of scope: secure boot
+and flash encryption are **not supported** by this build (see below).
 
 | Attacker capability | Defense |
 |---|---|
-| Publish actuator commands with broker access | **HMAC-SHA256 signed frames** — canonical-JSON signature + ±30 s replay window; key provisioned via the captive portal (no compile-time path) |
-| Impersonate the broker / rogue AP | **Opt-in TLS (8883)** with the Pi's CA pinned trust-on-first-use at provision time |
-| Redirect camera uploads to an attacker host | `server_url` allow-list — RFC1918 applies to genuine IPv4 literals only ("10.attacker.com" is rejected) |
+| Publish actuator commands with broker access | **HMAC-SHA256 signed frames** — canonical-JSON signature + ±30 s window; key provisioned via the captive portal (no compile-time path) |
+| Replay a captured command | The ±30 s `ts` window, plus a **replay guard**: a second delivery of the same signed frame on the same topic inside the window is rejected. A keyed node rejects commands entirely until NTP has synced (point NTP at the Pi for airgapped rooms) |
+| Redirect a captured command to another channel or node | **Topic binding**: the Pi signs the full `sporeprint/<node>/cmd/<suffix>` topic into every frame, and the node rejects a frame whose signed `topic` differs from the topic it arrived on |
+| Impersonate the broker / rogue AP | **Opt-in TLS (8883)** with the Pi's CA pinned trust-on-first-use at provision time; a missing CA is never silent (see Secure MQTT) |
+| Redirect camera uploads to an attacker host | `server_url` allow-list — RFC1918 applies to genuine IPv4 literals only ("10.attacker.com" is rejected); `https://` uploads require the pinned Pi CA |
 | Brute-force the OTA password over LAN | 12-char minimum, no default — OTA stays disabled until provisioned |
-| Replay a captured command later | `ts` outside ±30 s rejected; commands rejected entirely until NTP syncs (point NTP at the Pi for airgapped rooms) |
-| Flash arbitrary firmware once OTA password is known | **Secure boot v2** (opt-in, below) |
-| Extract creds from a stolen node | **Flash encryption** (opt-in, below) |
+| Flash arbitrary firmware once the OTA password is known | **Not defended** — secure boot is not available in the Arduino build |
+| Extract credentials from a stolen node | **Not defended** — flash encryption is not available in the Arduino build |
 
-Migration posture: a node with no signing key accepts commands but logs
-`[SEC] hmac_key not provisioned — accepting unsigned cmd/...` on every
-one — an unprovisioned fleet is loud, never silent. The canonical-form
-contract is pinned by shared golden vectors
+## Signed commands
+
+Every `sporeprint/<node>/cmd/*` frame the Pi publishes is signed with
+`SPOREPRINT_MQTT_HMAC_KEY` (`install.sh` generates it; `./scripts/provision-node.sh`
+prints it, `--rotate` replaces it). The signature covers every JSON member except
+`signature` itself, in canonical form. Besides the command, the Pi adds:
+
+- `ts` — epoch seconds; the node accepts ±30 s.
+- `topic` — the full topic the frame is published on. Current firmware rejects
+  a frame whose signed `topic` differs from its arrival topic.
+- `nonce` — 16 hex characters (64 random bits), so two legitimate identical
+  commands in the same second (on/off/on) are distinct frames and not mistaken
+  for a replay.
+
+The node's replay guard remembers each accepted (topic, MAC) pair — 32 slots,
+kept for twice the window — and rejects a second delivery (`replayed frame` in
+its log). Rejected frames are never remembered.
+
+Compatibility: every firmware canonicalizes all members, so firmware that
+predates topic binding verifies these frames unchanged and simply ignores
+`topic` and `nonce`. A frame that would reach the node's 1024-byte inbound cap
+is sent signed but without the binding, and the Pi logs a WARNING. The
+canonical form is pinned by shared golden vectors
 (`server/tests/fixtures/signing_vectors.json`, byte-identical copy under
-`firmware/test/fixtures/`) asserted by the firmware's native suite, the
-Pi's pytest suite, and CI fixture-parity checks.
+`firmware/test/fixtures/`) asserted by the firmware's native suite, the Pi's
+pytest suite, and CI fixture-parity checks. Any other signer of node-bound
+frames (for example a private-cloud relay) should add the same members.
 
-Failure containment: channel outputs force OFF at the top of boot; the
-watchdog arms only after provisioning (the setup portal can never be
-killed by it); switch channels carry a 30-minute max-on cutoff that an
-explicit duration cannot exceed; empty command payloads are rejected,
-never defaulted to ON; panic coredumps persist in flash and upload to the
-Pi next boot.
+Migration posture:
+- A node with **no** signing key accepts commands but logs
+  `[SEC] hmac_key not provisioned — accepting unsigned cmd/...` on every one —
+  an unprovisioned fleet is loud, never silent. It accepts signed frames too.
+- A node **with** the key (portal field "Command signing key") rejects
+  unsigned, forged, stale, replayed and redirected frames.
+- On the Pi, `SPOREPRINT_MQTT_REQUIRE_SIGNING` decides what happens when it has
+  **no** key: `auto` (default) refuses to publish unsigned commands once the
+  Pi is cloud-paired, `always` always refuses, `never` sends them unsigned.
+  A refused publish makes the node-command endpoint return 503.
 
-## Enabling secure boot v2 + flash encryption (per-project, one-time)
+## Secure MQTT (TLS)
 
-> ⚠️ **Read this entire section before starting.** Enabling these
-> features **irrevocably** burns eFuses on the ESP32. A misstep bricks
-> the device. Test on a spare unit first.
+Ticking **Secure MQTT** in the portal makes the node fetch the Pi's CA from
+`GET /api/provision/ca` (public even when `SPOREPRINT_API_KEY` is set), pin it,
+and connect on 8883. Verification follows the broker host name:
 
-### Step 1 — generate the signing key
+- Use `sporeprint.local` (recommended) or an IP the Pi's certificate lists.
+  `install.sh` puts every Pi IPv4 into the certificate as both an `IP:` and a
+  `DNS:` SAN, because mbedTLS 2.28 on the ESP32 only matches DNS-type entries.
+  When the Pi's IP changes, re-running `install.sh` re-issues the server
+  certificate from the **same** CA, so pinned nodes are unaffected.
 
-On a machine that will stay offline afterward:
+With Secure MQTT ticked and **no** CA pinned yet (for example the Pi was
+unreachable during provisioning), the node:
+- by default falls back to plaintext **loudly**: an ERROR log line, a node
+  alert of type `tls_downgrade` (value = the plaintext port, sent on entry and
+  then hourly), `tls:false` and `tls_fallback:true` in its heartbeat, and CA
+  fetch retries after 1, 2, 4 and 8 min, then every 15 min. The first success
+  pins the CA and moves the running link to TLS with no reboot;
+- with **Require TLS** ticked (NVS `tls_req`), stays **off MQTT** instead —
+  the 10-minute safe mode switches its channels off — while it keeps retrying
+  the fetch.
 
-```bash
-# Secure boot v2 uses RSA-3072 or ECDSA-P256. ECDSA is smaller + faster.
-openssl ecparam -name prime256v1 -genkey -out firmware/secure_boot_signing_key.pem
-# Derive the public key that gets burned into eFuse.
-espsecure.py digest_sbv2_public_key \
-    --keyfile firmware/secure_boot_signing_key.pem \
-    --output firmware/secure_boot_pub_digest.bin
-```
+It never connects with TLS but no verification. Every heartbeat carries `tls`
+and `board`, so you can see which transport and image each node really runs.
 
-**Store the `.pem` offline** (e.g. a hardware token, printed QR-ed key
-in a safe). **You cannot recover it**. Every future OTA image must be
-signed with the same key.
+## Provisioning and physical gestures
 
-### Step 2 — enable in `platformio.ini`
+- Credentials, the node id, the signing key and the OTA password are entered
+  only in the `SporePrint-Setup` captive portal and stored in NVS. The node id
+  must equal the MQTT username (the broker ACL scopes each node by it).
+- A provisioned node whose settings have connected before no longer reopens
+  the open setup AP when WiFi fails: it boots offline and retries every 60 s.
+- Opening the portal on purpose is physical: hold BOOT (node) or short GPIO 13
+  to GND (camera — there is no button on that pin) for 3–10 s, then release.
+  More than 10 s factory-resets. While the button is held, the device starts
+  no MQTT connect, CA fetch or capture.
 
-Add to the shared `[env]` block (uncomment the guarded lines):
+## Failure containment
 
-```ini
-board_build.embed_files = secure_boot_pub_digest.bin
-board_build.partitions = partitions_secure.csv
-build_flags =
-    ${env.build_flags}
-    -DCONFIG_SECURE_BOOT=1
-    -DCONFIG_SECURE_BOOT_V2_ENABLED=1
-    -DCONFIG_SECURE_FLASH_ENC_ENABLED=1
-    -DCONFIG_SECURE_SIGNED_ON_UPDATE=1
-    -DCONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
-```
+- Channel outputs are forced OFF at the top of boot, before Serial, and again
+  when an OTA starts.
+- The watchdog arms only after provisioning (the setup portal can never be
+  killed by it).
+- Switch channels carry a max-on backstop an explicit duration cannot exceed:
+  30 min on `fae` / `exhaust` / `circulation`, **60 s on `aux`** (its pump
+  duty); lighting channels have none. `cmd/config {"max_on_sec": {"<channel>":
+  N}}` changes it per channel and persists it in NVS.
+- An explicit `"state":"off"` always wins over `pwm`/`level` in the same
+  command, and never leaves a timer armed. (The Pi also strips `pwm`/`level`
+  from every OFF it sends, because older firmware treated
+  `{"state":"off","pwm":N}` as ON.)
+- 10 minutes without MQTT → every channel off (safe mode); the node never
+  reboots itself for link loss.
+- Empty command payloads are rejected, never defaulted to ON.
+- Panic coredumps persist in flash and upload to the Pi on the next boot.
 
-And create `firmware/partitions_secure.csv` matching the default
-partition layout but with ota_data secured.
+## OTA
 
-### Step 3 — first flash
+- **Password:** `lib/sp_device/ota_service.cpp` refuses to start ArduinoOTA
+  when the NVS password is empty or shorter than 12 characters.
+- **Events:** start / success / error land on `sporeprint/<node>/ota`, so a
+  half-applied OTA is visible even without secure boot.
+- **Rollback:** a freshly flashed OTA image is on probation until MQTT has been
+  connected continuously for 60 s. A crash, watchdog reset or power loss
+  before then boots the previous image. An operator restart confirms the new
+  image only if it reached MQTT during that boot. Rollback needs a bootloader
+  built with rollback support, which is this framework's default.
+- **Integrity:** ArduinoOTA and the Pi's OTA push check the image MD5. There is
+  no signature check on node images (see below).
 
-```bash
-pio run -e node_esp32 -t upload
-# The first boot automatically:
-#   1. Burns BLK2 eFuse with the public-key digest (permanent).
-#   2. Burns FLASH_CRYPT_CNT eFuse (permanent).
-#   3. Encrypts the flash (~40 seconds, device appears to hang).
-#   4. Reboots into the encrypted firmware.
-```
+## Secure boot v2 + flash encryption — not supported
 
-Subsequent `pio run -t upload` will fail because the bootloader no
-longer accepts unsigned images. Flash via:
+Earlier versions of this page described enabling secure boot and flash
+encryption with `-DCONFIG_SECURE_*` build flags. **That recipe does not work
+and must not be followed:**
 
-```bash
-pio run -e node_esp32 -t signedupload    # applies the key automatically
-```
+- The firmware builds with `framework = arduino` (the `[esp32_base]` section
+  of `firmware/platformio.ini`). The Arduino-ESP32 core ships its ESP-IDF
+  libraries **and its bootloader precompiled**, from an `sdkconfig` in which
+  `CONFIG_SECURE_BOOT` and `CONFIG_SECURE_FLASH_ENC_ENABLED` are not set.
+  `-D` build flags cannot change a precompiled bootloader or library, so
+  nothing gets enabled and no eFuse is burned — while the node looks
+  "secured".
+- `signedupload` is not a PlatformIO target.
+- The OTA code referenced there (`OTAManager`, `ota_manager.cpp`) is the v1
+  firmware; v2 uses `lib/sp_device/ota_service.cpp`.
 
-### Step 4 — signed OTA
-
-The `OTAManager` already calls `Update.setMD5()`. When secure boot is
-enabled, `Update` additionally verifies the embedded signature against
-the eFuse-stored public key. Callers don't need to change — the image
-just needs to be signed with the same `.pem`:
-
-```bash
-espsecure.py sign_data \
-    --keyfile firmware/secure_boot_signing_key.pem \
-    --version 2 \
-    --output firmware/.pio/build/node_esp32/firmware.signed.bin \
-    firmware/.pio/build/node_esp32/firmware.bin
-```
-
-Or just flash via `pio run -t signedupload` and PlatformIO handles it.
-
-### Step 5 — rollback protection (optional)
-
-Enable only after you've successfully shipped one OTA with the new
-setup, so a bad build can't permanently lock out newer firmware:
-
-```ini
--DCONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=1
--DCONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=1
-```
-
-Each signed build then needs an incrementing `secure_version` in the
-app header — `bump.sh` can set this from `VERSION.txt`.
-
-## Current defaults (no operator action required)
-
-- **OTA password minimum 12 chars** — `ota_manager.cpp` refuses to
-  enable OTA if the NVS-stored password is shorter, empty, or the
-  literal default.
-- **MQTT HMAC signing** — commands land with a fresh signature every
-  call; a compromised broker cred no longer grants arbitrary actuation.
-- **OTA event publishing** — start/success/error events land on
-  `sporeprint/<node>/ota`, so a half-applied OTA is visible cloud-side
-  even without secure boot.
+Supporting it would mean a different build: Arduino as an ESP-IDF component
+(`framework = arduino, espidf`) with an `sdkconfig.defaults` that enables
+`CONFIG_SECURE_BOOT_V2_ENABLED` and `CONFIG_SECURE_FLASH_ENC_ENABLED`, OTA
+images signed with `espsecure.py sign_data --version 2`, a partition table
+with room for the signature, and an OTA path that verifies it. Enabling these
+**irrevocably** burns eFuses, and a mistake bricks the board. None of this is
+implemented or tested in this repo; don't improvise it on a production node.
 
 ## v4 cloud-side OTA pubkey landing zone
 
-The cloud added a `PUT /settings/ota-pubkey` endpoint in v4. Operators
-who run flash-encrypted nodes can register the public side of their
-secure-boot signing key with the cloud so the cloud-web admin surface
-can verify OTA payloads end-to-end before publishing them. The private
-key never leaves the operator's machine — only the public verifier
-ships. The endpoint persists into the operator's `profiles` row and is
-read by `cloud/app/devices/router.py::ota_push` before signing the
-delta. If no pubkey is registered, the cloud falls back to per-device
-HMAC-only flow as before.
+The cloud added a `PUT /settings/ota-pubkey` endpoint in v4. It lets an
+operator register the public half of an image-signing key with the cloud, so
+the cloud-web admin surface can verify OTA payloads end-to-end before
+publishing them. The private key never leaves the operator's machine — only
+the public verifier ships. The endpoint persists into the operator's
+`profiles` row and is read by the cloud's `ota_push` before signing the delta.
+If no pubkey is registered, the cloud falls back to the per-device HMAC-only
+flow. Because the node firmware itself cannot verify image signatures (see
+above), this protects the cloud → Pi hop, not the Pi → node flash.
 
 This is independent of web-push (browser) VAPID keys, which sign
 cloud-→-browser notifications and have nothing to do with firmware. The
 two key systems are namespaced separately (`CLOUD_VAPID_*` vs
 per-user `ota_pubkey`).
 
-## What's still open for v3.5+
+## What's still open
 
-- Tooling around `scripts/provision-node.sh --with-secure-boot` that
-  automates the per-node key-derivation + first-flash dance.
+- A secure-boot / flash-encryption build (the ESP-IDF component route above)
+  and signed node OTA images.
 - Per-node HMAC keys (currently a single shared key across all nodes
   paired to one Pi).
-- Rollback counter wired through `bump.sh`.
-- Documentation on recovery from lost signing key (answer: there is
-  none; treat the key like a hardware wallet seed).
+- Erasing a node's coredump only after the Pi acknowledges it (the Pi-side ack
+  is not implemented yet).

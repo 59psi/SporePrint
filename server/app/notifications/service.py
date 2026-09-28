@@ -165,11 +165,21 @@ async def node_offline(node_id: str):
     )
 
 
-async def harvest_ready(species: str, session_name: str):
+async def harvest_ready(
+    species: str, session_name: str, *, reason: str | None = None, dedup_key: str | None = None,
+):
+    """INFO: vision analysis says the session's fruit is at its harvest window.
+
+    ``reason`` (the vision read, e.g. "growth has slowed …") is appended to the
+    message; ``dedup_key`` defaults to one per session name.
+    """
+    message = f"Session '{session_name}' appears ready for harvest based on vision analysis."
+    if reason:
+        message += f" Vision: {reason}."
     await notify_info(
         f"Harvest ready — {species}",
-        f"Session '{session_name}' appears ready for harvest based on vision analysis.",
-        dedup_key=f"harvest:{session_name}",
+        message,
+        dedup_key=dedup_key or f"harvest:{session_name}",
     )
 
 

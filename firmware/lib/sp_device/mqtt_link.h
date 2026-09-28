@@ -45,8 +45,17 @@ public:
           node_type_(node_type),
           fw_version_(fw_version) {}
 
+    // `connect_now` = false skips the immediate connect attempt (Secure MQTT
+    // required but no Pi CA pinned yet — tls_policy.h FailClosed).
     void begin(const char* host, uint16_t port, const char* user,
-               const char* pass);
+               const char* pass, bool connect_now = true);
+
+    // Move the link onto another transport (the Pi CA got pinned at runtime
+    // → TLS on 8883). Publishes the retained offline status the LWT would
+    // (so the Pi isn't left showing "online" if the new transport can't
+    // connect), drops the connection, and lets the next allowed loop() pass
+    // reconnect on the new transport. `transport` must outlive the link.
+    void switch_transport(Client& transport, uint16_t port);
 
     // Pump: reconnect window + PubSubClient loop. Call every loop pass with
     // a `now` taken at the top of the pass. `may_connect` = false skips

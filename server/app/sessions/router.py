@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from ..species.service import get_profile
+from ..telemetry.service import get_history
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate, DryingLogEntry
 from . import service
 
@@ -9,7 +11,10 @@ router = APIRouter()
 
 @router.post("")
 async def create_session(data: SessionCreate):
-    return await service.create_session(data)
+    try:
+        return await service.create_session(data)
+    except service.InvalidPhaseError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.get("")
@@ -69,9 +74,11 @@ async def next_phase(session_id: int):
     if not session:
         raise HTTPException(404, "Session not found")
     flushes = await service.flush_status(session_id)
+    profile = await get_profile(session["species_profile_id"])
     suggested = service.suggested_next_phase(
         session["current_phase"], session.get("container_type"),
         more_flushes_expected=flushes["more_expected"],
+        profile_phases=[p.value for p in profile.phases] if profile else None,
     )
     return {
         "current_phase": session["current_phase"],
@@ -82,7 +89,10 @@ async def next_phase(session_id: int):
 
 @router.post("/{session_id}/phase")
 async def advance_phase(session_id: int, data: PhaseAdvance):
-    session = await service.advance_phase(session_id, data)
+    try:
+        session = await service.advance_phase(session_id, data)
+    except service.InvalidPhaseError as e:
+        raise HTTPException(422, str(e))
     if not session:
         raise HTTPException(404, "Session not found")
     return session
@@ -118,7 +128,6 @@ async def session_telemetry(
     node_id = await service.resolve_session_node_id(session_id, sensor)
     if not node_id:
         return []
-    from ..telemetry.service import get_history
     return await get_history(node_id, sensor, from_ts, to_ts, resolution)
 
 

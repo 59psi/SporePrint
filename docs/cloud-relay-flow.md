@@ -19,7 +19,7 @@ sequenceDiagram
     Relay->>Relay: verify_jwt() · get_user_tier()<br/>get_user_devices()
     Relay-->>App: connected (joins device rooms)
 
-    Note over Pi: On boot, with SPOREPRINT_CLOUD_TOKEN set
+    Note over Pi: On boot, when paired (cloud.env beside the DB, or SPOREPRINT_CLOUD_TOKEN)
     Pi->>Relay: Socket.IO connect<br/>auth = { token, device_id }
     Relay->>Relay: validate_device_token()<br/>update_device_status('online')
     Relay-->>Pi: connected (joins device:<id> room)
@@ -35,7 +35,7 @@ sequenceDiagram
 
     Pi->>Pi: verify_frame(cloud_token, frame)<br/>ts window · tier · id-replay · target registered
     alt Signature valid
-        Pi->>ESP: mqtt_publish sporeprint/<node>/cmd/<channel>
+        Pi->>ESP: mqtt_publish sporeprint/<node>/cmd/<channel><br/>re-signed with the Pi's key + topic + nonce
         ESP-->>Pi: status update (next telemetry)
         Pi-->>Relay: emit 'command_result' { id, success: true }
         Relay-->>App: forward result
@@ -57,6 +57,28 @@ sequenceDiagram
 | `target` / `channel` match `^[a-zA-Z0-9_-]{1,64}$` | `_is_safe_target` / `_is_safe_channel` | `Invalid target or channel` |
 
 Pre-v3.3.1 only the tier string was checked — a compromised cloud relay could have issued any command to any registered target. v3.3.1 closes that by making the Pi require a signature it can verify.
+
+## The Pi → node leg
+
+The cloud never signs node frames itself. After verifying a cloud command,
+the Pi publishes it to `sporeprint/<node>/cmd/<channel>` **re-signed with its
+own `SPOREPRINT_MQTT_HMAC_KEY`**, and binds two extra signed members: `topic`
+(the full destination topic, so the frame can't be redirected to another
+channel or node) and a random `nonce` (so identical commands in the same
+second aren't mistaken for a replay). Nodes holding the key reject unsigned,
+forged, replayed or redirected frames; see `docs/firmware-security.md`.
+
+- A cloud-paired Pi with `SPOREPRINT_MQTT_REQUIRE_SIGNING=auto` (the default)
+  refuses to publish unsigned node commands, so it needs a key:
+  `install.sh` generates one, `./scripts/provision-node.sh` prints it.
+- A cloud OFF to a hardware channel (`state: off`, any case) is published
+  without any `pwm`/`level` (older firmware treated `{state:off, pwm:N}` as ON)
+  and clears that actuator's `safety_max_on_seconds` ceiling.
+- `integrations_request` frames: signed frames are replay-deduped by id (409)
+  and a signature that can't be verified gets 401. After the Pi verifies its
+  first signed one, unsigned frames are rejected (401); the latch resets on
+  `/api/cloud/configure`. `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=true`
+  rejects unsigned frames from the start.
 
 ## v4 cloud-side rechecks (before forwarding any command)
 
@@ -100,6 +122,16 @@ OTA bundles themselves are now Ed25519-signed (`generate-ota-keypair.py`
 + `sign-ota-bundle.py` in `sporeprint/scripts/`); the cloud verifies the
 signature before approving the promotion, and the Pi's verification logic
 runs against the same public key during `_promote`.
+
+Limits of Pi self-update:
+- The Docker install refuses a `system/ota` command (`success=false`, "Pi
+  self-update is not supported in the Docker deployment"); update a Docker Pi
+  on the Pi with `git pull && ./install.sh`. Self-update needs the bare-metal
+  `<SPOREPRINT_INSTALL_ROOT>/current` symlink layout.
+- A requested version lower than the installed one is refused before the
+  command is acknowledged, and only one OTA runs at a time.
+- The signature covers the bundle bytes only; version and channel are not
+  signed yet (a signed `{version, channel, sha256}` manifest is future work).
 
 ## External services referenced in this flow
 

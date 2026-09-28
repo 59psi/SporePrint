@@ -116,6 +116,99 @@ async def test_publish_payload_is_forwarded_verbatim(mock_mqtt):
     assert published_payload == {"state": "on", "duration_sec": 90}
 
 
+# ── a cloud OFF clears the actuator's safety ceiling (automation-safety 3b) ─
+#
+# The engine's safety_max_on_seconds ceiling counts from the first automation
+# ON. An OFF sent outside automation must clear it, or the next automation ON
+# inherits the stale deadline and trips early (false WARNING + 15 min lockout).
+
+@pytest.fixture()
+def off_hook(monkeypatch):
+    calls: list[tuple[str, str | None, float]] = []
+
+    async def _spy(target, channel, *, sent_at=None):
+        calls.append((target, channel, sent_at))
+
+    monkeypatch.setattr("app.automation.engine.note_actuator_off", _spy)
+    return calls
+
+
+async def test_published_cloud_off_clears_the_ceiling(mock_mqtt, off_hook):
+    await _register_relay_node()
+    sio = _FakeSio()
+    before = time.time()
+    await handle_cloud_command(
+        sio, _sign(_cmd("cmd-off", channel="fae", payload={"state": "off"})))
+    assert sio.last_result()["success"] is True
+    assert [(t, c) for t, c, _ in off_hook] == [(RELAY_NODE, "fae")]
+    # sent_at is taken just BEFORE the publish, per the hook's contract.
+    assert before <= off_hook[0][2] <= time.time()
+
+
+@pytest.mark.parametrize("payload,channel", [
+    ({"state": "on"}, "fae"),                 # not an OFF
+    ({"pwm": 0}, "fae"),                      # no explicit state: not a plain OFF
+    ({"state": "off"}, None),                 # cmd/config, not an actuator
+])
+async def test_only_a_plain_channel_off_clears_the_ceiling(mock_mqtt, off_hook, payload, channel):
+    await _register_relay_node()
+    await handle_cloud_command(
+        _FakeSio(), _sign(_cmd("cmd-x", channel=channel, payload=payload)))
+    assert len(mock_mqtt) == 1
+    assert off_hook == []
+
+
+async def test_undelivered_cloud_off_keeps_the_ceiling(mock_mqtt, off_hook):
+    await _register_relay_node()
+    mock_mqtt.mock.return_value = False
+    sio = _FakeSio()
+    await handle_cloud_command(
+        sio, _sign(_cmd("cmd-off-lost", channel="fae", payload={"state": "off"})))
+    assert sio.last_result()["success"] is False
+    assert off_hook == []
+
+
+async def test_cloud_off_never_carries_a_duty_value(mock_mqtt, off_hook):
+    # Deployed firmware reads {"state":"off","pwm":N} as ON at duty N. The Pi
+    # is about to clear the ceiling for this OFF, so it must be a real OFF.
+    await _register_relay_node()
+    await handle_cloud_command(_FakeSio(), _sign(_cmd(
+        "cmd-off-pwm", channel="fae",
+        payload={"state": "OFF", "pwm": 180, "level": 400, "reason": "app"})))
+    (_topic, published) = mock_mqtt[0]
+    assert published == {"state": "OFF", "reason": "app"}
+    assert [(t, c) for t, c, _ in off_hook] == [(RELAY_NODE, "fae")]
+
+
+async def test_cloud_off_cancels_a_real_armed_ceiling(mock_mqtt):
+    import asyncio
+
+    import app.automation.engine as engine
+
+    await _register_relay_node()
+    key = engine._safety_key(RELAY_NODE, "fae")
+    armed = asyncio.create_task(asyncio.sleep(3600))
+    engine._safety_tasks[key] = armed
+    engine._safety_last_on[key] = time.time() - 60   # ON went out a minute ago
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO safety_watchdogs (target, channel, rule_name, armed_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (RELAY_NODE, "fae", "FAE boost", time.time() - 60, time.time() + 3540),
+        )
+        await db.commit()
+
+    await handle_cloud_command(
+        _FakeSio(), _sign(_cmd("cmd-off-real", channel="fae", payload={"state": "off"})))
+
+    await asyncio.sleep(0)
+    assert armed.cancelled()
+    assert key not in engine._safety_tasks
+    async with get_db() as db:
+        rows = await (await db.execute("SELECT * FROM safety_watchdogs")).fetchall()
+    assert rows == []
+
+
 # ── premium gate ───────────────────────────────────────────────────────────
 
 async def test_free_tier_is_rejected_and_never_publishes(mock_mqtt):

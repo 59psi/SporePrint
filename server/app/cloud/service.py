@@ -635,7 +635,10 @@ async def handle_cloud_command(sio, data):
                 "executed" if ok else "rejected", channel, tier,
             )
         else:
-            # Late import to avoid circular dependency with mqtt.py
+            # Late imports: mqtt.py imports this module at top level, and the
+            # automation engine imports mqtt.py, so either at module top here
+            # would be a circular import.
+            from ..automation.engine import note_actuator_off
             from ..mqtt import mqtt_publish
 
             if channel:
@@ -643,7 +646,20 @@ async def handle_cloud_command(sio, data):
             else:
                 topic = f"sporeprint/{target}/cmd/config"
 
+            is_off = bool(channel) and _is_plain_off(payload)
+            if is_off:
+                payload = _strip_duty(payload)
+            sent_at = time.time()
             published = await mqtt_publish(topic, payload)
+            if published and is_off:
+                # An OFF outside automation ends the ON a safety ceiling is
+                # timing; otherwise the next automation ON inherits the stale
+                # deadline and trips early (false page + 15 min lockout).
+                try:
+                    await note_actuator_off(target, channel, sent_at=sent_at)
+                except Exception as e:
+                    log.warning("Cloud: clearing safety ceiling for %s/%s failed: %s",
+                                target, channel, e)
 
             await sio.emit("command_result", {
                 "id": command_id,
@@ -666,6 +682,23 @@ async def handle_cloud_command(sio, data):
             "success": False,
             "error": str(e),
         })
+
+
+def _is_plain_off(payload) -> bool:
+    """An explicit ``"state": "off"`` channel command (any case, as firmware reads it)."""
+    return (isinstance(payload, dict)
+            and isinstance(payload.get("state"), str)
+            and payload["state"].strip().lower() == "off")
+
+
+def _strip_duty(payload: dict) -> dict:
+    """Drop duty values from an OFF so it can never switch a channel on.
+
+    Current firmware lets an explicit off win, but deployed firmware reads
+    ``{"state": "off", "pwm": N}`` as ON at duty N — and the Pi clears the
+    actuator's safety ceiling for every OFF it relays.
+    """
+    return {k: v for k, v in payload.items() if k not in ("pwm", "level")}
 
 
 def cloud_url_transport_ok(url: str) -> bool:

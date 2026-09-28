@@ -6,6 +6,10 @@ pass through — the LAN-scoped CORS middleware remains the only gate.
 Requests that pass without the bearer:
 - `/api/health` (any method) — the UI's existence probe must work before auth is set up
 - `POST /api/cloud/pair`      — pairing handshake (code + lockout is the gate here)
+- `GET /api/provision/ca`     — the broker's PUBLIC CA certificate for the node's
+  Secure-MQTT trust-on-first-use fetch (firmware tls_transport.h sends no bearer;
+  a 401 would silently drop the node to plaintext 1883). The handler refuses any
+  file containing key material.
 - `POST /api/vision/frame`    — ESP32-CAM uploads (the camera has no slot for the
   key), ONLY for an X-Node-Id registered in `hardware_nodes` and with a declared
   Content-Length within the 20 MB cap (checked before the body is read)
@@ -87,6 +91,8 @@ _PUBLIC_PATHS = frozenset({
 # whitelist also exposed e.g. POST /api/cloud/pairing-code).
 _PUBLIC_ROUTES = frozenset({
     ("POST", "/api/cloud/pair"),
+    # Serves only the public CA (app/provision.py); nodes fetch it keyless.
+    ("GET", "/api/provision/ca"),
 })
 
 # v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
@@ -180,6 +186,27 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+
+def socketio_client_addr(environ: dict | None) -> str | None:
+    """The connecting Socket.IO client's address, from the ASGI scope.
+
+    python-engineio's ASGI driver hardcodes environ['REMOTE_ADDR'] to
+    '127.0.0.1', so keying on it put every client in one rate-limit bucket.
+    scope['client'] is the real peer — rewritten from nginx's X-Forwarded-For
+    by uvicorn's proxy-headers middleware only when the hop is a trusted
+    proxy (FORWARDED_ALLOW_IPS). The raw X-Forwarded-For header is never
+    read here: a LAN client talking to :8000 directly could forge it.
+    """
+    if not environ:
+        return None
+    client = (environ.get("asgi.scope") or {}).get("client")
+    if client and client[0]:
+        return str(client[0])
+    # Other engineio drivers fill REMOTE_ADDR honestly. Under ASGI with no
+    # peer address (a unix-socket bind) it is the placeholder, which keeps
+    # all such clients in one shared, still rate-limited bucket.
+    return environ.get("REMOTE_ADDR") or None
 
 
 def socketio_auth_ok(auth: dict | None, remote_addr: str | None = None) -> bool:

@@ -4,8 +4,12 @@
 Run ONCE, on a release-signing host that you trust. Outputs:
 
   - The base64-encoded **public** key — paste into every Pi's
-    Settings → OTA verify key (or set SPOREPRINT_OTA_PUBKEY=<value>
+    Settings → OTA verify key (or set SPOREPRINT_OTA_PUBKEY_B64=<value>
     in the SporePrint checkout's .env, then `docker compose up -d server`).
+    Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current (systemd)
+    layout self-update from signed bundles. The Docker install (install.sh)
+    refuses cloud OTA — it updates with `git pull && ./install.sh` — so the key
+    has no effect there.
 
   - The base64-encoded **private** key — keep this on hardware you
     control (a YubiKey with PIV slot, an offline laptop, a sealed
@@ -18,10 +22,10 @@ Run ONCE, on a release-signing host that you trust. Outputs:
 
         python3 scripts/sign-ota-bundle.py \\
             --bundle dist/sporeprint-server-3.4.11.tar.gz \\
-            --private-key ~/.config/sporeprint/ota-signing.key
+            --private-key ~/.config/sporeprint/ota/ota-signing.key
 
 Usage:
-    python3 sporeprint/scripts/generate-ota-keypair.py [--out DIR]
+    python3 scripts/generate-ota-keypair.py [--out DIR]
 
 By default the keys are printed to stdout and NOT written to disk.
 Pass `--out DIR` to write `ota-signing.key` (private) and
@@ -128,10 +132,14 @@ def main() -> int:
     print("=" * 72)
     print()
     print("Public verify key (paste into every Pi's Settings → OTA verify key,")
-    print("or set SPOREPRINT_OTA_PUBKEY=<value> in the Pi's SporePrint/.env and run")
-    print("`docker compose up -d server`):")
+    print("or set SPOREPRINT_OTA_PUBKEY_B64=<value> in the Pi's SporePrint/.env and")
+    print("run `docker compose up -d server`):")
     print()
     print(f"  {pub_b64}")
+    print()
+    print("Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current (systemd)")
+    print("layout self-update. A Docker install (install.sh) refuses cloud OTA and")
+    print("updates with `git pull && ./install.sh`, so the key has no effect there.")
     print()
     print("-" * 72)
     print("Private signing key — KEEP THIS OFFLINE. Never commit. Never email.")

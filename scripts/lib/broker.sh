@@ -55,6 +55,7 @@ sp_should_chown() { [ "$(uname -s)" = "Linux" ]; }
 sp_passwd_update() {
   local root="$1" chown_flag=0
   sp_should_chown && chown_flag=1
+  # shellcheck disable=SC2016  # the -c script expands inside the container
   sp_docker run --rm -i -e SP_CHOWN="$chown_flag" -e SP_UID="$SP_BROKER_UID" \
     -v "$root/config/mosquitto:/work" --entrypoint sh "$SP_MOSQUITTO_IMAGE" -c '
       set -e

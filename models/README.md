@@ -394,14 +394,15 @@ Wiring: DOUT → relay-node GPIO 32, SCK → GPIO 33.
 | 2 | M4 × 16 SHCS + 2 × M4 DIN 125 washers | down through the platform into the free end (11.4 mm engaged) |
 | 4 | M4 × 8.1 insert (ruthex RX-M4x8.1 / CNC Kitchen) | platform stop bosses |
 | 4 | M4 × 8 set screw (ISO 4026 flat or ISO 4029 cup point) | adjustable overload stops (use nylon-patch screws or medium threadlocker) |
-| 2 | M2.5 × 5.7 insert | board posts, **recessed 2.9 mm** below the PCB and pressed down an access bore |
-| 2 | M2.5 × 10 SHCS | board to posts (5.5 mm engaged; do not use shorter) |
+| 2 | M2.5 × 5.7 insert | board posts, **recessed 2.9 mm** below the PCB and pressed down a Ø5.2 access bore (0.3 mm a side over the Ø4.6 knurl) |
+| 2 | M2.5 × 10 SHCS | board to posts (5.5 mm engaged). × 12 also fits (a screw-tip hole continues below each pocket); × 8 engages < 1.5 d — do not use it |
 | 1 | zip tie ≤ 3.6 mm | cable anchor |
 
 Changes for other presets:
 - `tal220`: 2 × M5 × 25 + 2 × M5 washers replace the M4 × 25 at the fixed
   end.
-- `sfe13879`: 4 × M3 × 5.7 inserts + 4 × M3 × 10 SHCS replace the M2.5 pair.
+- `sfe13879`: 4 × M3 × 5.7 inserts + 4 × M3 × 10 SHCS (× 12 also fits)
+  replace the M2.5 pair.
 - `generic`: no board inserts; use about 20 × 12 × 1 mm double-sided foam
   tape.
 
@@ -409,7 +410,8 @@ Changes for other presets:
 - `cell=...`, `hx_board=...`, `gen_L` / `gen_W`
 - `part="all"` (default, both on one 183 × 107 bed) | `"base"` | `"platform"` | `"assembly"`
 - `hx_stand` (≥ 2.5), `plat_margin`, `stop_gap_nom`, `stop_screw_len` (≤ 9.1)
-- `lc_washers=false`, `hx_access_fit`
+- `lc_washers=false`, `hx_access_fit` (default 0.6 mm over the insert's knurl;
+  the post grows with the bore — raise it for a fatter clone insert)
 - `SP_FASTENER="self_tap"`: the board posts take self-tappers; the stop
   holes must be tapped M4
 - `SP_INSERT_HOLE_TWEAK`
@@ -653,7 +655,9 @@ How to read the table:
 
 Special cases:
 - In `hx711_scale` the HX711 board inserts go 2.9 mm **below** the post top,
-  down an access bore.
+  down a Ø5.2 access bore: drop each one in small end down and press it with
+  a narrow M2.5 / M3 insert tip (the stepped ruthex / CNC Kitchen tips reach
+  down the bore) until its top is level with the bottom of the bore.
 - In `cam_mount` the M5 pivot insert goes in horizontally, into the side
   boss.
 - In `pump_bracket`, clamp the part in a vise so the pads face up.

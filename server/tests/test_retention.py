@@ -4,6 +4,7 @@ import time
 
 from app.db import get_db
 from app.retention.service import (
+    FIRINGS_RETENTION_DAYS,
     _rollup_telemetry_5min,
     _rollup_telemetry_hourly,
     _rollup_weather_hourly,
@@ -88,3 +89,98 @@ async def test_rollup_weather_hourly():
 async def test_full_retention_run():
     """run_retention() should complete without errors even with empty tables."""
     await run_retention()
+
+
+# ── automation_firings pruning (srv-auto#18) ───────────────────────────────
+
+async def _firing(ts: float, session_id: int | None = None, *, fk: bool = True) -> None:
+    async with get_db() as db:
+        if not fk:  # an orphan left by a pre-FK database
+            await db.execute("PRAGMA foreign_keys=OFF")
+        await db.execute(
+            "INSERT INTO automation_firings (rule_id, rule_name, timestamp, session_id) "
+            "VALUES (1, 'Humidity Boost', ?, ?)",
+            (ts, session_id),
+        )
+        await db.commit()
+
+
+async def _session() -> int:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "INSERT INTO sessions (name, species_profile_id) VALUES ('grow', 'blue_oyster')")
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def test_retention_prunes_old_firings_that_belong_to_no_session():
+    now = time.time()
+    old = now - (FIRINGS_RETENTION_DAYS + 5) * 86400
+    sid = await _session()
+    await _firing(old)                        # no session, expired  -> pruned
+    await _firing(old, 9999, fk=False)        # orphaned session id  -> pruned
+    await _firing(old, sid)                   # a grow's event log   -> kept
+    await _firing(now - 10 * 86400)           # recent               -> kept
+
+    await run_retention()
+
+    async with get_db() as db:
+        rows = [dict(r) for r in await (await db.execute(
+            "SELECT timestamp, session_id FROM automation_firings ORDER BY timestamp")).fetchall()]
+    # Session-tagged rows feed that session's transcript automation summary
+    # (transcript.export_json), so they are kept for the life of the record.
+    assert rows == [
+        {"timestamp": old, "session_id": sid},
+        {"timestamp": now - 10 * 86400, "session_id": None},
+    ]
+
+
+# ── vision frames get a nightly prune pass (notify-vision-weather 4) ──────
+
+async def test_retention_runs_the_vision_frame_prune(monkeypatch):
+    calls = []
+
+    async def _prune():
+        calls.append(time.time())
+        return {"frames_deleted": 0, "bytes_freed": 0, "frames_kept_outside_storage": 0}
+
+    monkeypatch.setattr("app.retention.service.prune_vision_frames", _prune)
+    await run_retention()
+    assert len(calls) == 1
+
+
+async def test_a_failing_vision_prune_does_not_abort_retention(monkeypatch):
+    async def _boom():
+        raise OSError("vision storage unavailable")
+
+    monkeypatch.setattr("app.retention.service.prune_vision_frames", _boom)
+    vacuumed = []
+
+    async def _vacuum_spy():
+        vacuumed.append(True)
+
+    monkeypatch.setattr("app.retention.service._vacuum", _vacuum_spy)
+    await run_retention()
+    assert vacuumed == [True]
+
+
+# ── the one-time auto_vacuum conversion needs disk headroom ────────────────
+
+async def test_auto_vacuum_conversion_is_skipped_without_disk_headroom(monkeypatch):
+    """A full VACUUM writes a copy of the DB (temp file + WAL); running out of
+    disk mid-way would starve the broker and ntfy on the same card."""
+    import collections
+
+    from app.retention import service as retention
+
+    async with get_db() as db:
+        await db.execute("PRAGMA auto_vacuum = NONE")
+        await db.execute("VACUUM")
+    Usage = collections.namedtuple("Usage", "total used free")
+    monkeypatch.setattr(retention.shutil, "disk_usage",
+                        lambda _path: Usage(10**9, 10**9 - 1024, 1024))
+
+    assert await retention.ensure_incremental_auto_vacuum() is False
+    async with get_db() as db:
+        mode = (await (await db.execute("PRAGMA auto_vacuum")).fetchone())[0]
+    assert mode == 0

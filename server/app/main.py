@@ -1,11 +1,17 @@
 import asyncio
+import datetime as dt
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from .hardware.coredumps import coredump_dir
+from .health.service import update_task
+from .sessions.service import check_phase_reminders
 
 # Socket.IO accepts wildcard origins because engineio's CORS implementation only
 # allows exact-string match (no regex/callable) and the Pi binds to a dynamic
@@ -28,7 +34,7 @@ async def lifespan(app: FastAPI):
 
     from .automation.service import seed_builtin_rules
     from .cloud.service import start_cloud_connector
-    from .retention.service import start_retention_task
+    from .retention.service import ensure_incremental_auto_vacuum, start_retention_task
     from .weather.service import start_weather_polling
 
     # v3.4.9 Debt 5 — configure structured logging with request_id
@@ -47,9 +53,10 @@ async def lifespan(app: FastAPI):
         if not settings.allow_unauthenticated:
             raise RuntimeError(
                 "SPOREPRINT_API_KEY is empty and SPOREPRINT_ALLOW_UNAUTHENTICATED=false. "
-                "Either set SPOREPRINT_API_KEY (recommended — run setup.sh) or, for "
-                "intentional LAN-trust mode on an isolated network, set "
-                "SPOREPRINT_ALLOW_UNAUTHENTICATED=true."
+                "On a Pi, run ./install.sh (it sets up LAN-trust mode for the bundled "
+                "dashboard); otherwise set SPOREPRINT_API_KEY to require a bearer "
+                "token, or set SPOREPRINT_ALLOW_UNAUTHENTICATED=true for intentional "
+                "LAN-trust mode on an isolated network."
             )
         log.warning(
             "SPOREPRINT_API_KEY is empty — running in LAN-trust mode with no auth. "
@@ -57,6 +64,16 @@ async def lifespan(app: FastAPI):
         )
 
     await init_db()
+    # One-time switch of an existing database to auto_vacuum=INCREMENTAL (a
+    # full VACUUM holding the write lock), done here before any writer task
+    # exists. New databases are created in that mode; afterwards this is a
+    # no-op. A failure (e.g. disk full) is logged and boot continues — the
+    # nightly job only loses its ability to hand freed pages back.
+    try:
+        await ensure_incremental_auto_vacuum()
+    except Exception as e:
+        log.error("auto_vacuum conversion failed; continuing boot: %s", e)
+    _ensure_coredump_dir(log)
     await seed_builtins()
     await seed_builtin_rules()
 
@@ -71,6 +88,7 @@ async def lifespan(app: FastAPI):
     register_task("daily_retrain", "idle")
     register_task("nightly_weather_aggregate", "idle")
     register_task("node_liveness_sweeper", "running")
+    register_task("phase_reminders", "idle")
 
     from .integrations._health_sweeper import (
         run_health_sweeper,
@@ -85,6 +103,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_daily_retrain()),
         asyncio.create_task(_nightly_weather_aggregate()),
         asyncio.create_task(_node_liveness_sweeper()),
+        asyncio.create_task(_phase_reminder_loop()),
         # v4.1.5 — emit vendor_health_degraded events on transitions
         # so the cloud's push-rules + escalation chains can fire.
         asyncio.create_task(run_health_sweeper()),
@@ -107,9 +126,10 @@ async def lifespan(app: FastAPI):
     # are isolated per-driver in the registry so a misconfigured Aranet
     # base station can't take down the Pi.
     await _start_enabled_integrations()
-    # v4.1.5 — push the initial snapshot so the cloud's fleet cache
-    # warms up immediately. Forwarded events queue if the cloud
-    # connector is still establishing its socket.
+    # v4.1.5 — push the initial snapshot so the cloud's fleet cache warms up
+    # immediately. forward_event does NOT queue: if the connector's socket is
+    # not up yet this push is dropped, which is harmless because the connector
+    # re-pushes the snapshot on every (re)connect.
     await push_state_snapshot()
     yield
     await _stop_all_integrations()
@@ -166,9 +186,63 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
+def _ensure_coredump_dir(log: logging.Logger) -> None:
+    """Create the node coredump directory at boot and say if it is unusable.
+
+    Dumps are reassembled there when a node reports a panic; finding out it
+    is unwritable only then means that dump is lost.
+    """
+    path = coredump_dir()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error("Coredump directory %s cannot be created: %s — node panic "
+                  "dumps will be lost", path, e)
+        return
+    if not os.access(path, os.W_OK | os.X_OK):
+        log.error("Coredump directory %s is not writable — node panic dumps "
+                  "will be lost", path)
+
+
+# Overdue-phase reminders (INFO) go out once a day at this local hour
+# (container time: UTC unless TZ is set). Daily rather than hourly: the INFO
+# tier's dedup is 1 h, so an hourly check would nag every hour for days.
+_PHASE_REMINDER_LOCAL_HOUR = 9
+
+
+def _seconds_until_next_phase_reminder(now: float | None = None) -> float:
+    now = time.time() if now is None else now
+    current = dt.datetime.fromtimestamp(now)
+    target = current.replace(hour=_PHASE_REMINDER_LOCAL_HOUR, minute=0,
+                             second=0, microsecond=0)
+    if target <= current:
+        target += dt.timedelta(days=1)
+    return target.timestamp() - now
+
+
+async def _phase_reminder_loop():
+    """Nudge the operator about active sessions that have overrun their phase."""
+    log = logging.getLogger(__name__)
+    while True:
+        try:
+            await asyncio.sleep(_seconds_until_next_phase_reminder())
+            update_task("phase_reminders", "running")
+            sent = await check_phase_reminders()
+            update_task("phase_reminders", "idle")
+            if sent:
+                log.info("Sent %d overdue-phase reminder(s)", sent)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            update_task("phase_reminders", "error", error=str(e))
+            log.error("Phase reminder check failed: %s", e)
+
+
 # A node is considered offline once we haven't heard from it for this long.
-# Climate nodes publish every 60s + heartbeats every 5 min, so 15 min is three
-# missed heartbeats — enough to discriminate a WiFi blip from a true outage.
+# last_seen is refreshed by status/* frames and by every telemetry frame
+# (mqtt.py). Heartbeats come at least every 5 min (current firmware keeps them
+# on their own clock) and relay banks report switch state every 60 s, so 15
+# min is three missed heartbeats — enough to tell a WiFi blip from an outage.
 _NODE_OFFLINE_THRESHOLD_SECONDS = 900
 _NODE_SWEEPER_INTERVAL_SECONDS = 60
 
@@ -270,7 +344,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-from .auth import ApiKeyMiddleware, socketio_auth_ok
+from .auth import ApiKeyMiddleware, socketio_auth_ok, socketio_client_addr
 from ._request_id_mw import RequestIdMiddleware
 
 # v3.4.9 Debt 5 — request-id middleware lives BEFORE the api key check
@@ -368,9 +442,11 @@ from .health.service import track_client_connect, track_client_disconnect
 async def _sio_connect(sid, environ, auth=None):
     # v3.3.3 — pass the remote address into the auth callback so its rate-limit
     # can kick in (see app.auth.socketio_auth_ok docstring for the LAN-trust
-    # rationale). environ['REMOTE_ADDR'] is set by uvicorn's ASGI layer.
+    # rationale). The address is the ASGI scope's peer (behind nginx, the
+    # dashboard's real IP via uvicorn --proxy-headers); engineio's ASGI
+    # REMOTE_ADDR is a hardcoded placeholder — see socketio_client_addr.
     _log = logging.getLogger(__name__)
-    remote_addr = environ.get("REMOTE_ADDR") or environ.get("HTTP_X_FORWARDED_FOR")
+    remote_addr = socketio_client_addr(environ)
     if not socketio_auth_ok(auth, remote_addr=remote_addr):
         _log.warning("Socket.IO connect refused: sid=%s remote=%s", sid, remote_addr or "?")
         return False

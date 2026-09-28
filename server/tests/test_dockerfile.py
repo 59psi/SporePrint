@@ -50,3 +50,14 @@ def test_uvicorn_trusts_forwarded_headers_only_from_the_compose_network():
     cmd = json.loads(next(rest for op, rest in ins if op == "CMD"))
     assert cmd[:2] == ["uvicorn", "app.main:socket_app"]
     assert "--proxy-headers" in cmd
+
+
+def test_image_carries_the_zone_files_tz_needs():
+    """compose passes TZ (install.sh writes the host's zone) so automation
+    schedules run on the operator's clock. glibc resolves TZ through
+    /usr/share/zoneinfo and silently falls back to UTC when the zone file is
+    missing. The pinned Debian base ships tzdata today; the build must keep
+    it that way if a future base drops it."""
+    runs = " ".join(rest for op, rest in _instructions() if op == "RUN")
+    assert "/usr/share/zoneinfo/" in runs, "no zoneinfo check in the image build"
+    assert re.search(r"apt-get install\b[^;&|]*\btzdata\b", runs), "no tzdata fallback install"

@@ -59,7 +59,7 @@ def _actuator_label(action) -> str:
     return f"{action.target}/{action.channel}" if action.channel else action.target
 
 
-async def _actuator_present(action) -> bool:
+async def _actuator_present(action, chamber_nodes: list[str] | None = None) -> bool:
     """Is the actuator this action drives actually paired to the Pi right now?
 
     Three action shapes, three honest checks — all reading the same registries
@@ -74,20 +74,28 @@ async def _actuator_present(action) -> bool:
       node registry directly — RESOLVING the placeholder first, so a lighting
       node registered under its MAC-derived id still reads as present instead of
       the chamber reading as "no lighting". (V3-2)
+
+    With ``chamber_nodes`` a placeholder (relay-01 / light-01) must resolve the
+    way the engine resolves it for that chamber — the chamber's own node of
+    that role, or one in no chamber — so another chamber's relay or light never
+    makes this chamber read as covered.
     """
     if await validate_action_channel(action):
         # Either a live node rejected this channel, or the placeholder target
         # resolves to no node of its role — both mean the actuator isn't there.
         return False
+    if chamber_nodes and await resolve_node_target(action.target, chamber_nodes) is None:
+        return False
     if action.channel:
         return await target_is_present(action.channel)
     if action.target.startswith("plug-"):
         return await target_is_present(action.target)
-    resolved = await resolve_node_target(action.target)
+    resolved = await resolve_node_target(action.target, chamber_nodes)
     return resolved is not None and await get_node(resolved) is not None
 
 
-async def _resolve_fallback(target: str, fallbacks: list[AutomationRule]) -> str | None:
+async def _resolve_fallback(target: str, fallbacks: list[AutomationRule],
+                            chamber_nodes: list[str] | None = None) -> str | None:
     """Name the actuator that stands in for an absent `target`, if any.
 
     A fallback rule declares `requires_absent_target=<target>` and fires only
@@ -96,13 +104,17 @@ async def _resolve_fallback(target: str, fallbacks: list[AutomationRule]) -> str
     claiming the requirement degrades gracefully rather than simply fails.
     """
     for rule in fallbacks:
-        if rule.requires_absent_target == target and await _actuator_present(rule.action):
+        if (rule.requires_absent_target == target
+                and await _actuator_present(rule.action, chamber_nodes)):
             return _actuator_label(rule.action)
     return None
 
 
-async def compute_coverage(profile) -> list[dict]:
+async def compute_coverage(profile, chamber_nodes: list[str] | None = None) -> list[dict]:
     """Per-phase hardware-capability verdict for `profile` (a SpeciesProfile).
+
+    ``chamber_nodes`` (the chamber's node ids) scopes placeholder resolution to
+    that chamber, the way the engine resolves it when it drives the chamber.
 
     Returns the `phases` list of the GET /api/chambers/{id}/automation-coverage
     contract: one entry per grow phase, each with a deduped list of the
@@ -137,9 +149,9 @@ async def compute_coverage(profile) -> list[dict]:
             if key in seen:
                 continue
             seen.add(key)
-            available = await _actuator_present(rule.action)
+            available = await _actuator_present(rule.action, chamber_nodes)
             fallback = None if available else await _resolve_fallback(
-                rule.action.target, fallbacks
+                rule.action.target, fallbacks, chamber_nodes
             )
             requirements.append({
                 "target": rule.action.target,

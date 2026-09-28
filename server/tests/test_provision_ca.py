@@ -82,6 +82,26 @@ async def test_provision_ca_serves_repo_root_ca_from_any_cwd(
     assert "BEGIN CERTIFICATE" in resp.text
 
 
+async def test_provision_ca_is_public_when_the_api_key_gate_is_on(
+        client, tmp_path, monkeypatch):
+    """The firmware's TOFU fetch (tls_transport.h) sends no bearer, so with
+    SPOREPRINT_API_KEY set the CA must still be served — a 401 here makes
+    every Secure-MQTT node fall back to plaintext 1883."""
+    from app.config import settings
+
+    ca = tmp_path / "ca.crt"
+    ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n")
+    monkeypatch.setattr(provision, "_CA_PATHS", (ca,))
+    monkeypatch.setattr(settings, "api_key", "lan-key")
+
+    resp = client.get("/api/provision/ca")
+    assert resp.status_code == 200
+    assert "BEGIN CERTIFICATE" in resp.text
+    # Only the read is public: other methods and the rest of the API stay gated.
+    assert client.post("/api/provision/ca").status_code == 401
+    assert client.get("/api/sessions").status_code == 401
+
+
 async def test_provision_ca_404_points_at_the_supported_installer(
         client, tmp_path, monkeypatch):
     monkeypatch.setattr(provision, "_CA_PATHS", (tmp_path / "nope.crt",))

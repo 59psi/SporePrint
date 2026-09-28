@@ -2,11 +2,18 @@
 //
 // autodetect — I²C sensor identification at boot.
 //
-// Posture: VALIDATE, don't discover. The provisioned personality declares
-// what should be attached; autodetect probes the known addresses, reports
-// what answered, and the node app raises `expected_missing` health/alerts
-// for declared-but-absent sensors (a dead sensor must be an alert, not
-// silence). Opportunistic finds (present but undeclared) still get used.
+// Posture: probe the known addresses and report what answered; every sensor
+// that answers is used. What the node app then treats as MISSING is narrow
+// (src/node/main.cpp publish_health / check_alerts):
+//   * temp_rh — only a CLIMATE-personality node is expected to carry a
+//     temp/RH sensor; one with no SHT on the bus lists `temp_rh` in
+//     expected_missing (relay/lighting banks are sensorless by design)
+//   * CO2 / lux found here are opportunistic: never listed when absent at
+//     boot, but once found, a sensor that stops delivering goes stale and
+//     raises a sensor_failure alert (freshness.h)
+//   * the config-flag peripherals below are listed when enabled but not
+//     delivering (mhz19, hx711) — except the reed switch, which cannot be
+//     told apart from a closed door and is never listed
 //
 // The 0x44/0x45 dance: SHT3x and SHT4x share addresses but not protocols
 // (the v4.1 BOM bug). Probe SHT4x FIRST — its single-byte 0x89 serial read

@@ -8,6 +8,8 @@ Shelly topics:  shellies/<device_id>/relay/0 → "on"/"off"
                 shellies/<device_id>/relay/0/power → watts
 
 Tasmota topics: tasmota/<device_id>/stat/POWER → "ON"/"OFF"
+                tasmota/<device_id>/stat/RESULT → {"POWER": "ON"} (command replies)
+                tasmota/<device_id>/tele/STATE → {..., "POWER": "ON"} (periodic)
                 tasmota/<device_id>/cmnd/POWER ← "ON"/"OFF"
                 tasmota/<device_id>/tele/SENSOR → JSON with energy
 """
@@ -16,6 +18,7 @@ import json
 import logging
 import time
 
+from .. import mqtt as _mqtt
 from ..db import get_db
 from ..mqtt import mqtt_publish
 
@@ -51,10 +54,31 @@ async def handle_plug_message(sio, topic: str, payload):
             await _update_plug_state(plug_id, "tasmota", device_id, state.lower())
             await sio.emit("plug_state", {"plug_id": plug_id, "state": state.lower()})
 
+        elif (parts[2], parts[3]) in (("stat", "RESULT"), ("tele", "STATE")):
+            # A command reply (stat/RESULT) and the periodic status (tele/STATE)
+            # carry the relay as JSON {"POWER": "ON"} — POWER1 on multi-relay
+            # firmware. A plug whose SetOption kept stat/POWER quiet reported
+            # its state nowhere else, so last_state went stale.
+            state = _tasmota_json_power(payload)
+            if state is not None:
+                await _update_plug_state(plug_id, "tasmota", device_id, state)
+                await sio.emit("plug_state", {"plug_id": plug_id, "state": state})
+
         elif parts[2] == "tele" and parts[3] == "SENSOR":
             if isinstance(payload, dict) and "ENERGY" in payload:
                 power = payload["ENERGY"].get("Power", 0)
                 await _update_plug_power(plug_id, power)
+
+
+def _tasmota_json_power(payload) -> str | None:
+    """"on"/"off" from a Tasmota RESULT/STATE document, or None if it has no relay state."""
+    if not isinstance(payload, dict):
+        return None
+    for key in ("POWER", "POWER1"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip().upper() in ("ON", "OFF"):
+            return value.strip().lower()
+    return None
 
 
 async def is_plug_target(target: str) -> bool:
@@ -129,6 +153,24 @@ async def plug_aliases(target: str) -> set[str]:
     return aliases
 
 
+async def paired_plug(plug_id: str) -> dict | None:
+    """The paired smart_plugs row a command to `plug_id` reaches, or None.
+
+    Matched by plug_id OR device_role (`plug-heater` → role 'heater'), the exact
+    id winning a tie — the same resolution target_is_present uses.
+    """
+    role = plug_id[len("plug-"):] if plug_id.startswith("plug-") else None
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM smart_plugs "
+            "WHERE plug_id = ? OR device_role = ? "
+            "ORDER BY (plug_id = ?) DESC LIMIT 1",
+            (plug_id, role, plug_id),
+        )
+        row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def send_plug_command(plug_id: str, state: str) -> bool:
     """Send an on/off command to a smart plug. True only when it was delivered
     to a PAIRED plug; an unpaired plug is a reported no-op (False).
@@ -155,16 +197,7 @@ async def send_plug_command(plug_id: str, state: str) -> bool:
     though the plug was paired and `target_is_present` reported it available.
     The exact-id match wins the ORDER BY tie-break when both exist. (V3-1)
     """
-    role = plug_id[len("plug-"):] if plug_id.startswith("plug-") else None
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT plug_type, mqtt_topic_prefix FROM smart_plugs "
-            "WHERE plug_id = ? OR device_role = ? "
-            "ORDER BY (plug_id = ?) DESC LIMIT 1",
-            (plug_id, role, plug_id),
-        )
-        row = await cursor.fetchone()
-
+    row = await paired_plug(plug_id)
     if not row:
         # No paired plug for this id — the command can reach no actuator, so it
         # is a no-op. Don't claim success (and don't spray a speculative publish
@@ -187,12 +220,21 @@ async def send_plug_command(plug_id: str, state: str) -> bool:
 
 
 async def _publish_raw(topic: str, payload: str) -> bool:
-    """Publish an unencoded payload — vendor plugs want bare text, not JSON."""
-    from ..mqtt import _client
+    """Publish an unencoded payload — vendor plugs want bare text, not JSON.
 
-    if _client is None:
+    False when there is no broker connection or the publish fails, like
+    mqtt_publish: a caller must never read a raised transport error as sent.
+    The client is read from the mqtt module at call time — it is replaced on
+    every reconnect.
+    """
+    client = _mqtt._client
+    if client is None:
         return False
-    await _client.publish(topic, payload)
+    try:
+        await client.publish(topic, payload)
+    except Exception as e:
+        log.warning("plug publish to %s failed: %s", topic, e)
+        return False
     return True
 
 

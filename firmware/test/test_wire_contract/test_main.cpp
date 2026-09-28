@@ -223,6 +223,25 @@ void test_alert_every_firmware_type_is_a_known_alert_type() {
     }
 }
 
+// Firmware alert types that are NOT (yet) in the design ALERT_TYPES. The Pi
+// pages unknown node alert types at WARNING (server/app/mqtt.py
+// _notify_node_alert) and forwards them unchanged, so each is additive; the
+// cloud design list should adopt them (cross-repo follow-up).
+static const char* const kFirmwareOnlyAlertTypes[] = {"tls_downgrade"};
+
+void test_tls_downgrade_alert_shape() {
+    // fw-node#2: Secure MQTT on, no Pi CA pinned, running on plaintext. The
+    // value is the plaintext port in use; no `sensor` (dedup is per type).
+    JsonDocument doc;
+    sp::build_alert(sp::kAlertTlsDowngrade, 1883.0f,
+                    "Secure MQTT is on but no Pi CA is pinned", nullptr, doc);
+    const char* expected[] = {"type", "value", "message"};
+    assert_exact_keys(doc.as<JsonObject>(), expected, 3, "tls_downgrade alert");
+    TEST_ASSERT_EQUAL_STRING("tls_downgrade", doc["type"]);
+    TEST_ASSERT_TRUE(in_list(kFirmwareOnlyAlertTypes, 1, doc["type"].as<const char*>()));
+    TEST_ASSERT_FALSE(in_list(kAlertTypes, 5, doc["type"].as<const char*>()));
+}
+
 // ── switch-channel report ──────────────────────────────────────
 
 void test_switch_report_contract() {
@@ -361,6 +380,49 @@ void test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals() {
     TEST_ASSERT_TRUE(in_list(kComponentTypes, 4, "camera"));
 }
 
+void test_heartbeat_transport_and_board_keys_are_optional_additions() {
+    // fw-node#2 / new S3 board env: `tls` (the MQTT transport actually in
+    // use), `tls_fallback` (only while Secure MQTT is on but the node runs
+    // plaintext) and `board` (which image a node needs for OTA). All are
+    // additive: an input set that doesn't ask for them yields exactly the
+    // pre-existing key set (asserted above), and the Pi ignores unknown keys.
+    const char* roles[] = {"relay"};
+    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
+    in.emit_tls = true;
+    in.tls = true;
+    in.board = "esp32-s3-devkitc-1-n32r16v";
+    JsonDocument doc;
+    sp::build_heartbeat(in, doc);
+    std::set<std::string> k = keys_of(doc.as<JsonObject>());
+    TEST_ASSERT_EQUAL_INT(13, (int)k.size());  // 11 + tls + board
+    TEST_ASSERT_TRUE(doc["tls"].is<bool>());
+    TEST_ASSERT_TRUE(doc["tls"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("esp32-s3-devkitc-1-n32r16v", doc["board"]);
+    TEST_ASSERT_FALSE(k.count("tls_fallback") == 1);  // only when true
+
+    in.tls = false;
+    in.tls_fallback = true;
+    JsonDocument fb;
+    sp::build_heartbeat(in, fb);
+    TEST_ASSERT_FALSE(fb["tls"].as<bool>());
+    TEST_ASSERT_TRUE(fb["tls_fallback"].is<bool>());
+    TEST_ASSERT_TRUE(fb["tls_fallback"].as<bool>());
+
+    // Defaults: none of the three keys.
+    sp::HeartbeatInputs plain = node_hb_inputs(roles, 1);
+    JsonDocument d0;
+    sp::build_heartbeat(plain, d0);
+    std::set<std::string> k0 = keys_of(d0.as<JsonObject>());
+    TEST_ASSERT_FALSE(k0.count("tls") == 1);
+    TEST_ASSERT_FALSE(k0.count("tls_fallback") == 1);
+    TEST_ASSERT_FALSE(k0.count("board") == 1);
+    // An empty board string is treated as unset.
+    plain.board = "";
+    JsonDocument d1;
+    sp::build_heartbeat(plain, d1);
+    TEST_ASSERT_FALSE(keys_of(d1.as<JsonObject>()).count("board") == 1);
+}
+
 // ── health ─────────────────────────────────────────────────────
 
 void test_node_health_contract_with_sensors_and_channels() {
@@ -460,11 +522,13 @@ int main(int, char**) {
     RUN_TEST(test_telemetry_ts_epoch_when_synced_else_uptime);
     RUN_TEST(test_alert_keys_and_types);
     RUN_TEST(test_alert_every_firmware_type_is_a_known_alert_type);
+    RUN_TEST(test_tls_downgrade_alert_shape);
     RUN_TEST(test_switch_report_contract);
     RUN_TEST(test_dim_levels_keyed_by_channel_name_and_not_persisted);
     RUN_TEST(test_node_heartbeat_contract);
     RUN_TEST(test_node_heartbeat_migrated_from_appears_only_when_set);
     RUN_TEST(test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals);
+    RUN_TEST(test_heartbeat_transport_and_board_keys_are_optional_additions);
     RUN_TEST(test_node_health_contract_with_sensors_and_channels);
     RUN_TEST(test_climate_health_omits_channels_object);
     RUN_TEST(test_log_entry_contract);

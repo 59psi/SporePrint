@@ -216,6 +216,43 @@ void test_peripherals_non_object_is_rejected_without_changes() {
     TEST_ASSERT_FALSE(r.changed);
 }
 
+// reed_inv (door contact wired on its NO lead): a boolean option of the reed
+// peripheral, settable from the same cmd/config key. It applies live — only a
+// change to the driver SET (mhz19 / hx711 / reed) needs the reboot.
+void test_peripherals_reed_invert_applies_without_restart() {
+    sp::PeripheralFlags f;
+    f.reed = true;
+    TEST_ASSERT_FALSE(f.reed_inv);  // default = LOW-closed, the old behavior
+    sp::PeripheralCmdResult r = apply("{\"peripherals\":{\"reed_inv\":true}}", &f);
+    TEST_ASSERT_TRUE(r.is_object);
+    TEST_ASSERT_TRUE(r.changed);
+    TEST_ASSERT_FALSE(r.restart_needed);
+    TEST_ASSERT_EQUAL_INT(1, r.applied);
+    TEST_ASSERT_TRUE(f.reed_inv);
+    TEST_ASSERT_TRUE(f.reed);
+
+    // Same value again: nothing to do.
+    r = apply("{\"peripherals\":{\"reed_inv\":true}}", &f);
+    TEST_ASSERT_FALSE(r.changed);
+    TEST_ASSERT_FALSE(r.restart_needed);
+
+    // Non-boolean is ignored, never coerced.
+    r = apply("{\"peripherals\":{\"reed_inv\":0}}", &f);
+    TEST_ASSERT_EQUAL_INT(1, r.ignored);
+    TEST_ASSERT_TRUE(f.reed_inv);
+}
+
+void test_peripherals_driver_set_change_needs_a_restart() {
+    sp::PeripheralFlags f;
+    sp::PeripheralCmdResult r =
+        apply("{\"peripherals\":{\"reed\":true,\"reed_inv\":true}}", &f);
+    TEST_ASSERT_TRUE(r.changed);
+    TEST_ASSERT_TRUE(r.restart_needed);  // the reed driver must be built
+    TEST_ASSERT_TRUE(f.reed && f.reed_inv);
+    r = apply("{\"peripherals\":{\"hx711\":true}}", &f);
+    TEST_ASSERT_TRUE(r.restart_needed);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_html_escape_neutralises_attribute_breakers);
@@ -235,5 +272,7 @@ int main(int, char**) {
     RUN_TEST(test_peripherals_same_values_report_unchanged);
     RUN_TEST(test_peripherals_ignore_non_bool_and_unknown_keys);
     RUN_TEST(test_peripherals_non_object_is_rejected_without_changes);
+    RUN_TEST(test_peripherals_reed_invert_applies_without_restart);
+    RUN_TEST(test_peripherals_driver_set_change_needs_a_restart);
     return UNITY_END();
 }

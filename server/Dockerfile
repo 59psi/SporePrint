@@ -5,8 +5,19 @@
 #   docker buildx imagetools inspect python:3.12-slim   # "Digest:" line
 FROM python:3.12.14-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
+# Zone files for TZ: compose passes TZ (install.sh writes the host's zone into
+# .env) so automation schedules run on the operator's clock, and glibc
+# silently falls back to UTC for a zone it cannot find. The Debian trixie base
+# ships tzdata (canonical Region/City zones; legacy aliases such as US/Pacific
+# live in tzdata-legacy, which install.sh resolves on the host). Install it
+# only if a future base drops it, so the usual build stays offline for apt.
 RUN pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
-    adduser --disabled-password --gecos "" --no-create-home appuser
+    adduser --disabled-password --gecos "" --no-create-home appuser && \
+    if [ ! -f /usr/share/zoneinfo/America/New_York ]; then \
+        apt-get update && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 WORKDIR /app
 
@@ -33,7 +44,8 @@ EXPOSE 8000
 # sets X-Forwarded-For. Trust those headers only from Docker's default bridge
 # address pool (the compose network) so the server sees each dashboard's real
 # address; a LAN client talking to :8000 directly cannot spoof one. Override
-# with -e FORWARDED_ALLOW_IPS=<cidr> if your compose network uses another range.
+# with FORWARDED_ALLOW_IPS=<cidr> in .env (docker-compose.yml passes it, with
+# this same default) if your compose network uses another range.
 ENV FORWARDED_ALLOW_IPS=172.16.0.0/12
 
 CMD ["uvicorn", "app.main:socket_app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

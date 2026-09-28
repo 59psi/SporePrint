@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import time
 
 import aiomqtt
@@ -38,6 +39,15 @@ _mqtt_restart_count = 0
 
 # Shelly / Tasmota publish on their own topic trees, often as bare text.
 _VENDOR_PLUG_PREFIXES = ("shellies/", "tasmota/")
+
+# Telemetry frames also refresh a registered node's liveness (srv-hw#22): the
+# offline sweeper in main.py reads last_seen, which only status/* frames used
+# to write. UPDATE only — status changes stay with the heartbeat/LWT path, and
+# telemetry never registers a node (registration gates keyless camera uploads).
+_TOUCH_LAST_SEEN_SQL = (
+    "UPDATE hardware_nodes SET last_seen = MAX(COALESCE(last_seen, 0), ?) "
+    "WHERE node_id = ?"
+)
 
 # Node-side alert types (firmware check_alerts / reed edges) -> ntfy tier.
 # Deployed firmware re-emits a standing condition every read cycle (~30 s);
@@ -93,6 +103,30 @@ def _sign_cmd_payload(payload: dict) -> dict:
         key.encode("utf-8"), canonical, hashlib.sha256
     ).hexdigest()
     return signed
+
+
+# The node's MqttLink drops any inbound frame of kInboundCap (1024) bytes or
+# more (firmware/lib/sp_device/mqtt_link.h), so a bound frame must stay below.
+_NODE_INBOUND_FRAME_CAP = 1024
+
+
+def _bind_cmd_payload(topic: str, payload: dict) -> dict:
+    """Add the destination-binding members to a cmd/* body before signing.
+
+    * "topic" — the full `sporeprint/<node>/cmd/<suffix>` it is published on.
+      Current firmware rejects a signed frame whose "topic" differs from the
+      topic it arrived on, so a captured frame can't be redirected to another
+      channel or node (fw-node#11).
+    * "nonce" — 64 random bits. The node remembers each accepted (topic, MAC)
+      for the replay window; without a nonce, two legitimate identical
+      commands in the same `ts` second (on/off/on) are byte-identical and
+      the repeat is dropped as a replay.
+
+    Backward compatible: every deployed firmware canonicalizes ALL members
+    except "signature", so older nodes verify these frames and ignore the
+    extra keys. The Pi's values always win over same-named payload keys.
+    """
+    return {**payload, "topic": topic, "nonce": secrets.token_hex(8)}
 
 
 def _is_cmd_topic(topic: str) -> bool:
@@ -178,7 +212,14 @@ async def mqtt_publish(topic: str, payload: dict) -> bool:
                 _log_signing_block(topic)
                 return False
             _log_unsigned_ship()
-        outbound = _sign_cmd_payload(payload)
+            outbound = _sign_cmd_payload(payload)
+        else:
+            outbound = _sign_cmd_payload(_bind_cmd_payload(topic, payload))
+            if len(json.dumps(outbound).encode("utf-8")) >= _NODE_INBOUND_FRAME_CAP:
+                # Deliverable beats bound: the node would drop the whole frame.
+                log.warning("cmd frame to %s too large for topic binding; "
+                            "sending it signed but unbound", topic)
+                outbound = _sign_cmd_payload(payload)
 
     try:
         await _client.publish(topic, json.dumps(outbound))
@@ -350,6 +391,7 @@ async def _handle_message(sio, topic: str, payload):
                     payload.get("trigger", "report"),
                 ),
             )
+            await db.execute(_TOUCH_LAST_SEEN_SQL, (received_at, node_id))
             await db.commit()
         await sio.emit("actuator_state", {"node_id": node_id, **payload})
         # Keep the cloud forward — remote clients render live actuator state
@@ -391,6 +433,13 @@ async def _handle_message(sio, topic: str, payload):
             # the write lock. Losing the history row must not also cost a live
             # frame its rules evaluation (safety cutoffs included).
             log.warning("storing telemetry from %s failed: %s", node_id, e)
+        # Any frame (replayed ones too) proves the node is up right now.
+        try:
+            async with get_db() as db:
+                await db.execute(_TOUCH_LAST_SEEN_SQL, (received_at, node_id))
+                await db.commit()
+        except Exception as e:
+            log.warning("refreshing last_seen for %s failed: %s", node_id, e)
         if not live:
             # History only: the local socket feed renders each frame as the
             # current reading and the rules engine acts on it, so a late frame

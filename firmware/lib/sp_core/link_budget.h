@@ -36,4 +36,19 @@ constexpr uint32_t kConnectAttemptWorstCaseS =
 static_assert(kConnectAttemptWorstCaseS + kLoopWdtMarginS <= kLoopWdtTimeoutS,
               "one MQTT connect attempt must fit inside the loop task WDT");
 
+// Runtime Pi-CA fetch (tls_policy.h, fw-node#2): Secure MQTT is on but no CA
+// is pinned, so the node retries GET http://<pi>:8000/api/provision/ca from
+// loop() on a backoff. One fetch blocks its pass for DNS + TCP connect + the
+// HTTP read. (The boot-time fetch runs pre-WDT and keeps longer timeouts.)
+// A fetch and an MQTT connect attempt together would NOT fit, so the
+// composition roots never start a connect attempt in a pass that fetched
+// (sp::mqtt_may_connect).
+constexpr uint32_t kCaFetchConnectTimeoutS = 3;
+constexpr uint32_t kCaFetchReadTimeoutS = 5;
+constexpr uint32_t kCaFetchWorstCaseS =
+    kDnsWorstCaseS + kCaFetchConnectTimeoutS + kCaFetchReadTimeoutS;
+
+static_assert(kCaFetchWorstCaseS + kLoopWdtMarginS <= kLoopWdtTimeoutS,
+              "one runtime CA fetch must fit inside the loop task WDT");
+
 }  // namespace sp

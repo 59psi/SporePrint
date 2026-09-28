@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+from .service import platformio_image_envs, platformio_references
+
 router = APIRouter()
 log = logging.getLogger(__name__)
 
@@ -51,7 +53,16 @@ _BUNDLE_NODES: dict[str, tuple[str, str, bool]] = {
     "sp_drivers":    ("lib/sp_drivers",  "Driver library", True),
     "full":          ("",                "All firmware",   False),
 }
-_BUNDLE_SUFFIXES = {".cpp", ".h", ".hpp", ".ino", ".ini", ".md", ".txt"}
+_BUNDLE_SUFFIXES = {".c", ".cpp", ".h", ".hpp", ".ino", ".ini", ".md", ".txt"}
+# PlatformIO library manifests: they declare each lib's dependencies and build
+# flags (sp_drivers' -I.), so a bundle without them builds differently from
+# the tested tree (or not at all).
+_BUNDLE_NAMES = {"library.json"}
+# Source files the per-file endpoint and listing expose under _FIRMWARE_ROOTS.
+_SOURCE_SUFFIXES = {".cpp", ".h", ".hpp", ".ino", ".ini"}
+# Files at the firmware root every build needs, besides what platformio.ini
+# itself references (partition tables, extra_scripts).
+_ROOT_BUILD_FILES = ("platformio.ini", "VERSION.txt")
 
 _models_cache: dict = {"data": [], "ts": 0}
 _diagrams_cache: dict = {"data": [], "ts": 0}
@@ -73,6 +84,71 @@ def _cached_list(directory: Path, suffix: str, cache: dict) -> list[dict]:
         ]
     cache["ts"] = now
     return cache["data"]
+
+
+def _bundleable(f: Path) -> bool:
+    return f.suffix in _BUNDLE_SUFFIXES or f.name in _BUNDLE_NAMES
+
+
+def _servable_source(f: Path) -> bool:
+    """A file the listing / per-file endpoint may expose under _FIRMWARE_ROOTS."""
+    return f.suffix in _SOURCE_SUFFIXES or f.name in _BUNDLE_NAMES
+
+
+def _firmware_build_files() -> tuple[list[Path], list[Path]]:
+    """(files, dirs), resolved, that a PlatformIO build of this tree needs
+    besides the image/library sources: platformio.ini, VERSION.txt, every
+    partition table, and whatever platformio.ini references — extra_scripts,
+    partition tables, embedded files, -I include dirs. Read from the ini, so a
+    newly added script or table is bundled without a code change. A
+    reference resolving outside the firmware dir is never followed."""
+    root = _FIRMWARE_DIR.resolve()
+    ref_files, ref_dirs = platformio_references(_FIRMWARE_DIR / "platformio.ini")
+    names = (set(_ROOT_BUILD_FILES) | ref_files
+             | {p.name for p in _FIRMWARE_DIR.glob("partitions*.csv")})
+    files = []
+    for rel in sorted(names):
+        p = (_FIRMWARE_DIR / rel).resolve()
+        if p.is_file() and _is_within(p, root):
+            files.append(p)
+    dirs = []
+    for rel in sorted(ref_dirs):
+        d = (_FIRMWARE_DIR / rel).resolve()
+        if d.is_dir() and d != root and _is_within(d, root):
+            dirs.append(d)
+    return files, dirs
+
+
+def _build_file_rels() -> set[str]:
+    """Firmware-relative paths of _firmware_build_files()' files."""
+    root = _FIRMWARE_DIR.resolve()
+    return {p.relative_to(root).as_posix() for p in _firmware_build_files()[0]}
+
+
+def _flash_instructions(envs: list[str]) -> str:
+    """README body: how to build/flash `envs`, including the version note."""
+    try:
+        ini_text = (_FIRMWARE_DIR / "platformio.ini").read_text(encoding="utf-8")
+    except OSError:
+        ini_text = ""
+    lines = ["```bash", "cd firmware"]
+    if "${sysenv.SPOREPRINT_FW_VERSION}" in ini_text:
+        lines.append('export SPOREPRINT_FW_VERSION="$(cat VERSION.txt)"')
+        version_note = (
+            "platformio.ini reads the firmware version from SPOREPRINT_FW_VERSION: "
+            "export it as above, or heartbeats report an empty firmware_version."
+        )
+    else:
+        version_note = (
+            "The firmware version heartbeats report is read from VERSION.txt at "
+            "build time; set SPOREPRINT_FW_VERSION to override it."
+        )
+    lines += [f"pio run -t upload -e {env}" for env in envs]
+    lines.append("```")
+    body = "\n".join(lines) + "\n\n"
+    if len(envs) > 1:
+        body = "Run the line for your board:\n\n" + body
+    return body + version_note + "\n"
 
 
 class ScadInlineError(Exception):
@@ -295,15 +371,17 @@ async def get_diagram(filename: str):
 async def list_firmware():
     """List firmware source files grouped by node.
 
-    Returns every .cpp / .h / .ino / .ini under each allow-listed firmware
-    root, with size + download URL. Files outside the allow-list are never
-    exposed so an attacker can't read build artifacts or secrets.
+    Returns every .cpp / .h / .ino / .ini (and library.json manifest) under
+    each allow-listed firmware root, with size + download URL, plus a
+    "platformio.ini" group holding the build files at the firmware root
+    (platformio.ini, VERSION.txt, partition tables, extra_scripts). Files
+    outside the allow-list are never exposed so an attacker can't read build
+    artifacts or secrets.
     """
     now = time.time()
     if now - _firmware_cache["ts"] < _CACHE_TTL and _firmware_cache["data"]:
         return _firmware_cache["data"]
 
-    allowed_suffixes = {".cpp", ".h", ".hpp", ".ino", ".ini"}
     groups: list[dict] = []
 
     for root_rel in _FIRMWARE_ROOTS:
@@ -312,11 +390,11 @@ async def list_firmware():
             continue
         files = []
         for f in sorted(root.rglob("*")):
-            if not f.is_file() or f.suffix not in allowed_suffixes:
+            if not f.is_file() or not _servable_source(f):
                 continue
-            rel = f.relative_to(_FIRMWARE_DIR)
+            rel = f.relative_to(_FIRMWARE_DIR).as_posix()
             files.append({
-                "filename": str(rel),
+                "filename": rel,
                 "size_bytes": f.stat().st_size,
                 "url": f"/api/builder/firmware/{rel}",
             })
@@ -328,16 +406,18 @@ async def list_firmware():
                 group["bundle_filename"] = f"sporeprint-{node}.zip"
             groups.append(group)
 
-    pio = _FIRMWARE_DIR / "platformio.ini"
-    if pio.exists():
+    if (_FIRMWARE_DIR / "platformio.ini").exists():
+        fw_root = _FIRMWARE_DIR.resolve()
+        build_files = sorted(_firmware_build_files()[0],
+                             key=lambda p: (p.name != "platformio.ini", p.as_posix()))
         groups.append({
             "node": "platformio.ini",
             "path": "platformio.ini",
             "files": [{
-                "filename": "platformio.ini",
-                "size_bytes": pio.stat().st_size,
-                "url": "/api/builder/firmware/platformio.ini",
-            }],
+                "filename": p.relative_to(fw_root).as_posix(),
+                "size_bytes": p.stat().st_size,
+                "url": f"/api/builder/firmware/{p.relative_to(fw_root).as_posix()}",
+            } for p in build_files],
         })
 
     # Full-firmware bundle is a synthetic group that appears at the top —
@@ -360,32 +440,46 @@ def _build_node_bundle(node: str) -> bytes:
     """Build an in-memory ZIP for an image, a library, or the full firmware.
 
     - `full`            → the entire firmware/ tree (both images + libs)
-    - sp_core/sp_drivers → just that library + platformio.ini
-    - node/cam (+v1 aliases) → the image's src + all libs + boards/ +
-      partition tables + platformio.ini — self-contained, no git clone
+    - sp_core/sp_drivers → just that library + the root build files
+    - node/cam (+v1 aliases) → the image's src + all libs + boards/ + the
+      root build files — self-contained, no git clone
+
+    Every library ships with its library.json manifest, and the root build
+    files are platformio.ini, VERSION.txt, every partition table and whatever
+    platformio.ini references (extra_scripts, -I dirs), so the bundle builds
+    exactly like the tested tree.
     """
     if node not in _BUNDLE_NODES:
         raise HTTPException(404, "Unknown node")
     node_rel, _label, is_library = _BUNDLE_NODES[node]
-    env = "cam" if node_rel == "src/cam" else "node_esp32"
+    image_envs = platformio_image_envs(_FIRMWARE_DIR / "platformio.ini")
+    fw_root = _FIRMWARE_DIR.resolve()
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        written: set[str] = set()
+
+        def write(f: Path, arc: str) -> None:
+            if arc not in written:
+                written.add(arc)
+                zf.write(f, arc)
+
         def add_tree(src_root: Path, arc_prefix: str) -> None:
             if not src_root.exists():
                 return
             for f in sorted(src_root.rglob("*")):
-                if not f.is_file() or f.suffix not in _BUNDLE_SUFFIXES:
+                if not f.is_file() or not _bundleable(f):
                     continue
-                arc = f"{arc_prefix}/{f.relative_to(src_root)}"
-                zf.write(f, arc)
+                if not _is_within(f.resolve(), fw_root):
+                    continue  # a symlink out of the firmware tree
+                write(f, f"{arc_prefix}/{f.relative_to(src_root).as_posix()}")
 
         def add_build_files() -> None:
-            for name in ("platformio.ini", "partitions.csv",
-                         "partitions_8mb.csv", "VERSION.txt"):
-                p = _FIRMWARE_DIR / name
-                if p.is_file():
-                    zf.write(p, f"firmware/{name}")
+            files, dirs = _firmware_build_files()
+            for f in files:
+                write(f, f"firmware/{f.relative_to(fw_root).as_posix()}")
+            for d in dirs:
+                add_tree(d, f"firmware/{d.relative_to(fw_root).as_posix()}")
 
         if node == "full":
             for root_rel in _FIRMWARE_ROOTS:
@@ -393,16 +487,11 @@ def _build_node_bundle(node: str) -> bytes:
             add_build_files()
             readme = (
                 "# SporePrint — full firmware bundle\n\n"
-                "Contains both images (unified node + camera), the shared\n"
-                "libraries, and board profiles. Unzip, then flash from the\n"
-                "`firmware/` directory:\n\n"
-                "```bash\n"
-                "cd firmware\n"
-                "pio run -t upload -e node_esp32      # WROOM-32 node\n"
-                "pio run -t upload -e node_esp32s3    # ESP32-S3 node\n"
-                "pio run -t upload -e cam             # AI-Thinker camera\n"
-                "```\n\n"
-                "Full source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
+                "Contains both images (unified node + AI-Thinker ESP32-CAM\n"
+                "camera), the shared libraries, and board profiles. Unzip,\n"
+                "then flash from the `firmware/` directory.\n\n"
+                + _flash_instructions(image_envs["node"] + image_envs["cam"])
+                + "\nFull source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
             )
             zf.writestr("firmware/README.md", readme)
         else:
@@ -432,16 +521,14 @@ def _build_node_bundle(node: str) -> bytes:
                     add_tree(_FIRMWARE_DIR / lib_rel, f"firmware/{lib_rel}")
                 add_tree(_FIRMWARE_DIR / "boards", "firmware/boards")
                 add_build_files()
+                envs = image_envs["cam" if node_rel == "src/cam" else "node"]
                 readme = (
                     f"# SporePrint — {node} firmware\n\n"
-                    f"Unzip this archive and flash with PlatformIO:\n\n"
-                    f"```bash\n"
-                    f"cd firmware\n"
-                    f"pio run -t upload -e {env}\n"
-                    f"```\n\n"
-                    f"On first boot the node opens the 'SporePrint-Setup'\n"
-                    f"WiFi portal for provisioning.\n\n"
-                    f"Full source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
+                    f"Unzip this archive and flash with PlatformIO.\n\n"
+                    + _flash_instructions(envs)
+                    + "\nOn first boot the node opens the 'SporePrint-Setup'\n"
+                    "WiFi portal for provisioning.\n\n"
+                    "Full source: https://github.com/59psi/SporePrint/tree/main/firmware\n"
                 )
                 zf.writestr(f"firmware/{node_rel}/README.md", readme)
 
@@ -475,14 +562,16 @@ async def get_firmware_file(path: str):
         raise HTTPException(400, "Invalid path")
     if not target.is_file():
         raise HTTPException(404, "File not found")
-    if target.suffix not in {".cpp", ".h", ".hpp", ".ino", ".ini"}:
-        raise HTTPException(400, "Unsupported file type")
 
-    # Enforce allow-listed roots — platformio.ini or under _FIRMWARE_ROOTS
-    rel = target.relative_to(_FIRMWARE_DIR.resolve())
-    rel_str = str(rel)
-    if rel_str != "platformio.ini" and not any(rel_str.startswith(root) for root in _FIRMWARE_ROOTS):
-        raise HTTPException(404, "File not found")
+    # Allow-list: the root build files (platformio.ini, VERSION.txt, partition
+    # tables, extra_scripts), or a source file / library.json under
+    # _FIRMWARE_ROOTS.
+    rel_str = target.relative_to(_FIRMWARE_DIR.resolve()).as_posix()
+    if rel_str not in _build_file_rels():
+        if not _servable_source(target):
+            raise HTTPException(400, "Unsupported file type")
+        if not any(rel_str.startswith(f"{root}/") for root in _FIRMWARE_ROOTS):
+            raise HTTPException(404, "File not found")
 
     return FileResponse(str(target), media_type="text/plain",
                         headers={"Content-Disposition": f"attachment; filename={target.name}"})

@@ -27,17 +27,35 @@ class Settings(BaseSettings):
     weather_lat: str = ""
     weather_lon: str = ""
     weather_poll_minutes: int = 10
+    # Minutes between automatic Claude analyses of a session's camera frames
+    # (vision/service._auto_analysis_interval_seconds). The local CNN is still
+    # a stub, so this is the worst-case automatic contamination-detection
+    # latency; lower it for faster detection at more BYOK API spend. The first
+    # frame after a phase change is always analysed at once. Values <= 0 fall
+    # back to the 6 h default.
+    vision_auto_interval_min: int = 360
     cloud_url: str = ""
     cloud_token: str = ""
     cloud_device_id: str = ""
+    # Strict mode for cloud integrations_request frames
+    # (cloud/integrations_proxy._require_signed_setting): true rejects every
+    # unsigned frame. False keeps the migration posture — unsigned frames are
+    # accepted until this Pi verifies its first signed one after pairing.
+    cloud_require_signed_integrations: bool = False
+    # Where the operator's browser reaches the Pi dashboard (nginx UI port),
+    # e.g. for links printed on QR labels. The default is the mDNS name plus
+    # the compose UI port.
+    public_ui_url: str = "http://sporeprint.local:3001"
     # If set, all /api/* requests and Socket.IO connects must present
-    # Authorization: Bearer <api_key>. Empty means no auth.
-    # setup.sh populates this on first run so the default is authed.
+    # Authorization: Bearer <api_key>. Empty means no auth. install.sh
+    # leaves it empty and writes SPOREPRINT_ALLOW_UNAUTHENTICATED=true
+    # (LAN-trust, the bundled dashboard sends no bearer); set it to gate the
+    # mobile app and other external clients.
     api_key: str = ""
     # Explicit opt-in to run with api_key unset. Default false — an empty
     # api_key will refuse to boot unless this flag is true. Prevents silently
-    # shipping a production Pi with no auth because the operator never ran
-    # setup.sh or forgot to set SPOREPRINT_API_KEY.
+    # shipping a production Pi with no auth because the operator skipped
+    # ./install.sh or forgot to set SPOREPRINT_API_KEY.
     allow_unauthenticated: bool = False
     # HMAC-SHA256 key used to sign every cmd/* MQTT frame the Pi publishes
     # to an ESP32 node. v3.4.9 C-1. Must match the `hmac_key` stored in NVS

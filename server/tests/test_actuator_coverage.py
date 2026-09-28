@@ -11,7 +11,7 @@ for a missing dehumidifier, mist-pump stands in for a missing humidifier, and
 neither fires when the real device is present.
 """
 
-import pytest
+import json
 
 from app.automation.engine import evaluate_rules  # noqa: F401 (import guard)
 from app.automation.smart_plugs import target_is_present
@@ -88,7 +88,6 @@ async def test_target_is_present_false_when_nothing_paired():
 
 async def test_target_is_present_matches_a_node_channel():
     async with get_db() as db:
-        import json
         await db.execute(
             "INSERT INTO hardware_nodes (node_id, node_type, channels) VALUES ('relay-01', 'relay', ?)",
             (json.dumps(["fae", "exhaust", "circulation", "aux"]),),

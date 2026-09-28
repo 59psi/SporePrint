@@ -2,17 +2,28 @@
 """Sign a firmware bundle with the OTA private key.
 
 Produces a detached `.sig` file alongside the bundle. The Pi-side
-verifier (`sporeprint/server/app/cloud/ota.py::_verify_signature`)
-expects a 64-byte raw Ed25519 signature in this exact format.
+verifier (`server/app/cloud/ota.py::_verify_signature`) expects a 64-byte
+raw Ed25519 signature over the bundle bytes, in exactly this format
+(server/tests/test_ota_keypair_script.py signs with this script and
+verifies with that function).
 
 Usage:
-    python3 sign-ota-bundle.py \\
+    python3 scripts/sign-ota-bundle.py \\
         --bundle dist/sporeprint-server-3.4.11.tar.gz \\
         --private-key ~/.config/sporeprint/ota/ota-signing.key
 
 After signing, upload BOTH files to the release host:
     s3://updates.sporeprint.ai/firmware/{channel}/{version}.tar.gz
     s3://updates.sporeprint.ai/firmware/{channel}/{version}.tar.gz.sig
+
+What the signature does NOT cover: the version and channel. The Pi takes
+those from the OTA command and refuses a downgrade (a version lower than
+the one installed), but a signed bundle is accepted under any equal-or-newer
+version name. Binding them needs a signed manifest {version, channel,
+sha256} — a coordinated change to this script, the release host and the
+Pi verifier. Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current
+(systemd) layout self-update; Docker installs (install.sh) refuse cloud OTA
+and update with `git pull && ./install.sh`.
 """
 
 from __future__ import annotations

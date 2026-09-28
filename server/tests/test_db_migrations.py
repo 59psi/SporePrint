@@ -58,3 +58,48 @@ async def test_init_db_is_idempotent(tmp_path, monkeypatch):
         indexes = {r[1] for r in await (await db.execute(
             "PRAGMA index_list(automation_firings)")).fetchall()}
     assert "idx_firings_status" in indexes
+
+
+async def _pragma(db_path, name):
+    async with aiosqlite.connect(db_path) as db:
+        return (await (await db.execute(f"PRAGMA {name}")).fetchone())[0]
+
+
+async def test_new_database_starts_in_incremental_auto_vacuum(tmp_path, monkeypatch):
+    """A fresh install never needs the writer-stalling mode-switch VACUUM:
+    auto_vacuum only sticks when set before WAL mode and the first table."""
+    db_path = tmp_path / "fresh.db"
+    monkeypatch.setattr(settings, "database_path", str(db_path))
+    await init_db()
+    assert await _pragma(db_path, "auto_vacuum") == 2  # INCREMENTAL
+    assert await _pragma(db_path, "journal_mode") == "wal"
+
+
+async def test_init_db_never_rewrites_an_existing_database(tmp_path, monkeypatch):
+    """Converting an existing DB takes a full VACUUM; that is the lifespan's
+    explicit, logged step (retention.ensure_incremental_auto_vacuum), never a
+    side effect of init_db."""
+    db_path = tmp_path / "legacy.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(_PRE_330_FIRINGS)
+        await db.commit()
+    monkeypatch.setattr(settings, "database_path", str(db_path))
+    await init_db()
+    assert await _pragma(db_path, "auto_vacuum") == 0
+
+
+async def test_rollup_history_query_uses_the_node_sensor_time_index(tmp_path, monkeypatch):
+    """get_history's rollup branch filters node_id + sensor + a timestamp
+    range; without this index it scanned every node's and sensor's rollups."""
+    db_path = tmp_path / "idx.db"
+    monkeypatch.setattr(settings, "database_path", str(db_path))
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        indexes = {r[1] for r in await (await db.execute(
+            "PRAGMA index_list(telemetry_rollups)")).fetchall()}
+        plan = " ".join(str(r[3]) for r in await (await db.execute(
+            "EXPLAIN QUERY PLAN SELECT timestamp, avg_value FROM telemetry_rollups "
+            "WHERE node_id = ? AND sensor = ? AND timestamp >= ? AND timestamp <= ?",
+            ("n1", "temp_f", 0.0, 1e12))).fetchall())
+    assert "idx_rollup_node_sensor_time" in indexes
+    assert "idx_rollup_node_sensor_time" in plan, plan

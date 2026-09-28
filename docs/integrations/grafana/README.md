@@ -7,13 +7,19 @@ unless you yourself point an external scraper at the Pi.
 
 ## Quick start
 
+`/metrics` is served by the API on **port 8000** only. The dashboard's
+nginx on port 3001 proxies just `/api` and `/socket.io`, so
+`http://<pi>:3001/metrics` returns the dashboard's HTML, not metrics.
+Use `sporeprint.local` below, or the Pi's IP if mDNS doesn't resolve on
+your network.
+
 1. **Enable on the Pi** — open the Pi LAN UI at
-   `http://chambers.local/integrations`, find the Grafana row, set
+   `http://sporeprint.local:3001/integrations`, find the Grafana row, set
    `enabled` to true, and Save. The `/metrics` route appears the moment
    you save (returns 404 while disabled).
 2. **Verify locally** — from any LAN host:
    ```sh
-   curl http://chambers.local/metrics | head
+   curl http://sporeprint.local:8000/metrics | head
    ```
    You should see lines like `sporeprint_node_temperature_celsius{...} 23.5`.
 3. **Add a Prometheus scrape job** — in your `prometheus.yml`:
@@ -23,7 +29,7 @@ unless you yourself point an external scraper at the Pi.
      - job_name: sporeprint
        scrape_interval: 30s
        static_configs:
-         - targets: ['chambers.local:80']
+         - targets: ['sporeprint.local:8000']
    ```
 4. **Import the dashboard** — in Grafana, go to *Dashboards → New →
    Import* and paste `sporeprint-chamber-dashboard.json` from this
@@ -32,11 +38,11 @@ unless you yourself point an external scraper at the Pi.
 ## Authentication (optional)
 
 By default `/metrics` is unauthenticated, matching Prometheus
-convention — network scoping (the Pi's LAN-CORS regex + your home
-router) is the gate. If you want a soft auth check, set
-`bearer_token` in the integration settings; scrapes then need an
-`Authorization: Bearer <token>` header. Useful for Tailscale →
-Grafana-Cloud setups.
+convention — network scoping (your home router) is the gate. It sits
+outside `/api`, so `SPOREPRINT_API_KEY` does not cover it. If you want a
+soft auth check, set `bearer_token` in the integration settings; scrapes
+then need an `Authorization: Bearer <token>` header (a missing, wrong or
+non-ASCII token gets 401). Useful for Tailscale → Grafana-Cloud setups.
 
 ## Metric reference
 
@@ -51,7 +57,7 @@ All metrics are prefixed with `sporeprint_` for easy filtering.
 | `sporeprint_node_dewpoint_celsius` | gauge | node_id, chamber_id | Converted from F at scrape time |
 | `sporeprint_chamber_session_active` | gauge | chamber_id, species_profile_id, phase | 1 if active session |
 | `sporeprint_actuator_event_count` | counter | node_id, channel, action | Lifetime events |
-| `sporeprint_contamination_events_total` | counter | chamber_id | Lifetime contaminations |
+| `sporeprint_contamination_events_total` | counter | chamber_id | Lifetime contamination events (vision detections + manual marks), plus older sessions marked contaminated that have no event row |
 | `sporeprint_build_info` | info | version | Pi build metadata |
 
 `chamber_id` is `""` when a sensor is not yet mapped to a chamber.
@@ -70,6 +76,9 @@ Both flags live in the same Pi LAN UI page.
 
 - **`/metrics` returns 404** — driver is disabled. Enable it in the Pi
   LAN UI's Integrations page.
+- **`/metrics` returns HTML / Prometheus reports a parse error** — the
+  scrape hit the dashboard on port 3001 (or 80, where nothing listens).
+  Scrape port 8000.
 - **`/metrics` returns 401** — you've set `bearer_token` and the
   scraper is missing the header. Either remove the token or add it to
   Prometheus' `authorization` block.

@@ -1,15 +1,17 @@
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Header, HTTPException, Request
+from starlette.datastructures import UploadFile
 
 from ..config import settings
+from ..hardware.service import get_camera_sensor, normalize_camera_sensor, record_camera_sensor
+from ..sessions.service import get_active_session_for_node
 from .service import (
     analyze_frame_claude,
     analyze_frame_local,
     apply_user_label,
     frame_storage_name,
-    get_active_session_id,
     get_frame_by_id,
     get_frames,
     insert_frame,
@@ -27,46 +29,82 @@ router = APIRouter()
 # firmware actually uses and reject traversal payloads like `../etc/passwd`.
 _NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Room for the multipart boundary and part headers around a max-size image.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _ACCEPTED_MEDIA = ("image/jpeg", "image/png", "image/webp")
+_TOO_LARGE = "File too large (max 20MB)"
+
+
+async def _read_frame_body(request: Request) -> tuple[str, bytes]:
+    """(media type, image bytes) of an upload, never buffering past the cap.
+
+    Two wire shapes: the ESP32-CAM POSTs the JPEG as a raw `image/jpeg` body
+    (esp_http_client has no multipart encoder — a required File(...) once made
+    FastAPI reject every camera frame with a 422); the web UI and tests post
+    multipart with a `file` part. A declared Content-Length over the cap is
+    refused before anything is read, and a raw body is read chunk by chunk and
+    refused once it passes the cap — a bearer-authenticated caller used to
+    have its whole body buffered (a chunked upload declares no length) before
+    the 20 MB check. The auth middleware already bounds keyless camera uploads.
+    """
+    media_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        if not declared.strip().isdigit():
+            raise HTTPException(400, "Invalid Content-Length")
+        limit = _MAX_UPLOAD_BYTES + (
+            _MULTIPART_OVERHEAD_BYTES if media_type == "multipart/form-data" else 0)
+        if int(declared) > limit:
+            raise HTTPException(413, _TOO_LARGE)
+
+    if media_type == "multipart/form-data":
+        if declared is None:
+            raise HTTPException(411, "Content-Length required for multipart uploads")
+        form = await request.form(max_files=1, max_fields=16)
+        try:
+            upload = form.get("file")
+            if not isinstance(upload, UploadFile):
+                raise HTTPException(400, "Multipart upload has no 'file' part")
+            part_type = (upload.content_type or "").split(";")[0].strip().lower()
+            content = await upload.read(_MAX_UPLOAD_BYTES + 1)
+        finally:
+            await form.close()
+    else:
+        part_type = media_type
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf += chunk
+            if len(buf) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(413, _TOO_LARGE)
+        content = bytes(buf)
+
+    if len(content) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, _TOO_LARGE)
+    return part_type, content
 
 
 @router.post("/frame")
 async def ingest_frame(
     request: Request,
-    # Optional, NOT required. The ESP32-CAM firmware POSTs the JPEG as a raw
-    # `image/jpeg` body (esp_http_client has no multipart encoder), so a
-    # required File(...) made FastAPI reject every camera frame with a 422
-    # before this function ever ran — the vision pipeline had never ingested a
-    # single firmware frame. Multipart stays supported for the web UI + tests.
-    file: UploadFile | None = File(None),
     x_node_id: str = Header("cam-01"),
     x_timestamp: str = Header(default=""),
     x_resolution: str = Header(default=""),
     x_flash_used: str = Header(default="1"),
+    # Optional: the cam's auto-detected image sensor (ov2640 / ov3660 / ov5640).
+    x_camera_sensor: str = Header(default=""),
 ):
     if not _NODE_ID_RE.match(x_node_id):
         raise HTTPException(400, "Invalid X-Node-Id (alphanumeric, _, -, max 32 chars)")
 
-    if file is not None:
-        media_type = (file.content_type or "").split(";")[0].strip().lower()
-        content = await file.read()
-    else:
-        media_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
-        content = await request.body()
-
+    media_type, content = await _read_frame_body(request)
     if media_type not in _ACCEPTED_MEDIA:
         raise HTTPException(415, "Only JPEG, PNG, and WebP images are accepted")
     if not content:
         raise HTTPException(400, "Empty frame body")
 
-    # Unsynced cams (missing / uptime-based X-Timestamp) get arrival time.
-    try:
-        ts = resolve_frame_timestamp(x_timestamp)
-    except ValueError:
-        raise HTTPException(400, "Invalid X-Timestamp")
-
-    if len(content) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "File too large (max 20MB)")
+    # Unsynced cams (missing / unparseable / uptime-based X-Timestamp) get
+    # arrival time — the frame is kept either way.
+    ts = resolve_frame_timestamp(x_timestamp)
 
     storage = Path(settings.vision_storage).resolve()
     storage.mkdir(parents=True, exist_ok=True)
@@ -87,14 +125,22 @@ async def ingest_frame(
     else:
         raise HTTPException(500, "Could not allocate a unique frame filename")
 
-    session_id = await get_active_session_id()
+    camera_sensor = normalize_camera_sensor(x_camera_sensor)
+    if camera_sensor:
+        await record_camera_sensor(x_node_id, camera_sensor)
+
+    # The camera's own grow — the same per-node rule the engine uses: its
+    # chamber's session when the camera is listed in a chamber, else the
+    # chamberless (single-closet) grow, never a guess between two chambers'.
+    session = await get_active_session_for_node(x_node_id)
+    session_id = session["id"] if session else None
     frame_id = await insert_frame(
         session_id=session_id,
         node_id=x_node_id,
         timestamp=ts,
         file_path=str(file_path),
         resolution=x_resolution,
-        flash_used=int(x_flash_used),
+        flash_used=0 if x_flash_used.strip().lower() in ("0", "false", "no") else 1,
     )
 
     # Run local CNN analysis (async, non-blocking).
@@ -112,6 +158,7 @@ async def ingest_frame(
         session_id=session_id,
         node_id=x_node_id,
         file_path=str(file_path),
+        camera_sensor=camera_sensor,
     )
     # Thin frames past the retention window (throttled, background).
     await maybe_schedule_vision_prune()
@@ -120,6 +167,7 @@ async def ingest_frame(
         "frame_id": frame_id,
         "file_path": str(file_path),
         "local_analysis": local_result,
+        "camera_sensor": camera_sensor,
     }
 
 
@@ -145,6 +193,7 @@ async def trigger_claude_analysis(frame_id: int):
     frame = await get_frame_by_id(frame_id)
     if not frame:
         raise HTTPException(404, "Frame not found")
+    frame["camera_sensor"] = await get_camera_sensor(frame["node_id"])
 
     result = await analyze_frame_claude(frame)
     # Persist only a real analysis: analyze_frame_claude returns a truthy

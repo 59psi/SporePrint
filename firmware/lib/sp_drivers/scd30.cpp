@@ -34,7 +34,12 @@ bool Scd30::begin() {
 
 bool Scd30::data_ready() {
     uint16_t word = 0;
-    if (!xport_.cmd_read(kCmdDataReady, kCmdGapMs, &word, 1)) return false;
+    if (!xport_.cmd_read(kCmdDataReady, kCmdGapMs, &word, 1)) {
+        // Bus fault (NACK / stretch timeout / CRC) — a health failure, not
+        // "no sample yet" (word == 0 is the healthy not-ready answer).
+        health_.fail("data_ready error");
+        return false;
+    }
     return word == 1;
 }
 

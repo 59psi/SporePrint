@@ -385,6 +385,73 @@ async def test_door_open_is_info_and_close_is_silent(ntfy_posts):
     assert ntfy_posts[0]["priority"] == "3"
 
 
+# ── Liveness: telemetry refreshes last_seen (srv-hw#22 hardening) ─────────
+#
+# The liveness sweeper (main._node_liveness_sweeper) pages node_offline once
+# hardware_nodes.last_seen is 15 min stale. Only status/* frames used to touch
+# it, so a node whose heartbeats stop reaching the Pi (or older firmware) was
+# paged offline while its telemetry was arriving every minute.
+
+async def _register_node(node_id: str, last_seen: float, status: str = "online"):
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, last_seen, status) "
+            "VALUES (?, 'climate', ?, ?)",
+            (node_id, last_seen, status),
+        )
+        await db.commit()
+
+
+async def _node_row(node_id: str):
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT last_seen, status FROM hardware_nodes WHERE node_id = ?", (node_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def test_sensor_telemetry_refreshes_last_seen(rules_spy):
+    await _register_node("climate-01", time.time() - 3600)
+    before = time.time()
+    await _handle_message(_Sio(), "sporeprint/climate-01/telemetry",
+                          {"ts": time.time(), "temp_f": 71.5})
+    assert (await _node_row("climate-01"))["last_seen"] >= before
+
+
+async def test_switch_state_report_refreshes_last_seen(rules_spy):
+    await _register_node("relay-01", time.time() - 3600)
+    before = time.time()
+    await _handle_message(_Sio(), "sporeprint/relay-01/telemetry/fae",
+                          {"channel": "fae", "state": "on", "pwm": 255, "trigger": "report"})
+    assert (await _node_row("relay-01"))["last_seen"] >= before
+
+
+async def test_replayed_telemetry_still_proves_the_node_is_alive(rules_spy):
+    # The frame's reading is old, but its arrival is now.
+    await _register_node("climate-01", time.time() - 3600)
+    before = time.time()
+    await _handle_message(_Sio(), "sporeprint/climate-01/telemetry",
+                          {"ts": time.time() - 1800, "temp_f": 70.0, "replay": True})
+    assert (await _node_row("climate-01"))["last_seen"] >= before
+
+
+async def test_telemetry_does_not_change_status_or_register_nodes(rules_spy):
+    # Recovery (status 'online') stays with the heartbeat/status path, and an
+    # unknown node id is never registered from telemetry — registration gates
+    # keyless camera uploads (auth._camera_frame_rejection).
+    await _register_node("climate-01", time.time() - 3600, status="offline")
+    await _handle_message(_Sio(), "sporeprint/climate-01/telemetry",
+                          {"ts": time.time(), "temp_f": 71.5})
+    assert (await _node_row("climate-01"))["status"] == "offline"
+
+    await _handle_message(_Sio(), "sporeprint/stranger-01/telemetry",
+                          {"ts": time.time(), "temp_f": 71.5})
+    await _handle_message(_Sio(), "sporeprint/stranger-02/telemetry/fae",
+                          {"channel": "fae", "state": "off"})
+    assert await _node_row("stranger-01") is None
+    assert await _node_row("stranger-02") is None
+
+
 async def test_alert_still_emitted_to_socket(ntfy_posts):
     sio = _Sio()
     await _handle_message(sio, "sporeprint/climate-01/alert",

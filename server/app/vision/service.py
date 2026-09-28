@@ -13,7 +13,8 @@ import anthropic
 from ..config import settings
 from ..contamination.service import record_event
 from ..db import get_db
-from ..notifications.service import contamination_alert, notify_warning
+from ..notifications.service import contamination_alert, harvest_ready, notify_warning
+from ..species.service import get_profile
 
 log = logging.getLogger(__name__)
 
@@ -148,11 +149,18 @@ _MAX_FUTURE_SKEW_SECONDS = 300
 
 
 def resolve_frame_timestamp(raw: str | None, now: float | None = None) -> float:
-    """Frame timestamp from the X-Timestamp header. Raises ValueError on garbage."""
+    """Frame timestamp from the X-Timestamp header; arrival time unless synced.
+
+    A missing, unparseable, non-finite, pre-epoch-sync (< 1e9) or far-future
+    value is not a capture time the Pi can trust, so the frame is stamped with
+    its arrival time — never refused: the camera can't fix its clock, and a
+    400 here only threw its frames away.
+    """
     now = time.time() if now is None else now
-    if not raw:
+    try:
+        ts = float(raw) if raw else now
+    except ValueError:
         return now
-    ts = float(raw)
     if not math.isfinite(ts) or ts < _EPOCH_SYNCED_MIN or ts > now + _MAX_FUTURE_SKEW_SECONDS:
         return now
     return ts
@@ -220,8 +228,6 @@ async def analyze_frame_claude(frame: dict) -> dict | None:
         species_name = "Unknown"
         chamber_id = None
         if frame.get("session_id"):
-            from ..species.service import get_profile
-
             async with get_db() as db:
                 cursor = await db.execute(
                     "SELECT * FROM sessions WHERE id = ?",
@@ -255,6 +261,12 @@ Colonization Visual: {colonization_visual}
 Contamination Notes: {contamination_notes}
 """
 
+        camera_context = ""
+        if frame.get("camera_sensor"):
+            # OV3660 frames are noticeably more saturated than OV2640 ones —
+            # colour cues (green trich, orange cordyceps) read differently.
+            camera_context = f"Camera sensor: {str(frame['camera_sensor']).upper()} (ESP32-CAM)\n"
+
         system_prompt = f"""You are an expert mycologist analyzing a mushroom cultivation image.
 Provide a structured analysis in JSON format with these fields:
 - health_assessment: "healthy" | "concern" | "contaminated" | "unknown"
@@ -269,7 +281,7 @@ Provide a structured analysis in JSON format with these fields:
 - recommendations: list of actionable recommendations
 - summary: 2-3 sentence natural language summary
 
-{session_context}"""
+{session_context}{camera_context}"""
 
         # v3.3.5 — wrap in the Pi-side AI tracer so an operator can see
         # latency + success rate in journalctl without adding Sentry.
@@ -537,11 +549,12 @@ async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> 
 
     async with get_db() as db:
         srow = await (await db.execute(
-            "SELECT current_phase FROM sessions WHERE id = ?", (session_id,)
+            "SELECT name, current_phase FROM sessions WHERE id = ?", (session_id,)
         )).fetchone()
         if not srow:
             return
         phase = srow["current_phase"]
+        session_name = srow["name"]
 
         # Pull the last few Claude analyses for this session (oldest→newest).
         rows = await (await db.execute(
@@ -579,11 +592,10 @@ async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> 
         await db.commit()
 
     try:
-        await notify_warning(
-            f"Harvest window — {species_name}",
-            f"Vision: {reason}. Check the chamber.",
-            dedup_key=f"harvest:{session_id}",
-        )
+        # INFO tier per spec §6 ("harvest readiness"); the session_events row
+        # above already limits it to one per session per 12 h.
+        await harvest_ready(species_name, session_name, reason=reason,
+                            dedup_key=f"harvest:{session_id}")
     except Exception as e:
         log.warning("harvest notify failed: %s", e)
     try:
@@ -699,15 +711,6 @@ def _deserialize_frame(row) -> dict:
 # ─── CRUD helpers for the vision router (P12 layering cleanup) ──────────
 # Router now imports these instead of running inline SQL. Shared helpers also
 # used by vision/router.py ingest path.
-
-async def get_active_session_id() -> int | None:
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT id FROM sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-        return row["id"] if row else None
-
 
 async def insert_frame(session_id: int | None, node_id: str, timestamp: float,
                        file_path: str, resolution: str, flash_used: int) -> int:
@@ -867,6 +870,7 @@ async def maybe_schedule_auto_analysis(
     session_id: int | None,
     node_id: str,
     file_path: str,
+    camera_sensor: str | None = None,
 ) -> asyncio.Task | None:
     """Kick the real Claude detector for a freshly-ingested frame, cost-gated.
 
@@ -889,6 +893,7 @@ async def maybe_schedule_auto_analysis(
         "session_id": session_id,
         "node_id": node_id,
         "file_path": file_path,
+        "camera_sensor": camera_sensor,
     }
     task = asyncio.create_task(_run_auto_analysis(frame))
     _auto_analysis_tasks.add(task)

@@ -196,6 +196,10 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
                            "saved one; none saved = warn mode");
         page += checkbox("tls", v.tls_enabled,
                          "Secure MQTT (TLS \u2014 pins the Pi's certificate)");
+        page += checkbox("tls_req", v.tls_required,
+                         "Require TLS \u2014 if the Pi's certificate can't be "
+                         "pinned, stay offline instead of falling back to "
+                         "plaintext");
         page += "<small style='color:#666'>";
         page += kTlsIpNote;
         page += "</small><br><br>";
@@ -211,6 +215,9 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
             page += checkbox("hx711", v.hx711_enabled,
                              "HX711 load-cell scale");
             page += checkbox("reed", v.reed_enabled, "Door reed switch");
+            page += checkbox("reed_inv", v.reed_invert,
+                             "&nbsp;&nbsp;Door contact wired on its NO "
+                             "terminal (open with the door shut) \u2014 invert");
             page += "</fieldset>";
         }
         page += kFormTail;
@@ -243,11 +250,13 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
         if (portal.arg("hmac_key").length()) cfg.hmac_key = arg_str(portal, "hmac_key");
         if (portal.arg("ntp_host").length()) cfg.ntp_host = arg_str(portal, "ntp_host");
         cfg.tls_enabled = portal.arg("tls") == "1";
+        cfg.tls_required = portal.arg("tls_req") == "1";
         if (peripheral_opts) {
             // Unchecked boxes are absent from the POST, so "== 1" covers both.
             cfg.mhz19_enabled = portal.arg("mhz19") == "1";
             cfg.hx711_enabled = portal.arg("hx711") == "1";
             cfg.reed_enabled = portal.arg("reed") == "1";
+            cfg.reed_invert = portal.arg("reed_inv") == "1";
         }
 
         const std::string form_node_id = arg_str(portal, "node_id");

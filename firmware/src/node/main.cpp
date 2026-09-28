@@ -34,12 +34,17 @@
 //     published and raises one sensor_failure alert (freshness.h)
 //   * alerts fire on entry + hourly reminders, with hysteresis
 //     (alert_latch.h)
+//   * status heartbeat on its own clock, min(publish_interval, 5 min), so
+//     a long telemetry interval never trips the Pi's 900 s offline sweep
+//     (publish_cadence.h)
+//   * Secure MQTT with no pinned Pi CA never downgrades silently: loud
+//     fallback + CA-fetch retries, or fail closed with "Require TLS"
+//     (tls_policy.h)
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Wire.h>
-#include <esp_ota_ops.h>
 #include <esp_task_wdt.h>
 
 #include <math.h>
@@ -65,6 +70,7 @@
 #include "freshness.h"
 #include "hmac_verify.h"
 #include "hx711.h"
+#include "image_rollback.h"
 #include "link_budget.h"
 #include "link_watchdog.h"
 #include "log_forward.h"
@@ -75,6 +81,7 @@
 #include "ota_service.h"
 #include "personality.h"
 #include "provisioning.h"
+#include "publish_cadence.h"
 #include "reed_switch.h"
 #include "scale_calibrator.h"
 #include "scd30.h"
@@ -84,6 +91,7 @@
 #include "sht3x.h"
 #include "sht4x.h"
 #include "telemetry_buffer.h"
+#include "tls_policy.h"
 #include "wifi_provisioner.h"
 #include "wire_contract.h"
 #include "wrap_time.h"
@@ -103,6 +111,9 @@ static sp_device::NodeConfig cfg;
 static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/true);
 static WiFiClient wifi_client;
 static WiFiClientSecure wifi_client_secure;
+// Transport selection + runtime CA-fetch retry (fw-node#2).
+static sp_device::TlsSupervisor tls_link(cfg, kv, wifi_client,
+                                         wifi_client_secure);
 static sp_device::MqttLink* mqtt = nullptr;
 static sp_device::OtaService* ota = nullptr;
 
@@ -159,6 +170,7 @@ static sp::ThresholdAlert co2_hi_alert(sp::ThresholdAlert::Dir::Above, 4000.0f, 
 static sp::AlertLatch temp_rh_fail_alert;
 static sp::AlertLatch scd_stale_alert, mhz_stale_alert, lux_stale_alert,
     hx_stale_alert;
+static sp::AlertLatch tls_downgrade_alert;  // Secure MQTT on plaintext fallback
 
 // HX711 tare / calibrate: averaged fresh samples, never the cached one.
 static sp::ScaleCalibrator scale_cal;
@@ -168,11 +180,11 @@ static sp::LinkWatchdog link_wd;
 static uint32_t wifi_reconnects = 0;
 static uint32_t safe_mode_cut_mask = 0;  // channels safe mode turned off
 
-// Cadence (operator-tunable via cmd/config, clamped).
+// Cadence (operator-tunable via cmd/config, clamped). Telemetry + health
+// follow publish_interval_ms; the heartbeat keeps its own <= 5 min clock.
 static uint32_t read_interval_ms = 30000;
-static uint32_t publish_interval_ms = 60000;
+static sp::PublishCadence cadence(60000);  // publish_interval_ms
 static uint32_t last_read_ms = 0;
-static uint32_t last_publish_ms = 0;
 static uint32_t last_switch_report_ms = 0;
 
 // BOOT button: 3-10 s hold + release → setup portal, >10 s → factory reset.
@@ -262,43 +274,19 @@ static uint32_t force_all_off(const char* reason, bool report) {
 // bad OTA (panic after WiFi, never reaching MQTT, WDT loop) crash-looped on
 // the new slot forever. Now the image stays ESP_OTA_IMG_PENDING_VERIFY
 // until confirm_running_image(); any reset before that makes the
-// bootloader boot the previous image.
+// bootloader boot the previous image (sp_device/image_rollback.h).
 extern "C" bool verifyRollbackLater() { return true; }
 
-static bool running_image_pending() {
-    const esp_partition_t* running = esp_ota_get_running_partition();
-    esp_ota_img_states_t state;
-    return running != nullptr &&
-           esp_ota_get_state_partition(running, &state) == ESP_OK &&
-           state == ESP_OTA_IMG_PENDING_VERIFY;
-}
-
 static void confirm_running_image(const char* why) {
-    image_confirm.mark_done();
-    if (!running_image_pending()) return;  // USB-flashed / already valid
-    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-    SP_LOG(err == ESP_OK ? LOG_INFO : LOG_ERROR,
-           "[OTA] running image %s (%s)",
-           err == ESP_OK ? "confirmed - rollback cancelled" : "confirm FAILED",
-           why);
+    sp_device::confirm_running_image(image_confirm, why);
 }
 
 // Before an operator-requested reboot (peripheral change, portal request,
-// factory reset). A probation image is confirmed only if it reached the
-// broker this boot: then the reboot is an operator action, not a failed
-// image. One that never reached MQTT is left unconfirmed, so the reboot boots
-// the previous image exactly as a power cycle would — the BOOT gesture is
-// what an operator reaches for when a fresh OTA can't connect, and it must
+// factory reset): an image that never reached MQTT stays unconfirmed, so the
+// BOOT gesture an operator reaches for when a fresh OTA can't connect does
 // not lock that image in.
 static void confirm_before_deliberate_restart(const char* why) {
-    if (image_confirm.reached_broker() ||
-        (mqtt != nullptr && mqtt->connected())) {
-        confirm_running_image(why);
-    } else if (running_image_pending()) {
-        SP_LOG(LOG_WARN,
-               "[OTA] image never reached MQTT this boot - left unconfirmed; "
-               "this restart boots the previous image");
-    }
+    sp_device::confirm_before_deliberate_restart(image_confirm, mqtt, why);
 }
 
 // Operator-requested reboot. Deferred a moment so the log line reaches MQTT;
@@ -374,9 +362,10 @@ static void handle_config_cmd(JsonDocument& doc) {
     if (doc["publish_interval_ms"].is<uint32_t>()) {
         sp::ClampResult r = sp::clamp_publish_interval_ms(
             doc["publish_interval_ms"].as<uint32_t>());
-        publish_interval_ms = r.value;
-        SP_LOG(LOG_INFO, "[CMD] publish_interval_ms=%u%s", (unsigned)r.value,
-               r.clamped ? " (clamped)" : "");
+        cadence.set_publish_interval(r.value);
+        SP_LOG(LOG_INFO, "[CMD] publish_interval_ms=%u%s (heartbeat every %u s)",
+               (unsigned)r.value, r.clamped ? " (clamped)" : "",
+               (unsigned)(cadence.heartbeat_interval_ms() / 1000UL));
     }
     if (!doc["calibrate_co2"].isNull()) {
         if (doc["calibrate_co2"].is<bool>()) {
@@ -466,16 +455,19 @@ static void handle_config_cmd(JsonDocument& doc) {
         }
     }
     // Tier-3 peripheral switch (docs#0): {"peripherals": {"mhz19": true,
-    // "hx711": true, "reed": false}} — only boolean members present are
-    // applied. Persisted to the same NVS flags the setup portal writes; the
-    // drivers are built only in setup(), so a real change reboots the node
-    // (boot step 1 drives every channel off again). An unchanged request is
-    // a no-op, so a repeated command cannot reboot-loop the node.
+    // "hx711": true, "reed": false, "reed_inv": true}} — only boolean
+    // members present are applied. Persisted to the same NVS flags the setup
+    // portal writes; the drivers are built only in setup(), so a change to
+    // the driver SET reboots the node (boot step 1 drives every channel off
+    // again). reed_inv (door contact wired on its NO lead) applies live. An
+    // unchanged request is a no-op, so a repeated command cannot reboot-loop
+    // the node.
     if (!doc["peripherals"].isNull()) {
         sp::PeripheralFlags flags;
         flags.mhz19 = cfg.mhz19_enabled;
         flags.hx711 = cfg.hx711_enabled;
         flags.reed = cfg.reed_enabled;
+        flags.reed_inv = cfg.reed_invert;
         sp::PeripheralCmdResult r =
             sp::apply_peripheral_cmd(doc["peripherals"], &flags);
         if (!r.is_object) {
@@ -486,21 +478,34 @@ static void handle_config_cmd(JsonDocument& doc) {
             if (r.ignored > 0)
                 SP_LOG(LOG_WARN,
                        "[CMD] peripherals: ignored %d entr%s (known keys: "
-                       "mhz19, hx711, reed; values must be true/false)",
+                       "mhz19, hx711, reed, reed_inv; values must be "
+                       "true/false)",
                        r.ignored, r.ignored == 1 ? "y" : "ies");
             if (r.changed) {
                 cfg.mhz19_enabled = flags.mhz19;
                 cfg.hx711_enabled = flags.hx711;
                 cfg.reed_enabled = flags.reed;
+                cfg.reed_invert = flags.reed_inv;
                 cfg.save(kv);
                 SP_LOG(LOG_INFO,
-                       "[CMD] peripherals saved: mhz19=%d hx711=%d reed=%d",
-                       (int)flags.mhz19, (int)flags.hx711, (int)flags.reed);
-                request_restart("peripheral set changed");
+                       "[CMD] peripherals saved: mhz19=%d hx711=%d reed=%d "
+                       "reed_inv=%d",
+                       (int)flags.mhz19, (int)flags.hx711, (int)flags.reed,
+                       (int)flags.reed_inv);
+                if (r.restart_needed) {
+                    request_restart("peripheral set changed");
+                } else if (reed != nullptr) {
+                    // Re-read the door under the new convention; no event.
+                    reed->set_invert(flags.reed_inv, millis());
+                    SP_LOG(LOG_INFO, "[CMD] reed invert %s - door reads %s",
+                           flags.reed_inv ? "on" : "off",
+                           reed->is_closed() ? "closed" : "open");
+                }
             } else if (r.applied > 0) {
                 SP_LOG(LOG_INFO, "[CMD] peripherals unchanged (mhz19=%d "
-                                 "hx711=%d reed=%d)",
-                       (int)flags.mhz19, (int)flags.hx711, (int)flags.reed);
+                                 "hx711=%d reed=%d reed_inv=%d)",
+                       (int)flags.mhz19, (int)flags.hx711, (int)flags.reed,
+                       (int)flags.reed_inv);
             }
         }
     }
@@ -778,6 +783,15 @@ static void check_alerts() {
                 "Light sensor stale - no fresh reading", "BH1750");
     stale_alert(hx711 != nullptr, hx_fresh, hx_stale_alert,
                 "Scale stale - no HX711 samples", "HX711");
+
+    // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly
+    // until the runtime CA fetch pins a CA and the link moves to TLS.
+    if (tls_downgrade_alert.due(tls_link.fallback(), now) &&
+        emit_alert(sp::kAlertTlsDowngrade, (float)cfg.broker_port,
+                   "Secure MQTT is on but no Pi CA is pinned - running on "
+                   "plaintext (credentials unencrypted); retrying the CA "
+                   "fetch"))
+        tls_downgrade_alert.emitted(now);
 }
 
 static void publish_telemetry() {
@@ -879,6 +893,12 @@ static void publish_heartbeat() {
     in.n_roles = n_roles;
     in.fw_image = "node";
     in.migrated_from = cfg.migrated_from.c_str();
+    // Additive keys: the MQTT transport actually in use (fw-node#2) and the
+    // board profile (which image an OTA push needs).
+    in.emit_tls = true;
+    in.tls = tls_link.tls();
+    in.tls_fallback = tls_link.fallback();
+    in.board = SP_BOARD_NAME;
 
     JsonDocument doc;
     sp::build_heartbeat(in, doc);
@@ -888,9 +908,10 @@ static void publish_heartbeat() {
 static void publish_health() {
     sp::SensorHealthView sviews[8];
     int ns = 0;
-    // A driver can look healthy while its reading is frozen (e.g. SCD4x
-    // data_ready() failing without recording a fault, an HX711 that never
-    // signals ready) — a stale reading must not report ok:true.
+    // A driver can look healthy while its reading is frozen (e.g. an SCD4x
+    // that stays "not ready" without a bus fault, an HX711 that never
+    // signals ready) — a stale reading must not report ok:true. (SCD4x/SCD30
+    // data_ready() bus faults are recorded as driver failures themselves.)
     auto add_sensor = [&](const char* name, const sp::DriverHealth& h,
                           bool stale) {
         const char* err = h.last_error != nullptr
@@ -1077,20 +1098,22 @@ void setup() {
         hx711->begin();
     }
     if (cfg.reed_enabled) {
-        reed = new sp::ReedSwitch(reed_pin);
+        // reed_inv: contact wired on its NO lead (pin HIGH = door shut).
+        reed = new sp::ReedSwitch(reed_pin, 50, cfg.reed_invert);
         reed->begin(millis());
     }
 
-    // 6. MQTT + services.
-    sp_device::MqttTransport xport =
-        sp_device::select_mqtt_transport(cfg, kv, wifi_client,
-                                         wifi_client_secure);
+    // 6. MQTT + services. The transport follows tls_policy.h: plain, TLS
+    //    against the pinned Pi CA, the loud plaintext fallback, or (Require
+    //    TLS) no MQTT until a CA is pinned.
+    sp_device::MqttTransport xport = tls_link.select();
     mqtt = new sp_device::MqttLink(*xport.client, cfg.node_id.c_str(),
                                    sp::node_type_str(cfg.personality),
                                    SPOREPRINT_FW_VERSION);
     mqtt->on_command(on_command, nullptr);
     mqtt->begin(cfg.broker_host.c_str(), xport.port,
-                cfg.mqtt_user.c_str(), cfg.mqtt_pass.c_str());
+                cfg.mqtt_user.c_str(), cfg.mqtt_pass.c_str(),
+                /*connect_now=*/sp::tls_mode_allows_mqtt(xport.mode));
 
     sp_device::logfwd::attach(mqtt);
     sp_device::coredump::upload_if_present(*mqtt);
@@ -1104,17 +1127,13 @@ void setup() {
                   nullptr);
     ota->begin();
 
-    SP_LOG(LOG_INFO, "[BOOT] node ready: id=%s type=%s channels=%d reset=%d",
+    SP_LOG(LOG_INFO,
+           "[BOOT] node ready: id=%s type=%s board=%s channels=%d mqtt=%s "
+           "reset=%d",
            cfg.node_id.c_str(), sp::node_type_str(cfg.personality),
-           channel_count, (int)esp_reset_reason());
-    if (running_image_pending()) {
-        SP_LOG(LOG_WARN,
-               "[OTA] new image on probation: confirmed after %u s of MQTT; "
-               "a crash or reboot before then boots the previous image",
-               (unsigned)(sp::ImageConfirm::kStableMs / 1000UL));
-    } else {
-        image_confirm.mark_done();  // nothing to confirm
-    }
+           SP_BOARD_NAME, channel_count, sp::tls_mode_str(xport.mode),
+           (int)esp_reset_reason());
+    sp_device::note_probation_at_boot(image_confirm);
 
     // Staleness clocks + link watchdog start at the end of boot (setup can
     // spend seconds in WiFi/NTP/autodetect). The MH-Z19C's clock starts
@@ -1159,7 +1178,11 @@ void loop() {
             break;
     }
 
-    mqtt->loop(now, /*may_connect=*/!boot_down);
+    // Secure MQTT with no pinned CA: at most one bounded CA fetch per pass on
+    // a backoff (tls_policy.h). A pass that fetched starts no MQTT connect
+    // attempt — the two together would overrun the WDT (link_budget.h).
+    const bool ca_fetched = tls_link.loop(now, boot_down, *mqtt);
+    mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, boot_down));
     ota->loop();
     sp_device::logfwd::loop(now);
 
@@ -1290,12 +1313,13 @@ void loop() {
         read_sensors();
         check_alerts();
     }
-    if (sp::elapsed_ms(now, last_publish_ms) >= publish_interval_ms) {
-        last_publish_ms = now;
-        publish_telemetry();
-        publish_heartbeat();
-        publish_health();
-    }
+    // Telemetry + health at publish_interval_ms; the heartbeat on its own
+    // min(publish_interval_ms, 5 min) clock (srv-hw#22) — at the 60 s
+    // default all three still go out on the same pass.
+    const sp::PublishCadence::Due due = cadence.update(now);
+    if (due.telemetry) publish_telemetry();
+    if (due.heartbeat) publish_heartbeat();
+    if (due.telemetry) publish_health();
     // Switch banks also report state every 60 s (v1 contract).
     if (channel_count > 0 &&
         channels[0].config().mode == sp::ChannelMode::Switch &&

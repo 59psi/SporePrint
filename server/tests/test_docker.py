@@ -1,12 +1,35 @@
 """Validate docker-compose.yml — catches image typos, missing services, wrong env vars."""
 
+import os
 import re
 from pathlib import Path
 
 import yaml
 
+from app.config import Settings
+from app.vision import service as vision_service
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+SERVER_DOCKERFILE = REPO_ROOT / "server" / "Dockerfile"
+UI_DOCKERFILE = REPO_ROOT / "ui" / "Dockerfile"
+
+# Standard (non-SPOREPRINT_) variables the server container reads: TZ for the
+# automation schedules' local clock (glibc), FORWARDED_ALLOW_IPS for uvicorn.
+NON_PREFIXED_SERVER_ENV = {"TZ", "FORWARDED_ALLOW_IPS"}
+
+# .env.example keys the server container deliberately does not receive.
+DOCUMENTED_BUT_NOT_FORWARDED = {
+    # uvicorn's --host/--port in server/Dockerfile bind the container.
+    "SPOREPRINT_HOST",
+    "SPOREPRINT_PORT",
+    # The smart-plug (sp-3p) broker credential: install.sh and the broker
+    # scripts read it; the server never connects as sp-3p.
+    "SPOREPRINT_MQTT_3P_PASSWORD",
+}
+
+_INTERPOLATION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 # Scripts that run throwaway eclipse-mosquitto containers (mosquitto_passwd
 # for the broker's password file). They must use the exact image the broker
@@ -40,6 +63,20 @@ def _bind_mounts(service: dict) -> dict[str, dict]:
 def _server_env() -> dict[str, str]:
     env = _load_compose()["services"]["server"]["environment"]
     return dict(e.split("=", 1) for e in env)
+
+
+def _interpolate(raw: str, dotenv: dict[str, str]) -> str:
+    """Compose's `${VAR:-default}` / `${VAR}` against a .env (no shell vars)."""
+    def sub(m: re.Match) -> str:
+        value = dotenv.get(m.group(1), "")
+        return m.group(2) if value == "" and m.group(2) is not None else value
+    return _INTERPOLATION.sub(sub, raw)
+
+
+def _compose_default(key: str) -> str:
+    m = re.fullmatch(r"\$\{\w+:-(.*)\}", _server_env()[key])
+    assert m, f"{key} has no `${{VAR:-default}}` default"
+    return m.group(1)
 
 
 def test_compose_has_all_services():
@@ -94,7 +131,116 @@ def test_server_env_vars_use_correct_prefix():
     env_list = services["server"]["environment"]
     for env in env_list:
         key = env.split("=")[0]
+        if key in NON_PREFIXED_SERVER_ENV:
+            continue
         assert key.startswith("SPOREPRINT_"), f"Env var {key} doesn't use SPOREPRINT_ prefix"
+
+
+def test_server_schedules_run_on_the_operator_timezone():
+    """Photoperiod, time_range and cron rules evaluate time.localtime(). With
+    no TZ the container is on UTC, so a 06:00 lights-on ran at 23:00 PDT and
+    Lion's Mane Night Cool (22:00-06:00) cooled the closet all afternoon.
+    install.sh writes the host's zone into .env as TZ; unset stays UTC."""
+    assert _server_env().get("TZ") == "${TZ:-UTC}"
+
+
+def test_server_receives_every_operator_setting():
+    """There is no env_file:, so a setting reaches the container only if it is
+    listed. Each of these was documented, or read by the server, but could
+    not be set on a Docker Pi."""
+    env = _server_env()
+    # Blank means the default model (config.py's blank-to-default validator).
+    assert env.get("SPOREPRINT_CLAUDE_MODEL") == "${SPOREPRINT_CLAUDE_MODEL:-}"
+    # Non-str settings get a real default: an EMPTY string fails int/bool
+    # validation and the server crash-loops at boot.
+    assert env.get("SPOREPRINT_VISION_AUTO_INTERVAL_MIN", "").startswith(
+        "${SPOREPRINT_VISION_AUTO_INTERVAL_MIN:-")
+    assert env.get("SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS", "").startswith(
+        "${SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS:-")
+    # uvicorn's trusted-proxy range, overridable from .env: editing the tracked
+    # compose file or Dockerfile instead makes install.sh's `git pull
+    # --ff-only` fail, and the Pi then silently keeps building old code.
+    assert env.get("FORWARDED_ALLOW_IPS", "").startswith("${FORWARDED_ALLOW_IPS:-")
+
+
+def test_compose_defaults_mirror_the_server_defaults():
+    """A compose default that disagrees with the code would silently change
+    behaviour for every Pi that leaves the key unset."""
+    fields = Settings.model_fields
+    interval = fields["vision_auto_interval_min"].default if "vision_auto_interval_min" in fields else None
+    if interval is None:
+        interval = vision_service._AUTO_ANALYSIS_MIN_INTERVAL_SECONDS // 60
+    assert int(_compose_default("SPOREPRINT_VISION_AUTO_INTERVAL_MIN")) == interval
+    strict = (fields["cloud_require_signed_integrations"].default
+              if "cloud_require_signed_integrations" in fields else False)
+    assert _compose_default("SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS") == str(bool(strict)).lower()
+    assert _compose_default("SPOREPRINT_MQTT_REQUIRE_SIGNING") == fields["mqtt_require_signing"].default
+    assert int(_compose_default("SPOREPRINT_WEATHER_POLL_MINUTES")) == fields["weather_poll_minutes"].default
+    if "public_ui_url" in fields:
+        assert _compose_default("SPOREPRINT_PUBLIC_UI_URL") == fields["public_ui_url"].default
+    image_default = re.search(r"^ENV\s+FORWARDED_ALLOW_IPS=(\S+)", SERVER_DOCKERFILE.read_text(), re.M).group(1)
+    assert _compose_default("FORWARDED_ALLOW_IPS") == image_default
+
+
+def test_compose_defaults_boot_the_server(monkeypatch):
+    """`docker compose up` with an .env that sets nothing must still produce
+    an environment the server's Settings accept (an empty value for an
+    int/bool/Literal field is a boot-time crash loop)."""
+    for key in list(os.environ):
+        if key.startswith("SPOREPRINT_"):
+            monkeypatch.delenv(key)
+    for key, raw in _server_env().items():
+        monkeypatch.setenv(key, _interpolate(raw, {}))
+    Settings(_env_file=None)
+
+
+def test_every_server_setting_can_reach_the_container():
+    """A Settings field compose does not list can never be set on a Docker
+    Pi. Add new settings to the server environment (with a real default
+    when the field is not a str), or exempt them here with the reason."""
+    exempt = {
+        "host", "port",       # uvicorn's --host/--port in server/Dockerfile
+        "setup_complete",     # first-run wizard flag, stored by the UI in the DB
+    }
+    forwarded = set(_server_env())
+    missing = {name for name in Settings.model_fields
+               if f"SPOREPRINT_{name.upper()}" not in forwarded} - exempt
+    assert not missing, f"settings compose never passes to the server: {sorted(missing)}"
+
+
+def test_every_documented_setting_reaches_the_server():
+    """.env.example is the operator's menu. A key documented there but not
+    forwarded here is a knob that silently does nothing on a Docker Pi
+    (SPOREPRINT_MQTT_HMAC_KEY and SPOREPRINT_CLAUDE_MODEL both were)."""
+    documented = set(re.findall(r"^\s*#?\s*(SPOREPRINT_[A-Z0-9_]+|TZ)=", ENV_EXAMPLE.read_text(), re.M))
+    missing = documented - set(_server_env()) - DOCUMENTED_BUT_NOT_FORWARDED
+    assert not missing, f"documented in .env.example but never passed to the server: {sorted(missing)}"
+
+
+def test_every_operator_setting_is_documented():
+    text = ENV_EXAMPLE.read_text()
+    for key, raw in _server_env().items():
+        for var in _INTERPOLATION.findall(raw):
+            assert var[0] in text, f"{key} reads ${{{var[0]}}}, which .env.example never mentions"
+
+
+def test_env_example_is_a_valid_bare_metal_server_env():
+    """Bare metal runs uvicorn from server/, which reads server/.env as a
+    dotenv — and Settings refuses unknown non-empty keys there. A copied
+    .env.example must still boot."""
+    Settings(_env_file=str(ENV_EXAMPLE))
+
+
+def test_ui_nginx_base_image_is_pinned_to_a_stable_release():
+    """`FROM nginx:alpine` floats with mainline: every `compose up --build`
+    could pull a new nginx under the LAN dashboard's proxy. Pin a stable
+    (even-minor) release by tag AND multi-arch index digest, like the server."""
+    froms = [line.split(None, 1)[1].strip() for line in UI_DOCKERFILE.read_text().splitlines()
+             if line.strip().upper().startswith("FROM ")]
+    assert len(froms) == 1, froms
+    m = re.fullmatch(r"nginx:(\d+)\.(\d+)\.(\d+)-alpine@sha256:[0-9a-f]{64}", froms[0])
+    assert m, f"ui/Dockerfile base {froms[0]!r} is not an exact nginx release + digest"
+    assert int(m.group(2)) % 2 == 0, "odd nginx minors are mainline; the LAN proxy tracks stable"
 
 
 def test_server_receives_the_command_signing_and_ota_keys():
@@ -109,7 +255,7 @@ def test_server_receives_the_command_signing_and_ota_keys():
     # server crash-loops at boot — the default must be spelled out.
     assert env.get("SPOREPRINT_MQTT_REQUIRE_SIGNING") == "${SPOREPRINT_MQTT_REQUIRE_SIGNING:-auto}"
     assert env.get("SPOREPRINT_OTA_PUBKEY_B64") == "${SPOREPRINT_OTA_PUBKEY_B64:-}"
-    # Name printed by scripts/generate-ota-keypair.py; cloud/ota.py falls back to it.
+    # The older name (still in operators' .env files); cloud/ota.py falls back to it.
     assert env.get("SPOREPRINT_OTA_PUBKEY") == "${SPOREPRINT_OTA_PUBKEY:-}"
 
 

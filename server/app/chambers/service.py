@@ -68,8 +68,41 @@ async def update_chamber(chamber_id: int, data: ChamberUpdate) -> dict | None:
                WHERE id = ?""",
             (name, description, node_ids, active_session_id, automation_rule_ids, chamber_id),
         )
+        if active_session_id is not None:
+            # Keep the two chamber↔session links in step: create_session writes
+            # both, a link made here used to set only this one — so telemetry
+            # tagging, chamber stats and transcripts (which read
+            # sessions.chamber_id) never saw the session as this chamber's.
+            # A session already bound to a chamber is never moved.
+            await db.execute(
+                "UPDATE sessions SET chamber_id = ? WHERE id = ? AND chamber_id IS NULL",
+                (chamber_id, active_session_id),
+            )
         await db.commit()
     return await get_chamber(chamber_id)
+
+
+# Chambers listing a node. A chamber whose node_ids isn't valid JSON lists none.
+_NODE_CHAMBERS_SQL = (
+    "SELECT DISTINCT c.id, c.node_ids FROM chambers c, "
+    "json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j "
+    "WHERE j.value = ? ORDER BY c.id"
+)
+
+
+async def chambers_for_node(node_id: str) -> list[dict]:
+    """Every chamber that lists `node_id`, as [{"id": int, "node_ids": [str, ...]}]."""
+    async with get_db() as db:
+        cursor = await db.execute(_NODE_CHAMBERS_SQL, (node_id,))
+        rows = await cursor.fetchall()
+    chambers = []
+    for row in rows:
+        try:
+            nodes = [str(n) for n in json.loads(row["node_ids"] or "[]")]
+        except (TypeError, ValueError):
+            nodes = []
+        chambers.append({"id": row["id"], "node_ids": nodes})
+    return chambers
 
 
 async def delete_chamber(chamber_id: int) -> bool:

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# scripts/provision-node.sh — generate (or reuse) the MQTT command-signing
-# key shared by the Pi server and every ESP32 node.
+# scripts/provision-node.sh — print (or generate / rotate) the MQTT
+# command-signing key shared by the Pi server and every ESP32 node.
 #
 # Usage:
 #   ./scripts/provision-node.sh [--rotate]
+#
+# install.sh already provisions the key on first run, so the Pi signs every
+# command from day one (nodes without the key accept signed commands; a
+# cloud-paired Pi would otherwise refuse to send any). Run this to print the
+# key for the node portals, or with --rotate to replace it.
 #
 # What this does:
 #   1. Reuses the existing SPOREPRINT_MQTT_HMAC_KEY (repo-root .env first,
@@ -38,7 +43,7 @@ for arg in "$@"; do
   case "$arg" in
     --rotate) ROTATE=1 ;;
     -h|--help)
-      sed -n '2,29p' "$0"
+      sed -n '2,/^$/p' "$0"   # the header comment
       exit 0
       ;;
   esac

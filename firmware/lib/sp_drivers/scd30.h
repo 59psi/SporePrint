@@ -35,6 +35,9 @@ public:
     // Disable ASC, start continuous measurement (no pressure compensation).
     bool begin();
 
+    // True when a new sample is waiting. A bus failure (NACK / stretch
+    // timeout / CRC) returns false AND counts as a health failure
+    // ("data_ready error"); "no sample yet" is healthy.
     bool data_ready();
 
     // Read the measurement triple (call only when data_ready()).

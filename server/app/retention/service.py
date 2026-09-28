@@ -10,6 +10,13 @@ Retention policy:
 
 Same policy for weather data.
 
+Also nightly:
+  - automation_firings rows older than 90 days that belong to no session.
+    Session-tagged firings are that grow's automation event log (its
+    transcript's automation summary counts them), so they stay with it.
+  - A vision-frame thinning pass (vision.service.prune_vision_frames), which
+    ingest otherwise triggers at most once a day while cameras are posting.
+
 Rollup safety invariant:
   Every raw row deleted must contribute to an aggregate row that was either
   created by this run or merged into an existing row. The previous
@@ -20,15 +27,25 @@ Rollup safety invariant:
 
 import asyncio
 import logging
+import shutil
 import time
+from pathlib import Path
 
+from ..config import settings
 from ..db import get_db
+from ..vision.service import prune_vision_frames
 
 log = logging.getLogger(__name__)
 
 RAW_RETENTION_DAYS = 7
 FIVEMIN_RETENTION_DAYS = 30
 HOURLY_RETENTION_DAYS = 365
+FIRINGS_RETENTION_DAYS = 90
+
+# The one-time conversion VACUUM writes a full copy of the database (a temp
+# file, then the new pages through the WAL), so it only runs with room for
+# two copies plus this margin left on the database's filesystem.
+_VACUUM_FREE_MARGIN_BYTES = 64 * 1024 * 1024
 
 # Coarser rollups (hourly, daily) are built from finer ones, whose buckets hold
 # unequal counts (partial buckets, offline-buffer bursts, a changed publish
@@ -75,6 +92,13 @@ async def run_retention():
     await _rollup_telemetry_hourly()
     await _rollup_weather_hourly()
     await _cleanup_old_rollups()
+    await _prune_automation_firings()
+    try:
+        await prune_vision_frames()
+    except Exception as e:
+        # Vision storage trouble (a moved or unmounted dir) must not cost the
+        # telemetry tiers their vacuum.
+        log.warning("Retention: vision frame prune failed: %s", e)
     await _vacuum()
 
     elapsed = time.time() - t0
@@ -226,6 +250,48 @@ async def _cleanup_old_rollups():
             raise
 
 
+async def _prune_automation_firings():
+    """Delete expired automation firings that belong to no grow session.
+
+    Rows tagged with a session are kept: they are that session's automation
+    event log, and its transcript counts them. Rows whose session no longer
+    exists (possible only in databases older than the FK pragma) are pruned.
+    """
+    cutoff = time.time() - FIRINGS_RETENTION_DAYS * 86400
+    async with get_db() as db:
+        result = await db.execute(
+            """DELETE FROM automation_firings
+                WHERE timestamp < ?
+                  AND (session_id IS NULL
+                       OR session_id NOT IN (SELECT id FROM sessions))""",
+            (cutoff,),
+        )
+        await db.commit()
+    if result.rowcount > 0:
+        log.info("Retention: pruned %d automation firings older than %d days",
+                 result.rowcount, FIRINGS_RETENTION_DAYS)
+
+
+def _vacuum_has_room() -> bool:
+    """Enough free disk for a full VACUUM of the database? Logs when not."""
+    db_path = Path(settings.database_path)
+    try:
+        size = db_path.stat().st_size
+        free = shutil.disk_usage(db_path.resolve().parent).free
+    except OSError as e:
+        log.warning("Retention: cannot check disk space for VACUUM: %s", e)
+        return False
+    needed = 2 * size + _VACUUM_FREE_MARGIN_BYTES
+    if free < needed:
+        log.warning(
+            "Retention: skipping the auto_vacuum conversion VACUUM — %.0f MB free, "
+            "%.0f MB needed for a %.0f MB database; free some disk space",
+            free / 1e6, needed / 1e6, size / 1e6,
+        )
+        return False
+    return True
+
+
 async def _pragma_int(db, pragma_sql: str) -> int:
     cursor = await db.execute(pragma_sql)
     return int((await cursor.fetchone())[0])
@@ -235,13 +301,17 @@ async def ensure_incremental_auto_vacuum() -> bool:
     """Switch the database to auto_vacuum=INCREMENTAL; True if it converted.
 
     A database created without auto_vacuum can only change mode through a full
-    VACUUM, which rewrites the file (temporary disk up to the DB size) and
-    holds the write lock throughout. Concurrent writers (MQTT ingest, the rules
-    engine) wait out busy_timeout and then fail, so the ideal caller is startup,
-    before those tasks run. A no-op once the database is in incremental mode.
+    VACUUM, which rewrites the file (temporary disk up to twice the DB size)
+    and holds the write lock throughout. Concurrent writers (MQTT ingest, the
+    rules engine) wait out busy_timeout and then fail, so the ideal caller is
+    startup, before those tasks run (the main.py lifespan does). A no-op once
+    the database is in incremental mode; skipped (False, logged) while the
+    disk lacks room for the rewrite.
     """
     async with get_db() as db:
         if await _pragma_int(db, "PRAGMA auto_vacuum") == _AUTO_VACUUM_INCREMENTAL:
+            return False
+        if not _vacuum_has_room():
             return False
         t0 = time.monotonic()
         log.info("Retention: converting database to auto_vacuum=INCREMENTAL (one-time VACUUM)")

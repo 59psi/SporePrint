@@ -9,10 +9,17 @@ from .service import (
     NODE_ID_RE,
     get_node as service_get_node,
     list_nodes as service_list_nodes,
+    peripherals_command,
     send_command,
 )
 
 router = APIRouter()
+
+_NOT_PUBLISHED = (
+    "Command not published — MQTT broker unavailable, or command "
+    "signing is enforced and SPOREPRINT_MQTT_HMAC_KEY is unset "
+    "(see GET /api/health/detail/mqtt)"
+)
 
 
 # ─── LAN discovery + claim (H2-1) ───────────────────────────────
@@ -60,13 +67,28 @@ async def post_command(node_id: str, command: dict):
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not published:
-        raise HTTPException(
-            503,
-            "Command not published — MQTT broker unavailable, or command "
-            "signing is enforced and SPOREPRINT_MQTT_HMAC_KEY is unset "
-            "(see GET /api/health/detail/mqtt)",
-        )
+        raise HTTPException(503, _NOT_PUBLISHED)
     return {"status": "sent", "topic": topic}
+
+
+@router.post("/nodes/{node_id}/peripherals")
+async def set_node_peripherals(node_id: str, peripherals: dict):
+    """Enable/disable a node's optional peripherals without a factory reset.
+
+    Body: any of {"mhz19": bool, "hx711": bool, "reed": bool}. Sent as the
+    signed cmd/config {"peripherals": {...}}; a node whose set changes saves
+    it and reboots about 1.5 s later.
+    """
+    if not NODE_ID_RE.match(node_id):
+        raise HTTPException(400, "Invalid node_id")
+    try:
+        command = peripherals_command(peripherals)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    topic, published = await send_command(node_id, {"channel": "config", **command})
+    if not published:
+        raise HTTPException(503, _NOT_PUBLISHED)
+    return {"status": "sent", "topic": topic, **command}
 
 
 @router.get("/nodes/{node_id}/logs")

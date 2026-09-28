@@ -14,8 +14,10 @@
 #      (official get.docker.com convenience script), plus chrony (NTP) and
 #      openssl if needed. Nothing else has to be installed by hand.
 #   3. Writes a LAN-trust .env and generates the secrets the stack needs:
-#      the MQTT broker credentials (+ TLS certificates) and a smart-plug
-#      credential. No secret is ever committed to git.
+#      the MQTT broker credentials (+ TLS certificates), a smart-plug
+#      credential and the node command-signing key; records the host's time
+#      zone (TZ) for the automation schedules. Keys already set are kept. No
+#      secret is ever committed to git.
 #   4. Brings the whole stack up with `docker compose up -d --build` and
 #      waits for the API to report healthy.
 #   5. Prints the dashboard URL.
@@ -74,7 +76,9 @@ require curl
 ARCH="$(uname -m)"
 OS_ID="unknown"; OS_LIKE=""
 if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091  # the host's own os-release, read at runtime
   OS_ID="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-unknown}" || true)"
+  # shellcheck disable=SC1091
   OS_LIKE="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID_LIKE:-}" || true)"
 fi
 info "OS: ${OS_ID} (${ARCH})"
@@ -196,10 +200,12 @@ env_set() { # env_set KEY VALUE — replace in place or append. Idempotent.
   mv "$tmp" .env
 }
 
+EXISTING_INSTALL=0
 if [ ! -f .env ]; then
   if [ -f .env.example ]; then cp .env.example .env; info "Created .env from .env.example"
   else : > .env; info "Created empty .env"; fi
 else
+  EXISTING_INSTALL=1
   info ".env already present — updating only unset keys"
 fi
 
@@ -233,6 +239,69 @@ if [ -z "$MQTT_3P_PASS" ]; then
   MQTT_CREDS_FRESH=1
   info "Generated MQTT 'sp-3p' (smart-plug) credential"
 fi
+
+# Command-signing key (SPOREPRINT_MQTT_HMAC_KEY). With a key the Pi signs
+# every cmd/* frame: nodes that have no key accept signed frames, keyed nodes
+# verify them. Without one, a cloud-paired Pi (mqtt_require_signing=auto)
+# REFUSES every node command, so pairing a Pi whose nodes were never
+# provisioned used to cut off all actuation. Reuse a key an older
+# scripts/provision-node.sh left in server/.env — nodes may already hold it.
+# Keep in step with scripts/lib/host.sh sp_ensure_signing_key.
+if [ -z "$(env_get SPOREPRINT_MQTT_HMAC_KEY)" ]; then
+  HMAC_KEY="$(grep -E '^SPOREPRINT_MQTT_HMAC_KEY=' server/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$HMAC_KEY" ]; then
+    info "Reusing the command-signing key from server/.env"
+  else
+    HMAC_KEY="$(openssl rand -hex 32)"
+    info "Generated the command-signing key (SPOREPRINT_MQTT_HMAC_KEY)"
+  fi
+  env_set SPOREPRINT_MQTT_HMAC_KEY "$HMAC_KEY"
+  unset HMAC_KEY
+fi
+
+# Time zone: automation schedules (photoperiod, time windows, cron) run on
+# the server container's local clock, which is UTC unless compose passes TZ.
+# Only fills an unset TZ — an operator's choice in .env is kept.
+# Keep in step with scripts/lib/host.sh sp_host_timezone.
+host_timezone() { # the host's canonical IANA zone, or nothing
+  local zi="${SP_ZONEINFO_DIR:-/usr/share/zoneinfo}" tz="" real=""
+  if command -v timedatectl >/dev/null 2>&1; then
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  fi
+  if [ -z "$tz" ] && [ -r /etc/timezone ]; then
+    tz="$(head -n 1 /etc/timezone 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  if [ -z "$tz" ] && [ -L /etc/localtime ]; then
+    tz="$(readlink /etc/localtime 2>/dev/null || true)"
+    tz="${tz##*zoneinfo/}"
+  fi
+  # A legacy alias (US/Pacific) is a symlink on Debian hosts: resolve it. The
+  # server image carries canonical zones only, and glibc runs an unknown TZ
+  # on UTC without a word.
+  if [ -n "$tz" ] && [ -L "$zi/$tz" ]; then
+    real="$(readlink -f "$zi/$tz" 2>/dev/null || true)"
+    case "$real" in */zoneinfo/*) tz="${real##*/zoneinfo/}" ;; esac
+  fi
+  tz="${tz#posix/}"
+  printf '%s\n' "$tz" | grep -Eq '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$' || return 0
+  if [ -d "$zi" ] && [ ! -f "$zi/$tz" ]; then return 0; fi
+  printf '%s' "$tz"
+}
+if [ -z "$(env_get TZ)" ]; then
+  HOST_TZ="$(host_timezone)"
+  if [ -n "$HOST_TZ" ]; then
+    env_set TZ "$HOST_TZ"
+    info "Time zone ${HOST_TZ} (TZ in .env — automation schedules follow it)"
+    if [ "$EXISTING_INSTALL" = "1" ] && [ "$HOST_TZ" != "UTC" ] && [ "$HOST_TZ" != "Etc/UTC" ]; then
+      warn "Schedules ran on UTC until now. Rule times you entered in UTC to compensate"
+      warn "(photoperiod, time windows, cron) now read as ${HOST_TZ} — set them back to local"
+      warn "time, or put TZ=UTC in .env and re-run to keep the old behaviour."
+    fi
+  else
+    warn "Could not determine this host's time zone — automation schedules will run on UTC."
+    warn "Set TZ=<Region/City> (e.g. America/Los_Angeles) in .env and re-run ./install.sh."
+  fi
+fi
 chmod 600 .env 2>/dev/null || true
 
 # ── 6. Mosquitto password file (hashes generated inside the broker image) ─────
@@ -255,6 +324,7 @@ if [ ! -f "$PASSWD_FILE" ] || [ "$MQTT_CREDS_FRESH" = "1" ]; then
   # existing file): per-node users added by scripts/add-node-mqtt-user.sh
   # survive a re-run, and the inode the running broker's bind mount points at
   # stays the same. Credentials travel on stdin, not argv.
+  # shellcheck disable=SC2016  # the -c script expands inside the container
   printf '%s\n%s\n%s\n%s\n' server "$MQTT_PASS" sp-3p "$MQTT_3P_PASS" \
     | dc run --rm -i -e SP_CHOWN="$BROKER_CHOWN" \
         -v "$PWD/config/mosquitto:/work" --entrypoint sh "$MOSQUITTO_IMAGE" -c '
@@ -402,6 +472,7 @@ info "API is healthy"
 PI_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "$PI_IP" ] || PI_IP="<pi-ip>"
 DC_PREFIX=""; [ -n "$DOCKER_SUDO" ] && DC_PREFIX="sudo "
+SCHED_TZ="$(env_get TZ)"; [ -n "$SCHED_TZ" ] || SCHED_TZ="UTC (set TZ in .env)"
 
 cat <<EOF
 
@@ -414,11 +485,16 @@ ${GREEN}${BOLD}✓ SporePrint is running.${NC}
   MQTT broker  ${PI_IP}:1883   (TLS on 8883)   — ESP32 nodes connect here
                Secure MQTT nodes: use sporeprint.local (or ${PI_IP}) as the broker host
   ntfy push    http://${PI_IP}:8080
+  Schedules    ${SCHED_TZ} — photoperiod, time windows and cron rules follow it
 
 ${BOLD}Next steps${NC}
   • Open the dashboard and finish the first-run setup.
   • Pair firmware nodes to the broker: ./scripts/add-node-mqtt-user.sh <node_id>
-  • Optional command signing: ./scripts/provision-node.sh
+  • Command signing is on: the Pi signs every node command. Nodes accept signed
+    commands without the key; to make a node reject forged ones, paste the key
+    into its portal's "Command signing key" — print it with ./scripts/provision-node.sh
+  • Smart plugs (Shelly/Tasmota): MQTT user sp-3p, password SPOREPRINT_MQTT_3P_PASSWORD
+    in .env (Tasmota: FullTopic tasmota/%topic%/%prefix%/ and a unique Topic).
   • To pair with the cloud (premium remote access), generate a code in the app.
 
 ${BOLD}Manage the stack${NC}  (from ${REPO_DIR})
@@ -426,7 +502,7 @@ ${BOLD}Manage the stack${NC}  (from ${REPO_DIR})
   ${DC_PREFIX}docker compose logs -f server    # live server logs
   ${DC_PREFIX}docker compose up -d server      # apply .env changes ('restart' does NOT re-read .env)
   ${DC_PREFIX}docker compose down              # stop everything (data is kept in named volumes)
-  ./install.sh                     # re-run to update + rebuild
+  git pull && ./install.sh        # update the checkout + rebuild
 
 ${BOLD}Security${NC}
   Running in LAN-trust mode (no HTTP auth) — the browser UI is same-origin.

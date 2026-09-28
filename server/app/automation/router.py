@@ -8,7 +8,7 @@ from .engine import (
     set_override, get_overrides, clear_override as clear_override_engine, note_actuator_off,
 )
 from .service import deserialize_rule_row, serialize_rule_data, validate_action_channel
-from .smart_plugs import get_all_plugs, register_plug, send_plug_command
+from .smart_plugs import get_all_plugs, paired_plug, register_plug, send_plug_command
 
 router = APIRouter()
 
@@ -148,12 +148,17 @@ async def add_plug(data: dict):
 @router.post("/plugs/{plug_id}/command")
 async def command_plug(plug_id: str, data: dict):
     state = data.get("state", "off")
+    # Nothing switched in either failure, so neither reports success: an
+    # unknown / unpaired plug is the caller's problem (409), a broker that is
+    # down or refused the publish is ours (503).
+    if await paired_plug(plug_id) is None:
+        raise HTTPException(409, f"Plug '{plug_id}' is not paired")
     sent_at = time.time()
     published = await send_plug_command(plug_id, state)
     if not published:
-        # send_plug_command returns False for a plug with no paired row or a
-        # disconnected broker — nothing switched, so don't report success.
-        raise HTTPException(409, f"Plug '{plug_id}' is not paired or MQTT is disconnected")
+        raise HTTPException(
+            503, f"Command to plug '{plug_id}' not published — MQTT broker unavailable",
+        )
     if str(state).lower() == "off":
         # A manual OFF ends whatever automation ON a safety ceiling was timing;
         # without this the next automation ON keeps the stale deadline.

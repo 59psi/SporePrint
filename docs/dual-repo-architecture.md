@@ -10,7 +10,7 @@ Open-source Pi-side core + private commercial cloud layer. The commercial repo c
 flowchart TB
     subgraph Public["PUBLIC · sporeprint · MIT License · github.com/59psi/SporePrint"]
         Server["Pi Server<br/>Python 3.11+ · FastAPI<br/>17 router groups · 106 endpoints<br/>SQLite · aiomqtt · Socket.IO<br/>Bearer-token gate (v3.3.0)"]
-        Firmware["Firmware<br/>C++ · PlatformIO<br/>Climate · Relay · Lighting · Cam<br/>Auth'd MQTT + OTA pwd (v3.3.0)<br/>Offline buffer · Health reporting"]
+        Firmware["Firmware<br/>C++ · PlatformIO<br/>Unified node (climate · relay · lighting) + Cam<br/>Auth'd MQTT · signed commands · OTA pwd + rollback<br/>Offline buffer · Health reporting"]
         WebUI["Web UI<br/>React 18 · Vite · Tailwind v4<br/>15 pages · Zustand · Recharts<br/>Dashboard · Sessions · Species<br/>Automation · Analytics · Builder"]
     end
 

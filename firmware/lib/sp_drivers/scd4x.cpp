@@ -62,7 +62,13 @@ bool Scd4x::begin() {
 
 bool Scd4x::data_ready() {
     uint16_t word = 0;
-    if (!xport_.cmd_read(kCmdDataReady, kShortDelayMs, &word, 1)) return false;
+    if (!xport_.cmd_read(kCmdDataReady, kShortDelayMs, &word, 1)) {
+        // A NACK / CRC failure here is a bus fault, not "no sample yet" —
+        // count it, or a sensor that fell off the bus keeps reporting
+        // healthy reads/fails while its reading goes stale.
+        health_.fail("data_ready error");
+        return false;
+    }
     return (word & 0x07FF) != 0;
 }
 

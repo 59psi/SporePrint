@@ -6,12 +6,17 @@
 // the Arduino core refuses to auto-retry (AUTH_FAIL et al.) left the node
 // dark until power-cycled. LinkWatchdog is the pure policy; the composition
 // root turns its actions into channel force_off()s and WiFi.begin().
+//
+// Also: the heartbeat cadence (srv-hw#22) — PublishCadence keeps the status
+// heartbeat inside the Pi's offline threshold whatever the telemetry interval.
 
 #include <unity.h>
 
 #include <stdint.h>
 
+#include "clamps.h"
 #include "link_watchdog.h"
+#include "publish_cadence.h"
 
 void setUp() {}
 void tearDown() {}
@@ -121,6 +126,96 @@ void test_millis_wrap_is_safe() {
     TEST_ASSERT_TRUE(w.update(t0 + kSafe, true, false).enter_safe_mode);
 }
 
+// ── heartbeat cadence (srv-hw#22) ──────────────────────────────
+//
+// The Pi marks a node offline (and pages) when no status/* frame arrived for
+// 900 s (server/app/main.py _NODE_OFFLINE_THRESHOLD_SECONDS). The node used to
+// publish its heartbeat only inside the telemetry block, so an operator-set
+// publish_interval_ms of 15 min or more (the clamps allow 1 h) flapped the
+// node offline/online every cycle. The heartbeat now runs on its own cadence,
+// min(publish_interval_ms, 5 min) — CLAUDE.md "Heartbeat every 5 min".
+
+static const uint32_t kPiOfflineThresholdMs = 900000;
+
+void test_heartbeat_interval_is_capped_at_five_minutes() {
+    sp::PublishCadence c(60000);
+    TEST_ASSERT_EQUAL_UINT32(60000, c.heartbeat_interval_ms());
+    c.set_publish_interval(300000);
+    TEST_ASSERT_EQUAL_UINT32(300000, c.heartbeat_interval_ms());
+    c.set_publish_interval(sp::kMaxPublishIntervalMs);  // 1 h
+    TEST_ASSERT_EQUAL_UINT32(300000, c.heartbeat_interval_ms());
+    // Every publish interval the clamps allow keeps two missed heartbeats of
+    // margin under the Pi's offline threshold.
+    for (uint32_t ms = sp::kMinPublishIntervalMs;
+         ms <= sp::kMaxPublishIntervalMs; ms += 5000) {
+        c.set_publish_interval(ms);
+        TEST_ASSERT_TRUE(c.heartbeat_interval_ms() <= ms);
+        TEST_ASSERT_TRUE(3u * c.heartbeat_interval_ms() <= kPiOfflineThresholdMs);
+    }
+}
+
+// Drive the cadence the way loop() does (1 s passes) and return the longest
+// gap between heartbeats over `span_ms`, counting both publishes.
+static uint32_t max_heartbeat_gap(sp::PublishCadence& c, uint32_t start,
+                                  uint32_t span_ms, int* telemetry,
+                                  int* heartbeats) {
+    uint32_t last_hb = start, worst = 0;
+    *telemetry = 0;
+    *heartbeats = 0;
+    for (uint32_t off = 1000; off <= span_ms; off += 1000) {
+        sp::PublishCadence::Due d = c.update(start + off);
+        if (d.telemetry) ++*telemetry;
+        if (d.heartbeat) {
+            uint32_t gap = (start + off) - last_hb;
+            if (gap > worst) worst = gap;
+            last_hb = start + off;
+            ++*heartbeats;
+        }
+    }
+    return worst;
+}
+
+void test_hour_publish_interval_still_heartbeats_every_five_minutes() {
+    sp::PublishCadence c(sp::kMaxPublishIntervalMs);
+    c.begin(0);
+    int telemetry = 0, heartbeats = 0;
+    uint32_t worst = max_heartbeat_gap(c, 0, 2UL * 3600UL * 1000UL, &telemetry,
+                                       &heartbeats);
+    TEST_ASSERT_EQUAL_INT(2, telemetry);    // telemetry keeps the operator's 1 h
+    TEST_ASSERT_EQUAL_INT(24, heartbeats);  // heartbeat every 5 min
+    TEST_ASSERT_EQUAL_UINT32(300000, worst);
+    TEST_ASSERT_TRUE(worst < kPiOfflineThresholdMs);
+}
+
+void test_default_interval_heartbeats_with_telemetry() {
+    // At the 60 s default both fire on the same pass — unchanged wire
+    // behavior for every node that never touched publish_interval_ms.
+    sp::PublishCadence c(60000);
+    c.begin(0);
+    int fired = 0;
+    for (uint32_t t = 1000; t <= 600000; t += 1000) {
+        sp::PublishCadence::Due d = c.update(t);
+        TEST_ASSERT_EQUAL(d.telemetry, d.heartbeat);
+        if (d.telemetry) {
+            TEST_ASSERT_EQUAL_UINT32(0, t % 60000);
+            ++fired;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(10, fired);
+}
+
+void test_interval_change_takes_effect_and_is_wrap_safe() {
+    uint32_t t0 = 0xFFFFFFFFu - 100000u;
+    sp::PublishCadence c(60000);
+    c.begin(t0);
+    c.set_publish_interval(1800000);  // 30 min via cmd/config
+    int telemetry = 0, heartbeats = 0;
+    uint32_t worst = max_heartbeat_gap(c, t0, 3600000, &telemetry, &heartbeats);
+    TEST_ASSERT_EQUAL_INT(2, telemetry);
+    TEST_ASSERT_EQUAL_INT(12, heartbeats);
+    TEST_ASSERT_EQUAL_UINT32(300000, worst);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_constants_match_spec);
@@ -130,5 +225,9 @@ int main(int, char**) {
     RUN_TEST(test_never_connected_after_boot_still_enters_safe_mode);
     RUN_TEST(test_wifi_down_retries_every_minute);
     RUN_TEST(test_millis_wrap_is_safe);
+    RUN_TEST(test_heartbeat_interval_is_capped_at_five_minutes);
+    RUN_TEST(test_hour_publish_interval_still_heartbeats_every_five_minutes);
+    RUN_TEST(test_default_interval_heartbeats_with_telemetry);
+    RUN_TEST(test_interval_change_takes_effect_and_is_wrap_safe);
     return UNITY_END();
 }

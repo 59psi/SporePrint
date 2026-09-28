@@ -334,6 +334,48 @@ void test_scd4x_data_ready_and_read() {
     TEST_ASSERT_FLOAT_WITHIN(0.05f, 50.0f, rh);
 }
 
+// A data_ready bus failure (NACK / CRC) is a sensor fault, not "no data
+// yet": it must show in health, or a CO2 sensor that fell off the bus looks
+// healthy (reads/fails frozen) while its reading goes stale.
+void test_scd4x_data_ready_bus_failure_is_a_health_fail() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd4x scd(bus, clock);
+
+    bus.expect_write_nack(0x62);
+    TEST_ASSERT_FALSE(scd.data_ready());
+    TEST_ASSERT_EQUAL_UINT32(1, scd.health().fails);
+    TEST_ASSERT_EQUAL_STRING("data_ready error", scd.health().last_error);
+
+    // CRC-corrupt reply: also a fault.
+    bus.expect_write(0x62, {0xE4, 0xB8});
+    bus.expect_read(0x62, {0x80, 0x06, 0x00});  // wrong CRC byte
+    TEST_ASSERT_FALSE(scd.data_ready());
+    TEST_ASSERT_EQUAL_UINT32(2, scd.health().fails);
+
+    // "Not ready yet" is healthy and leaves the counters alone.
+    bus.expect_write(0x62, {0xE4, 0xB8});
+    std::vector<uint8_t> not_ready;
+    push_word(not_ready, 0x8000);
+    bus.expect_read(0x62, not_ready);
+    TEST_ASSERT_FALSE(scd.data_ready());
+    TEST_ASSERT_EQUAL_UINT32(2, scd.health().fails);
+    TEST_ASSERT_EQUAL_UINT32(2, scd.health().reads);
+
+    // The next good measurement clears the error.
+    bus.expect_write(0x62, {0xEC, 0x05});
+    std::vector<uint8_t> meas;
+    push_word(meas, 900);
+    push_word(meas, 0x6666);
+    push_word(meas, 0x8000);
+    bus.expect_read(0x62, meas);
+    uint16_t co2;
+    float t, rh;
+    TEST_ASSERT_TRUE(scd.read(&co2, &t, &rh));
+    TEST_ASSERT_NULL(scd.health().last_error);
+    TEST_ASSERT_TRUE(bus.script_consumed());
+}
+
 void test_scd4x_frc_success_and_failure() {
     MockI2cBus bus;
     MockClock clock;
@@ -416,6 +458,38 @@ void test_scd30_stretch_timeout_is_read_fail() {
     float co2, t, rh;
     TEST_ASSERT_FALSE(scd.read(&co2, &t, &rh));
     TEST_ASSERT_EQUAL_UINT32(1, scd.health().fails);
+}
+
+void test_scd30_data_ready_bus_failure_is_a_health_fail() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd30 scd(bus, clock);
+
+    bus.expect_write_nack(0x61);
+    TEST_ASSERT_FALSE(scd.data_ready());
+    TEST_ASSERT_EQUAL_UINT32(1, scd.health().fails);
+    TEST_ASSERT_EQUAL_STRING("data_ready error", scd.health().last_error);
+
+    // Clock-stretch timeout on the reply: a fault too.
+    bus.expect_write(0x61, {0x02, 0x02});
+    bus.expect_read(0x61, {}, /*ack=*/false);
+    TEST_ASSERT_FALSE(scd.data_ready());
+    TEST_ASSERT_EQUAL_UINT32(2, scd.health().fails);
+
+    // Word 0 = no new sample yet: healthy, counters untouched.
+    bus.expect_write(0x61, {0x02, 0x02});
+    std::vector<uint8_t> not_ready;
+    push_word(not_ready, 0);
+    bus.expect_read(0x61, not_ready);
+    TEST_ASSERT_FALSE(scd.data_ready());
+    TEST_ASSERT_EQUAL_UINT32(2, scd.health().reads);
+
+    bus.expect_write(0x61, {0x02, 0x02});
+    std::vector<uint8_t> ready;
+    push_word(ready, 1);
+    bus.expect_read(0x61, ready);
+    TEST_ASSERT_TRUE(scd.data_ready());
+    TEST_ASSERT_TRUE(bus.script_consumed());
 }
 
 void test_scd30_frc_success_and_failure() {
@@ -612,10 +686,12 @@ int main(int, char**) {
     RUN_TEST(test_scd4x_probe_stops_stale_periodic_mode_first);
     RUN_TEST(test_scd4x_probe_absent);
     RUN_TEST(test_scd4x_data_ready_and_read);
+    RUN_TEST(test_scd4x_data_ready_bus_failure_is_a_health_fail);
     RUN_TEST(test_scd4x_frc_success_and_failure);
     RUN_TEST(test_scd30_float_decode);
     RUN_TEST(test_scd30_read_measurement_floats);
     RUN_TEST(test_scd30_stretch_timeout_is_read_fail);
+    RUN_TEST(test_scd30_data_ready_bus_failure_is_a_health_fail);
     RUN_TEST(test_scd30_frc_success_and_failure);
     RUN_TEST(test_scd30_out_of_range_rejected);
     RUN_TEST(test_scd30_nan_rejected);

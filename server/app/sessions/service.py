@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import date, datetime, timedelta, timezone
 
 
@@ -12,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 # imported here may import app.sessions.service at module level in turn.
 from ..automation.service import deserialize_rule_row, resolve_node_target
 from ..automation.smart_plugs import is_plug_target, send_plug_command, target_is_present
+from ..chambers.service import chambers_for_node, get_chamber
 from ..db import get_db
 from ..mqtt import mqtt_publish
 from ..notifications.service import phase_reminder, pink_oyster_harvest
@@ -27,6 +29,69 @@ _PHASE_ORDER = [
     "substrate_colonization", "cold_storage", "primordia_induction",
     "fruiting", "rest", "complete",
 ]
+
+# Where a phase borrows setpoints when the session's species profile does not
+# define it — the automation engine resolves phase params through this table.
+# 33 of 74 profiles fold pinning into fruiting (no primordia_induction) and 71
+# have no rest phase, yet the lifecycle walks sessions through both. Rest
+# borrows fruiting's envelope with the lights off (the block rests / soaks in
+# the dark).
+PHASE_PARAM_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "primordia_induction": ("fruiting",),
+    "fruiting": ("primordia_induction",),
+    "rest": ("fruiting", "primordia_induction"),
+}
+
+# Phases that run on no species setpoints: cold storage holds the fridge cold
+# whatever the species, and a complete session is not managed.
+_SPECIES_AGNOSTIC_PHASES = frozenset({"cold_storage", "complete"})
+# The colonization stages run in a sealed vessel (plate, LC jar, grain jar,
+# bag) that the closet at most holds near ambient; CLAUDE.md §4b lists them
+# as ambient / n/a / in-bag, and §6 makes agar / LC / grain optional stages.
+# Profiles define only the ones they drive (71 of 74 built-ins define no
+# agar phase; the sclerotia species define grain but not substrate), so a
+# missing one means "no closet setpoints", never "unreachable".
+_COLONIZATION_PHASES = frozenset({
+    "agar", "liquid_culture", "grain_colonization", "substrate_colonization",
+})
+# Phases a session may enter whatever its species profile defines.
+_ALWAYS_ENTERABLE_PHASES = _SPECIES_AGNOSTIC_PHASES | _COLONIZATION_PHASES
+_GROW_PHASES = tuple(p.value for p in GrowPhase)
+
+
+class InvalidPhaseError(ValueError):
+    """A phase a session cannot be advanced to (unknown, or no setpoints)."""
+
+
+def phase_params_source(defined: Collection[str], phase: str) -> str | None:
+    """The profile phase whose setpoints `phase` runs on: the phase itself when
+    the profile defines it, else its PHASE_PARAM_FALLBACKS stand-in, else None."""
+    if phase in defined:
+        return phase
+    return next((alt for alt in PHASE_PARAM_FALLBACKS.get(phase, ()) if alt in defined), None)
+
+
+def phase_error(phase: str, profile: SpeciesProfile | None) -> str | None:
+    """Why a session on `profile` cannot enter `phase`, or None if it can.
+
+    A typo ('fruitng') or a phase the profile neither defines nor falls back
+    for used to be stored as-is — and from then on every profile-driven rule
+    and every stage safety alert was silent, because no setpoints resolve for
+    it. Only the closet-driven stages (primordia induction, fruiting, rest)
+    need setpoints: the colonization stages, cold storage and complete are
+    always enterable (_ALWAYS_ENTERABLE_PHASES). With no profile (unknown /
+    deleted species) only the name is checked.
+    """
+    if phase not in _GROW_PHASES:
+        return f"Unknown phase {phase!r} — expected one of: {', '.join(_GROW_PHASES)}"
+    if profile is None or phase in _ALWAYS_ENTERABLE_PHASES:
+        return None
+    defined = {p.value for p in profile.phases}
+    if phase_params_source(defined, phase) is not None:
+        return None
+    listed = ", ".join(p for p in _GROW_PHASES if p in defined) or "none"
+    return (f"Species profile {profile.id!r} defines no {phase!r} phase (it defines: "
+            f"{listed}), so automation would run it with no setpoints or safety alerts")
 
 
 def _params_snapshot(profile: SpeciesProfile | None, phase: str) -> str | None:
@@ -64,7 +129,13 @@ async def create_session(data: SessionCreate) -> dict:
     # caller submitted the hyphenated or underscored form. get_profile() stays
     # tolerant either way. See app.species.profiles.canonical_species_id.
     species_id = canonical_species_id(data.species_profile_id)
-    snapshot = _params_snapshot(await get_profile(species_id), data.current_phase)
+    profile = await get_profile(species_id)
+    # Same gate as advance_phase: a session created at a typo'd phase used to
+    # run with no setpoints and no stage alerts (the REST route answers 422;
+    # a cloud session_start reports the reason as success=false).
+    if error := phase_error(data.current_phase, profile):
+        raise InvalidPhaseError(error)
+    snapshot = _params_snapshot(profile, data.current_phase)
     async with get_db() as db:
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
@@ -197,7 +268,7 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
     return await get_session(session_id)
 
 
-_COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substrate_colonization"}
+# (_COLONIZATION_PHASES is defined with the phase-validation tables above.)
 # Bulk-substrate containers that fruit in place (a bag is cut open; a tub/tray
 # is opened to air). Everything else — colonized agar / liquid culture / grain
 # spawn — is pulled and parked in cold storage until used. monotub/tray were
@@ -207,7 +278,8 @@ _FRUITING_CONTAINERS = {"grow_bag", "bag", "bulk_bag", "monotub", "tray"}
 
 
 def suggested_next_phase(current_phase: str, container_type: str | None,
-                         more_flushes_expected: bool = True) -> str:
+                         more_flushes_expected: bool = True, *,
+                         profile_phases: Collection[str] | None = None) -> str:
     """The product spec's forks, as a suggestion the UI offers on 'advance phase'.
 
     Two forks:
@@ -220,22 +292,44 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
            rest → fruiting   (if more flushes expected)
            rest → complete   (bag is spent)
     Everything else follows the ordinary linear order.
+
+    ``profile_phases`` (the phases the session's species profile defines)
+    skips forward past phases the profile doesn't define: pink oyster folds
+    pinning into fruiting, so its bag goes straight to fruiting. REST stays in
+    the flush loop whenever fruiting setpoints exist to run it on, and
+    cold_storage / complete need no setpoints.
     """
     ct = (container_type or "").lower()
     if current_phase in _COLONIZATION_PHASES:
-        return "primordia_induction" if ct in _FRUITING_CONTAINERS else "cold_storage"
-    if current_phase == "rest":
-        return "fruiting" if more_flushes_expected else "complete"
-    # Non-fork transitions follow the ordinary linear progression.
-    order = [p.value for p in GrowPhase]
-    try:
-        i = order.index(current_phase)
-        return order[i + 1] if i + 1 < len(order) else "complete"
-    except ValueError:
-        return "complete"
+        candidate = "primordia_induction" if ct in _FRUITING_CONTAINERS else "cold_storage"
+    elif current_phase == "rest":
+        candidate = "fruiting" if more_flushes_expected else "complete"
+    else:
+        # Non-fork transitions follow the ordinary linear progression.
+        try:
+            i = _GROW_PHASES.index(current_phase)
+            candidate = _GROW_PHASES[i + 1] if i + 1 < len(_GROW_PHASES) else "complete"
+        except ValueError:
+            candidate = "complete"
+    if profile_phases is None:
+        return candidate
+
+    defined = set(profile_phases)
+
+    def _suggestable(phase: str) -> bool:
+        if phase in _SPECIES_AGNOSTIC_PHASES or phase in defined:
+            return True
+        return phase == "rest" and phase_params_source(defined, phase) is not None
+
+    for phase in _GROW_PHASES[_GROW_PHASES.index(candidate):]:
+        if phase != current_phase and _suggestable(phase):
+            return phase
+    return "complete"
 
 
 async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
+    """Move the session to data.phase. None for an unknown session; raises
+    InvalidPhaseError for a phase the session cannot run (see phase_error)."""
     now = time.time()
     async with get_db() as db:
         cursor = await db.execute(
@@ -244,7 +338,10 @@ async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
         row = await cursor.fetchone()
     if row is None:
         return None
-    snapshot = _params_snapshot(await get_profile(row["species_profile_id"]), data.phase)
+    profile = await get_profile(row["species_profile_id"])
+    if error := phase_error(data.phase, profile):
+        raise InvalidPhaseError(error)
+    snapshot = _params_snapshot(profile, data.phase)
 
     async with get_db() as db:
         # Close current phase
@@ -389,6 +486,88 @@ async def get_active_session() -> dict | None:
         return dict(row) if row else None
 
 
+# The grow a chamber runs, most specific link first (see
+# get_active_session_for_chambers). :ids is a JSON array of chamber ids.
+_CHAMBER_IDS = "(SELECT value FROM json_each(:ids))"
+_CHAMBER_SESSION_SQL = (
+    # 1. bound to it by sessions.chamber_id;
+    "SELECT * FROM sessions WHERE status = 'active' AND chamber_id IN " + _CHAMBER_IDS +
+    " ORDER BY created_at DESC, id DESC LIMIT 1",
+    # 2. linked by chambers.active_session_id (and bound to no chamber);
+    "SELECT * FROM sessions WHERE status = 'active' AND chamber_id IS NULL "
+    "AND id IN (SELECT active_session_id FROM chambers WHERE id IN " + _CHAMBER_IDS + ")"
+    " ORDER BY created_at DESC, id DESC LIMIT 1",
+    # 3. the newest session bound to no chamber and linked from no OTHER one.
+    "SELECT * FROM sessions WHERE status = 'active' AND chamber_id IS NULL "
+    "AND id NOT IN (SELECT active_session_id FROM chambers "
+    "WHERE active_session_id IS NOT NULL AND id NOT IN " + _CHAMBER_IDS + ")"
+    " ORDER BY created_at DESC, id DESC LIMIT 1",
+)
+
+
+# The grow a node listed in NO chamber belongs to (see
+# get_active_session_for_chambers([])), most specific first.
+_UNCHAMBERED_SESSION_SQL = (
+    # 1. the newest session bound to no existing chamber — the single-closet
+    #    grow, and exactly the one telemetry.service.active_session_for_node
+    #    tags such a node's readings with;
+    "SELECT * FROM sessions WHERE status = 'active' "
+    "AND (chamber_id IS NULL OR chamber_id NOT IN (SELECT id FROM chambers))"
+    " ORDER BY created_at DESC, id DESC LIMIT 1",
+    # 2. else, when every active session is bound to ONE chamber, its newest:
+    #    the node can only be that grow's (its chamber's node list is just
+    #    incomplete). Grows in two chambers are ambiguous — neither is picked.
+    "SELECT * FROM sessions WHERE status = 'active' "
+    "AND (SELECT COUNT(DISTINCT chamber_id) FROM sessions WHERE status = 'active') = 1"
+    " ORDER BY created_at DESC, id DESC LIMIT 1",
+)
+
+
+async def get_active_session_for_chambers(chamber_ids: Sequence[int]) -> dict | None:
+    """The active session the given chamber(s) run, or None.
+
+    In order: an active session bound to one of them by sessions.chamber_id;
+    else the one a chamber's active_session_id links (PATCH /api/chambers
+    used to set only that link); else the newest active session bound to NO
+    chamber and linked from no other chamber — a pre-migration session, or one
+    an API / cloud session_start created without a chamber_id. Never another
+    chamber's grow: two chambers run side by side.
+
+    With no chamber ids (a node listed in no chamber): the newest session
+    bound to no chamber (the single closet); else the grow of the only chamber
+    with active sessions; else None — never a guess between two chambers.
+
+    This is THE per-node session rule (CLAUDE.md §12). The ingest tagger
+    telemetry.service.active_session_for_node is its strict subset: whenever
+    the tagger names a session for a live reading this names the same one
+    (the tagger also skips sessions created after a replayed reading's
+    timestamp); this also resolves
+    the unbound cases (a legacy chamber link, a chamberless session on a
+    chambered node, a single chamber's incomplete node list) so such a grow
+    stays managed.
+    """
+    ids = [int(i) for i in chamber_ids]
+    if ids:
+        queries, params = _CHAMBER_SESSION_SQL, {"ids": json.dumps(ids)}
+    else:
+        queries, params = _UNCHAMBERED_SESSION_SQL, {}
+    async with get_db() as db:
+        for sql in queries:
+            cursor = await db.execute(sql, params)
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+    return None
+
+
+async def get_active_session_for_node(node_id: str) -> dict | None:
+    """The active session a node's readings (or camera frames) belong to: its
+    chamber's grow when the node is listed in a chamber, else the unambiguous
+    chamberless grow (see get_active_session_for_chambers)."""
+    chambers = await chambers_for_node(node_id)
+    return await get_active_session_for_chambers([c["id"] for c in chambers])
+
+
 async def get_events(session_id: int, limit: int | None = None) -> list[dict]:
     """Session events in chronological order.
 
@@ -423,23 +602,72 @@ def _is_held(held: set[tuple[str, str | None]], targets: set[str], channel: str 
     return any((t, channel) in held or (t, None) in held for t in targets)
 
 
+# Awaited as listener(target, channel, sent_at=...) after session-end safing
+# actually published an OFF to that actuator. The automation engine registers
+# note_actuator_off here, so a safety ceiling timing an ON that this OFF ended
+# is cleared (otherwise the next ON keeps the stale deadline and trips early).
+# The engine imports this module at its top, so this module cannot import it.
+ActuatorOffListener = Callable[..., Awaitable[None]]
+_actuator_off_listeners: list[ActuatorOffListener] = []
+
+
+def add_actuator_off_listener(listener: ActuatorOffListener) -> None:
+    """Register `listener` for OFFs session-end safing publishes (idempotent)."""
+    if listener not in _actuator_off_listeners:
+        _actuator_off_listeners.append(listener)
+
+
+async def _notify_actuator_off(target: str, channel: str | None, sent_at: float) -> None:
+    for listener in list(_actuator_off_listeners):
+        try:
+            await listener(target, channel, sent_at=sent_at)
+        except Exception as e:  # bookkeeping must never strand the other OFFs
+            log.warning("actuator-off listener failed for %s:%s: %s", target, channel, e)
+
+
+async def _chamber_left_idle_by(session_id: int) -> list[str] | None:
+    """The node ids of the chamber `session_id` was bound to, when no active
+    grow runs that chamber any more (get_active_session_for_chambers — so an
+    unbound session its nodes would drive keeps it busy); else None."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT chamber_id FROM sessions WHERE id = ?", (session_id,))
+        row = await cursor.fetchone()
+    if row is None or row["chamber_id"] is None:
+        return None
+    chamber = await get_chamber(row["chamber_id"])
+    if chamber is None or not chamber["node_ids"]:
+        return None
+    if await get_active_session_for_chambers([chamber["id"]]) is not None:
+        return None
+    return [str(n) for n in chamber["node_ids"]]
+
+
 async def _safe_actuators_after_session_end(session_id: int) -> list[dict] | None:
     """Command automation-driven actuators OFF once no active session remains.
 
-    evaluate_rules() returns before any rule runs when there is no active
-    session, so whatever automation last switched ON — a cooler plug from
-    "Pre-cool for Hot Forecast" (no safety_max_on), the fruiting light scene —
-    would otherwise stay ON indefinitely after the grow ends. Every actuator an
-    automation rule can switch ON gets an explicit OFF (lights go to the dark
-    scene), except those under an operator's manual hold. Vendor-integration
-    actions have no generic OFF and are left alone.
+    With no active session the engine runs only the life-safety rules (e.g.
+    the CO2 Hard Ceiling), so whatever the grow's rules last switched ON — a
+    cooler plug from "Pre-cool for Hot Forecast" (no safety_max_on), the
+    fruiting light scene — would otherwise stay ON indefinitely after the grow
+    ends. Every actuator an automation rule can switch ON gets an explicit OFF
+    (lights go to the dark scene), except those under an operator's manual
+    hold. Vendor-integration actions have no generic OFF and are left alone.
+    Each OFF that went out is reported to the actuator-off listeners (the
+    engine's safety-ceiling bookkeeping).
 
-    Skipped entirely while another session is still active: the engine keeps
-    driving the closet for it and a blanket OFF would fight it. Returns the
+    While another session is still active the engine keeps driving the
+    hardware for it and a blanket OFF would fight it, so: a grow bound to a
+    chamber whose own nodes no remaining grow runs (another chamber's grow is
+    still active) safes only the channels / scenes of that chamber's listed
+    nodes — never a plug (plugs belong to no chamber) nor another chamber's
+    or an unlisted node; otherwise safing is skipped. Returns the
     per-actuator results, or None when skipped.
     """
+    scope: list[str] | None = None
     if await get_active_session() is not None:
-        return None
+        scope = await _chamber_left_idle_by(session_id)
+        if not scope:
+            return None
 
     now = time.time()
     async with get_db() as db:
@@ -463,13 +691,18 @@ async def _safe_actuators_after_session_end(session_id: int) -> list[dict] | Non
         channel = action.get("channel")
         if not target or action.get("vendor_slug") or action.get("state") != "on":
             continue
-        # Same target resolution as the engine's _fire_rule, so the OFF lands
-        # on the node/plug the ON went to.
-        resolved = await resolve_node_target(target) or target
+        # Same target resolution as the engine's _fire_rule (chamber-scoped
+        # when this chamber's grow ended), so the OFF lands on the node/plug
+        # the ON went to.
+        resolved = await resolve_node_target(target, scope) or target
         if _is_held(held, {target, resolved}, channel):
             continue
         if await is_plug_target(resolved):
+            if scope is not None:
+                continue  # a plug may serve the grow that is still running
             kind, key_channel = "plug", None
+        elif scope is not None and resolved not in scope:
+            continue  # another chamber's (or an unlisted) node
         elif channel:
             kind, key_channel = "channel", channel
         elif action.get("scene"):
@@ -482,6 +715,9 @@ async def _safe_actuators_after_session_end(session_id: int) -> list[dict] | Non
         seen.add(key)
 
         published = False
+        # Taken just before the publish: a ceiling armed by an ON that went
+        # out after this moment is not ended by this OFF.
+        sent_at = time.time()
         try:
             if kind == "plug":
                 if not await target_is_present(resolved):
@@ -499,6 +735,8 @@ async def _safe_actuators_after_session_end(session_id: int) -> list[dict] | Non
                 )
         except Exception as e:  # one unreachable actuator must not strand the rest
             log.warning("session-end OFF for %s:%s failed: %s", resolved, key_channel, e)
+        if published:
+            await _notify_actuator_off(resolved, key_channel, sent_at)
         results.append({
             "target": resolved, "channel": key_channel, "kind": kind,
             "published": bool(published),
@@ -624,6 +862,31 @@ async def handle_remote_command(channel: str, payload: dict) -> dict | None:
     raise ValueError(f"unknown session command channel: {channel!r}")
 
 
+# Strategy 3 of resolve_session_node_id: the node listed in no chamber with
+# the most samples (raw rows, plus rollup rows weighted by their sample count)
+# inside [from_ts, to_ts], for :sensor when given.
+_CHAMBERLESS_SESSION_NODE_SQL = """
+    WITH chambered AS (
+        SELECT DISTINCT j.value AS node_id FROM chambers c,
+               json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j
+    ),
+    samples AS (
+        SELECT node_id, 1 AS n FROM telemetry_readings
+         WHERE timestamp >= :from_ts AND timestamp <= :to_ts
+           AND (:sensor IS NULL OR sensor = :sensor)
+        UNION ALL
+        SELECT node_id, COALESCE(count, 1) AS n FROM telemetry_rollups
+         WHERE timestamp >= :from_ts AND timestamp <= :to_ts
+           AND (:sensor IS NULL OR sensor = :sensor)
+    )
+    SELECT node_id FROM samples
+     WHERE node_id NOT IN (SELECT node_id FROM chambered)
+     GROUP BY node_id
+     ORDER BY SUM(n) DESC, node_id
+     LIMIT 1
+"""
+
+
 async def resolve_session_node_id(session_id: int, sensor: str | None = None) -> str | None:
     """Resolve which hardware node's telemetry backs a session.
 
@@ -631,7 +894,7 @@ async def resolve_session_node_id(session_id: int, sensor: str | None = None) ->
     ``climate-01`` and so returned the wrong node's series (or nothing) for any
     node not named that, and for every session whose chamber is a different node.
 
-    Two strategies, in order:
+    Three strategies, in order:
       1. Session-tagged telemetry — if any ``telemetry_readings`` rows carry this
          ``session_id``, use the node that produced them (scoped to ``sensor``
          when given, so a session spanning several nodes resolves to the one that
@@ -640,10 +903,13 @@ async def resolve_session_node_id(session_id: int, sensor: str | None = None) ->
          chamber's ``node_ids`` and pick the climate/sensor node (``node_type``
          'climate'/'sensor', or a node whose ``roles`` include one of those),
          falling back to the chamber's first node.
+      3. A chamberless session whose tagged raw rows have aged into rollups
+         (raw telemetry is kept 7 days): the node in no chamber that reported
+         the most data during the session — raw rows or rollups — which is
+         exactly the node set the ingest tagger assigns to a chamberless grow.
 
-    Returns None when neither strategy yields a node (unknown session, or a
-    session with no chamber and no tagged telemetry) so the caller can return an
-    empty series.
+    Returns None when no strategy yields a node (unknown session, or no
+    telemetry at all) so the caller can return an empty series.
     """
     async with get_db() as db:
         # 1. Prefer telemetry actually tagged with this session.
@@ -666,18 +932,28 @@ async def resolve_session_node_id(session_id: int, sensor: str | None = None) ->
 
         # 2. Fall back to the session's chamber's climate/sensor node.
         cursor = await db.execute(
-            "SELECT chamber_id FROM sessions WHERE id = ?", (session_id,)
+            "SELECT chamber_id, created_at, completed_at FROM sessions WHERE id = ?",
+            (session_id,),
         )
         srow = await cursor.fetchone()
-        if not srow or srow["chamber_id"] is None:
+        if not srow:
             return None
-
-        cursor = await db.execute(
-            "SELECT node_ids FROM chambers WHERE id = ?", (srow["chamber_id"],)
-        )
-        crow = await cursor.fetchone()
+        crow = None
+        if srow["chamber_id"] is not None:
+            cursor = await db.execute(
+                "SELECT node_ids FROM chambers WHERE id = ?", (srow["chamber_id"],)
+            )
+            crow = await cursor.fetchone()
         if not crow:
-            return None
+            # 3. Chamberless (or its chamber was deleted): the unassigned node
+            # with the most data in the session's window.
+            cursor = await db.execute(_CHAMBERLESS_SESSION_NODE_SQL, {
+                "sensor": sensor,
+                "from_ts": srow["created_at"] or 0,
+                "to_ts": srow["completed_at"] or time.time(),
+            })
+            row = await cursor.fetchone()
+            return row["node_id"] if row else None
         try:
             node_ids = json.loads(crow["node_ids"] or "[]")
         except (json.JSONDecodeError, TypeError):

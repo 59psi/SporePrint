@@ -9,8 +9,13 @@ namespace sp_device {
 
 MqttLink* MqttLink::instance_ = nullptr;
 
+namespace {
+// Same bytes as the connect()-time LWT.
+const char kOfflineStatus[] = "{\"status\":\"offline\"}";
+}  // namespace
+
 void MqttLink::begin(const char* host, uint16_t port, const char* user,
-                     const char* pass) {
+                     const char* pass, bool connect_now) {
     instance_ = this;
     host_ = host;
     port_ = port;
@@ -21,8 +26,20 @@ void MqttLink::begin(const char* host, uint16_t port, const char* user,
     // CONNACK wait (default 15 s) — part of the link_budget.h attempt budget.
     mqtt_.setSocketTimeout((uint16_t)sp::kMqttSocketTimeoutS);
     mqtt_.setCallback(static_callback);
-    connect_attempt();
+    if (connect_now) connect_attempt();
     last_attempt_ms_ = millis();
+}
+
+void MqttLink::switch_transport(Client& transport, uint16_t port) {
+    if (mqtt_.connected()) {
+        publish_raw(topic("status").c_str(), kOfflineStatus, /*retain=*/true);
+        mqtt_.disconnect();
+    }
+    mqtt_.setClient(transport);
+    port_ = port;
+    mqtt_.setServer(host_.c_str(), port_);
+    // Eligible for a connect attempt on the next allowed pass.
+    last_attempt_ms_ = millis() - kRetryWindowMs - 1;
 }
 
 void MqttLink::loop(uint32_t now_ms, bool may_connect) {
@@ -47,7 +64,7 @@ void MqttLink::connect_attempt() {
     if (WiFi.status() != WL_CONNECTED) return;
 
     std::string lwt_topic = topic("status");
-    const char* lwt_payload = "{\"status\":\"offline\"}";
+    const char* lwt_payload = kOfflineStatus;
     const char* user_ptr = user_.empty() ? nullptr : user_.c_str();
     const char* pass_ptr = pass_.empty() ? nullptr : pass_.c_str();
     std::string client_id = "sporeprint-" + node_type_ + "-" + node_id_;

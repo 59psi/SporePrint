@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .hardware_guides import TIERS
@@ -47,7 +48,18 @@ class GuideRequest(BaseModel):
 
 @router.post("/guide")
 async def create_guide(data: GuideRequest):
-    return await generate_guide(data.request, data.constraints)
+    """Generate (and save) a Builder guide.
+
+    Failures keep their JSON body — error, code, and for a truncated guide the
+    partial `guide` with `truncated`, `request` and `constraints` — under a
+    non-2xx status: 503 when no Claude key is configured, 502 when the Claude
+    call failed, was refused, or came back cut off or empty.
+    """
+    result = await generate_guide(data.request, data.constraints)
+    if "error" in result:
+        status = 503 if result.get("code") == "not_configured" else 502
+        return JSONResponse(result, status_code=status)
+    return result
 
 
 @router.get("/guides")

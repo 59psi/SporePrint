@@ -29,6 +29,8 @@ header() { echo -e "\n${BOLD}$1${NC}"; }
 cd "$(dirname "$0")"
 # shellcheck source=scripts/lib/broker.sh
 . scripts/lib/broker.sh
+# shellcheck source=scripts/lib/host.sh
+. scripts/lib/host.sh
 
 # ── Prerequisites ──────────────────────────────────────────────
 
@@ -178,6 +180,25 @@ if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
     info "ESP32 nodes each need their own broker user: ./scripts/add-node-mqtt-user.sh <node_id>"
 fi
 
+# Command-signing key — same as install.sh: with a key the Pi signs every
+# cmd/* frame (unkeyed nodes accept signed frames), so a cloud-paired stack
+# (signing enforced) never drops commands for want of one.
+if [ -z "$(_env_get SPOREPRINT_MQTT_HMAC_KEY)" ]; then
+    sp_ensure_signing_key "$PWD" >/dev/null
+    info "Command-signing key in .env (SPOREPRINT_MQTT_HMAC_KEY) — print it with ./scripts/provision-node.sh"
+fi
+
+# Time zone for the automation schedules (compose passes TZ to the server).
+if [ -z "$(_env_get TZ)" ]; then
+    HOST_TZ="$(sp_host_timezone)"
+    if [ -n "$HOST_TZ" ]; then
+        sp_env_set .env TZ "$HOST_TZ"
+        info "Time zone $HOST_TZ (TZ in .env — automation schedules follow it)"
+    else
+        warn "Could not determine the host time zone — schedules run on UTC; set TZ=<Region/City> in .env"
+    fi
+fi
+
 chmod 600 .env 2>/dev/null || true
 
 # ── Broker TLS certificates (v4.2) ─────────────────────────────
@@ -190,28 +211,57 @@ chmod 600 .env 2>/dev/null || true
 header "Broker TLS certificates..."
 
 CERT_DIR="config/mosquitto/certs"
-if [ -f "$CERT_DIR/server.crt" ]; then
-    info "Certificates already present — skipping (delete $CERT_DIR to regenerate)"
-else
+HOST_NAME="$(hostname -s 2>/dev/null || echo sporeprint)"
+# The server certificate names the mDNS name, the hostname AND every IPv4 of
+# this machine (each as IP: and DNS: — see sp_server_san), so a node given
+# this machine's IP as its Secure-MQTT broker host verifies the broker. The
+# same list install.sh issues on a Pi.
+HOST_IPS="$(sp_host_ipv4s)"
+PRIMARY_IP="$(printf '%s\n' "$HOST_IPS" | head -1)"
+issue_server_cert() { # (re)issue server.key + server.crt from the existing CA
+    local tmp
+    tmp="$(mktemp -d)"
+    # shellcheck disable=SC2086  # HOST_IPS word-splits into one argument per IP
+    if openssl req -newkey rsa:2048 -nodes \
+           -keyout "$tmp/server.key" -out "$tmp/server.csr" \
+           -subj "/CN=sporeprint.local" 2>/dev/null \
+       && openssl x509 -req -in "$tmp/server.csr" \
+           -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
+           -CAcreateserial -CAserial "$tmp/ca.srl" \
+           -days 1825 -out "$tmp/server.crt" \
+           -extfile <(printf 'subjectAltName=%s' "$(sp_server_san "$HOST_NAME" $HOST_IPS)") 2>/dev/null; then
+        chmod 600 "$tmp/server.key"
+        chmod 644 "$tmp/server.crt"
+        mv -f "$tmp/server.key" "$CERT_DIR/server.key"
+        mv -f "$tmp/server.crt" "$CERT_DIR/server.crt"
+        rm -rf "$tmp"
+        return 0
+    fi
+    rm -rf "$tmp"
+    return 1
+}
+if [ ! -f "$CERT_DIR/server.crt" ]; then
     mkdir -p "$CERT_DIR"
-    HOST_NAME="$(hostname -s 2>/dev/null || echo sporeprint)"
     # Local CA (10 years — LAN-internal trust root, rotated by deleting the dir).
     openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
         -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
-        -subj "/CN=SporePrint Local CA" 2>/dev/null
-    # Server cert: the mDNS name + bare hostname. (install.sh also adds the
-    # host's IPs, as both IP: and DNS: entries — see the comment there.)
-    openssl req -newkey rsa:2048 -nodes \
-        -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.csr" \
-        -subj "/CN=sporeprint.local" 2>/dev/null
-    openssl x509 -req -in "$CERT_DIR/server.csr" \
-        -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
-        -days 1825 -out "$CERT_DIR/server.crt" \
-        -extfile <(printf "subjectAltName=DNS:sporeprint.local,DNS:%s.local,DNS:%s,DNS:localhost" \
-                   "$HOST_NAME" "$HOST_NAME") 2>/dev/null
-    rm -f "$CERT_DIR/server.csr" "$CERT_DIR/ca.srl"
-    chmod 600 "$CERT_DIR/ca.key" "$CERT_DIR/server.key"
+        -subj "/CN=SporePrint Local CA" 2>/dev/null || fail "CA certificate generation failed"
+    chmod 600 "$CERT_DIR/ca.key"
+    chmod 644 "$CERT_DIR/ca.crt"
+    issue_server_cert || fail "server certificate generation failed"
     info "CA + server certificate generated in $CERT_DIR"
+elif [ -n "$PRIMARY_IP" ] && ! openssl x509 -in "$CERT_DIR/server.crt" -noout -text 2>/dev/null \
+        | grep -qE "IP Address:$(printf '%s' "$PRIMARY_IP" | sed 's/\./\\./g')(,|\$)"; then
+    # An older DNS-only certificate, or this machine's IP changed: re-issue the
+    # server certificate from the SAME CA — nodes pin the CA, not the cert.
+    if [ -r "$CERT_DIR/ca.key" ] && issue_server_cert; then
+        info "Re-issued the broker certificate to cover $PRIMARY_IP (same CA — pinned nodes unaffected)"
+        info "A running broker keeps the old one until: docker compose restart mqtt"
+    else
+        warn "The broker certificate does not cover $PRIMARY_IP — Secure MQTT nodes must use sporeprint.local"
+    fi
+else
+    info "Certificates already present — skipping (delete $CERT_DIR to regenerate)"
 fi
 
 # The dockerized broker opens the passwd file + TLS key AFTER dropping to its
@@ -260,7 +310,8 @@ echo "  Development:"
 echo "    source .venv/bin/activate"
 echo "    cd server && uvicorn app.main:socket_app --reload    # API on :8000"
 echo "    (the server reads server/.env when run from server/ — copy the"
-echo "     settings you need there)"
+echo "     SPOREPRINT_* settings you need there; it refuses keys it does not"
+echo "     know, such as TZ or SPOREPRINT_MQTT_3P_PASSWORD)"
 echo ""
 echo "  You'll also need the credentialed MQTT broker:"
 echo "    docker compose up -d mqtt"

@@ -13,6 +13,7 @@ import time
 
 import psutil
 
+from ..auth import socketio_client_addr
 from ..config import settings
 from ..db import get_db
 
@@ -36,7 +37,8 @@ def update_mqtt_stat(key: str, value):
 def track_client_connect(sid: str, environ: dict | None = None):
     _sio_clients[sid] = {
         "connected_at": time.time(),
-        "ip": environ.get("REMOTE_ADDR", "unknown") if environ else "unknown",
+        # The ASGI peer, not engineio's hardcoded REMOTE_ADDR placeholder.
+        "ip": socketio_client_addr(environ) or "unknown",
     }
 
 

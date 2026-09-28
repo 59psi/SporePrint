@@ -138,6 +138,20 @@ def test_safe_extract_accepts_normal_files(tmp_path):
     assert (staging / "README.md").exists()
 
 
+def test_safe_extract_uses_an_explicit_tar_filter(tmp_path):
+    """Unfiltered extract() is deprecated (Python 3.12+ warns; 3.14 changes
+    the default). The manual member walk stays, and the stdlib 'data' filter
+    is applied on top of it wherever the running Python has one."""
+    import warnings
+
+    bundle = _build_tar([("server/app.py", b"x"), ("docs/a.md", b"y")], tmp_path)
+    staging = tmp_path / "staging"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        _safe_extract_tar(bundle, staging)
+    assert (staging / "server" / "app.py").read_bytes() == b"x"
+
+
 # ─── Ed25519 signature verification ──────────────────────────────────
 
 

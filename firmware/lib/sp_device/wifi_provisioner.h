@@ -20,9 +20,12 @@
 //   OTA password (optional but recommended, min 12 chars enforced at use)
 //   HMAC signing key (optional; empty keeps the warn+accept migration
 //     posture — the operator sees a warning per accepted command)
+//   Secure MQTT (tls_en) + Require TLS (tls_req: with no pinned Pi CA, stay
+//     offline instead of the loud plaintext fallback — tls_policy.h)
 //   NTP host (default pool.ntp.org; set to the Pi for airgapped rooms)
 //   Optional peripherals (node image only): MH-Z19C, HX711 scale, reed
-//     door switch — the NVS flags the node's setup() reads (docs#0)
+//     door switch — the NVS flags the node's setup() reads (docs#0) — and
+//     the reed invert option (reed_inv: contact wired on its NO lead)
 //
 // Form policy (sp_core/provisioning.h, host-tested): every pre-filled value
 // is HTML-escaped; blank password fields keep the stored secret (WiFi only

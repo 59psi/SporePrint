@@ -59,8 +59,11 @@ services:
       - "3233:3233"
     volumes:
       # Runtime data → named volumes so it survives `docker compose down`
-      # and container rebuilds. SQLite DB + the Fernet integration key live
-      # in sporeprint_db; captured vision frames in sporeprint_vision.
+      # and container rebuilds. sporeprint_db holds the SQLite DB, the Fernet
+      # integration key (.integration-key — lose it and every stored vendor
+      # credential must be re-entered) and cloud.env (the cloud pairing
+      # credentials, 0600): back that volume up as a whole. Captured vision
+      # frames live in sporeprint_vision.
       - sporeprint_db:/data/db
       - sporeprint_vision:/data/vision
       # Read-only content the hardware builder serves. These live OUTSIDE the
@@ -82,7 +85,16 @@ services:
         read_only: true
         bind:
           create_host_path: false
+    # Every setting reaches the container ONLY through this list (no
+    # env_file:, and server/.dockerignore keeps .env out of the image).
+    # Values interpolate from the repo-root .env. A non-str setting needs a
+    # real default: an EMPTY value fails int/bool validation and the server
+    # crash-loops at boot (tests/test_docker.py boots Settings from these).
     environment:
+      # Automation schedules (photoperiod, time windows, cron) run on the
+      # container's local clock. install.sh writes the host's zone into .env
+      # (canonical Region/City, e.g. America/Los_Angeles); unset means UTC.
+      - TZ=${TZ:-UTC}
       - SPOREPRINT_DATABASE_PATH=/data/db/sporeprint.db
       - SPOREPRINT_VISION_STORAGE=/data/vision
       # Fernet key for encrypted third-party integration secrets. The app
@@ -100,10 +112,18 @@ services:
       - SPOREPRINT_NTFY_TOPIC=${SPOREPRINT_NTFY_TOPIC:-sporeprint}
       - SPOREPRINT_WEATHER_PROVIDER=${SPOREPRINT_WEATHER_PROVIDER:-openmeteo}
       - SPOREPRINT_CLAUDE_API_KEY=${SPOREPRINT_CLAUDE_API_KEY:-}
+      # Model for every Claude feature; blank = the server's default.
+      - SPOREPRINT_CLAUDE_MODEL=${SPOREPRINT_CLAUDE_MODEL:-}
+      # Claude vision auto-analysis cadence per session, minutes. Keep the
+      # default equal to the server's (6 h, spec §6 — tests check).
+      - SPOREPRINT_VISION_AUTO_INTERVAL_MIN=${SPOREPRINT_VISION_AUTO_INTERVAL_MIN:-360}
       - SPOREPRINT_WEATHER_API_KEY=${SPOREPRINT_WEATHER_API_KEY:-}
       - SPOREPRINT_WEATHER_LAT=${SPOREPRINT_WEATHER_LAT:-}
       - SPOREPRINT_WEATHER_LON=${SPOREPRINT_WEATHER_LON:-}
       - SPOREPRINT_WEATHER_POLL_MINUTES=${SPOREPRINT_WEATHER_POLL_MINUTES:-10}
+      # Dashboard URL printed into QR labels when the request carries no
+      # Origin/Referer (the ui service's port 3001). Same default as the server.
+      - SPOREPRINT_PUBLIC_UI_URL=${SPOREPRINT_PUBLIC_UI_URL:-http://sporeprint.local:3001}
       # HTTP auth. The Pi LAN UI (ui/dist) calls /api same-origin with NO
       # bearer token, so the browser dashboard only works in LAN-trust mode.
       # install.sh writes SPOREPRINT_ALLOW_UNAUTHENTICATED=true into .env; the
@@ -113,24 +133,37 @@ services:
       # clients (which CAN present `Authorization: Bearer`).
       - SPOREPRINT_API_KEY=${SPOREPRINT_API_KEY:-}
       - SPOREPRINT_ALLOW_UNAUTHENTICATED=${SPOREPRINT_ALLOW_UNAUTHENTICATED:-false}
-      # Cloud pairing (opt-in — normally written by the mobile app via
-      # POST /api/cloud/configure; here for completeness).
+      # Cloud pairing (opt-in). Pairing from the mobile app (POST
+      # /api/cloud/configure) writes cloud.env on the sporeprint_db volume,
+      # whose non-empty values override these; they stay for operators who
+      # configure the cloud link from .env.
       - SPOREPRINT_CLOUD_URL=${SPOREPRINT_CLOUD_URL:-}
       - SPOREPRINT_CLOUD_TOKEN=${SPOREPRINT_CLOUD_TOKEN:-}
       - SPOREPRINT_CLOUD_DEVICE_ID=${SPOREPRINT_CLOUD_DEVICE_ID:-}
-      # cmd/* command signing. server/.dockerignore excludes .env and there
-      # is no env_file:, so these reach the container ONLY via this list —
-      # scripts/provision-node.sh writes the key to the repo-root .env that
-      # compose interpolates. Apply with `docker compose up -d server`
-      # (`restart` does not re-read .env). REQUIRE_SIGNING keeps an explicit
-      # `auto` default: an empty value fails the auto|always|never check.
+      # Strict mode for cloud integrations_request frames: reject unsigned
+      # ones even before the first signed frame arrives.
+      - SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=${SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS:-false}
+      # cmd/* command signing. install.sh provisions the key in the
+      # repo-root .env (scripts/provision-node.sh prints and rotates it), so
+      # the Pi signs every command: nodes without a key accept signed
+      # frames, keyed nodes verify them. Without a key, a cloud-paired Pi in
+      # `auto` mode REFUSES every node command. Apply a change with
+      # `docker compose up -d server` (`restart` does not re-read .env).
+      # REQUIRE_SIGNING keeps an explicit `auto` default: an empty value
+      # fails the auto|always|never check.
       - SPOREPRINT_MQTT_HMAC_KEY=${SPOREPRINT_MQTT_HMAC_KEY:-}
       - SPOREPRINT_MQTT_REQUIRE_SIGNING=${SPOREPRINT_MQTT_REQUIRE_SIGNING:-auto}
       # OTA self-update verify key (base64 Ed25519 public key). The _B64 name
-      # is the setting; SPOREPRINT_OTA_PUBKEY is the name
-      # scripts/generate-ota-keypair.py prints (cloud/ota.py falls back to it).
+      # is the setting; SPOREPRINT_OTA_PUBKEY is the older name (cloud/ota.py
+      # falls back to it). Only bare-metal installs self-update — this
+      # Docker stack refuses cloud OTA (update: git pull && ./install.sh).
       - SPOREPRINT_OTA_PUBKEY_B64=${SPOREPRINT_OTA_PUBKEY_B64:-}
       - SPOREPRINT_OTA_PUBKEY=${SPOREPRINT_OTA_PUBKEY:-}
+      # uvicorn trusts X-Forwarded-For (from the ui container's nginx) only
+      # from this range — Docker's default bridge pool. Override in .env if
+      # this compose network lands elsewhere; keep the default equal to
+      # server/Dockerfile's ENV (tests check).
+      - FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-172.16.0.0/12}
     healthcheck:
       # The health route is /api/health (public — bypasses the api-key gate).
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]

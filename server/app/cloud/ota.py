@@ -245,9 +245,13 @@ def _verify_signature(bundle_path: Path, sig_path: Path) -> None:
 
 
 def _safe_extract_tar(bundle_path: Path, dest: Path) -> None:
-    # Manual member walk instead of tarfile.extractall(filter='data') so
-    # static-analysis can see the path-traversal / symlink rejection
-    # explicitly. (filter='data' is good but doesn't show up in audit tools.)
+    # Manual member walk so static analysis can see the path-traversal /
+    # link rejection explicitly, with the stdlib 'data' filter applied on top
+    # of it (it also refuses absolute/escaping paths and links, and drops
+    # group/other write bits). Unfiltered extract() is deprecated from 3.12
+    # and changes behaviour in 3.14; 'data' exists from 3.11.4 / 3.12, and
+    # the manual walk alone still guards an older 3.11.
+    extract_kwargs = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
     dest.mkdir(parents=True, exist_ok=True)
     dest_real = dest.resolve()
 
@@ -277,10 +281,10 @@ def _safe_extract_tar(bundle_path: Path, dest: Path) -> None:
                     f"tar member {name!r} resolves outside the staging dir — refusing"
                 )
 
-            # Strip suid/sgid/sticky — tarfile honors mode bits by default.
+            # Strip suid/sgid/sticky and group/other write.
             member.mode = member.mode & 0o755
 
-            tf.extract(member, path=dest)
+            tf.extract(member, path=dest, **extract_kwargs)
 
 
 def _stage_install(bundle_path: Path, version: str) -> Path:

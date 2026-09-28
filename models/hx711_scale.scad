@@ -61,9 +61,15 @@
 //   of each screw post is a collar relieved 0.6 mm around every nearby
 //   through-hole pad, with any sliver thinner than 0.8 mm removed. The
 //   heat-set insert sits BELOW that zone (mouth 2.9 mm under the PCB), with
-//   the full library minimum wall all round, and goes in through an access
-//   bore in the collar (Ø4.4 for M2.5, Ø5.1 for M3: passes inserts up to
-//   Ø4.0 / Ø4.7 OD, i.e. ruthex / CNC Kitchen 5.7 mm inserts).
+//   the full library minimum wall all round, and goes in through a Ø5.2
+//   access bore in the collar: 0.3 mm a side over the Ø4.6 knurl of the
+//   ruthex RX-M2.5x5.7 / RX-M3x5.7 and CNC Kitchen M2.5x4 / M3x5.7 inserts
+//   (vendor tables, d1 / D1 = 4.6 for all four; the 4 mm CNC Kitchen M2.5
+//   leaves 4.0 mm engaged on a x 10 screw). The post grows with the
+//   bore (Ø7.4: a 1.1 mm collar ring round the bore), so -D hx_access_fit
+//   never thins the collar away. A screw-tip hole (M2.5 Ø2.9 / M3 Ø3.4
+//   clearance) continues below each pocket down to 1 mm above the bed, so
+//   x 10 and x 12 board screws both fit.
 //
 //   Wiring: load-cell wires -> the HX711 E+/E-/A-/A+ terminals; HX711 DOUT ->
 //   relay-node GPIO 32, SCK -> GPIO 33, VIN/VCC -> 3V3, GND -> GND. SOLDER the
@@ -76,10 +82,11 @@
 //
 // ── Assembly ────────────────────────────────────────────────────────────────
 //   1. Press the inserts. Platform: 4 x M4 into the boss tips, flush.
-//      Base (board posts): drop each insert down the collar's access bore
-//      onto its pocket and press it in until its top is level with the
-//      bottom of the bore, 2.9 mm below the post top (standard M2.5 / M3
-//      insert tips fit down the bore; ≤1 mm deeper is harmless).
+//      Base (board posts): drop each insert (small end down) down the
+//      collar's Ø5.2 access bore onto the pocket's chamfer and press it in
+//      until its top is level with the bottom of the bore, 2.9 mm below the
+//      post top. Use a narrow M2.5 / M3 insert tip (the stepped CNC Kitchen /
+//      ruthex tips reach down the bore); ≤1 mm deeper is harmless.
 //   2. Bar: WIRE end on the base riser, the arrow on the bar pointing DOWN.
 //      Bolt it from under the base (washers under the heads).
 //   3. Board on its posts/pegs (terminal block toward the bar), wire it, tie
@@ -127,9 +134,12 @@
 //     threadlocker on the thread (keep threadlocker off the plastic).
 //   HX711 board (base; insert mouth 2.9 mm below the PCB, see "Board posts"):
 //     ada5974 : 2 x M2.5 insert, 5.7 mm (RX-M2.5x5.7) + 2 x M2.5 x 10 SHCS
-//               (5.5 mm of the 5.7 mm insert engaged; not shorter than x 10)
+//               (5.5 mm of the 5.7 mm insert engaged). x 12 also fits (its
+//               tip runs 1.8 mm past the insert into the tip hole); x 8
+//               engages only 3.5 mm (< 1.5 d): do not use it.
 //     sfe13879: 4 x M3 insert, 5.7 mm (RX-M3x5.7)     + 4 x M3 x 10 SHCS
-//               (5.5 mm engaged; not shorter than x 10)
+//               (5.5 mm engaged; x 12 also fits; x 8 is too short)
+//     (the echo gives the exact range for non-default stacks)
 //     generic : no inserts; ~20 x 12 mm double-sided foam tape (≈1 mm)
 //   Cable: 1 zip tie ≤3.6 mm wide through the anchor behind the bay
 //     (tunnel 4.8 x 2.4 mm under a 1.8 mm roof, 2 mm legs).
@@ -169,7 +179,9 @@
 //   -D SP_FASTENER="self_tap"  pilot holes instead of insert pockets (board
 //                            posts take self-tappers; tap the stop holes M4)
 //   -D SP_INSERT_HOLE_TWEAK=-0.1  tighten / loosen every insert pocket
-//   -D hx_access_fit=0.4     access-bore Ø over the board insert's OD
+//   -D hx_access_fit=0.6     access-bore Ø over the board insert's knurl OD
+//                            (the post grows with it; raise it for a
+//                            fatter clone insert)
 //   Every dimension below can be overridden the same way. Asserts stop the
 //   render on impossible combinations, notably: foot_h + base_th + hx_floor
 //   ≥ 7.1 mm (the recessed board inserts need the slab; the old foot_h=0
@@ -262,7 +274,13 @@ hx_relief_gap = 0.6;  // mm — relief clearance around each pad's copper
 hx_min_feat  = 0.8;   // mm — relieved collars keep no sliver thinner than this
 hx_insert_sink = 0.4; // mm — full-boss band between the relief zone and the
                       //   board insert's mouth (2 layers)
-hx_access_fit = 0.4;  // mm — access bore Ø over the board insert's OD
+hx_access_fit = 0.6;  // mm — access bore Ø over the board insert's knurl OD
+                      //   (0.3 mm a side: printed holes run ~0.1 mm small)
+hx_collar_wall = 1.1; // mm — collar ring left round the access bore (the
+                      //   screw post is sized from the bore, not the library
+                      //   minimum boss, so a wider bore never eats the collar)
+hx_tip_floor = 1.0;   // mm — screw-tip hole below each board pocket stops this
+                      //   far above the bed (lets x 12 board screws in)
 peg_d        = 1.8;   // mm — Adafruit locating peg (Ø2.5 plated hole ≈ Ø2.4)
 anchor_tun_w = 4.8;   // mm — zip-tie tunnel width  (ties ≤3.6 mm wide)
 anchor_tun_h = 2.4;   // mm — zip-tie tunnel height
@@ -384,10 +402,15 @@ peg_collar_d = 4.4;   // mm — Adafruit peg collar (clears the TB pads by ≥0.
 // Board inserts: pocket mouth BELOW the relieved collar, so the insert keeps
 // the library's full minimum wall; the collar only carries an access bore.
 hx_ins_mouth = z_pcb - hx_relief - hx_insert_sink;     // assembled z of the mouth
-// Knurl OD of the 5.7 mm ruthex / CNC Kitchen inserts (upper bound)
-function hx_insert_od(s) = s == "M3" ? 4.7 : s == "M2.5" ? 4.0 : sp_insert_hole_d(s) + 0.6;
+// Knurl OD (d1 / D1) of the specified inserts. Vendor tables: ruthex
+// RX-M2.5x5.7 and RX-M3x5.7 d1 = 4.6; CNC Kitchen M2.5x4 and M3x5.7 D1 = 4.6.
+function hx_insert_od(s) = s == "M3" ? 4.6 : s == "M2.5" ? 4.6 : sp_insert_hole_d(s) + 0.6;
+// Insert access bore. The post is sized from it in BOTH fastener modes, so
+// the part outline never changes with SP_FASTENER (library convention).
+function hx_ins_access_d() = hx_insert_od(hx_screw()) + hx_access_fit;
 function hx_access_d() = SP_FASTENER == "self_tap" ? sp_screw_clearance_d(hx_screw())
-                                                   : hx_insert_od(hx_screw()) + hx_access_fit;
+                                                   : hx_ins_access_d();
+function hx_post_d() = max(sp_insert_boss_d(hx_screw()), hx_ins_access_d() + 2 * hx_collar_wall);
 // Board screws: SHCS head on the PCB, through the PCB + access bore, into
 // the insert. Longest stock length that stays inside the insert.
 hx_stock   = [4, 5, 6, 8, 10, 12, 16, 20];
@@ -395,6 +418,15 @@ hx_grip    = pcb_th + (z_pcb - hx_ins_mouth);
 hx_scr_len = max([for (L = hx_stock)
                   if (L <= sp_screw_len(hx_screw(), hx_grip, false) + 0.001) L]);
 hx_scr_eng = hx_scr_len - hx_grip;
+// Screw-tip hole: clearance Ø (pilot Ø in self_tap mode) from the pocket
+// floor down to hx_tip_floor (none when the pocket floor is already that low).
+hx_pocket_floor = hx_ins_mouth - sp_insert_depth(hx_screw());
+hx_tip_bot = min(hx_tip_floor, hx_pocket_floor);
+// Range of stock lengths that work: ≥ 1.5 d engaged, tip ≥ 0.5 mm above
+// the bottom of the tip hole.
+hx_scr_d   = hx_screw() == "M3" ? 3 : 2.5;
+hx_scr_min = min([for (L = hx_stock) if (L - hx_grip >= 1.5 * hx_scr_d - 0.001) L]);
+hx_scr_max = max([for (L = hx_stock) if (L - hx_grip <= hx_ins_mouth - hx_tip_bot - 0.5 + 0.001) L]);
 
 // Board-local -> assembled: u along +Y, v along -X, centred on the zone.
 module at_board(z = z_pcb) {
@@ -431,6 +463,14 @@ assert(hx_ins_mouth - sp_insert_depth(hx_screw()) >= 1.0 - 0.001,
            " mm (raise foot_h or base_th; raising hx_floor / hx_stand also lifts the",
            " terminal block toward the platform)"));
 assert(gen_L >= 20 && gen_W >= 14, "gen_L / gen_W below any known HX711 module");
+assert(hx_collar_wall >= hx_min_feat - 0.001,
+       str("hx_collar_wall must be >= hx_min_feat (", hx_min_feat, " mm): the collar ring would be opened away"));
+assert(hx_access_fit >= 0.2,
+       "hx_access_fit < 0.2: the access bore would not pass the insert's knurl once printed");
+assert(hx_tip_floor >= 0.6, "hx_tip_floor < 0.6 mm: the screw-tip hole would break through the underside");
+assert(hx_board == "generic" || hx_scr_len <= hx_scr_max,
+       str("board screw x ", hx_scr_len, " would bottom out in the screw-tip hole (longest that fits: x ",
+           hx_scr_max, "; lower hx_tip_floor or raise the slab)"));
 // Tallest thing in the bay (Adafruit terminal block 10.6 mm, or wires up to
 // header height on any board) must clear the platform's ribs by 0.5 mm even
 // with the platform dropped the full stop_gap_nom (set screws backed off).
@@ -449,12 +489,24 @@ echo(str("hx711_scale: cell=", cell, " fixed end 2 x ", lc_fix_size, " x ", fix_
          _wtxt(lc_fix_size), " (", fix_eng, " mm engaged); free end 2 x ", lc_load_size,
          " x ", load_len, _wtxt(lc_load_size), " (", load_eng, " mm engaged); stops 4 x ",
          stop_size, " insert + ", stop_size, " x ", stop_screw_len, " set screw"));
+function _hx_nscr() = len([for (h = hx_holes()) if (h[2] == "screw") 1]);
+hx_scr_ok = [for (L = hx_stock) if (L >= hx_scr_min && L <= hx_scr_max) L];
+function _hx_join(v, i = 0) = i >= len(v) ? "" : str(i > 0 ? " / " : "", "x ", v[i], _hx_join(v, i + 1));
+function _hx_range() =
+    str("; ", len(hx_scr_ok) > 1 ? str(_hx_join(hx_scr_ok), len(hx_scr_ok) == 2 ? " both fit" : " all fit")
+                                 : str("exactly x ", hx_scr_len),
+        ": shorter engages < 1.5 d, longer bottoms out");
 echo(str("hx711_scale: hx_board=", hx_board,
          hx_board == "generic" ? str(" (", gen_L, " x ", gen_W, ") -> foam tape, no screws")
-         : str(" -> ", len([for (h = hx_holes()) if (h[2] == "screw") 1]), " x ",
-               hx_screw(), " insert (mouth ", hx_ins_mouth, ", ", z_pcb - hx_ins_mouth,
-               " mm below the PCB) + ", hx_screw(), " x ", hx_scr_len, " SHCS (",
-               hx_scr_eng, " mm engaged)")));
+         : SP_FASTENER == "self_tap"
+         ? str(" -> ", _hx_nscr(), " x Ø", sp_insert_hole_d(hx_screw()), " pilot hole (top ",
+               hx_ins_mouth, ", ", z_pcb - hx_ins_mouth, " mm below the PCB, under a Ø",
+               hx_access_d(), " clearance bore) + ", _hx_nscr(), " x self-tapping ", hx_screw(),
+               " x ", hx_scr_len, " (", hx_scr_eng, " mm engaged", _hx_range(), ")")
+         : str(" -> ", _hx_nscr(), " x ", hx_screw(), " insert (mouth ", hx_ins_mouth, ", ",
+               z_pcb - hx_ins_mouth, " mm below the PCB, down a Ø", hx_access_d(),
+               " access bore in a Ø", hx_post_d(), " post) + ", _hx_nscr(), " x ", hx_screw(),
+               " x ", hx_scr_len, " SHCS (", hx_scr_eng, " mm engaged", _hx_range(), ")")));
 
 // Axis-aligned box between two plan corners p and q, z = 0 .. h.
 module box2(p, q, h) {
@@ -525,12 +577,12 @@ module hx_relief_2d() {
 // minus the pad keep-out.
 module hx_collar_raw_2d(hl) {
     difference() {
-        translate([hl[0], hl[1]]) circle(d = sp_insert_boss_d(hx_screw()), $fn = 48);
+        translate([hl[0], hl[1]]) circle(d = hx_post_d(), $fn = 48);
         translate([hl[0], hl[1]]) circle(d = hx_access_d(), $fn = 48);
         hx_relief_2d();
     }
 }
-// Screw post: full boss (insert zone) up to the relief zone, then the
+// Screw post (Ø hx_post_d): full boss (insert zone) up to the relief zone, then the
 // relieved collar with every sliver thinner than hx_min_feat opened away.
 module hx_screw_post(hl) {
     zf = base_top + hx_floor;
@@ -538,7 +590,7 @@ module hx_screw_post(hl) {
     t  = hx_min_feat / 2;
     if (zr > zf + 0.001)
         at_board(zf) translate([hl[0], hl[1], 0])
-            cylinder(h = zr - zf + 0.01, d = sp_insert_boss_d(hx_screw()), $fn = 48);
+            cylinder(h = zr - zf + 0.01, d = hx_post_d(), $fn = 48);
     at_board(zr) linear_extrude(z_pcb - zr)
         intersection() {
             offset(r = t, $fn = 24) offset(r = -t, $fn = 24) hx_collar_raw_2d(hl);
@@ -554,6 +606,14 @@ module hx_board_cuts() {
                 sp_insert_pocket(hx_screw());
                 translate([0, 0, -0.01])
                     cylinder(h = z_pcb - hx_ins_mouth + 1, d = hx_access_d(), $fn = 48);
+                // screw-tip hole below the pocket (a x 12 screw's tip lands
+                // here); never wider than the pocket / pilot above it, so its
+                // top is an upward ledge, not an overhang
+                if (hx_pocket_floor - hx_tip_bot > 0.001)
+                    translate([0, 0, hx_tip_bot - hx_ins_mouth])
+                        cylinder(h = hx_pocket_floor - hx_tip_bot + 0.02,
+                                 d = min(sp_screw_clearance_d(hx_screw()), sp_insert_hole_d(hx_screw())),
+                                 $fn = 32);
             }
     // Relieve post tops under through-hole pads (lead stubs + solder)
     for (p = hx_pads())

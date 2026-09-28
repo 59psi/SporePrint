@@ -293,6 +293,10 @@ CREATE TABLE IF NOT EXISTS telemetry_rollups (
     count INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rollup_unique ON telemetry_rollups(timestamp, node_id, sensor, resolution);
+-- History reads (telemetry.get_history, transcripts) filter one node + sensor
+-- over a time range; idx_rollup_unique leads with timestamp, so without this
+-- the range covered every node's and sensor's rollups.
+CREATE INDEX IF NOT EXISTS idx_rollup_node_sensor_time ON telemetry_rollups(node_id, sensor, timestamp);
 
 -- Weather rollups (compressed historical weather)
 CREATE TABLE IF NOT EXISTS weather_rollups (
@@ -417,7 +421,9 @@ CREATE TABLE IF NOT EXISTS integration_settings (
 -- Contamination events (persisted identify detections + manual marks).
 -- source='identify' rows are auto-created when POST /api/contamination/identify
 -- returns a positive detection; source='manual' rows come from the page's
--- manual-mark flow. root_cause is stamped later via the RCA endpoint.
+-- manual-mark flow; source='vision' rows are written by the camera frame
+-- analysis pipeline for a confident detection, with frame_id and chamber_id
+-- set. root_cause is stamped later via the RCA endpoint.
 CREATE TABLE IF NOT EXISTS contamination_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER REFERENCES sessions(id),
@@ -487,6 +493,13 @@ async def _apply_connection_pragmas(db):
 async def init_db():
     Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(settings.database_path) as db:
+        # New databases start in auto_vacuum=INCREMENTAL, so the nightly
+        # retention job can hand freed pages back without a full VACUUM. The
+        # mode only sticks before WAL mode is set and the first table exists;
+        # on an existing database this is a no-op (converting one needs a full
+        # VACUUM — see retention.service.ensure_incremental_auto_vacuum, which
+        # the lifespan runs at boot).
+        await db.execute("PRAGMA auto_vacuum=INCREMENTAL")
         # journal_mode + synchronous are persistent, set once at init
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")

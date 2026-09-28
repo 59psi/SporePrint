@@ -27,24 +27,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nodes publish `weight_g` (0.1 g resolution) in telemetry; uncalibrated
   nodes keep publishing `scale_raw` so operators see counts during setup.
 - **Reed switch health reporting.** The reed appears in the node health
-  `sensors` block (debounced edges count as reads — an enabled-but-dead
-  switch shows `reads=0`) and in `expected_missing` when enabled but not
-  constructed, matching mhz19/hx711. BH1750 stays opportunistic
-  (autodetect posture) and is deliberately NOT in `expected_missing`.
+  `sensors` block (debounced edges count as reads). It is deliberately NOT
+  listed in `expected_missing`: a correctly wired switch on a door that
+  stays shut produces no edges, so `reads=0` cannot tell a dead reed from a
+  closed door. BH1750 stays opportunistic (autodetect posture) and is not
+  listed either.
 - Host tests for all of the above: SCD30 FRC framing + CRC + NACK
   health-fail, MH-Z19C zero-cal / ABC-on / ABC-off frames byte-for-byte,
   HX711 grams math including the uncalibrated (scale == 0) guard.
+- **Hardware audit (2026-09).** Everything below is additive on the wire:
+  new payload keys are optional, the signing vectors are unchanged, and
+  every NVS key added reads as the old behavior when missing.
+  - **Heartbeat on its own clock** (srv-hw#22). `status/heartbeat` goes out
+    every min(`publish_interval_ms`, 5 min) instead of riding in the
+    telemetry block, so a node set to publish every 15 min–1 h no longer
+    flaps offline/online against the Pi's 900 s sweep. Telemetry + health
+    keep the operator's interval; at the 60 s default nothing changes.
+  - **Secure MQTT never downgrades silently** (fw-node#2). With TLS ticked
+    and no Pi CA pinned the node still falls back to plaintext by default,
+    but now logs an ERROR, raises a `tls_downgrade` alert (value = the
+    plaintext port; entry + hourly), reports `tls:false` +
+    `tls_fallback:true` in the heartbeat, and retries the CA fetch from
+    `loop()` after 1, 2, 4, 8, then every 15 min. The first success pins the
+    CA and moves the live link to TLS 8883 without a reboot. A `401` from
+    `/api/provision/ca` is logged as the Pi's API-key gate.
+  - **"Require TLS"** portal checkbox (NVS `tls_req`, default off): with no
+    pinned CA, MQTT stays down (fail closed — the 10-min safe mode takes the
+    channels off) while the CA fetch retries; the first success brings the
+    link up on TLS.
+  - **Heartbeat `tls` (bool) and `board`** on node + cam (e.g.
+    `esp32-wroom-32`, `esp32-s3-devkitc-1-n32r16v`, `esp32-cam-ai-thinker`)
+    — which transport is really in use, and which image an OTA push needs.
+  - **Reed invert** (NVS `reed_inv`, default off): for a door contact wired
+    on its NO lead (open while the magnet is present → pin HIGH with the
+    door shut). Portal checkbox under the door switch, and
+    `cmd/config {"peripherals": {"reed_inv": true}}` — applied live, no
+    reboot; the door state is re-read without a spurious door event.
+  - **New env `node_esp32s3_n32r16v`** for the Espressif
+    ESP32-S3-DevKitC-1-N32R16V (32 MB octal flash + 16 MB octal PSRAM,
+    1.8 V): opi_opi SDK build, OPI bootloader, 32 MB image header and
+    `partitions_32mb.csv` (4 MB OTA slots; everything in the low 16 MB, the
+    upper 16 MB left free). Same pin map as `node_esp32s3`. The
+    `node_esp32s3` image does not boot on this board.
+  - **Tier-3 peripherals without a factory reset**: portal fieldset
+    (MH-Z19C, HX711, reed) and `cmd/config {"peripherals": {...}}` — a
+    change to the driver set saves and reboots ~1.5 s later; an unchanged
+    request does nothing.
+  - **Per-channel max-on** `cmd/config {"max_on_sec": {"<channel>": N}}`,
+    persisted as NVS `mo_<channel>`: switch channels 1–1800 s, dim channels
+    0 (none)–86400 s.
+  - **Camera sensors**: OV3660 (what the BOM 2-pack now ships) and OV5640
+    alongside the OV2640, auto-detected by PID; additive cam health
+    `camera.sensor` / `sensor_pid` / `jpeg_quality`, heartbeat
+    `camera_sensor`, upload header `X-Camera-Sensor`.
+  - Host suites `test_core_sensing`, `test_core_link`,
+    `test_core_provision`, `test_core_boot`, `test_core_tls`.
 
 ### Changed
 
 - `Mhz19::begin()` takes `abc_enabled` (default `false`) instead of
   hardcoding ABC off — the chamber posture is unchanged, but bench rigs
   in ventilated rooms can now opt in to Winsen auto-baseline.
+- **Hardware audit (2026-09):**
+  - **Setup portal no longer opens on a WiFi hiccup** (fw-node#9), node AND
+    camera: a provisioned device whose settings have connected before
+    boots offline, buffers, and re-begins WiFi every 60 s instead of
+    opening the open `SporePrint-Setup` AP for 10 min. Open it on purpose
+    by holding BOOT (node) / shorting the IO13 header pin to GND (cam — the
+    AI-Thinker board has no button on GPIO 13) 3–10 s, then releasing;
+    > 10 s still factory-resets. Both gestures time only
+    densely-sampled passes, and no MQTT connect, CA fetch or capture starts
+    while the button is held. Settings just saved in the portal that never
+    connect reopen the portal, as before.
+  - **OTA rollback works** (fw-node#12), node and camera: a new image is on
+    probation until MQTT has been up 60 s continuously; a crash, WDT or
+    power loss before then boots the previous image. An operator restart
+    confirms the image only if it reached MQTT that boot.
+  - **Signed commands** (fw-node#11), node and camera: a second delivery of
+    the same signed frame on the same topic inside the replay window is
+    rejected, and an optional signed `"topic"` member must equal the
+    arrival topic. The Pi now signs `"topic"` and a random `"nonce"` into
+    every command frame, so redirection protection is active and two
+    identical commands in the same second (on/off/on) are no longer
+    mistaken for a replay. Older firmware verifies these frames unchanged.
+  - **Safety**: `aux` max-on backstop 60 s by default (fae / exhaust /
+    circulation stay 30 min, lighting none); an explicit `"state":"off"`
+    always wins over `pwm`/`level`; dim channels accept `pwm` as a 10-bit
+    level alias; 10 min without MQTT → every channel off (safe mode,
+    reported as `safety_cutoff` on reconnect); every channel off at OTA
+    start; channel pins driven off before Serial at boot.
+  - **Telemetry**: `ts` is epoch seconds once NTP has synced (uptime
+    before); frames replayed from the offline buffer carry `"replay": true`
+    and go out before the live frame. A CO2 / lux / scale reading with no
+    fresh sample for max(3× read interval, 30 s) is dropped and raises one
+    `sensor_failure` alert (MH-Z19C: 3-min preheat grace).
+  - **`expected_missing`**: `temp_rh` only on climate-personality nodes;
+    `mhz19` / `hx711` when enabled but not delivering (each also alerts);
+    never the reed switch.
+  - **Alerts are latched**: once on entry, then at most hourly, re-armed
+    after clearing with hysteresis (temp 1 °F, RH 2 %, CO2 200 ppm).
+  - `calibrate_co2` refuses targets outside 400–2000 ppm and non-integers;
+    `tare` / `calibrate_scale` average 8 fresh HX711 samples (~1 s, 3 s
+    timeout) and refuse a calibration below 1 count/g.
+  - **SCD4x / SCD30 `data_ready()` bus failures** (NACK, stretch timeout,
+    CRC) now count as driver health failures (`last_error` "data_ready
+    error") instead of looking healthy while the reading goes stale.
+  - **Portal**: node id 1–32 of `[A-Za-z0-9_-]` and equal to the MQTT
+    username when one is set (blank = the username); blank password fields
+    keep the saved secret (WiFi only on the same SSID; "Open network"
+    clears it); pre-filled values are HTML-escaped; a refused form comes
+    back with what was typed.
+  - **MQTT connects fit the 30 s loop WDT** (TCP 3 s, TLS handshake 6 s,
+    CONNACK 3 s; DNS up to 15 s), are skipped while WiFi is down, and
+    retry 5 s after the previous attempt ENDS.
+  - **Camera**: the flash stays on through the exposure (fresh frame at
+    capture time, `X-Flash-Used: 1` true); no `server_url` → uploads go to
+    `http://<portal Pi address>:8000`; `https://` uploads require the
+    pinned Pi CA (never unverified TLS); `X-Timestamp` omitted until NTP
+    syncs; JPEG quality steps +2 (to 20) after a dropped frame.
+  - **Drivers**: SHT3x detected reliably (2 ms soft-reset wait); SCD4x
+    found after warm reboots/OTA (stop periodic before probing, ~0.5 s
+    extra boot); SCD4x ASC forced off even when the ASC read fails; SCD30
+    NaN readings rejected.
+  - **Build**: `SPOREPRINT_FW_VERSION` comes from the environment variable
+    (release workflow) else `VERSION.txt` else `"dev"`
+    (`scripts/fw_version.py`, attached via `extra_configs =
+    scripts/*.ini` so a tree without `scripts/` still builds) — local
+    builds no longer heartbeat an empty version (docs#28). Libraries pinned
+    exactly: PubSubClient 2.8, ArduinoJson 7.4.3 (device + native).
 
 ### No pin changes
 
 No GPIO / I2C / PWM pin reassignments. Per `feedback_firmware_pin_changes`,
-no wiring diagrams, schematics, BOM, or setup guides need updating.
+no wiring diagrams, schematics, BOM, or setup guides need updating. (The new
+`node_esp32s3_n32r16v` env reuses the `node_esp32s3` pin map.)
 
 ## [5.0.0] - 2026-07-16
 

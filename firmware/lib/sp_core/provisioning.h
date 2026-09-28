@@ -16,7 +16,8 @@
 //   * is_ipv4_literal   — Secure MQTT with an IP host only verifies if the
 //                        Pi's certificate lists that IP
 //   * apply_peripheral_cmd — the Tier-3 peripheral enable flags (MH-Z19C,
-//                        HX711, reed) had no writer at all
+//                        HX711, reed) had no writer at all; plus the reed's
+//                        level-invert option (reed_inv)
 //
 // Native-safe: no Arduino headers (ArduinoJson is header-only).
 
@@ -123,16 +124,28 @@ inline bool is_ipv4_literal(const std::string& host) {
 // ── Tier-3 peripheral enable flags ─────────────────────────────
 // Persisted as NVS mhz19_en / hx711_en / reed_en (missing keys = off, so
 // nodes provisioned before these were settable boot exactly as before).
-// Drivers are constructed only in setup(): a change takes effect on reboot.
+// Drivers are constructed only in setup(): a change to the driver SET takes
+// effect on reboot.
+//
+// reed_inv (NVS reed_inv, missing = false) is an option of the reed driver,
+// not a driver: false = contact closed while the magnet is present (pin LOW
+// = door shut, the original convention); true = contact wired on its NO lead
+// (pin HIGH = door shut). It applies live — no reboot.
 
 struct PeripheralFlags {
     bool mhz19 = false;
     bool hx711 = false;
     bool reed = false;
+    bool reed_inv = false;
 };
 
-inline bool operator==(const PeripheralFlags& a, const PeripheralFlags& b) {
+// Same driver set (the flags that decide which drivers setup() builds).
+inline bool same_driver_set(const PeripheralFlags& a, const PeripheralFlags& b) {
     return a.mhz19 == b.mhz19 && a.hx711 == b.hx711 && a.reed == b.reed;
+}
+
+inline bool operator==(const PeripheralFlags& a, const PeripheralFlags& b) {
+    return same_driver_set(a, b) && a.reed_inv == b.reed_inv;
 }
 inline bool operator!=(const PeripheralFlags& a, const PeripheralFlags& b) {
     return !(a == b);
@@ -141,13 +154,14 @@ inline bool operator!=(const PeripheralFlags& a, const PeripheralFlags& b) {
 struct PeripheralCmdResult {
     bool is_object = false;  // the value was a JSON object
     bool changed = false;    // *flags differs from its value before the call
+    bool restart_needed = false;  // the driver set changed (reboot to apply)
     int applied = 0;         // boolean members applied (changed or not)
     int ignored = 0;         // unknown keys / non-boolean values (never coerced)
 };
 
-// cmd/config {"peripherals": {"mhz19": bool, "hx711": bool, "reed": bool}}.
-// Only members present with a JSON boolean are applied; anything else is
-// counted in `ignored` and leaves the flag untouched.
+// cmd/config {"peripherals": {"mhz19": bool, "hx711": bool, "reed": bool,
+// "reed_inv": bool}}. Only members present with a JSON boolean are applied;
+// anything else is counted in `ignored` and leaves the flag untouched.
 inline PeripheralCmdResult apply_peripheral_cmd(JsonVariantConst value,
                                                 PeripheralFlags* flags) {
     PeripheralCmdResult r;
@@ -160,6 +174,7 @@ inline PeripheralCmdResult apply_peripheral_cmd(JsonVariantConst value,
         if (strcmp(key, "mhz19") == 0) target = &flags->mhz19;
         else if (strcmp(key, "hx711") == 0) target = &flags->hx711;
         else if (strcmp(key, "reed") == 0) target = &flags->reed;
+        else if (strcmp(key, "reed_inv") == 0) target = &flags->reed_inv;
         if (target == nullptr || !kv.value().is<bool>()) {
             ++r.ignored;
             continue;
@@ -168,6 +183,7 @@ inline PeripheralCmdResult apply_peripheral_cmd(JsonVariantConst value,
         ++r.applied;
     }
     r.changed = (*flags != before);
+    r.restart_needed = !same_driver_set(*flags, before);
     return r;
 }
 

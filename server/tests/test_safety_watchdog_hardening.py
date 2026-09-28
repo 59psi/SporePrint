@@ -159,7 +159,7 @@ def notes(monkeypatch):
         sent.append(("warning", title))
         sent.messages.append(message)
 
-    async def _crit(title, message, tags=None):
+    async def _crit(title, message, tags=None, **kwargs):
         sent.append(("critical", title))
         sent.messages.append(message)
 

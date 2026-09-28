@@ -273,16 +273,6 @@ async def test_set_dim_validates_percent(fresh_keystore):
         await drv.set_dim("10.0.0.30", 200)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Mock-state fragility — the parallel session in the test mirror "
-        "drifts in seq tracking when run with the full suite. The cipher "
-        "itself is round-trip-tested in test_klap_session_round_trip. "
-        "Refactoring this integration test for deterministic mirror state "
-        "is queued for v4.1.x."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_set_power_drives_handshake_then_encrypted_request(
     fresh_keystore, monkeypatch
@@ -290,6 +280,12 @@ async def test_set_power_drives_handshake_then_encrypted_request(
     """set_power performs the KLAP handshake then sends an encrypted
     request. We verify the *outbound* command shape — the cipher
     round-trip itself is covered by ``test_klap_session_round_trip``.
+
+    This was xfail'd as "mock-state fragility", but the flake was a real
+    driver bug: KlapSession.next_iv masked seq with 0x7FFFFFFF, so for the
+    ~half of random seeds whose initial seq is negative the driver encrypted
+    under a different IV than a device (or this mirror) derives. next_iv now
+    steps a signed 32-bit counter, and the mirror matches for every seed.
     """
     captured: dict[str, Any] = {}
     local_seed_holder = {"value": b""}

@@ -14,8 +14,9 @@
 #     container (scripts/lib/broker.sh), so per-node users are kept.
 #   * the repo-root .env — the file docker compose interpolates into the
 #     server + broker-healthcheck environment. server/.env (bare-metal /
-#     systemd installs, where uvicorn runs from server/) is updated too when
-#     it exists, so the two never diverge.
+#     systemd installs, where uvicorn runs from server/) gets the `server`
+#     password too when it exists, so the two never diverge — and nothing
+#     else: the server refuses to start on a key it does not know.
 # Then the broker is reloaded and, when the compose stack is running, the
 # server + mqtt containers are recreated (`docker compose up -d` — a plain
 # `restart` would keep the OLD password from the old environment and lock
@@ -37,11 +38,14 @@ else
   targets=(server sp-cmd sp-telemetry sp-3p)
 fi
 
-# .env files to update: root (compose) first, plus server/.env if present.
-ENV_FILES=()
-[ -f "$ROOT/.env" ] && ENV_FILES+=("$ROOT/.env")
+# .env files to update: the root .env (compose; always — it is also where the
+# operator finds the sp-3p password for the plugs), plus server/.env if present.
+# server/.env is the bare-metal server's own dotenv, and the server refuses to
+# start on a non-empty key it does not know — so only the password the
+# server itself uses (SPOREPRINT_MQTT_PASSWORD) is mirrored there.
+ENV_FILES=("$ROOT/.env")
 [ -f "$ROOT/server/.env" ] && ENV_FILES+=("$ROOT/server/.env")
-[ "${#ENV_FILES[@]}" -gt 0 ] || ENV_FILES=("$ROOT/.env")
+SERVER_READS="SPOREPRINT_MQTT_PASSWORD"
 
 env_set() { # env_set FILE KEY VALUE — replace in place or append; keeps 0600.
   local file="$1" key="$2" val="$3" tmp
@@ -94,8 +98,15 @@ for user in "${targets[@]}"; do
     sp-3p)        env_key="SPOREPRINT_MQTT_3P_PASSWORD" ;;
   esac
   if [ -n "$env_key" ]; then
-    for f in "${ENV_FILES[@]}"; do env_set "$f" "$env_key" "$pass"; done
-    echo "✓ rotated $user (env: $env_key → ${ENV_FILES[*]})"
+    written=()
+    for f in "${ENV_FILES[@]}"; do
+      if [ "$f" = "$ROOT/server/.env" ] && [ "$env_key" != "$SERVER_READS" ]; then
+        continue
+      fi
+      env_set "$f" "$env_key" "$pass"
+      written+=("$f")
+    done
+    echo "✓ rotated $user (env: $env_key → ${written[*]})"
   else
     echo "✓ rotated $user (no env var — custom user; password: $pass)"
   fi

@@ -1,0 +1,355 @@
+"""The docs must describe the code, firmware and BOM that actually ship.
+
+Every check here pins a claim that had drifted before the 2026-09 docs pass
+(docs#2/#10-#13/#15/#16/#18/#19/#22/#24/#30, srv-auto#13, srv-hw#9/#15,
+deps-infra#11/#21, fw-node#13/#15, fw-drivers-cam#15/#16): tier prices,
+wiring-diagram labels, MQTT topics that never existed, the Tasmota FullTopic,
+the S3 pin map, the secure-boot recipe, the Grafana port. When one fails, fix
+the doc (or the code) so the two agree again; don't loosen the check.
+"""
+
+import re
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import pytest
+
+from app.builder.hardware_guides import TIERS, TIER_ALL, TIER_RECOMMENDED
+from app.db import SCHEMA
+from app.species.profiles import BUILTIN_PROFILES
+
+ROOT = Path(__file__).resolve().parents[2]
+DOCS = ROOT / "docs"
+README = ROOT / "README.md"
+AGENTS = ROOT / "AGENTS.md"
+GUIDE = DOCS / "hardware-build-guide.md"
+FW_SECURITY = DOCS / "firmware-security.md"
+SVGS = sorted(DOCS.glob("*.svg"))
+TIER_SVGS = sorted(DOCS.glob("wiring-tier*.svg"))
+SVG_NS = "{http://www.w3.org/2000/svg}"
+
+# Markdown an operator or contributor follows (release history excluded:
+# CHANGELOG entries describe what WAS true).
+CURRENT_MD = [README, AGENTS, *sorted(DOCS.rglob("*.md")), ROOT / "models" / "README.md",
+              ROOT / "firmware" / "test" / "README.md"]
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _svg_labels(path: Path) -> list[str]:
+    """Each <text> element's full string (tspans included)."""
+    tree = ET.parse(path)
+    return ["".join(el.itertext()) for el in tree.iter(f"{SVG_NS}text")]
+
+
+def _section(text: str, heading_re: str) -> str:
+    """The body of the first markdown section whose heading matches."""
+    m = re.search(rf"^(#+) [^\n]*{heading_re}[^\n]*$", text, re.M)
+    assert m, f"no section heading matching {heading_re!r}"
+    level = len(m.group(1))
+    rest = text[m.end():]
+    end = re.search(rf"^#{{1,{level}}} ", rest, re.M)
+    return rest[: end.start()] if end else rest
+
+
+def test_docs_exist():
+    assert SVGS and TIER_SVGS and GUIDE.exists() and FW_SECURITY.exists()
+
+
+@pytest.mark.parametrize("svg", SVGS, ids=lambda p: p.name)
+def test_every_svg_is_well_formed_xml(svg):
+    ET.parse(svg)
+
+
+@pytest.mark.parametrize("svg", SVGS, ids=lambda p: p.name)
+def test_svg_footers_carry_no_release_number(svg):
+    # All five said "SporePrint v4.0.0" through the 5.0.0 release; a
+    # hard-coded number goes stale on every bump.
+    stale = [t for t in _svg_labels(svg) if re.search(r"SporePrint v\d+\.\d+\.\d+", t)]
+    assert not stale, f"{svg.name}: {stale}"
+
+
+# ── Tier prices (docs#10) ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("doc", [README, GUIDE], ids=lambda p: p.name)
+def test_tier_prices_match_the_bom(doc):
+    expected = {t.name: t.estimated_cost for t in TIERS}
+    text = _read(doc)
+    found = re.findall(r"(Bare Bones|Recommended|All the Things)\W{0,8}(~\$\d+)", text)
+    assert found, f"{doc.name} states no tier price"
+    wrong = [(name, price) for name, price in found if price != expected[name]]
+    assert not wrong, f"{doc.name}: {wrong} — hardware_guides.py says {expected}"
+    assert {name for name, _ in found} == set(expected), f"{doc.name} misses a tier price"
+
+
+# ── Wiring diagrams (docs#11, docs#13, bom SVG notes) ───────────────
+
+
+@pytest.mark.parametrize("svg", TIER_SVGS, ids=lambda p: p.name)
+def test_only_the_camera_programmer_is_micro_usb(svg):
+    # Every WROOM-32 DevKit in the BOM is the narrow USB-C board; only the
+    # ESP32-CAM-MB programmer is micro-USB.
+    wrong = [t for t in _svg_labels(svg) if "micro-USB" in t and not re.search(r"CAM|MB", t)]
+    assert not wrong, f"{svg.name}: {wrong}"
+
+
+@pytest.mark.parametrize("svg", TIER_SVGS, ids=lambda p: p.name)
+def test_devkit_pins_are_named_not_numbered(svg):
+    # "GND (pin 2)" is EN on a 38-pin DevKitC, and header order differs
+    # between DevKit layouts — label pins by their silk-screen name only.
+    numbered = [t for t in _svg_labels(svg) if re.search(r"\bpin \d+\b", t, re.I)]
+    assert not numbered, f"{svg.name}: {numbered}"
+
+
+def _psu_amps(tier) -> str:
+    psu = next(c for c in tier.components if c.name.startswith("12V Power Supply"))
+    return re.search(r"\((\d+)A,", psu.name).group(1)
+
+
+@pytest.mark.parametrize("tier, svg_name", [
+    (TIER_RECOMMENDED, "wiring-tier2-recommended.svg"),
+    (TIER_ALL, "wiring-tier3-all-the-things.svg"),
+])
+def test_svg_psu_matches_the_bom(tier, svg_name):
+    labels = " | ".join(_svg_labels(DOCS / svg_name))
+    amps = _psu_amps(tier)
+    assert f"12V {amps}A" in labels, f"{svg_name} does not show the BOM's 12V {amps}A supply"
+    other = {"5", "10"} - {amps}
+    for a in other:
+        assert f"12V {a}A" not in labels, f"{svg_name} still shows a 12V {a}A supply"
+
+
+def test_tier3_svg_shows_the_reed_on_com_and_nc():
+    labels = " | ".join(_svg_labels(DOCS / "wiring-tier3-all-the-things.svg"))
+    assert re.search(r"\bCOM\b", labels) and re.search(r"\bNC\b", labels)
+    assert "one leg" not in labels
+
+
+@pytest.mark.parametrize("svg", TIER_SVGS[1:], ids=lambda p: p.name)
+def test_gate_resistors_and_flyback_part_match_the_bom(svg):
+    labels = " | ".join(_svg_labels(svg))
+    assert "100R" in labels or "100 Ω" in labels
+    assert "UF4007" in labels, f"{svg.name}: the BOM's flyback diode is the UF4007"
+
+
+@pytest.mark.parametrize("svg", TIER_SVGS[1:], ids=lambda p: p.name)
+def test_tri_spectrum_wire_colours_are_shown(svg):
+    labels = " | ".join(_svg_labels(svg)).lower()
+    assert "blue wire" in labels
+    if "tier3" in svg.name:
+        assert "red wire" in labels and "green wire" in labels
+
+
+@pytest.mark.parametrize("svg", TIER_SVGS, ids=lambda p: p.name)
+def test_climate_node_is_a_stemma_qt_chain(svg):
+    labels = " | ".join(_svg_labels(svg))
+    assert "4397" in labels and "4210" in labels, f"{svg.name} misses the STEMMA QT cables"
+
+
+# ── MQTT topics (docs#12) ────────────────────────────────────────────
+
+# A topic with no node segment (sporeprint/tele/#, sporeprint/cmd/#) never
+# existed: the contract is sporeprint/<node_id>/<type>[/...].
+_NODELESS_TOPIC = re.compile(
+    r"sporeprint/(tele|telemetry|cmd|light|status|health|alert|logs|ota)\b")
+
+
+@pytest.mark.parametrize("svg", SVGS, ids=lambda p: p.name)
+def test_svg_topics_carry_a_node_segment(svg):
+    bad = [t for t in _svg_labels(svg) if _NODELESS_TOPIC.search(t)]
+    assert not bad, f"{svg.name}: {bad}"
+
+
+@pytest.mark.parametrize("doc", CURRENT_MD, ids=lambda p: str(p.relative_to(ROOT)))
+def test_markdown_topics_carry_a_node_segment(doc):
+    bad = _NODELESS_TOPIC.findall(_read(doc))
+    assert not bad, f"{doc.relative_to(ROOT)}: {bad}"
+
+
+def test_overview_svg_names_the_real_topics():
+    labels = " | ".join(_svg_labels(DOCS / "wiring-overall-system.svg"))
+    assert "sporeprint/<node_id>/telemetry" in labels
+    assert "sporeprint/<node_id>/cmd/" in labels
+    assert "tasmota/<topic>/cmnd/POWER" in labels
+
+
+# ── Camera sensor (fw-drivers-cam doc note 1) ───────────────────────
+
+
+@pytest.mark.parametrize("path", [README, GUIDE, AGENTS, *SVGS], ids=lambda p: p.name)
+def test_camera_sensor_is_not_ov2640_only(path):
+    chunks = _svg_labels(path) if path.suffix == ".svg" else _read(path).splitlines()
+    bad = [c for c in chunks if "OV2640" in c and "OV3660" not in c]
+    assert not bad, f"{path.name}: {bad}"
+
+
+# ── Smart plugs (docs#2, srv-auto#13, srv-hw#9, deps-infra#11) ──────
+
+FULL_TOPIC = "tasmota/%topic%/%prefix%/"
+
+
+@pytest.mark.parametrize("doc", [GUIDE, README, DOCS / "integrations" / "smart-plugs.md"],
+                         ids=lambda p: p.name)
+def test_tasmota_full_topic_and_credentials_are_documented(doc):
+    text = _read(doc)
+    assert FULL_TOPIC in text, f"{doc.name} never sets the Tasmota Full Topic"
+    assert "sp-3p" in text and "SPOREPRINT_MQTT_3P_PASSWORD" in text
+
+
+def test_build_guide_smart_plug_section_has_the_full_topic_and_troubleshooting_row():
+    guide = _read(GUIDE)
+    plugs = _section(guide, "Smart plugs")
+    assert FULL_TOPIC in plugs and "sp-3p" in plugs and "Topic" in plugs
+    trouble = _section(guide, "When something doesn't work")
+    assert FULL_TOPIC in trouble, "no troubleshooting row for the default FullTopic"
+
+
+# ── Provisioning / install (docs#16, docs#18, docs#3 docs half) ─────
+
+
+@pytest.mark.parametrize("doc", [README, GUIDE], ids=lambda p: p.name)
+def test_env_changes_are_applied_with_up_not_restart(doc):
+    # `docker compose restart` never re-reads .env.
+    assert "docker compose restart server" not in _read(doc)
+
+
+def test_build_guide_installs_with_install_sh_not_setup_sh():
+    pi = _section(_read(GUIDE), "The Raspberry Pi")
+    assert "./install.sh" in pi
+    assert "./setup.sh" not in pi
+
+
+def test_build_guide_node_id_follows_the_broker_username():
+    provision = _section(_read(GUIDE), "Provision each node")
+    assert "accept the default" not in provision
+    assert "blank" in provision and "add-node-mqtt-user.sh" in provision
+
+
+# ── Firmware facts (docs#15, fw-node#15, srv-hw#15, fw-drivers-cam) ──
+
+
+def _board_pin(header: str, name: str) -> str:
+    text = _read(ROOT / "firmware" / "boards" / header)
+    return re.search(rf"#define {name} (.+)", text).group(1).split("//")[0].strip()
+
+
+def test_build_guide_documents_the_s3_pin_map_and_every_env():
+    guide = _read(GUIDE)
+    s3 = _section(guide, "ESP32-S3")
+    header = "board_profile_esp32s3.h"
+    for name in ("SP_PIN_I2C_SDA", "SP_PIN_I2C_SCL", "SP_PIN_HX711_DOUT", "SP_PIN_HX711_SCK",
+                 "SP_PIN_REED", "SP_UART_CO2_RX", "SP_UART_CO2_TX"):
+        pin = _board_pin(header, name)
+        assert re.search(rf"\bGPIO {pin}\b", s3), f"S3 section misses {name} = GPIO {pin}"
+    for pin in re.findall(r"\d+", _board_pin(header, "SP_CHANNEL_PINS")):
+        assert re.search(rf"\bGPIO {pin}\b", s3), f"S3 section misses channel GPIO {pin}"
+    ini = _read(ROOT / "firmware" / "platformio.ini")
+    envs = [e for e in re.findall(r"^\[env:([a-z0-9_]+)\]", ini, re.M) if e != "native"]
+    for env in envs:
+        assert f"-e {env}" in guide, f"build guide never flashes env {env}"
+
+
+def test_build_guide_documents_reed_com_nc_and_the_invert_flag():
+    extras = _section(_read(GUIDE), "All the Things extras")
+    assert "COM" in extras and "NC" in extras and "reed_inv" in extras
+    assert "One leg of the switch" not in extras
+
+
+def test_door_bring_up_tip_names_the_floating_state():
+    # fw-drivers-cam#15: without the pull-up, the OPEN door floats.
+    checklist = _section(_read(GUIDE), "Bring-up checklist")
+    assert "flickers with the door\n   shut" not in checklist
+    assert re.search(r"flickers[^.]*OPEN", checklist)
+
+
+def test_camera_reset_gesture_is_documented():
+    # fw-drivers-cam#16: GPIO 13, no button on the AI-Thinker board.
+    guide = _read(GUIDE)
+    assert "IO13" in guide and "GPIO 13" in guide
+
+
+# ── Security docs (docs#19, deps-infra#21, docs#22, fw-node#13) ──────
+
+
+def test_readme_security_section_matches_compose_and_auth():
+    sec = _section(_read(README), "Security")
+    assert "127.0.0.1" not in sec, "the broker is published on the LAN (1883/8883), not loopback"
+    for public in ("/api/health", "POST /api/cloud/pair", "GET /api/provision/ca",
+                   "/api/vision/frame"):
+        assert public in sec, f"README Security misses public path {public}"
+
+
+def test_firmware_security_doc_has_no_recipe_for_the_arduino_build():
+    # The old recipe: -D flags into a nonexistent [env] base, a nonexistent
+    # upload target, and v1 OTA classes. Naming them as wrong is fine;
+    # instructing them is not.
+    text = _read(FW_SECURITY)
+    for stale in ("${env.build_flags}", "-DCONFIG_SECURE_BOOT=1", "-t signedupload",
+                  "The `OTAManager` already calls", "`ota_manager.cpp` refuses",
+                  "until the Pi adds a per-frame nonce"):
+        assert stale not in text, f"firmware-security.md still says {stale!r}"
+    assert "not supported" in text.lower()
+    assert "ota_service.cpp" in text and "[esp32_base]" in text
+
+
+def test_firmware_changelog_knows_the_pi_signs_topic_and_nonce():
+    text = _read(ROOT / "firmware" / "CHANGELOG.md")
+    unreleased = text.split("## [5.0.0]")[0]
+    assert "Until the Pi adds a per-frame nonce" not in unreleased
+
+
+def test_grafana_doc_points_at_the_api_port():
+    text = _read(DOCS / "integrations" / "grafana" / "README.md")
+    assert "chambers.local" not in text
+    assert ":8000/metrics" in text
+
+
+# ── Counts and paths (docs#30) ───────────────────────────────────────
+
+
+def test_readme_and_agents_counts_match_the_code():
+    n_species = len(BUILTIN_PROFILES)
+    n_tables = len(set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)))
+    for doc in (README, AGENTS):
+        text = _read(doc)
+        for n in re.findall(r"(\d+) (?:built-in )?species profiles", text):
+            assert int(n) == n_species, f"{doc.name} says {n} species profiles, code has {n_species}"
+        for n in re.findall(r"(\d+) (?:SQLite )?tables", text):
+            assert int(n) == n_tables, f"{doc.name} says {n} tables, db.py has {n_tables}"
+    assert f"{n_species} built-in species profiles" in _read(README)
+
+
+def test_agents_md_firmware_constraints_match_v2():
+    text = _read(AGENTS)
+    for stale in ("SPIFFS", "8-bit for relays", "lib/sporeprint_common", "matplotlib"):
+        assert stale not in text, f"AGENTS.md still says {stale!r}"
+
+
+def test_readme_drops_features_that_do_not_exist():
+    text = _read(README)
+    for stale in ("matplotlib", "PDF grow reports", "setup-pi.sh handles", "cd ui && npm",
+                  "cp .env.example .env    # edit"):
+        assert stale not in text, f"README still says {stale!r}"
+
+
+_LINK = re.compile(r"\]\(([^)\s]+)\)")
+
+
+@pytest.mark.parametrize("doc", CURRENT_MD, ids=lambda p: str(p.relative_to(ROOT)))
+def test_relative_links_resolve(doc):
+    missing = []
+    for target in _LINK.findall(_read(doc)):
+        if re.match(r"[a-z]+:", target) or target.startswith("#"):
+            continue
+        path = (doc.parent / target.split("#")[0]).resolve()
+        if not path.exists():
+            missing.append(target)
+    assert not missing, f"{doc.relative_to(ROOT)} links to missing files: {missing}"
+
+
+def test_env_example_doc_references_exist():
+    for ref in re.findall(r"docs/[\w./-]+\.md", _read(ROOT / ".env.example")):
+        assert (ROOT / ref).exists(), f".env.example points at missing {ref}"

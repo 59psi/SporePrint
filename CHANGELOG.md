@@ -7,46 +7,282 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **`models/hx711_scale.scad`** — two-part harvest scale (base + platform)
-  for the Tier 3 "HX711 + 5kg Load Cell" BOM line. Sized to the TAL220 5 kg
-  straight-bar cell (80 × 12.7 × 12.7 mm, M5 fixed end / M4 load end, 15 mm
-  hole pitch, verified against the HTC Sensor datasheet) with an HX711 bay
-  (38 × 22 mm) and a wire channel to the relay node. Fixed end bolts to the
-  base riser, free end lifts the platform; the base doubles as an overload
-  stop. PLA, no supports.
-- **`models/pump_bracket.scad`** — twin half-pipe saddle clamp for the Tier 3
-  peristaltic dosing pump (Adafruit 1150 Kamoer, 27 mm barrel / 72 mm long,
-  verified against the product page). Over-barrel capture-tie slots; base M3
-  + zip-tie mounting. PLA or PETG, no supports.
-- **`models/README.md`** — enumerates all 10 models with the part each fits,
-  its verified dimensions, tier, and print settings.
-- `models/sensor_mount.scad` gains an **`scd30 = true`** variant that widens
-  bay 2 for the SCD30 (Adafruit 4867, 51 × 25.4 mm) — the in-stock SCD41
-  alternate that is too long for the default 3-bay layout.
+The 2026-09 hardware + software audit: a live re-check of the whole bill of
+materials, every enclosure re-fit to sourced part drawings and joined with
+heat-set inserts, and ~180 verified software findings fixed test-first across
+the server, firmware, broker/install scripts and dependencies. The wire
+contract stays backward compatible: new payload keys are optional and the
+signing vectors are unchanged. Firmware details are in
+[`firmware/CHANGELOG.md`](firmware/CHANGELOG.md).
 
-### Fixed
-- **`models/sensor_mount.scad`** — the 2026-06 "three-bay redesign" still did
-  not fit its boards. Re-verified every footprint against the vendor pages
-  and corrected: the SHT31-D (18.0 × 12.7) and BH1750 (25.3 × 17.7) bay
-  widths were transposed so the BH1750 never fit; all three bays shared one
-  23.5 mm depth so only the SCD41 seated; the four "M3 holes" opened out
-  through the wall as scallops; and the side zip-tie slots missed the body
-  entirely. Bays are now per-board in width AND depth, and mounting moved to
-  real end ears (M3 + zip tie). Chimney venting preserved.
-- **`models/sensor_bracket.scad`** — its platform was hard-coded 40 × 50 mm,
-  far too small to carry the sensor_mount enclosure it exists for. It now
-  `use <sensor_mount.scad>` and derives the platform + tie-down holes from
-  the shared footprint (tracks the `scd30` variant), so the two parts bolt
-  together by the enclosure's end ears.
+### Upgrade notes
+- **Update a Docker Pi with `git pull && ./install.sh`** — `install.sh` writes
+  the new `.env` keys; `git pull && docker compose up -d --build` alone does
+  not. `install.sh` run inside a checkout no longer pulls by itself.
+- **Schedules move to local time.** `install.sh` writes the host's time zone
+  into `.env` as `TZ` (compose passes `TZ=${TZ:-UTC}`) and warns. Rule times
+  typed in UTC to compensate must be changed back, or set `TZ=UTC`. Use a
+  canonical Region/City name: the server image has no legacy aliases, and an
+  unknown zone silently runs on UTC. Bare metal: set `TZ` in the service
+  environment, not in `server/.env`.
+- **Command signing is on by default.** `install.sh` generates
+  `SPOREPRINT_MQTT_HMAC_KEY` (reusing one an older `provision-node.sh` left in
+  `server/.env`). A cloud-paired Pi without a key refuses every node command,
+  so run `./install.sh` or `./scripts/provision-node.sh`, then
+  `docker compose up -d server`, before pairing.
+- **First boot converts the database** to incremental auto-vacuum with one
+  full `VACUUM` (duration logged), before MQTT and automation start. It needs
+  free disk of 2 × the DB size + 64 MB; otherwise it is skipped with a WARNING
+  and retried next boot.
+- **Tasmota plugs need Full Topic `tasmota/%topic%/%prefix%/`** and the `sp-3p`
+  login. Plugs on Tasmota's default Full Topic never reached the Pi.
+- **Coredumps moved** to `<DB dir>/coredumps` (Docker: `/data/db/coredumps`, on
+  the data volume). Dumps in the old `data/coredumps` are no longer listed.
+- **Built-in species profiles are read-only** (`PUT` returns 409): clone one to
+  customize it.
+
+### Hardware (Builder BOM, `GET /api/builder/tiers`)
+- **Tier totals are now ~$205 / ~$485 / ~$660** (were ~$180 / ~$390 / ~$555),
+  re-checked live on 2026-09-27. They exclude the tri-spectrum strip's shipping
+  and duty (~$10+) and the heat-set inserts and screws. README and the build
+  guide use the same numbers.
+- New optional API field `Component.pack_price`: when set, one pack covers the
+  quantity; `price_approx` stays the per-unit price.
+- New lines: Raspberry Pi Active Cooler (all tiers); Adafruit 4397 + 4210
+  STEMMA QT cables (the climate node is now a no-solder daisy chain, replacing
+  the M-F jumpers); USB-A to USB-C cables, USB-A to micro-USB cables (camera
+  MBs) and UL-listed 5 V chargers — one per board; 100 Ω gate resistors;
+  KF301-2P screw terminals for `relay_board_mount`; Dupont jumpers; a
+  5.5 × 2.5 mm DC pigtail (Tiers 2/3).
+- Changed lines: Pi 5 4GB $110 (PiShop), official 27 W PSU, 64 GB A1 card;
+  ESP32-WROOM-32 is the narrow USB-C board (3-pack / 6-pack value options);
+  ESP32-CAM is an AI-Thinker 2-pack **with ESP32-CAM-MB programmers**
+  (OV2640, or OV3660 — both supported); flyback diode is the **UF4007**
+  (1N4007 only on on/off channels); 5 m white roll; IP67 tri-spectrum strip
+  with wire colours documented (blue 450 / red 660 / green 730); Facmogu 12 V
+  5 A (Tier 2) and **10 A** (Tier 3) bricks with load budgets (≤ ~4 A / ≤ ~8 A);
+  HX711 is Adafruit 5974 + 4541 (rate switch at 10 SPS); the reed switch is a
+  weideer MC-31B wired **COM + alarm-NC**; Athom Tasmota US Plug V2 (Tasmota
+  build, not the ESPHome twin).
+- Quantities: IRLZ44N 6 / 8, 10 kΩ 6 / 9, diodes 4 / 4 (inductive channels
+  only), Tasmota plugs 1 / 2 / 4.
+- Setup steps (all tiers): `install.sh`; `./scripts/add-node-mqtt-user.sh
+  <node_id>` before the portal, Node ID left blank; Tasmota User / Password /
+  Topic / Full Topic; ESP32-CAM-MB flashing (hold IO0, tap RST if the upload
+  won't start); print presets per part; heat-set insert and screw counts per
+  tier; PSU load budgets; the S3 pin map wherever `node_esp32s3` is named.
+- Capability bullets that described unimplemented features were removed (kWh,
+  PID, timelapse, quiet hours, EXIF, sensor fallback/divergence, correlation
+  reports, local CNN).
+
+### Enclosures (`models/`)
+- **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,
+  Eagle boards) and fit-checked in OpenSCAD against dimensioned proxies; every
+  part and preset renders manifold with Manifold. Nothing has been printed
+  yet; estimated dimensions are listed per model.
+- **Brass heat-set inserts** join every multi-piece enclosure
+  (`models/lib/sp_inserts.scad`: ruthex / CNC Kitchen sizes, pocket + boss +
+  clearance helpers, `SP_INSERT_HOLE_TWEAK`, `SP_FASTENER="self_tap"` fallback).
+  `models/README.md` has the per-part and per-tier shopping list.
+- `pi_case` (Pi 5 + Active Cooler, full-height insert bosses, Pi 4 does not
+  fit); `esp32_case` (narrow USB-C default, `devkitc_v4` / `wide_usbc` /
+  `s3_devkitc1` presets, header clearance, lid over the USB receptacle);
+  `sensor_mount` + `sensor_bracket` (current STEMMA QT board outlines, a QT
+  cable gallery, insert-held lid, `scd30=true` on both); `cam_mount`
+  (CAM + MB stack, IO0/RST reachable through side slots, M5 pivot insert);
+  `hx711_scale` (Adafruit 4541 bar75 default + `tal220`, Adafruit 5974 /
+  SparkFun / generic boards, recessed board inserts down a Ø5.2 access bore,
+  × 10 or × 12 board screws); `pump_bracket` (bolts through the pump flange,
+  presets `adafruit_1150` / `kamoer_nkp` / `universal`); `relay_board_mount`
+  (through-hole chassis for 4 IRLZ44N channels with 100 Ω, 10 kΩ, DO-41 and
+  KF301 footprints, `node="relay"|"lighting"`); `power_supply_mount` (Facmogu
+  5 A / 10 A and other brick presets, strap retention); `fan_duct` (71.5 mm
+  NF-A8 pitch, M4 inserts).
+- Model downloads (`GET /api/builder/models/<file>.scad`) inline `lib/`
+  includes so a single file renders on its own; `models-bundle.zip` ships the
+  repo layout.
+
+### Firmware (see `firmware/CHANGELOG.md`)
+- Camera detects **OV2640 / OV3660 / OV5640** and tunes per sensor; flash stays
+  on through the exposure; uploads default to the portal's Pi address; HTTPS
+  uploads require the pinned Pi CA.
+- **Reed invert** (portal checkbox / `cmd/config {"peripherals":
+  {"reed_inv": true}}`) for door contacts wired on NO.
+- New env **`node_esp32s3_n32r16v`** for the ESP32-S3-DevKitC-1-N32R16V (same
+  pin map as `node_esp32s3`).
+- Heartbeat on its own clock (min(publish interval, 5 min)); Secure MQTT never
+  downgrades silently (`tls_downgrade` alert, CA-fetch retries, optional
+  "Require TLS"); heartbeat `tls` and `board` keys.
+- Safety: `aux` max-on 60 s by default and per-channel `max_on_sec`; an explicit
+  OFF wins over `pwm`/`level`; 10-min MQTT-loss safe mode; channels off at OTA
+  start; OTA rollback on node and camera.
+- The setup AP no longer opens on a WiFi hiccup (BOOT / GPIO 13 gesture
+  instead); replay guard + topic binding on signed commands; portal node-id and
+  password-keep rules; epoch `ts` + `"replay": true`; latched alerts; sensor
+  staleness alerts; exact library pins (PubSubClient 2.8, ArduinoJson 7.4.3).
+
+### Added
+- `POST /api/hardware/nodes/{id}/peripherals` (`{"mhz19"|"hx711"|"reed": bool}`)
+  sends a signed `cmd/config`; the node reboots ~1.5 s later if its set changed.
+- Overdue-phase reminders: a daily 09:00 (container-local `TZ`) INFO "Phase
+  check — <session>" for each grow past its phase's expected duration
+  (`phase_reminders` task).
+- Settings: `SPOREPRINT_VISION_AUTO_INTERVAL_MIN` (default 360),
+  `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` (default false),
+  `SPOREPRINT_PUBLIC_UI_URL`, `SPOREPRINT_CLAUDE_MODEL` (default
+  `claude-sonnet-5`; every Claude feature), `TZ`, `FORWARDED_ALLOW_IPS`. Every
+  `Settings` field is now forwarded by compose (enforced by a test).
+- Vision: frame retention (30 days, then one frame per camera per day; flagged,
+  labelled and referenced frames kept); `X-Camera-Sensor` stored as the node's
+  `camera_sensor` and named in the Claude prompt; harvest-window INFO
+  notification; contamination events recorded with `source='vision'`.
+- Tasmota plugs also update from `stat/RESULT` and `tele/STATE` JSON
+  (`POWER` / `POWER1`); Shelly and Tasmota plugs register on their first state
+  report.
+- `docs/auth.md`, the S3 pin map and troubleshooting rows in the build guide,
+  and `server/tests/test_docs_consistency.py`, which pins the README, build
+  guide, SVGs and AGENTS.md to the code, firmware and BOM.
 
 ### Changed
-- **`models/esp32_case.scad`** — board length corrected to the 55 mm
-  ESP32-WROOM-32 DevKitC outline (was 52 mm); USB cutout widened to clear
-  **both** micro-USB and USB-C plug shells (the BOM's best-value board,
-  HiLetgo B0CNYK7WT2, is USB-C); header env name corrected to `node_esp32`
-  (was the stale `esp32dev`); ESP32-S3-DevKitC-1 note updated to its real
-  ~70 × 28 mm dual-USB-C footprint.
+- **Signed node commands** carry two more signed members, `topic` and a random
+  `nonce`: current firmware rejects redirected frames and no longer drops a
+  legitimate identical command in the same second. Deployed firmware verifies
+  them unchanged.
+- **OFF is never published with `pwm`/`level`** (rules, manual node commands,
+  cloud commands), and every published OFF — manual node, cloud, session-end
+  safing, manual plug — clears that actuator's `safety_max_on_seconds`
+  ceiling.
+- Automation: the highest-priority rule whose condition holds owns an
+  actuator; ceilings count from the first ON and a trip locks automation out
+  for 15 min (WARNING page, CRITICAL if the OFF fails); life-safety rules
+  (priority ≥ 20, absolute thresholds) run with no session; species-scoped
+  rules match `lions-mane` and `lions_mane`; redundant OFFs to unpaired plugs
+  are skipped; cron catch-up; scheduled FAE runs only when the phase's
+  `fae_mode` is scheduled or continuous; new `profile_ref` `temp_mid_f`;
+  `growth_form` antler/conk picks the CO₂ params; `bulk_bag` is sealed until
+  fruiting; the rule `notification` flag now pages (WARNING < priority 20 ≤
+  CRITICAL). Seeded templates are upgraded on boot unless edited (a WARNING
+  names each edited copy). An edited Pre-cool or Heat Wave rule with no
+  chamber-temperature condition now holds the cooler ON against Cooling
+  Cutoff — add a `temp_f` condition. The Humidity Boost/Cut and Dry Weather
+  rules carry 1800 s ceilings: a humidifier that needs more than 30 min to
+  cross the band trips one (raise `safety_max_on_seconds` if yours is slow).
+- Sessions: `POST /api/sessions` and `/phase` return 422 for an unknown phase
+  or one the species can't enter; missing primordia/fruiting/rest setpoints
+  borrow from each other; `next-phase` skips phases the species lacks; ending
+  a grow safes the actuators it drove (per chamber when several grows run);
+  phase history stores `params_snapshot`.
+- Which grow a node belongs to is chamber-aware: a listed node belongs to its
+  chamber's grow, an unlisted node to the newest chamberless grow. With grows
+  in two chambers, list every node in its chamber.
+- Node liveness: any telemetry frame from a registered node refreshes
+  `last_seen`, so nodes on a 15 min–1 h publish interval no longer flap
+  offline.
+- Telemetry: `ts < 1e9` is treated as unsynced; replayed or stale frames are
+  stored but not evaluated or pushed live; readings are tagged with their
+  grow; history charts fall through every rollup tier.
+- Notifications: ntfy is published through its JSON API (titles with em dashes
+  or °F now arrive); identical CRITICAL pages collapse for 15 min; temperature
+  and humidity EMERGENCY pages dedupe per node, parameter and direction; node
+  alerts reach ntfy by tier.
+- Vision auto-analysis runs every 6 h per session (and on the first frame after
+  a phase change) instead of every capture; the local CNN is still a stub.
+  Contamination pages CRITICAL at confidence ≥ 0.6 and sends one "Possible
+  contamination" WARNING at 0.3–0.6; stored frame names are unique and carry
+  the real image type; a failed re-analysis never overwrites a stored one;
+  `POST /api/contamination/identify` returns 415 for non-image uploads.
+- Claude: every feature uses `SPOREPRINT_CLAUDE_MODEL`; output ceilings are
+  16,000 tokens (32,000 streamed for the Builder). A refusal or truncated
+  answer returns `{error}` (Builder: `truncated: true` plus the partial guide,
+  not saved) instead of a 500 or a half-saved result.
+- Weather: forecast alerts fire only once the weather→closet model is trained
+  (~7 days), ignore past hours and dedupe per session, kind and day;
+  `forecast_high_f` / `forecast_low_f` cover today's local day; the prediction
+  model trains on 30 days; Open-Meteo times parse as UTC.
+- Transcripts: per-phase telemetry summaries are filled from rollups for old
+  phases; unknown session ids return 404; session analysis sends at most 150
+  vision summaries.
+- Sessions and species: chamber `PATCH` with `active_session_id: null`
+  detaches; chambers with history can be deleted; iCal dates anchor at the
+  first phase; the pink-oyster harvest page is CRITICAL; the substrate
+  calculator and shopping list scale correctly; species setpoints match
+  CLAUDE.md §4b (pink oyster, cordyceps, king trumpet CO₂);
+  `POST /api/experiments/{id}/analyze` is the preferred route.
+- Integrations: sending back a masked `••••last4` secret keeps it, `""` clears
+  it; a lost or changed `.integration-key` shows "re-enter the credentials";
+  vendor health transitions that happen while the cloud link is down are
+  retried until delivered.
+- `GET /api/provision/ca` is public in API-key mode, so Secure-MQTT nodes can
+  fetch the CA; in that mode `GET`/`POST /api/cloud/pairing-code` now need the
+  bearer, and a keyless `POST /api/vision/frame` is accepted only from a
+  registered camera with a declared Content-Length ≤ 20 MB.
+- Cloud pairing credentials persist to `cloud.env` beside the DB (0600) and
+  survive rebuilds; `cloud_url` must be `https://`; `integrations_request`
+  frames are replay-deduped and, after the first signed one, must be signed.
+- `POST /api/automation/plugs/{id}/command` returns 409 for an unknown or
+  unpaired plug and 503 when the broker is down; `POST
+  /api/hardware/nodes/{id}/command` returns 503 when nothing was published.
+- `POST /api/builder/guide` returns 503 (`not_configured`) or 502 (refusal,
+  truncated, empty, upstream error) with the body fields unchanged; firmware
+  ZIPs include `library.json`, `VERSION.txt`, every partition table and the
+  version script, and never bundle a private-looking `extra_configs` file.
+- Socket.IO rate limiting and client tracking use each client's real address
+  (uvicorn `--proxy-headers` behind nginx).
+- Nightly retention also prunes session-less `automation_firings` older than
+  90 days and thins vision frames; new index
+  `idx_rollup_node_sensor_time` speeds long-range charts.
+
+### Deploy
+- `install.sh`: writes `TZ`, generates the command-signing key, issues the
+  broker certificate with IP and DNS SANs for every host IPv4 (re-issued from
+  the same CA when the IP changes), repairs Docker-created bind-mount
+  directories, and prints the schedule time zone, signing status and
+  smart-plug credential + Full Topic.
+- `setup.sh` is a developer-workstation script (LAN-trust, no API key, IP
+  SANs); `scripts/setup-pi.sh` wraps `install.sh`.
+- `docker compose up` without `install.sh` fails loudly instead of creating
+  root-owned directories; broker secrets are owned by the broker user; logs are
+  capped at 10 MB × 3 per service.
+- The broker ACL lets nodes publish log batches and coredump chunks and lets
+  the server read `$SYS/broker/#`, so node logs, coredumps and
+  `/api/health/detail/mqtt` fill in. The broker CA is mounted into the server
+  container, so `/api/provision/ca` works under Docker.
+- `provision-node.sh` writes the signing key to the repo-root `.env` (reusing
+  an existing one); `add-node-mqtt-user.sh` mentions the key; broker password
+  edits run inside the broker image and reload the `mqtt` service.
+- Pi-pushed node OTA uses fixed TCP port 3233 (published in compose), runs one
+  push at a time and retries invitations. `generate-ota-keypair.py` creates the
+  private key 0600 atomically.
+- Images pinned: `eclipse-mosquitto:2.1.2-alpine`, `binwiederhier/ntfy:v2.28.0`,
+  `nginx:1.30.5-alpine` and `python:3.12.14-slim` by digest. The server image
+  installs exactly `server/uv.lock` (hash-checked).
+- `rotate-mqtt-creds.sh` writes only the `server` password into `server/.env`;
+  the other shared passwords stay in the repo-root `.env`.
+- Pi OTA: the Docker install refuses cloud self-update; downgrades are refused;
+  bundle extraction applies tarfile's `data` filter.
+- The dashboard's nginx passes request bodies up to 21 MiB and gives `/api/`
+  a 180 s timeout.
+
+### Dependencies
+- anthropic 0.94 → 1.8, fastapi 0.135 → 0.141, starlette 1.0 → 1.7 (Host-header
+  bypass of the API-key gate fixed), cryptography 45 → 50.0.1, pillow 11.3 →
+  12.3, uvicorn 0.54, python-multipart 0.0.32, python-socketio 5.17 /
+  engineio 4.14, pydantic-settings 2.15. `server/uv.lock` regenerated (it was
+  missing four runtime dependencies).
+- GitHub Actions pinned to commit SHAs at current majors; PlatformIO 6.2.0 in
+  CI and release; the release job alone gets write access.
+
+### Fixed
+- Plugs following the build guide never registered (missing Full Topic and
+  credentials) — docs, Builder steps and the install summary now say both.
+- Tapo local KLAP handshake (real devices authenticate), Kasa multi-segment
+  replies, Wemo port probing (49153/49152/49154/49155/49151, `host:port`
+  pins), Pulse session reuse, Grafana contamination counter.
+- Upgrading a database created before v3.3.0 no longer crashes `init_db`.
+- The Tapo KLAP `set_power` integration test is no longer `xfail`.
+- The CHANGELOG's earlier unreleased model entries (TAL220-only scale, saddle
+  pump clamp, "Adafruit 1150 = Kamoer" wording) are superseded by the
+  enclosure work above: Adafruit does not name the pump's OEM.
 
 ## [5.0.0] - 2026-07-16
 

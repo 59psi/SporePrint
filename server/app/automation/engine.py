@@ -6,11 +6,16 @@ import time
 
 from pydantic import TypeAdapter, ValidationError
 
+from ..chambers.service import chambers_for_node
 from ..db import get_db
 from ..integrations import _actions as _vendor_actions
 from ..mqtt import mqtt_publish
 from ..notifications.service import co2_alert, temperature_alert, notify_warning, notify_critical
-from ..sessions.service import get_active_session
+from ..sessions.service import (
+    PHASE_PARAM_FALLBACKS,
+    add_actuator_off_listener,
+    get_active_session_for_chambers,
+)
 from ..species.service import get_profile
 from .service import validate_action_channel
 from .smart_plugs import is_plug_target, plug_aliases, send_plug_command, target_is_present
@@ -23,6 +28,7 @@ from .models import (
 )
 from .service import (
     deserialize_rule_row,
+    drop_duty_from_off,
     get_rule,
     resolve_node_target,
     rule_applies_to_species,
@@ -228,17 +234,10 @@ def _is_life_safety_rule(rule: AutomationRule) -> bool:
     )
 
 
-# Where to borrow setpoints when the session is in a phase its species profile
-# does not define. 33 of 74 profiles fold pinning into fruiting (no
-# primordia_induction) and 71 have no rest phase, yet the phase-advance flow
-# walks every session through both — and with no params every profile-driven
-# rule AND every stage safety alert went silent. Rest borrows fruiting's
-# envelope with the lights off (the block rests / soaks in the dark).
-_PHASE_PARAM_FALLBACKS: dict[str, tuple[str, ...]] = {
-    "primordia_induction": ("fruiting",),
-    "fruiting": ("primordia_induction",),
-    "rest": ("fruiting", "primordia_induction"),
-}
+# A phase its species profile does not define borrows another phase's
+# setpoints (sessions.service.PHASE_PARAM_FALLBACKS — the phase-advance
+# validation reads the same table): with no params every profile-driven rule
+# AND every stage safety alert went silent. Rest runs with the lights off.
 _REST_LIGHTS_OFF = {"light_hours_on": 0, "light_hours_off": 24, "light_spectrum": "none"}
 
 # Phases whose params a session's growth_form re-selects (reishi: the profile's
@@ -283,7 +282,7 @@ def _resolve_phase_params(session: dict, species_profile):
     params = by_phase.get(phase)
     if params is None:
         key = (session.get("id"), phase)
-        for alt in _PHASE_PARAM_FALLBACKS.get(phase, ()):
+        for alt in PHASE_PARAM_FALLBACKS.get(phase, ()):
             if alt in by_phase:
                 params = by_phase[alt]
                 if phase == "rest":
@@ -586,53 +585,20 @@ async def _session_for_node(node_id: str) -> tuple[dict | None, list[str] | None
     another chamber's (two chambers can run side by side, and the newest session
     anywhere used to be applied to every node's readings, and its commands sent
     to whichever relay heartbeated last). A node in no chamber keeps the
-    single-closet behaviour: the newest active session, chamber node ids None.
+    single-closet behaviour — the newest session bound to no chamber, else the
+    grow of the only chamber with active sessions — with chamber node ids
+    None; with grows in two chambers it drives neither (life-safety still runs).
 
-    The chamber's session is, in order: an active session bound to it by
-    sessions.chamber_id; else the active session its chambers.active_session_id
-    links (PATCH /api/chambers sets only that); else the newest active session
-    bound to NO chamber (chamber_id NULL, linked from no other chamber) — a
-    pre-migration session, or one an API / cloud session_start created without
-    a chamber_id. Without that fallback a chambered node's grow went unmanaged:
-    no heater, no cooler, no stage alerts.
+    The session comes from sessions.service get_active_session_for_chambers:
+    bound by sessions.chamber_id, else linked by chambers.active_session_id,
+    else the newest session bound to NO chamber. Without that last fallback a
+    chambered node's grow went unmanaged: no heater, no cooler, no stage alerts.
     """
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT c.id, c.node_ids FROM chambers c, "
-            "json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j "
-            "WHERE j.value = ?",
-            (node_id,),
-        )
-        chambers = await cursor.fetchall()
-        row = None
-        if chambers:
-            ids = [c["id"] for c in chambers]
-            marks = ",".join("?" for _ in ids)
-            for sql in (
-                f"SELECT * FROM sessions WHERE status = 'active' AND chamber_id IN ({marks}) "
-                f"ORDER BY created_at DESC, id DESC LIMIT 1",
-                f"SELECT * FROM sessions WHERE status = 'active' AND chamber_id IS NULL "
-                f"AND id IN (SELECT active_session_id FROM chambers WHERE id IN ({marks})) "
-                f"ORDER BY created_at DESC, id DESC LIMIT 1",
-                f"SELECT * FROM sessions WHERE status = 'active' AND chamber_id IS NULL "
-                f"AND id NOT IN (SELECT active_session_id FROM chambers "
-                f"WHERE active_session_id IS NOT NULL AND id NOT IN ({marks})) "
-                f"ORDER BY created_at DESC, id DESC LIMIT 1",
-            ):
-                cursor = await db.execute(sql, ids)
-                row = await cursor.fetchone()
-                if row:
-                    break
-        session = dict(row) if row else None
+    chambers = await chambers_for_node(node_id)
+    session = await get_active_session_for_chambers([c["id"] for c in chambers])
     if not chambers:
-        return await get_active_session(), None
-    nodes: list[str] = []
-    for c in chambers:
-        try:
-            nodes.extend(str(n) for n in json.loads(c["node_ids"] or "[]"))
-        except (TypeError, ValueError):
-            continue
-    return session, nodes
+        return session, None
+    return session, [n for c in chambers for n in c["node_ids"]]
 
 
 def _arbitration_key(action, resolved: str) -> tuple[str, str | None]:
@@ -896,7 +862,11 @@ async def _check_safety_thresholds(
         msg = f"{param} {value} ({direction}); threshold {threshold}"
         try:
             if severity == "emergency":
-                await notify_critical(title, msg, tags=[param])
+                # The title is the same for every node and direction, so it
+                # can't be the ntfy dedup key: a second node's emergency (or
+                # the opposite excursion) inside 15 min would be swallowed.
+                await notify_critical(title, msg, tags=[param],
+                                      dedup_key=f"{node_id}:{param}:{direction}:emergency")
             else:
                 await notify_warning(title, msg, dedup_key=f"{node_id}:{param}:{direction}")
         except Exception as e:
@@ -1465,6 +1435,12 @@ async def note_actuator_off(
                  ", ".join(cleared), channel)
 
 
+# Session-end safing (sessions.service) switches actuators OFF outside
+# automation. That module can't import this one (this one imports it), so it
+# calls back through its actuator-off listener list.
+add_actuator_off_listener(note_actuator_off)
+
+
 async def _arm_safety_watchdog(
     target: str,
     channel: str | None,
@@ -1821,9 +1797,9 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict | None,
 
 
 def _is_plain_off(action) -> bool:
-    """A native/plug OFF with nothing else in it (no scene, no dimming level)."""
-    return (action.state == "off" and not action.vendor_slug
-            and not action.scene and not action.pwm)
+    """A native/plug OFF with nothing else in it (no scene). A pwm on an OFF
+    is never published (drop_duty_from_off), so it doesn't make one special."""
+    return action.state == "off" and not action.vendor_slug and not action.scene
 
 
 async def _plug_reports_on(target: str) -> bool:
@@ -1935,6 +1911,8 @@ async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
         payload["vendor_slug"] = action.vendor_slug
         payload["vendor_action"] = action.vendor_action
         payload["vendor_params"] = action.vendor_params
+    # An OFF never carries a duty value — deployed firmware let pwm win.
+    payload = drop_duty_from_off(payload)
 
     # Rules written before channel validation existed (or straight into the DB)
     # can still name a channel the node drops. MQTT accepts any topic, so the
