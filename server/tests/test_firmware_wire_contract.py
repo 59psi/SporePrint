@@ -225,6 +225,22 @@ def test_mqtt_ingest_reads_are_emitted():
     assert not dead, f"mqtt.py reads payload keys no firmware publisher emits: {sorted(dead)}"
 
 
+def test_heartbeat_ca_fp_is_an_optional_firmware_key():
+    """`ca_fp` pins the name a Pi-side CA check keys on: the lowercase hex
+    SHA-256 of the exact CA PEM a node's TLS link trusts, i.e.
+    ``hashlib.sha256(<GET /api/provision/ca body>.encode()).hexdigest()``.
+    It is optional (emitted only while the node runs TLS; older firmware
+    never sends it), so a consumer must use ``payload.get("ca_fp")`` and
+    treat a missing value as "unknown", never as a mismatch."""
+    body = _function_body(_read(WIRE_CONTRACT), "build_heartbeat(const HeartbeatInputs")
+    assert "ca_fp" in set(_KEY_RE.findall(body)), (
+        "build_heartbeat no longer emits ca_fp — a Pi CA-mismatch check would "
+        "read None forever")
+    # Conditional emission: guarded by a non-empty check, never unconditional.
+    assert re.search(r'if\s*\([^;{]*ca_fp[^;{]*\)\s*doc\["ca_fp"\]', body), (
+        "ca_fp must stay optional (emitted only when set)")
+
+
 # ── direction 2: nothing the firmware emits is silently dropped ─────────
 
 

@@ -19,6 +19,8 @@
 
 #include <ArduinoJson.h>
 
+#include <string.h>
+
 #include <set>
 #include <string>
 
@@ -423,6 +425,39 @@ void test_heartbeat_transport_and_board_keys_are_optional_additions() {
     TEST_ASSERT_FALSE(keys_of(d1.as<JsonObject>()).count("board") == 1);
 }
 
+void test_heartbeat_ca_fp_is_an_optional_addition() {
+    // Security review: `ca_fp` = lowercase hex SHA-256 of the CA PEM the TLS
+    // link trusts, so the Pi can spot a node that trust-on-first-use pinned
+    // some other CA. Additive: emitted only when set (the images set it only
+    // while `tls` is true); older Pis ignore it.
+    const char* roles[] = {"relay"};
+    const char* fp =
+        "cab3b27e4135403fdb3b368802d2b1bce67d4b8c1ab4c73245961524ceab0ef4";
+    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
+    in.emit_tls = true;
+    in.tls = true;
+    in.board = "esp32-wroom-32";
+    in.ca_fp = fp;
+    JsonDocument doc;
+    sp::build_heartbeat(in, doc);
+    std::set<std::string> k = keys_of(doc.as<JsonObject>());
+    TEST_ASSERT_EQUAL_INT(14, (int)k.size());  // 11 + tls + board + ca_fp
+    TEST_ASSERT_TRUE(doc["ca_fp"].is<const char*>());
+    TEST_ASSERT_EQUAL_STRING(fp, doc["ca_fp"]);
+    TEST_ASSERT_EQUAL_size_t(64, strlen(doc["ca_fp"].as<const char*>()));
+
+    // Unset or empty (plaintext link): omitted — the key set is unchanged.
+    in.tls = false;
+    in.ca_fp = "";
+    JsonDocument off;
+    sp::build_heartbeat(in, off);
+    TEST_ASSERT_FALSE(keys_of(off.as<JsonObject>()).count("ca_fp") == 1);
+    sp::HeartbeatInputs plain = node_hb_inputs(roles, 1);
+    JsonDocument d0;
+    sp::build_heartbeat(plain, d0);
+    TEST_ASSERT_FALSE(keys_of(d0.as<JsonObject>()).count("ca_fp") == 1);
+}
+
 // ── health ─────────────────────────────────────────────────────
 
 void test_node_health_contract_with_sensors_and_channels() {
@@ -529,6 +564,7 @@ int main(int, char**) {
     RUN_TEST(test_node_heartbeat_migrated_from_appears_only_when_set);
     RUN_TEST(test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals);
     RUN_TEST(test_heartbeat_transport_and_board_keys_are_optional_additions);
+    RUN_TEST(test_heartbeat_ca_fp_is_an_optional_addition);
     RUN_TEST(test_node_health_contract_with_sensors_and_channels);
     RUN_TEST(test_climate_health_omits_channels_object);
     RUN_TEST(test_log_entry_contract);

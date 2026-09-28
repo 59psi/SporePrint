@@ -319,6 +319,90 @@ async def test_callback_port_in_use_is_a_clean_push_error():
                 callback_port=taken)
 
 
+# ─── Only the target node may take the connect-back (final review) ───────
+#
+# The fixed callback port is published on every interface. The listener used
+# to hand the image to the FIRST TCP peer, from any address: a LAN host that
+# kept connecting to :3233 won the race, "flashed" the image (acking chunks
+# and sending OK), the real node's connect-back was closed, and the Pi
+# reported a successful update that never happened.
+
+_FOREIGN_IP = "10.66.6.6"
+
+
+async def _foreign_peer(port: int, local_port: int, got: dict) -> None:
+    """A LAN host that keeps connecting to the callback port and plays node."""
+    loop = asyncio.get_running_loop()
+    while True:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", local_port))
+        sock.setblocking(False)
+        try:
+            await loop.sock_connect(sock, ("127.0.0.1", port))
+        except OSError:
+            sock.close()
+            await asyncio.sleep(0.005)
+            continue
+        reader, writer = await asyncio.open_connection(sock=sock)
+        got["connected"] = got.get("connected", 0) + 1
+        try:
+            while True:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    return          # closed on us: the Pi refused this peer
+                got["bytes"] = got.get("bytes", 0) + len(chunk)
+                writer.write(str(len(chunk)).encode() + b"OK")
+                await writer.drain()
+        finally:
+            writer.close()
+
+
+async def test_foreign_peer_on_the_callback_port_never_gets_the_image(monkeypatch, caplog):
+    fixed, foreign_port = _free_tcp_port(), _free_tcp_port()
+    real_peer_host = ota_push._peer_host
+
+    def _peer_host(writer):
+        # Connections from the squatter's socket come from "another LAN host".
+        peer = writer.get_extra_info("peername")
+        return _FOREIGN_IP if peer and peer[1] == foreign_port else real_peer_host(writer)
+
+    monkeypatch.setattr(ota_push, "_peer_host", _peer_host)
+    got: dict = {}
+    # The node is busy for a moment, so the squatter certainly connects first.
+    device = await FakeOtaDevice(busy_s=0.3).start()
+    squatter = asyncio.create_task(_foreign_peer(fixed, foreign_port, got))
+    try:
+        image = os.urandom(2500)
+        await push_firmware(
+            "climate-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1",
+            callback_port=fixed)
+        assert got.get("connected", 0) >= 1, "the squatter never raced the node"
+        assert got.get("bytes", 0) == 0
+        assert device.received == image
+        assert any(_FOREIGN_IP in r.getMessage() for r in caplog.records
+                   if r.levelname == "WARNING")
+    finally:
+        squatter.cancel()
+        await device.stop()
+
+
+def test_peer_matching_normalises_addresses():
+    assert ota_push._same_host("::ffff:10.0.0.5", "10.0.0.5")
+    assert ota_push._same_host("10.0.0.5", "10.0.0.5")
+    assert ota_push._same_host("fe80::1%en0", "fe80::1")
+    assert not ota_push._same_host("10.0.0.6", "10.0.0.5")
+    assert not ota_push._same_host("", "10.0.0.5")
+    assert not ota_push._same_host(None, "10.0.0.5")
+
+
+async def test_hostname_target_accepts_its_resolved_addresses():
+    allowed = await ota_push._allowed_peers("localhost")
+    assert any(ota_push._same_host("127.0.0.1", a) for a in allowed)
+    assert await ota_push._allowed_peers("10.0.0.5") == {"10.0.0.5"}
+
+
 # ─── Invitation robustness against a busy node ───────────────────────────
 
 

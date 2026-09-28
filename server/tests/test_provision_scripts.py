@@ -240,7 +240,7 @@ def test_setup_pi_delegates_to_install_sh():
     directories, the broker and server crash-looped, and the next install.sh
     could not write the passwd file. It is now a thin wrapper."""
     body = (REPO_ROOT / "scripts" / "setup-pi.sh").read_text()
-    code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     assert "install.sh" in code
     assert "compose up" not in code
 
@@ -256,7 +256,7 @@ def test_install_sh_never_recreates_an_existing_passwd_file():
     """`mosquitto_passwd -c` on re-run wiped every per-node user, and the
     already-running broker kept the old hashes in memory."""
     body = (REPO_ROOT / "install.sh").read_text()
-    code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     assert "mosquitto_passwd -c" not in code
     assert "compose restart mqtt" in code or "kill -s HUP mqtt" in code
 
@@ -272,7 +272,7 @@ def test_install_sh_certificate_covers_the_pi_ip():
 def test_setup_sh_is_not_the_pi_installer():
     body = (REPO_ROOT / "setup.sh").read_text()
     assert "install.sh" in body
-    code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     # The LAN dashboard sends no bearer: an auto-generated API key made every
     # /api call 401 after `docker compose up`.
     assert "NEW_API_KEY" not in code
@@ -542,7 +542,7 @@ def test_host_lib_signing_key_prefers_root_then_server_env(tmp_path):
 
 def test_setup_sh_uses_the_shared_host_helpers():
     body = (REPO_ROOT / "setup.sh").read_text()
-    code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     assert "scripts/lib/host.sh" in body
     for helper in ("sp_server_san", "sp_host_ipv4s", "sp_host_timezone", "sp_ensure_signing_key"):
         assert helper in code, f"setup.sh does not call {helper}"

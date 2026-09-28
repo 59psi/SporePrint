@@ -15,7 +15,7 @@ and flash encryption are **not supported** by this build (see below).
 | Publish actuator commands with broker access | **HMAC-SHA256 signed frames** — canonical-JSON signature + ±30 s window; key provisioned via the captive portal (no compile-time path) |
 | Replay a captured command | The ±30 s `ts` window, plus a **replay guard**: a second delivery of the same signed frame on the same topic inside the window is rejected. A keyed node rejects commands entirely until NTP has synced (point NTP at the Pi for airgapped rooms) |
 | Redirect a captured command to another channel or node | **Topic binding**: the Pi signs the full `sporeprint/<node>/cmd/<suffix>` topic into every frame, and the node rejects a frame whose signed `topic` differs from the topic it arrived on |
-| Impersonate the broker / rogue AP | **Opt-in TLS (8883)** with the Pi's CA pinned trust-on-first-use at provision time; a missing CA is never silent (see Secure MQTT) |
+| Impersonate the broker / rogue AP | **Opt-in TLS (8883)** with the Pi's CA pinned trust-on-first-use, and only after a TLS connection with it succeeds; a missing CA is never silent, and the heartbeat's `ca_fp` shows which CA a node trusts (see Secure MQTT) |
 | Redirect camera uploads to an attacker host | `server_url` allow-list — RFC1918 applies to genuine IPv4 literals only ("10.attacker.com" is rejected); `https://` uploads require the pinned Pi CA |
 | Brute-force the OTA password over LAN | 12-char minimum, no default — OTA stays disabled until provisioned |
 | Flash arbitrary firmware once the OTA password is known | **Not defended** — secure boot is not available in the Arduino build |
@@ -63,8 +63,17 @@ Migration posture:
 ## Secure MQTT (TLS)
 
 Ticking **Secure MQTT** in the portal makes the node fetch the Pi's CA from
-`GET /api/provision/ca` (public even when `SPOREPRINT_API_KEY` is set), pin it,
-and connect on 8883. Verification follows the broker host name:
+`GET /api/provision/ca` (public even when `SPOREPRINT_API_KEY` is set) and
+connect on 8883 with it. **It verifies before it pins:** the fetched CA is
+only a candidate, held in RAM, until a TLS connection with it gets the
+broker's CONNACK. Only then is it written to NVS (`broker_ca`, then the
+verified marker `broker_ca_ok`), and from then on the pin is final — a later
+failure never downgrades a verified node, so an impostor broker cannot force
+plaintext. A failed trial persists nothing: the node goes back to plaintext
+(or stays off MQTT with **Require TLS**), backs off, and tries again. A CA an
+older image pinned without this check has no marker and gets the same trial.
+Re-pinning a verified CA takes a factory reset. Verification follows the
+broker host name:
 
 - Use `sporeprint.local` (recommended) or an IP the Pi's certificate lists.
   `install.sh` puts every Pi IPv4 into the certificate as both an `IP:` and a
@@ -72,19 +81,25 @@ and connect on 8883. Verification follows the broker host name:
   When the Pi's IP changes, re-running `install.sh` re-issues the server
   certificate from the **same** CA, so pinned nodes are unaffected.
 
-With Secure MQTT ticked and **no** CA pinned yet (for example the Pi was
-unreachable during provisioning), the node:
+With Secure MQTT ticked and **no** verified CA pinned yet (the Pi was
+unreachable during provisioning, or the trial failed), the node:
 - by default falls back to plaintext **loudly**: an ERROR log line, a node
-  alert of type `tls_downgrade` (value = the plaintext port, sent on entry and
-  then hourly), `tls:false` and `tls_fallback:true` in its heartbeat, and CA
-  fetch retries after 1, 2, 4 and 8 min, then every 15 min. The first success
-  pins the CA and moves the running link to TLS with no reboot;
+  alert of type `tls_downgrade` (value = the plaintext port, sent on entry,
+  then hourly, and at once when the reason changes; the message names the
+  reason: no CA yet, certificate name mismatch or another CA, nothing on
+  8883, TLS error, login refused), `tls:false` and `tls_fallback:true` in its
+  heartbeat, and fetch-and-try retries after 1, 2, 4 and 8 min, then every
+  15 min. A verified trial moves the running link to TLS with no reboot;
 - with **Require TLS** ticked (NVS `tls_req`), stays **off MQTT** instead —
-  the 10-minute safe mode switches its channels off — while it keeps retrying
-  the fetch.
+  the 10-minute safe mode switches its channels off — while it keeps retrying.
 
 It never connects with TLS but no verification. Every heartbeat carries `tls`
-and `board`, so you can see which transport and image each node really runs.
+and `board`, so you can see which transport and image each node really runs,
+and a TLS node also sends `ca_fp`: the lowercase hex SHA-256 of the CA PEM it
+uses, to compare with the Pi's own `ca.crt`
+(`sha256sum config/mosquitto/certs/ca.crt`). A node that pinned another CA
+(a LAN impostor answered its trust-on-first-use fetch) shows a different
+`ca_fp`.
 
 ## Provisioning and physical gestures
 

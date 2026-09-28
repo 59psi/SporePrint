@@ -41,11 +41,12 @@ USER appuser
 EXPOSE 8000
 
 # The LAN dashboard reaches the API through the ui container's nginx, which
-# sets X-Forwarded-For. Trust those headers only from Docker's default bridge
-# address pool (the compose network) so the server sees each dashboard's real
-# address; a LAN client talking to :8000 directly cannot spoof one. Override
-# with FORWARDED_ALLOW_IPS=<cidr> in .env (docker-compose.yml passes it, with
-# this same default) if your compose network uses another range.
-ENV FORWARDED_ALLOW_IPS=172.16.0.0/12
+# sets X-Forwarded-For. Trust those headers only from the ui container's fixed
+# address on compose's `edge` network, so the server sees each dashboard's
+# real address. Not a range: a bridge gateway is where docker-proxy relays
+# IPv6/loopback clients of the published :8000 from, and a gateway in the
+# trusted range let them forge the header. docker-compose.yml passes the same
+# default; move it with FORWARDED_ALLOW_IPS (= SPOREPRINT_EDGE_UI_IP) in .env.
+ENV FORWARDED_ALLOW_IPS=172.31.253.2
 
 CMD ["uvicorn", "app.main:socket_app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

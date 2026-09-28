@@ -17,7 +17,9 @@ Vision (fw-drivers-cam #1, cloud-integrations-auth #5, sessions-species #2):
 
 import asyncio
 import json
+import re
 import time
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +40,7 @@ from app.chambers.service import create_chamber
 from app.config import settings
 from app.db import get_db
 from app.hardware.service import (
+    PERIPHERAL_KEYS,
     get_camera_sensor,
     peripherals_command,
     record_camera_sensor,
@@ -175,6 +178,32 @@ def test_peripherals_endpoint_503_when_not_published(client, mock_mqtt):
     mock_mqtt.mock.return_value = False
     r = client.post("/api/hardware/nodes/node-1/peripherals", json={"reed": False})
     assert r.status_code == 503
+
+
+def test_peripherals_accepts_reed_inv():
+    """Firmware apply_peripheral_cmd takes reed_inv (applied live, no reboot)
+    and the build guide tells operators to send it; the endpoint 422'd it."""
+    assert peripherals_command({"reed_inv": True}) == {"peripherals": {"reed_inv": True}}
+    assert peripherals_command({"reed": True, "reed_inv": False}) == {
+        "peripherals": {"reed": True, "reed_inv": False}}
+    with pytest.raises(ValueError):
+        peripherals_command({"reed_inv": "yes"})
+
+
+def test_peripherals_endpoint_publishes_reed_inv(client, mock_mqtt):
+    r = client.post("/api/hardware/nodes/node-1/peripherals", json={"reed_inv": True})
+    assert r.status_code == 200, r.text
+    assert mock_mqtt == [("sporeprint/node-1/cmd/config", {"peripherals": {"reed_inv": True}})]
+
+
+def test_peripheral_keys_match_the_firmware():
+    """PERIPHERAL_KEYS is exactly the key set node firmware applies."""
+    src = (Path(__file__).resolve().parents[2] / "firmware" / "src" / "node"
+           / "main.cpp").read_text()
+    m = re.search(r'known keys: "\s*"([a-z0-9_, ]+);', src)
+    assert m, "firmware no longer lists its peripheral keys"
+    firmware_keys = {k.strip() for k in m.group(1).split(",") if k.strip()}
+    assert set(PERIPHERAL_KEYS) == firmware_keys
 
 
 # ── vision ingest ──────────────────────────────────────────────────────────

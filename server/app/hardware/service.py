@@ -11,7 +11,7 @@ import logging
 import re
 import time
 
-from ..automation.engine import note_actuator_off
+from ..automation.engine import note_actuator_off, note_actuator_on
 from ..automation.service import drop_duty_from_off, is_off_command
 from ..db import get_db
 from ..mqtt import mqtt_publish
@@ -25,9 +25,11 @@ CHANNEL_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 
 # Optional peripherals a node's cmd/config {"peripherals": {...}} switches on
 # or off (firmware sp_core apply_peripheral_cmd): MH-Z19C CO2 sensor (UART),
-# HX711 load-cell scale, door reed switch. A changed set is saved to NVS and
-# the node reboots ~1.5 s later; an unchanged request does nothing.
-PERIPHERAL_KEYS = ("mhz19", "hx711", "reed")
+# HX711 load-cell scale, door reed switch — a changed driver set is saved to
+# NVS and the node reboots ~1.5 s later — and reed_inv (door contact wired on
+# its NO lead), which is saved and applied live, no reboot. An unchanged
+# request does nothing. Older firmware ignores keys it doesn't know.
+PERIPHERAL_KEYS = ("mhz19", "hx711", "reed", "reed_inv")
 
 # Camera sensor ids the cam firmware reports (X-Camera-Sensor, heartbeat
 # camera_sensor): ov2640 / ov3660 / ov5640 / unknown / none.
@@ -61,7 +63,10 @@ async def send_command(node_id: str, command: dict) -> tuple[str, bool]:
     An OFF is published without any pwm / level (deployed firmware let a duty
     value win over "off"). A published OFF to a channel or scene also clears
     the automation safety ceiling timing that actuator, so the next automation
-    ON starts a fresh one instead of tripping early on the old deadline.
+    ON starts a fresh one instead of tripping early on the old deadline. Any
+    other published channel or scene command tells the engine the actuator may
+    be ON, so a rule cutoff re-sends its OFF instead of treating it as a
+    redundant repeat (note_actuator_on).
     """
     command = dict(command)
     command.pop("topic", None)
@@ -72,13 +77,16 @@ async def send_command(node_id: str, command: dict) -> tuple[str, bool]:
     command = drop_duty_from_off(command)
     sent_at = time.time()
     published = bool(await mqtt_publish(topic, command))
-    if published and channel != "config" and is_off_command(command):
-        # A scene rule's ceiling is keyed on the node with no channel.
+    if published and channel != "config":
+        # A scene rule's bookkeeping is keyed on the node with no channel.
+        key_channel = None if channel == "scene" else channel
         try:
-            await note_actuator_off(node_id, None if channel == "scene" else channel,
-                                    sent_at=sent_at)
-        except Exception as e:  # the OFF went out; bookkeeping must not 500 it
-            log.warning("clearing the safety ceiling for %s:%s failed: %s", node_id, channel, e)
+            if is_off_command(command):
+                await note_actuator_off(node_id, key_channel, sent_at=sent_at)
+            else:
+                await note_actuator_on(node_id, key_channel)
+        except Exception as e:  # the command went out; bookkeeping must not 500 it
+            log.warning("automation bookkeeping for %s:%s failed: %s", node_id, channel, e)
     return topic, published
 
 

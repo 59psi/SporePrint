@@ -100,7 +100,7 @@ flowchart TB
 
 ## Changes from the 2026-09 audit (unreleased)
 
-- **Telemetry timestamps** — the Pi now treats `ts < 1e9` as unsynced firmware uptime and stamps arrival time (the old cut-off was 2020-01-01). Frames flagged `"replay": true`, and synced frames more than 120 s old, are stored at their own time but are not pushed to the live socket and never evaluated by the rules.
+- **Telemetry timestamps** — the Pi now treats `ts < 1e9` as unsynced firmware uptime and stamps arrival time (the old cut-off was 2020-01-01). Frames flagged `"replay": true`, and out-of-order frames (up to 120 s older than the node's newest live frame; a bigger step back is a clock correction and re-baselines), are stored at their own time but are not pushed to the live socket and never evaluated by the rules. The Pi's own clock never decides whether a frame is live (a Pi clock running fast used to stop automation for every synced node); Pi-vs-node skew is logged past 120 s and reported per node under `reliability` in `GET /api/health/detail/system`.
 - **Session tagging** — each reading is tagged with the grow its node belongs to: a node listed in a chamber belongs to that chamber's grow; a node in no chamber belongs to the newest grow bound to no chamber.
 - **Node liveness** — nodes send their heartbeat every min(publish interval, 5 min), and any telemetry frame from a registered node also refreshes `last_seen`.
 - **Rule evaluation** — the highest-priority rule whose condition holds owns an actuator; `safety_max_on_seconds` counts from the first ON and a trip locks automation out of that actuator for 15 min; life-safety rules (priority ≥ 20, absolute thresholds) run even with no active session.

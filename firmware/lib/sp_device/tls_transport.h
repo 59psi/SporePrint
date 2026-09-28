@@ -7,20 +7,35 @@
 //
 // Trust-on-first-use: when TLS is enabled and no CA is pinned yet, the
 // node fetches the PEM from http://<pi>:8000/api/provision/ca (plain HTTP,
-// on the operator's own LAN — SSH-key semantics) and stores it in NVS. Every
-// connection after verifies the broker against the pinned CA; a different
-// broker cert (rogue AP, swapped Pi) fails the handshake. Re-pinning =
-// factory reset or re-provision.
+// on the operator's own LAN — SSH-key semantics). Every connection after the
+// pin verifies the broker against the pinned CA; a different broker cert
+// (rogue AP, swapped Pi) fails the handshake. Re-pinning = factory reset.
 //
-// No CA can be pinned (fw-node#2) — policy in sp_core/tls_policy.h:
+// Verify before commit (policy + host tests: sp_core/tls_policy.h
+// TlsPinMachine). A fetched CA is only a CANDIDATE: the link tries TLS 8883
+// with it from RAM, and only a CONNACK on that connection writes it to NVS
+// (`broker_ca`, then the verified marker `broker_ca_ok`) and keeps the node
+// on TLS. A failed trial persists nothing and goes back where it came from —
+// the working plaintext link, or fail-closed with "Require TLS" — with the
+// reason in the log and the tls_downgrade alert (cert name mismatch / other
+// CA, 8883 unreachable, TLS error, login refused), then backs off before the
+// next fetch + trial. Before this, the CA was pinned and the link switched
+// before any TLS connection had worked, and a broker certificate that did
+// not cover the node's broker host locked a working node out of MQTT for
+// good. A CA an older image stored WITHOUT the marker gets the same trial,
+// so a node that image locked out recovers on this one (e.g. after an
+// ArduinoOTA push over the LAN).
+//
+// No CA can be pinned (fw-node#2):
 //   default     plaintext fallback, but never silently: SP_LOG error, heartbeat
 //               `tls:false, tls_fallback:true`, a `tls_downgrade` alert from
-//               the composition root, and the CA fetch retried from loop() on
-//               a capped backoff. The first success pins the CA and moves the
-//               live link to TLS — no reboot.
+//               the composition root, and the CA fetch + trial retried from
+//               loop() on a capped backoff — no reboot needed.
 //   tls_req     ("Require TLS" in the portal) fail closed: MQTT stays down
-//               while the fetch retries; the first success brings it up on TLS.
-// Never TLS-without-verification.
+//               while the fetch + trial retries; a verified trial brings it up
+//               on TLS.
+// Never TLS-without-verification. The heartbeat's `ca_fp` (SHA-256 of the
+// PEM in use) lets the Pi check that the CA a node trusts is its own.
 
 #include <Arduino.h>
 #include <HTTPClient.h>
@@ -101,7 +116,8 @@ public:
         : cfg_(cfg), kv_(kv), plain_(plain), secure_(secure) {}
 
     // Boot: one pre-WDT CA fetch when needed (8 s timeouts), then the
-    // transport per tls_policy.h.
+    // transport per tls_policy.h. A Trial transport connects on TLS with the
+    // candidate; loop() commits or reverts it once the attempt has run.
     MqttTransport select() {
         // Bound every connect attempt (link_budget.h): the core defaults —
         // 30 s TCP connect, 120 s TLS handshake — outlast the 30 s loop WDT.
@@ -110,35 +126,47 @@ public:
         secure_.setTimeout(sp::kTcpConnectTimeoutS);
         secure_.setHandshakeTimeout(sp::kTlsHandshakeTimeoutS);
 
-        std::string ca;
+        std::string stored;
+        bool stored_ok = false;
+        bool fetched = false;
+        candidate_.clear();
         if (cfg_.tls_enabled) {
-            ca = kv_.get_string("broker_ca", "");
-            if (ca.empty() && WiFi.status() != WL_CONNECTED) {
+            stored = kv_.get_string(kCaKey, "");
+            stored_ok = !stored.empty() && kv_.get_bool(kCaOkKey, false);
+            if (!stored.empty()) {
+                candidate_ = stored;
+            } else if (WiFi.status() != WL_CONNECTED) {
                 // Offline boot (boot_policy.h). A portal save of Secure MQTT
                 // without a pinned CA forces a WiFi connect at the next boot,
                 // so this is only reached by a node that already ran on the
                 // fallback; loop() retries once WiFi is back.
                 SP_LOG(LOG_WARN, "[TLS] WiFi down at boot - CA fetch deferred");
-            } else if (ca.empty() &&
-                       fetch_pi_ca(cfg_.broker_host, 8000, 8000, &ca)) {
-                kv_.set_string("broker_ca", ca);
-                SP_LOG(LOG_INFO, "[TLS] Pinned broker CA (%u bytes)",
-                       (unsigned)ca.size());
+            } else if (fetch_pi_ca(cfg_.broker_host, 8000, 8000, &candidate_)) {
+                fetched = true;
             }
         }
-        mode_ = sp::tls_mode(cfg_.tls_enabled, !ca.empty(), cfg_.tls_required);
-        backoff_.begin(millis());
+        const sp::TlsMode mode =
+            pin_.begin(cfg_.tls_enabled, cfg_.tls_required, !stored.empty(),
+                       stored_ok, fetched, millis());
 
         MqttTransport t;
-        t.mode = mode_;
-        switch (mode_) {
+        t.mode = mode;
+        switch (mode) {
             case sp::TlsMode::Plain:
                 t.client = &plain_;
                 t.port = (uint16_t)cfg_.broker_port;
                 break;
             case sp::TlsMode::Pinned:
+            case sp::TlsMode::Trial:
                 warn_if_ip_host();
-                apply_pinned_ca(secure_, ca);
+                use_ca(candidate_);
+                if (mode == sp::TlsMode::Trial)
+                    SP_LOG(LOG_INFO,
+                           "[TLS] Trying TLS 8883 with the %s Pi CA (%u bytes, "
+                           "sha256 %.16s...) - pinned only once the broker "
+                           "accepts the connection",
+                           fetched ? "fetched" : "stored (unverified)",
+                           (unsigned)candidate_.size(), ca_fp_.c_str());
                 t.client = &secure_;
                 t.port = 8883;
                 t.tls = true;
@@ -164,41 +192,116 @@ public:
         return t;
     }
 
-    // Call once per loop pass, BEFORE MqttLink::loop(). Runs at most one
-    // blocking CA fetch (<= kCaFetchWorstCaseS) when the backoff is due.
-    // Returns true when it fetched: the caller must not start an MQTT connect
-    // attempt in the same pass (sp::mqtt_may_connect).
+    // Call once per loop pass, BEFORE MqttLink::loop(). Judges a running
+    // trial (commit / revert — no network I/O), or runs at most one blocking
+    // CA fetch (<= kCaFetchWorstCaseS) when the backoff is due. Returns true
+    // when it fetched: the caller must not start an MQTT connect attempt in
+    // the same pass (sp::mqtt_may_connect).
     bool loop(uint32_t now_ms, bool button_down, MqttLink& link) {
-        if (!sp::tls_mode_wants_ca(mode_)) return false;
-        if (!backoff_.due(now_ms, WiFi.status() == WL_CONNECTED, button_down))
-            return false;
+        using Step = sp::TlsPinMachine::Step;
+        switch (pin_.step(now_ms, WiFi.status() == WL_CONNECTED, button_down,
+                          link.connect_attempts(), link.connect_successes())) {
+            case Step::Idle:
+                return false;
+            case Step::Commit:
+                commit();
+                return false;
+            case Step::Revert:
+                revert(link);
+                return false;
+            case Step::Fetch:
+                break;
+        }
         std::string ca;
         if (!fetch_pi_ca(cfg_.broker_host,
                          (int32_t)(sp::kCaFetchConnectTimeoutS * 1000UL),
                          (uint16_t)(sp::kCaFetchReadTimeoutS * 1000UL), &ca)) {
-            backoff_.failed(millis());
+            pin_.fetch_failed(millis());
             SP_LOG(LOG_WARN, "[TLS] CA fetch attempt %u failed - still %s, "
                              "next try in %u s",
-                   (unsigned)backoff_.failures(), sp::tls_mode_str(mode_),
-                   (unsigned)(backoff_.delay_ms() / 1000UL));
+                   (unsigned)pin_.backoff().failures(),
+                   sp::tls_mode_str(pin_.mode()),
+                   (unsigned)(pin_.backoff().delay_ms() / 1000UL));
             return true;
         }
-        kv_.set_string("broker_ca", ca);
+        const sp::TlsMode was = pin_.mode();
+        candidate_ = ca;
         warn_if_ip_host();
-        apply_pinned_ca(secure_, ca);
+        use_ca(candidate_);
+        // The candidate lives in RAM only; the next allowed pass connects on
+        // it and the pass after that commits or reverts.
         link.switch_transport(secure_, 8883);
-        SP_LOG(LOG_INFO, "[TLS] Pinned broker CA (%u bytes) - MQTT moves to "
-                         "TLS 8883 (was %s)",
-               (unsigned)ca.size(), sp::tls_mode_str(mode_));
-        mode_ = sp::TlsMode::Pinned;
+        pin_.trial_started(link.connect_attempts(), link.connect_successes());
+        SP_LOG(LOG_INFO, "[TLS] Fetched the Pi CA (%u bytes, sha256 %.16s...) "
+                         "- trying MQTT on TLS 8883 (was %s); pinned only once "
+                         "the broker accepts the connection",
+               (unsigned)ca.size(), ca_fp_.c_str(), sp::tls_mode_str(was));
         return true;
     }
 
-    sp::TlsMode mode() const { return mode_; }
-    bool tls() const { return sp::tls_mode_is_tls(mode_); }
-    bool fallback() const { return sp::tls_mode_is_fallback(mode_); }
+    sp::TlsMode mode() const { return pin_.mode(); }
+    bool tls() const { return sp::tls_mode_is_tls(pin_.mode()); }
+    bool fallback() const { return sp::tls_mode_is_fallback(pin_.mode()); }
+    // The tls_downgrade alert condition + reason (None: no alert).
+    sp::TlsFailReason downgrade() const { return pin_.downgrade(); }
+    // Heartbeat `ca_fp`: the fingerprint of the CA the TLS link verifies
+    // against; "" (omitted) when the link is not TLS.
+    const char* ca_fp() const { return tls() ? ca_fp_.c_str() : ""; }
 
 private:
+    static constexpr const char* kCaKey = "broker_ca";
+    // Set only after a CONNACK on broker_ca. Missing (older images pinned
+    // without verifying) = the stored CA gets a trial, not blind trust.
+    static constexpr const char* kCaOkKey = "broker_ca_ok";
+
+    void use_ca(const std::string& ca) {
+        apply_pinned_ca(secure_, ca);
+        char fp[sp::kCaFingerprintHexLen + 1];
+        sp::ca_fingerprint_hex(ca.data(), ca.size(), fp);
+        ca_fp_ = fp;
+    }
+
+    // The trial connected: the broker proved it holds a certificate the
+    // candidate CA signed for this broker host. Persist the CA first, then
+    // the marker — power lost in between leaves an unverified CA, which only
+    // earns another trial.
+    void commit() {
+        if (kv_.get_string(kCaKey, "") != candidate_)
+            kv_.set_string(kCaKey, candidate_);
+        kv_.set_bool(kCaOkKey, true);
+        pin_.trial_verified();
+        SP_LOG(LOG_INFO, "[TLS] Broker verified against the Pi CA - pinned "
+                         "(%u bytes, sha256 %.16s...); MQTT stays on TLS 8883",
+               (unsigned)candidate_.size(), ca_fp_.c_str());
+    }
+
+    // The trial's connect attempt failed: nothing is persisted. Back to the
+    // plaintext fallback (or fail-closed), with the reason, on the backoff.
+    void revert(MqttLink& link) {
+        char err[80] = {0};
+        const int tls_err = secure_.lastError(err, sizeof(err));
+        const int state = link.state();
+        const sp::TlsFailReason why =
+            sp::classify_tls_trial_failure(state, tls_err);
+        pin_.trial_failed(why, millis());
+        if (pin_.mode() == sp::TlsMode::Fallback)
+            link.switch_transport(plain_, (uint16_t)cfg_.broker_port);
+        // FailClosed stays on the secure client: no connect is allowed.
+        // (Log lines are capped at logfwd::kEntryMsgLen — mbedTLS text cut.)
+        SP_LOG(LOG_ERROR,
+               "[TLS] Pi CA trial failed: %s (mqtt %d, tls %d %.40s) - NOT "
+               "pinned, back to %s, retry in %u s",
+               sp::tls_fail_reason_str(why), state, tls_err,
+               tls_err < 0 ? err : "", sp::tls_mode_str(pin_.mode()),
+               (unsigned)(pin_.backoff().delay_ms() / 1000UL));
+        if (why == sp::TlsFailReason::CertRejected)
+            SP_LOG(LOG_ERROR,
+                   "[TLS] The broker certificate must list '%s' (cert name "
+                   "mismatch) and be signed by the CA the Pi serves - re-run "
+                   "./install.sh on the Pi, or use sporeprint.local",
+                   cfg_.broker_host.c_str());
+    }
+
     void warn_if_ip_host() const {
         if (!sp::is_ipv4_literal(cfg_.broker_host)) return;
         // WiFiClientSecure verifies the certificate against this exact
@@ -214,8 +317,9 @@ private:
     NvsKvStore& kv_;
     WiFiClient& plain_;
     WiFiClientSecure& secure_;
-    sp::TlsMode mode_ = sp::TlsMode::Plain;
-    sp::CaFetchBackoff backoff_;
+    sp::TlsPinMachine pin_;
+    std::string candidate_;  // the CA in use on TLS (pinned or on trial)
+    std::string ca_fp_;      // its sha256, lowercase hex
 };
 
 }  // namespace sp_device

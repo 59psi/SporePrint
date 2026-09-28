@@ -165,6 +165,12 @@ inline void build_dim_levels(const DimLevel* levels, int n, JsonDocument& doc) {
 //   board         the board profile the image was built for (e.g.
 //                 "esp32-wroom-32", "esp32-s3-devkitc-1-n32r16v") — tells the
 //                 operator which image an OTA push needs
+//   ca_fp         lowercase hex SHA-256 (64 chars) of the exact CA PEM the
+//                 TLS link verifies the broker against — the bytes the Pi
+//                 served from GET /api/provision/ca, i.e. Python
+//                 hashlib.sha256(pem.encode()).hexdigest() of its ca.crt.
+//                 Only while `tls` is true (omitted else). Lets the Pi spot a
+//                 node that trust-on-first-use pinned some other CA.
 struct HeartbeatInputs {
     uint32_t uptime_sec = 0;
     uint32_t free_heap = 0;
@@ -184,6 +190,7 @@ struct HeartbeatInputs {
     bool tls = false;
     bool tls_fallback = false;       // emitted only when true
     const char* board = nullptr;     // nullptr/"" ⇒ omitted
+    const char* ca_fp = nullptr;     // nullptr/"" ⇒ omitted
 };
 
 inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
@@ -204,6 +211,7 @@ inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
     if (in.emit_tls) doc["tls"] = in.tls;
     if (in.tls_fallback) doc["tls_fallback"] = true;
     if (in.board != nullptr && in.board[0] != '\0') doc["board"] = in.board;
+    if (in.ca_fp != nullptr && in.ca_fp[0] != '\0') doc["ca_fp"] = in.ca_fp;
 }
 
 // ── health (publish_health) ────────────────────────────────────

@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import socketio
 from pydantic import TypeAdapter, ValidationError
 
+from ..automation.service import drop_duty_from_off, is_off_command
 from ..config import settings
 from ..health.service import get_system_metrics
 from ..integrations import _health_sweeper
@@ -638,7 +639,7 @@ async def handle_cloud_command(sio, data):
             # Late imports: mqtt.py imports this module at top level, and the
             # automation engine imports mqtt.py, so either at module top here
             # would be a circular import.
-            from ..automation.engine import note_actuator_off
+            from ..automation import engine as _engine
             from ..mqtt import mqtt_publish
 
             if channel:
@@ -646,19 +647,34 @@ async def handle_cloud_command(sio, data):
             else:
                 topic = f"sporeprint/{target}/cmd/config"
 
-            is_off = bool(channel) and _is_plain_off(payload)
-            if is_off:
-                payload = _strip_duty(payload)
+            # Automation bookkeeping applies to a switch command on a channel
+            # or scene (cmd/config carries no switch state) with an object
+            # body (a node drops anything else). A scene is keyed on the node
+            # with no channel, as the engine and hardware.service key it.
+            actuates = (bool(channel) and channel != "config"
+                        and isinstance(payload, dict))
+            key_channel = None if channel == "scene" else channel
+            is_off = actuates and is_off_command(payload)
+            if isinstance(payload, dict):
+                # An OFF never carries pwm / level: deployed firmware reads
+                # {"state":"off","pwm":N} as ON at duty N.
+                payload = drop_duty_from_off(payload)
             sent_at = time.time()
             published = await mqtt_publish(topic, payload)
-            if published and is_off:
-                # An OFF outside automation ends the ON a safety ceiling is
-                # timing; otherwise the next automation ON inherits the stale
-                # deadline and trips early (false page + 15 min lockout).
+            if published and actuates:
                 try:
-                    await note_actuator_off(target, channel, sent_at=sent_at)
+                    if is_off:
+                        # An OFF outside automation ends the ON a safety
+                        # ceiling is timing; otherwise the next automation ON
+                        # inherits the stale deadline and trips early (false
+                        # page + 15 min lockout).
+                        await _engine.note_actuator_off(target, key_channel, sent_at=sent_at)
+                    else:
+                        # An ON outside automation: a rule cutoff must re-send
+                        # its OFF, not skip it as a redundant repeat.
+                        await _engine.note_actuator_on(target, key_channel)
                 except Exception as e:
-                    log.warning("Cloud: clearing safety ceiling for %s/%s failed: %s",
+                    log.warning("Cloud: automation bookkeeping for %s/%s failed: %s",
                                 target, channel, e)
 
             await sio.emit("command_result", {
@@ -682,23 +698,6 @@ async def handle_cloud_command(sio, data):
             "success": False,
             "error": str(e),
         })
-
-
-def _is_plain_off(payload) -> bool:
-    """An explicit ``"state": "off"`` channel command (any case, as firmware reads it)."""
-    return (isinstance(payload, dict)
-            and isinstance(payload.get("state"), str)
-            and payload["state"].strip().lower() == "off")
-
-
-def _strip_duty(payload: dict) -> dict:
-    """Drop duty values from an OFF so it can never switch a channel on.
-
-    Current firmware lets an explicit off win, but deployed firmware reads
-    ``{"state": "off", "pwm": N}`` as ON at duty N — and the Pi clears the
-    actuator's safety ceiling for every OFF it relays.
-    """
-    return {k: v for k, v in payload.items() if k not in ("pwm", "level")}
 
 
 def cloud_url_transport_ok(url: str) -> bool:

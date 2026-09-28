@@ -48,22 +48,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     but now logs an ERROR, raises a `tls_downgrade` alert (value = the
     plaintext port; entry + hourly), reports `tls:false` +
     `tls_fallback:true` in the heartbeat, and retries the CA fetch from
-    `loop()` after 1, 2, 4, 8, then every 15 min. The first success pins the
-    CA and moves the live link to TLS 8883 without a reboot. A `401` from
+    `loop()` after 1, 2, 4, 8, then every 15 min, moving the live link to
+    TLS 8883 without a reboot once a CA verifies (below). A `401` from
     `/api/provision/ca` is logged as the Pi's API-key gate.
+  - **A fetched CA is pinned only after it works** (final review). The CA
+    from `/api/provision/ca` — at boot or at runtime — is a candidate held
+    in RAM: MQTT tries TLS 8883 with it, and only a CONNACK writes it to NVS
+    (`broker_ca`, then the new verified marker `broker_ca_ok`) and keeps the
+    node on TLS. A failed trial persists nothing, goes back to the working
+    plaintext link (or stays fail-closed with "Require TLS"), names the
+    reason in the log and the `tls_downgrade` alert message (cert name
+    mismatch / different CA, 8883 unreachable, TLS error, login refused —
+    a new reason is announced at once, a repeated one hourly) and backs off
+    before the next fetch + trial. Previously the CA was pinned and the link
+    switched before any TLS connection had worked, so a broker certificate
+    that did not list the node's broker host (e.g. an IP host) locked a
+    working node out of MQTT and into safe mode until someone factory-reset
+    it. A CA stored by an older image (no `broker_ca_ok`) gets the same
+    trial instead of blind trust, so a node that image locked out recovers
+    once this image is on it (e.g. via ArduinoOTA on the LAN); a verified
+    pin is never downgraded. Heartbeat `tls` stays false and `ca_fp` absent
+    until the TLS link is up.
   - **"Require TLS"** portal checkbox (NVS `tls_req`, default off): with no
     pinned CA, MQTT stays down (fail closed — the 10-min safe mode takes the
-    channels off) while the CA fetch retries; the first success brings the
+    channels off) while the CA fetch retries; a verified trial brings the
     link up on TLS.
   - **Heartbeat `tls` (bool) and `board`** on node + cam (e.g.
     `esp32-wroom-32`, `esp32-s3-devkitc-1-n32r16v`, `esp32-cam-ai-thinker`)
     — which transport is really in use, and which image an OTA push needs.
+  - **Heartbeat `ca_fp`** on node + cam, only while the MQTT link is TLS:
+    lowercase hex SHA-256 of the CA PEM it trusts (the exact bytes the Pi
+    served, so `hashlib.sha256(pem.encode()).hexdigest()` of the Pi's
+    `ca.crt`). Lets the Pi flag a node that trust-on-first-use pinned some
+    other CA. Optional; older Pis ignore it.
   - **Reed invert** (NVS `reed_inv`, default off): for a door contact wired
     on its NO lead (open while the magnet is present → pin HIGH with the
     door shut). Portal checkbox under the door switch, and
     `cmd/config {"peripherals": {"reed_inv": true}}` — applied live, no
     reboot; the door state is re-read without a spurious door event.
-  - **New env `node_esp32s3_n32r16v`** for the Espressif
+  - **New env `node_esp32s3_n32r16v`** (built by `firmware-ci.yml` and
+    shipped as `node_esp32s3_n32r16v.zip` by `firmware-release.yml`) for the
+    Espressif
     ESP32-S3-DevKitC-1-N32R16V (32 MB octal flash + 16 MB octal PSRAM,
     1.8 V): opi_opi SDK build, OPI bootloader, 32 MB image header and
     `partitions_32mb.csv` (4 MB OTA slots; everything in the low 16 MB, the
@@ -72,7 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Tier-3 peripherals without a factory reset**: portal fieldset
     (MH-Z19C, HX711, reed) and `cmd/config {"peripherals": {...}}` — a
     change to the driver set saves and reboots ~1.5 s later; an unchanged
-    request does nothing.
+    request does nothing. The camera's portal shows neither this fieldset
+    nor the "Node personality" select (it has no channel bank and ignored
+    it); a stored personality is left untouched.
   - **Per-channel max-on** `cmd/config {"max_on_sec": {"<channel>": N}}`,
     persisted as NVS `mo_<channel>`: switch channels 1–1800 s, dim channels
     0 (none)–86400 s.

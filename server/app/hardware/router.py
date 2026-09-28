@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from ..db import get_db
 from . import ota_push
 from .coredumps import dump_path, list_dumps
-from .discovery import claim_node, list_discovered_nodes
+from .discovery import ReservedNodeIdError, claim_node, list_discovered_nodes
 from .service import (
     NODE_ID_RE,
     get_node as service_get_node,
@@ -40,7 +40,11 @@ async def claim_node_route(body: dict):
     node_id = (body or {}).get("node_id")
     if not node_id or not NODE_ID_RE.match(str(node_id)):
         raise HTTPException(400, "Invalid or missing node_id")
-    if not await claim_node(str(node_id)):
+    try:
+        claimed = await claim_node(str(node_id))
+    except ReservedNodeIdError as e:
+        raise HTTPException(400, str(e))
+    if not claimed:
         raise HTTPException(404, "Node not found — only heartbeat-known nodes can be claimed")
     return {"status": "claimed", "node_id": node_id}
 
@@ -75,9 +79,11 @@ async def post_command(node_id: str, command: dict):
 async def set_node_peripherals(node_id: str, peripherals: dict):
     """Enable/disable a node's optional peripherals without a factory reset.
 
-    Body: any of {"mhz19": bool, "hx711": bool, "reed": bool}. Sent as the
-    signed cmd/config {"peripherals": {...}}; a node whose set changes saves
-    it and reboots about 1.5 s later.
+    Body: any of {"mhz19": bool, "hx711": bool, "reed": bool,
+    "reed_inv": bool}. Sent as the signed cmd/config {"peripherals": {...}}.
+    A node whose driver set (mhz19/hx711/reed) changes saves it and reboots
+    about 1.5 s later; reed_inv (door contact wired on its NO lead) is saved
+    and applied live, without a reboot.
     """
     if not NODE_ID_RE.match(node_id):
         raise HTTPException(400, "Invalid node_id")

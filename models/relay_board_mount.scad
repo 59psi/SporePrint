@@ -39,7 +39,8 @@
 //   D1 flyback diode, DO-41 / DO-204AL (1N4007, UF4007, 1N5819; Vishay
 //      outline: body ≤5.2 x Ø2.7, leads Ø0.86) — same 10.16 mm footprint,
 //      cathode band toward the "+" side (engraved bar marks it). Resistive
-//      LED loads don't need it; fans/pumps/solenoids do.
+//      LED loads don't need it (the lighting board takes no diodes);
+//      fans/pumps/solenoids do.
 //   Optional clip-on heatsink (heatsink=true): Aavid/Boyd 574502B00000G
 //      ("slide on heat sink featuring spring action", Aavid board-level
 //      catalog p.45): 21.84 W x 10.03 D x 19.05 H; the B03300G version's two
@@ -61,9 +62,11 @@
 //   100 Ω an IRLZ44N can dissipate ~1 W or more on a 1-2 A LED strip. The
 //   TO-220 stands in free air with its tab clear of plastic (only the body
 //   foot and leads touch the seat). Print this part in PETG for the
-//   lighting node or any channel above ~0.5 A, and fit the clip-on
-//   heatsinks (heatsink=true) for LED strips. Fans alone (≤0.1 A) are fine
-//   in PLA without heatsinks.
+//   lighting node or any channel above ~0.5 A. The clip-on heatsinks
+//   (heatsink=true) are optional (recommended above ~1 A per channel,
+//   required above ~2 A) and not in the BOM: an LED strip cut to closet
+//   length stays around 1 A. Fans alone (≤0.1 A) are fine in PLA without
+//   heatsinks.
 //
 // ── Construction / hardware to buy ─────────────────────────────────────────
 //   ONE printed piece: no printed-to-printed joint, so no inserts are
@@ -84,7 +87,9 @@
 //     Zip ties (either mode): ties ≤ 2.5 mm wide x ≤ 1.3 mm thick through
 //       the two slot pairs in the end margins (15 mm apart, around a shelf
 //       wire).
-//   Per board: 4 x IRLZ44N, 4 x 100 Ω, 4 x 10 kΩ, 4 x DO-41 diode,
+//   Per board: 4 x IRLZ44N, 4 x 100 Ω, 4 x 10 kΩ (1/4 W — 1/2 W bodies
+//     don't fit the seats), 4 x DO-41 diode (relay board only; the
+//     lighting board takes none),
 //     4 x 2-pos 5.08 mm terminal (J2) + 4 more for J1 when
 //     input_terminals=true (8 per board, 16 for Tier 3's two boards),
 //     optional 4 x Aavid 574502B00000G (or B03300G) heatsinks.

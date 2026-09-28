@@ -6,9 +6,9 @@ name: firmware-ci
 #      golden file the server's Python suite asserts on), HMAC verify,
 #      buffer/channel/clamp/wrap suites, driver mock-bus suites, and the
 #      cam URL allowlist.
-#   2. A build matrix for all three shipped images (node_esp32,
-#      node_esp32s3, cam) — catches platform-pin regressions, library API
-#      drift, and link breaks same-day. No hardware required; HIL testing
+#   2. A build matrix for all four shipped images (node_esp32,
+#      node_esp32s3, node_esp32s3_n32r16v, cam) — catches platform-pin
+#      regressions, library API drift, and link breaks same-day. No hardware required; HIL testing
 #      remains a manual step per release.
 #
 # Security: no step consumes untrusted event input (issue titles, PR
@@ -20,7 +20,7 @@ name: firmware-ci
 
 # RELEASE-GATED CI (2026-07): push/PR triggers removed org-wide — Actions
 # minutes are reserved for releases. Firmware validation happens locally
-# (`pio test -e native` + the three-image build) before merges, and
+# (`pio test -e native` + the four-image build) before merges, and
 # firmware-release.yml still runs on `firmware-v*` tags. On demand:
 #   gh workflow run firmware-ci.yml
 on:
@@ -88,7 +88,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [node_esp32, node_esp32s3, cam]
+        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

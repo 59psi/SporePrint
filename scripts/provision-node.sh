@@ -29,8 +29,11 @@
 #   * A compromise of this key = attacker-controlled commands for every
 #     node paired with the Pi. Rotate on any suspicion of broker leak.
 #   * Rotation = re-run with --rotate, apply it to the Pi server, then update
-#     each node via its portal (factory-reset hold 10 s → rejoin
-#     SporePrint-Setup → paste the new key) or re-provision in place.
+#     each node via its portal: reopen it with a BOOT 3-10 s hold, then
+#     release (camera: short IO13 to GND 3-10 s — there is no button on that
+#     pin) → join SporePrint-Setup → paste the new key, leaving the other
+#     password fields blank to keep them. No factory reset (a hold longer
+#     than 10 s) is needed — that would wipe WiFi, MQTT login and OTA password.
 
 set -euo pipefail
 
@@ -107,9 +110,11 @@ echo ""
 echo "   New node: power it, join the 'SporePrint-Setup' WiFi AP, open"
 echo "   http://192.168.4.1/, paste the key into 'Command signing key'."
 echo ""
-echo "   Already-provisioned node: hold the factory-reset button 10 s"
-echo "   (BOOT on dev boards, GPIO 13 on the cam), then provision via the"
-echo "   portal as above. WiFi + broker settings re-enter with it."
+echo "   Already-provisioned node: reopen its portal — hold BOOT 3-10 s, then"
+echo "   release (camera: short IO13 to GND 3-10 s; there is no button on that"
+echo "   pin). Join 'SporePrint-Setup', paste the key into 'Command signing"
+echo "   key' and leave the other password fields blank to keep them. No"
+echo "   factory reset: holding longer than 10 s wipes WiFi, MQTT and OTA."
 echo ""
 echo "3. Until a node has the key, it logs a WARNING on every accepted"
 echo "   unsigned command:"

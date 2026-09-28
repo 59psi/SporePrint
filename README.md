@@ -50,10 +50,21 @@ firmware, safety, enclosures, deploy) is listed under **[Unreleased]** in both.
     refuses every node command, so run `./install.sh` (or
     `./scripts/provision-node.sh`) and `docker compose up -d server` before
     pairing.
-  - The first boot converts the database to incremental auto-vacuum with one
-    full `VACUUM`. It can take a while on a large database and needs free disk
-    of at least 2 × the database size + 64 MB; otherwise it is skipped with a
-    WARNING and retried on the next boot.
+  - The database moves to incremental auto-vacuum with one full `VACUUM`. A
+    database up to 32 MB converts at the end of the first boot, once MQTT,
+    automation and the safety watchdogs are running; a bigger one is left to
+    the nightly retention window. It needs free disk of at least 2 × the
+    database size + 64 MB; otherwise it is skipped with a WARNING and retried.
+  - Nodes with **Secure MQTT** ticked that ran on the plaintext fallback now
+    get the Pi's CA. Run `./install.sh` first (it re-issues the broker
+    certificate with every Pi IPv4). Firmware older than this release pins
+    the CA at its next reboot without checking that TLS works, so a node whose
+    Pi address the certificate doesn't cover loses MQTT until you reach it
+    physically; point nodes at `sporeprint.local` or update their firmware
+    first. Current firmware pins only after a working TLS connection.
+  - The API answers only for LAN host names (DNS-rebinding guard). Reach the
+    Pi by a public DNS name, such as a Tailscale `*.ts.net` name? Add it to
+    `SPOREPRINT_ALLOWED_HOSTS` in `.env`, then `docker compose up -d server`.
 - **Pis older than v3.3.0:** the broker has refused anonymous clients since
   v3.3.0, so every node needs its own broker login
   (`./scripts/add-node-mqtt-user.sh <node_id>`) and an OTA password of at
@@ -138,7 +149,9 @@ aliases, and an unknown zone silently runs on UTC.
 same-origin with no token, so the stack ships with HTTP auth off
 (`SPOREPRINT_ALLOW_UNAUTHENTICATED=true`). That is safe on a home LAN behind a
 router/NAT — keep the Pi there and never port-forward it. The MQTT broker is
-still credentialed. To require an API key for the mobile app or other external
+still credentialed, and the API answers only for LAN host names, so a web
+page cannot reach it by DNS rebinding (`SPOREPRINT_ALLOWED_HOSTS` adds
+others). To require an API key for the mobile app or other external
 clients, set `SPOREPRINT_API_KEY` in `~/SporePrint/.env` and run
 `docker compose up -d server` — the bundled browser dashboard sends no key, so
 it stops working in that mode. See [docs/auth.md](docs/auth.md).
@@ -210,11 +223,13 @@ Before provisioning a node, create its broker login on the Pi:
 `./scripts/add-node-mqtt-user.sh <node_id>` (the MQTT username is the node
 id). On first boot each node opens the `SporePrint-Setup` WiFi portal
 (WiFi, Pi address, MQTT login, personality, optional peripherals, OTA password,
-command-signing key, Secure MQTT). Or clone the repo and flash from
-`firmware/` directly — the ZIP bundle is equivalent to
-`firmware/src/<image>/ + firmware/lib/ + firmware/boards/ +
-firmware/platformio.ini`. The S3 builds use their own GPIOs: see the
-[build guide](docs/hardware-build-guide.md).
+command-signing key, Secure MQTT; the camera's portal has no personality or
+peripherals). Or clone the repo and flash from `firmware/` directly — the ZIP
+bundle is equivalent to `firmware/src/<image>/ + firmware/lib/ +
+firmware/boards/ + firmware/platformio.ini`, plus `VERSION.txt`, every
+`partitions*.csv` and the files `platformio.ini` references (the
+`scripts/fw_version.ini` extra config and its version script). The S3 builds
+use their own GPIOs: see the [build guide](docs/hardware-build-guide.md).
 
 ### Prerequisites
 
@@ -654,9 +669,11 @@ server only if `docker-compose.yml` forwards it, and changes apply with
 | `SPOREPRINT_CLOUD_TOKEN` | *(empty)* | Device auth token for cloud pairing |
 | `SPOREPRINT_CLOUD_DEVICE_ID` | *(empty)* | Unique device identifier |
 | `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` | `false` | Reject every unsigned cloud `integrations_request` from the start |
-| `SPOREPRINT_PUBLIC_UI_URL` | `http://sporeprint.local:3001` | Where browsers reach the dashboard (set `http://<pi-ip>:3001` without mDNS) |
+| `SPOREPRINT_PUBLIC_UI_URL` | `http://sporeprint.local:3001` | Where browsers reach the dashboard (set `http://<pi-ip>:3001` without mDNS). Its host is also an allowed Host name |
+| `SPOREPRINT_ALLOWED_HOSTS` | *(empty)* | DNS-rebinding guard: extra Host names the API answers to (comma list of names, `*.suffix`, IPs or CIDRs; `*` = off). Private IPs, `localhost`, `*.local` / `*.lan` / `*.home.arpa` / `*.internal` and dotless names are always allowed; any other Host gets 421 |
 | `SPOREPRINT_OTA_PUBKEY_B64` | *(empty)* | Pi self-update verify key (bare-metal installs only; also Settings → OTA verify key) |
-| `FORWARDED_ALLOW_IPS` | `172.16.0.0/12` | Docker: the range uvicorn trusts `X-Forwarded-For` from (the ui container) |
+| `FORWARDED_ALLOW_IPS` | `172.31.253.2` | Docker: the one address uvicorn trusts `X-Forwarded-For` from — the ui container's fixed address on the `edge` network. Keep it equal to `SPOREPRINT_EDGE_UI_IP` |
+| `SPOREPRINT_EDGE_SUBNET` / `_EDGE_UI_IP` / `_EDGE_SERVER_IP` | `172.31.253.0/28` / `.2` / `.3` | Docker: the ui → server `edge` network. Compose reads them, not the server. Move all three (and `FORWARDED_ALLOW_IPS`) together if `docker compose up` reports "Pool overlaps" |
 
 ---
 
@@ -728,10 +745,12 @@ A companion mobile app (iOS and Android) and cloud backend are available separat
 
 SporePrint is designed for a single operator on a trusted home LAN. Defense-in-depth covers the cross-trust surfaces that break that premise:
 
-- **MQTT broker**: anonymous clients are **refused**. The broker reads a `password_file` and a per-role `acl.conf`; `install.sh` provisions the `server` and `sp-3p` (smart plug) logins, and `scripts/add-node-mqtt-user.sh <node_id>` gives each ESP32 its own login, scoped by the ACL to `sporeprint/<node_id>/…`. Ports **1883** and **8883 (TLS)** are published on the LAN by `docker-compose.yml` — never port-forward them to the internet.
+- **MQTT broker**: anonymous clients are **refused**. The broker reads a `password_file` and a per-role `acl.conf`; `install.sh` provisions the `server` and `sp-3p` (smart plug) logins, and `scripts/add-node-mqtt-user.sh <node_id>` gives each ESP32 its own login, scoped by the ACL to `sporeprint/<node_id>/…`. Frames under a service account's name (`server`, `sp-3p`, `sp-cmd`, `sp-telemetry`) are dropped, so a leaked smart-plug credential cannot pose as a node. Ports **1883** and **8883 (TLS)** are published on the LAN by `docker-compose.yml` — never port-forward them to the internet.
 - **Command signing**: every `sporeprint/<node>/cmd/*` frame the Pi publishes is HMAC-SHA256 signed and carries the topic it was sent on plus a random nonce. Nodes holding the key reject unsigned, forged, replayed or redirected frames. See [docs/firmware-security.md](docs/firmware-security.md).
+- **DNS rebinding**: the API and Socket.IO answer only for Host names an outside web page cannot point at the Pi — private and loopback IP literals, `localhost`, `*.local` and other private-use suffixes, dotless names, the host of `SPOREPRINT_PUBLIC_UI_URL` and anything listed in `SPOREPRINT_ALLOWED_HOSTS`. Any other Host gets 421 (`GET /api/health` and `GET /api/provision/ca` excepted), so a rebinding page cannot drive the API in LAN-trust mode.
 - **Backend API**: set `SPOREPRINT_API_KEY` to require `Authorization: Bearer <key>` on all `/api/*` routes plus the Socket.IO `connect` handshake. Public in that mode: `/api/health`, `POST /api/cloud/pair` and `GET /api/provision/ca` (the broker's public CA). `POST /api/vision/frame` is accepted without a bearer only from a camera registered in `hardware_nodes`, with a declared Content-Length of at most 20 MB. `/metrics` sits outside `/api` and has its own optional bearer (Grafana integration). See [docs/auth.md](docs/auth.md).
-- **OTA**: `ArduinoOTA` stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s.
+- **OTA**: `ArduinoOTA` stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s. A Pi-pushed image goes only to the node being flashed: the connect-back listener on TCP 3233 serves that node's address and closes any other peer.
+- **Secure MQTT**: a node pins the Pi's CA only after a TLS connection with it succeeds, and reports the pinned CA's SHA-256 as `ca_fp` in its heartbeat. See [docs/firmware-security.md](docs/firmware-security.md#secure-mqtt-tls).
 
 CORS on the backend is LAN-scoped via `allow_origin_regex` (localhost, `*.local`, RFC1918 ranges, `capacitor://localhost`). Settings-mutation routes (`PUT /api/settings/*`) sit behind the same bearer-token gate as every other write path. Vision uploads validate `X-Node-Id` against `^[a-zA-Z0-9_-]{1,32}$` and assert the resolved write path stays inside `vision_storage`.
 

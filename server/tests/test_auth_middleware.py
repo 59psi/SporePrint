@@ -243,6 +243,29 @@ def test_valid_token_set_key(monkeypatch):
     assert _valid_token(_KEY + "x") is False
 
 
+def test_valid_token_rejects_non_ascii_and_non_str_without_raising(monkeypatch):
+    # compare_digest raises TypeError on non-ASCII str and on mixed types;
+    # every odd token must simply be wrong.
+    monkeypatch.setattr(settings, "api_key", _KEY)
+    assert _valid_token("éé") is False
+    assert _valid_token("s3cret-lan-kéy") is False
+    for odd in (123, 1.5, b"s3cret-lan-key", ["s3cret-lan-key"], {"t": 1}, True):
+        assert _valid_token(odd) is False, odd
+
+
+def test_non_ascii_key_matches_itself(monkeypatch):
+    monkeypatch.setattr(settings, "api_key", "tök€n-key")
+    assert _valid_token("tök€n-key") is True
+    assert _valid_token("tok€n-key") is False
+
+
+def test_non_ascii_bearer_is_401_not_500(gated_client):
+    # Header bytes are decoded as latin-1, so \xe9 arrives as a non-ASCII str.
+    client = TestClient(gated_client.app, raise_server_exceptions=False)
+    r = client.get("/api/private", headers={"Authorization": b"Bearer \xe9\xe9"})
+    assert r.status_code == 401
+
+
 # ── _connect_rate_ok — sliding-window limiter ──────────────────────────────
 
 class _Clock:
@@ -310,6 +333,14 @@ def test_socketio_auth_checks_token(monkeypatch):
     assert socketio_auth_ok({"token": "wrong"}) is False
     assert socketio_auth_ok({}) is False
     assert socketio_auth_ok(None) is False
+
+
+def test_socketio_auth_odd_tokens_are_refused_not_raised(monkeypatch):
+    # The Socket.IO auth payload is client JSON: the token can be any type.
+    monkeypatch.setattr(settings, "api_key", _KEY)
+    for odd in ("éé", "\ud800", 42, None, [_KEY], {"k": _KEY}, True):
+        assert socketio_auth_ok({"token": odd}) is False, odd
+    assert socketio_auth_ok("not-a-dict") is False
 
 
 def test_socketio_auth_rate_limited_even_with_valid_token(monkeypatch):

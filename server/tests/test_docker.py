@@ -1,12 +1,15 @@
 """Validate docker-compose.yml — catches image typos, missing services, wrong env vars."""
 
+import ipaddress
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
 from app.config import Settings
+from app.host_allow import host_is_allowed
 from app.vision import service as vision_service
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +30,10 @@ DOCUMENTED_BUT_NOT_FORWARDED = {
     # The smart-plug (sp-3p) broker credential: install.sh and the broker
     # scripts read it; the server never connects as sp-3p.
     "SPOREPRINT_MQTT_3P_PASSWORD",
+    # The ui↔server `edge` network layout — compose reads these, not the server.
+    "SPOREPRINT_EDGE_SUBNET",
+    "SPOREPRINT_EDGE_UI_IP",
+    "SPOREPRINT_EDGE_SERVER_IP",
 }
 
 _INTERPOLATION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -310,3 +317,79 @@ def test_ui_port_mapping():
     services = _load_compose()["services"]
     ports = services["ui"]["ports"]
     assert any("3001:80" in str(p) for p in ports), f"UI should map to port 3001, got {ports}"
+
+
+# ── X-Forwarded-For trust: exactly the ui container, never a gateway ─────
+
+def _edge_layout(dotenv: dict[str, str] | None = None):
+    compose = _load_compose()
+    services = compose["services"]
+    dotenv = dotenv or {}
+    subnet = ipaddress.ip_network(
+        _interpolate(compose["networks"]["edge"]["ipam"]["config"][0]["subnet"], dotenv))
+    ui_ip = ipaddress.ip_address(
+        _interpolate(services["ui"]["networks"]["edge"]["ipv4_address"], dotenv))
+    server_ip = ipaddress.ip_address(
+        _interpolate(services["server"]["networks"]["edge"]["ipv4_address"], dotenv))
+    return subnet, ui_ip, server_ip
+
+
+def test_forwarded_headers_are_trusted_only_from_the_ui_container():
+    """FORWARDED_ALLOW_IPS=172.16.0.0/12 trusted every bridge gateway, and
+    docker-proxy relays IPv6/loopback clients of the published :8000 from a
+    gateway: such a client could forge X-Forwarded-For. The ui (nginx) now
+    has a fixed address on a fixed subnet and only that address is trusted."""
+    subnet, ui_ip, server_ip = _edge_layout()
+    assert _compose_default("FORWARDED_ALLOW_IPS") == str(ui_ip)
+    assert ui_ip in subnet and server_ip in subnet
+    assert len({ui_ip, server_ip, next(subnet.hosts())}) == 3, (
+        "ui, server and the gateway (first host) need distinct addresses"
+    )
+    image_default = re.search(r"^ENV\s+FORWARDED_ALLOW_IPS=(\S+)",
+                              SERVER_DOCKERFILE.read_text(), re.M).group(1)
+    assert image_default == str(ui_ip)
+
+
+def test_edge_network_carries_only_the_ui_hop():
+    services = _load_compose()["services"]
+    # The ui reaches nothing but the server, so its fixed address is the
+    # only one on the edge network apart from the server's.
+    assert set(services["ui"]["networks"]) == {"edge"}
+    # The server keeps the default network for mqtt/ntfy by name.
+    assert set(services["server"]["networks"]) == {"default", "edge"}
+    for name, svc in services.items():
+        if name not in ("ui", "server"):
+            assert "edge" not in (svc.get("networks") or {}), name
+
+
+def test_edge_layout_is_overridable_from_env():
+    """A fixed subnet can collide with another Docker network or the LAN;
+    editing the tracked compose file breaks install.sh's `git pull
+    --ff-only`, so .env must be able to move it."""
+    subnet, ui_ip, server_ip = _edge_layout({
+        "SPOREPRINT_EDGE_SUBNET": "10.99.7.0/28",
+        "SPOREPRINT_EDGE_UI_IP": "10.99.7.2",
+        "SPOREPRINT_EDGE_SERVER_IP": "10.99.7.3",
+    })
+    assert (str(subnet), str(ui_ip), str(server_ip)) == ("10.99.7.0/28", "10.99.7.2", "10.99.7.3")
+    text = ENV_EXAMPLE.read_text()
+    for key, value in (("SPOREPRINT_EDGE_SUBNET", str(_edge_layout()[0])),
+                       ("SPOREPRINT_EDGE_UI_IP", str(_edge_layout()[1])),
+                       ("SPOREPRINT_EDGE_SERVER_IP", str(_edge_layout()[2])),
+                       ("FORWARDED_ALLOW_IPS", str(_edge_layout()[1]))):
+        assert re.search(rf"^#\s*{key}={re.escape(value)}$", text, re.M), (
+            f".env.example must document {key}={value}"
+        )
+
+
+# ── Host allow-list (DNS rebinding) ───────────────────────────────────────
+
+def test_allowed_hosts_setting_reaches_the_server():
+    assert _server_env().get("SPOREPRINT_ALLOWED_HOSTS") == "${SPOREPRINT_ALLOWED_HOSTS:-}"
+
+
+def test_server_healthcheck_host_passes_the_host_allow_list():
+    test = " ".join(_load_compose()["services"]["server"]["healthcheck"]["test"])
+    url = re.search(r"https?://[^'\"\s]+", test).group(0)
+    assert urlsplit(url).path == "/api/health"
+    assert host_is_allowed(urlsplit(url).netloc)

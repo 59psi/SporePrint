@@ -30,6 +30,9 @@ grower's network can hit the API". Compensating controls:
 
   * CORS regex narrows browser origins to localhost, mDNS, RFC1918, and
     the official Capacitor shells + sporeprint.ai (see main.py).
+  * The Host allow-list (app/host_allow.py, wrapped around main.socket_app)
+    refuses DNS-rebinding requests: a remote page that re-points its own
+    hostname at the Pi still sends its own name as Host and gets a 421.
   * Every connect is logged with `sid`, remote IP, and whether auth is
     present — a spike of connects from one IP is visible in journalctl.
   * Rate-limit on Socket.IO connect (bounded-retry via `_connect_rate_ok`)
@@ -147,12 +150,23 @@ def _extract_bearer(header_value: str | None) -> str | None:
     return parts[1].strip()
 
 
-def _valid_token(presented: str | None) -> bool:
+def _valid_token(presented: object) -> bool:
+    """Constant-time check of a presented bearer against SPOREPRINT_API_KEY.
+
+    Compares UTF-8 bytes: compare_digest raises TypeError on non-ASCII str
+    (header values arrive latin-1 decoded) and on mixed types, which turned a
+    wrong token into a 500. Anything that is not a non-empty str — the
+    Socket.IO auth payload is client JSON — is simply wrong. surrogatepass:
+    JSON can carry a lone surrogate ("\\ud800"), which strict UTF-8 refuses.
+    """
     if not settings.api_key:
         return True
-    if not presented:
+    if not isinstance(presented, str) or not presented:
         return False
-    return hmac.compare_digest(presented, settings.api_key)
+    return hmac.compare_digest(
+        presented.encode("utf-8", "surrogatepass"),
+        settings.api_key.encode("utf-8", "surrogatepass"),
+    )
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):

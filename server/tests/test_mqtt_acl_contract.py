@@ -17,8 +17,18 @@ per-node pattern scoping.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
+
+from app.config import settings
+from app.db import get_db
+from app.mqtt import (
+    RESERVED_NODE_IDS,
+    _handle_message,
+    is_reserved_node_id,
+    purge_reserved_nodes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACL = REPO_ROOT / "config" / "mosquitto" / "acl.conf"
@@ -280,3 +290,126 @@ def test_broker_actually_requires_auth():
     back on 'to debug', every device on the LAN can drive the actuators."""
     conf = (REPO_ROOT / "config" / "mosquitto" / "mosquitto.conf").read_text()
     assert "allow_anonymous false" in conf
+
+
+# ── service accounts never become nodes (final review, security) ─────────
+#
+# The per-node `pattern` grants apply to EVERY broker user, service accounts
+# included: sp-3p (whose password lives on third-party plug firmware) can
+# publish sporeprint/sp-3p/{status,telemetry,alert}. The server upserted any
+# status sender into hardware_nodes and fed any telemetry to the rules
+# engine, so a leaked plug credential could register a node, claim a node
+# type and drive the heater/humidifier through automation. Frames under a
+# service account's name are dropped, and those ids can never be registered.
+
+ROTATE_SH = REPO_ROOT / "scripts" / "rotate-mqtt-creds.sh"
+
+
+def _service_accounts() -> set[str]:
+    """Every non-node broker user: the ACL's `user` blocks plus the shared
+    accounts the rotation script manages."""
+    users, _patterns = _parse_acl()
+    found = set(users)
+    m = re.search(r"targets=\(([a-z0-9_ -]+)\)", ROTATE_SH.read_text())
+    assert m, "rotate-mqtt-creds.sh no longer lists its default accounts"
+    found |= set(m.group(1).split())
+    return found
+
+
+def test_every_service_account_is_a_reserved_node_id():
+    accounts = _service_accounts()
+    assert {"server", "sp-3p", "sp-cmd", "sp-telemetry"} <= accounts
+    missing = accounts - set(RESERVED_NODE_IDS)
+    assert not missing, (
+        f"broker service account(s) {sorted(missing)} can publish under "
+        "sporeprint/<name>/ via the per-node patterns but are not in "
+        "app.mqtt.RESERVED_NODE_IDS"
+    )
+
+
+class _Sio:
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event, data):
+        self.events.append((event, data))
+
+
+async def _node_rows() -> list[str]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT node_id FROM hardware_nodes")
+        return [r["node_id"] for r in await cursor.fetchall()]
+
+
+async def test_service_accounts_never_become_nodes(monkeypatch):
+    reached: list[str] = []
+
+    async def _spy(node_id, readings, sio=None):
+        reached.append(f"rules:{node_id}")
+
+    async def _forward(*args, **kwargs):
+        reached.append("forwarded")
+
+    async def _notify(*args, **kwargs):
+        reached.append("notified")
+
+    monkeypatch.setattr("app.automation.engine.evaluate_rules", _spy)
+    monkeypatch.setattr("app.mqtt.forward_telemetry", _forward)
+    monkeypatch.setattr("app.mqtt.forward_event", _forward)
+    monkeypatch.setattr("app.mqtt.forward_component_health", _forward)
+    monkeypatch.setattr("app.mqtt.notify", _notify)
+    sio = _Sio()
+    for account in sorted(RESERVED_NODE_IDS):
+        base = f"sporeprint/{account}"
+        await _handle_message(sio, f"{base}/status/heartbeat",
+                              {"type": "relay", "roles": ["relay"], "ip": "10.0.0.66"})
+        await _handle_message(sio, f"{base}/status", {"status": "online"})
+        await _handle_message(sio, f"{base}/health", {"channels": {"heater": {}}})
+        await _handle_message(sio, f"{base}/telemetry", {"temp_f": 50.0, "ts": 5000})
+        await _handle_message(sio, f"{base}/telemetry/heater", {"state": "on"})
+        await _handle_message(sio, f"{base}/alert", {"type": "temperature", "value": 99})
+        await _handle_message(sio, f"{base}/ota", {"status": "start"})
+    assert await _node_rows() == []
+    assert reached == []
+    assert sio.events == []
+
+
+def test_reserved_id_check_is_case_insensitive_and_covers_the_mqtt_user(monkeypatch):
+    monkeypatch.setattr(settings, "mqtt_username", "pi-core")
+    assert is_reserved_node_id("SP-3P")
+    assert is_reserved_node_id("Server")
+    assert is_reserved_node_id("pi-core")
+    assert not is_reserved_node_id("climate-01")
+    assert not is_reserved_node_id("sp-3p-plug")
+
+
+async def test_real_node_frames_still_register():
+    await _handle_message(_Sio(), "sporeprint/relay-01/status/heartbeat",
+                          {"type": "relay", "ip": "10.0.0.5"})
+    assert await _node_rows() == ["relay-01"]
+
+
+async def test_rows_registered_before_the_filter_are_purged(monkeypatch):
+    monkeypatch.setattr(settings, "mqtt_username", "pi-core")
+    async with get_db() as db:
+        for node_id in ("sp-3p", "Server", "pi-core", "climate-01"):
+            await db.execute("INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
+                             "VALUES (?, 'relay', 1)", (node_id,))
+        await db.commit()
+    assert await purge_reserved_nodes() == 3
+    assert await _node_rows() == ["climate-01"]
+    assert await purge_reserved_nodes() == 0
+
+
+def test_claim_refuses_a_reserved_id(client):
+    async def _preexisting_row():
+        # A row registered by an older server, before the filter existed.
+        async with get_db() as db:
+            await db.execute("INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
+                             "VALUES ('sp-3p', 'relay', 1)")
+            await db.commit()
+
+    asyncio.run(_preexisting_row())
+    r = client.post("/api/hardware/claim", json={"node_id": "sp-3p"})
+    assert r.status_code == 400
+    assert "reserved" in r.json()["detail"].lower()

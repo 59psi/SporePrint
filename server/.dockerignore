@@ -1,7 +1,8 @@
 .venv/
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
 .pytest_cache/
+.ruff_cache/
 tests/
 .git/
 *.egg-info/
@@ -11,3 +12,14 @@ tests/
 *.md
 .DS_Store
 docker-compose*.yml
+# Runtime data and secrets. Run from server/ (setup.sh, README), the relative
+# defaults put the SQLite DB, the Fernet integration key and cloud.env (the
+# cloud device token, which is also the command-signing HMAC key) under data/.
+# `COPY . .` must never bake them into an image layer
+# (tests/test_dockerfile.py checks).
+data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/.integration-key
+**/cloud.env

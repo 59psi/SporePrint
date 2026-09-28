@@ -24,7 +24,7 @@ _S3_PIN_MAP = (
     "(the Espressif N32R16V sold on Amazon — plain node_esp32s3 does not boot on it) and a "
     "DIFFERENT pin map "
     "(firmware/boards/board_profile_esp32s3.h): SDA 8, SCL 9, channels GPIO 4/5/6/7, HX711 "
-    "DOUT/SCK 10/11, reed 12, MH-Z19C RX/TX 16/17 — every wiring row and step here is for the "
+    "DOUT/SCK 10/11, reed 12, MH-Z19C TX→16 / RX→17 — every wiring row and step here is for the "
     "WROOM-32 (SDA 21, SCL 22, channels 25/26/27/14); never wire an S3 to GPIO 26-37 (octal "
     "flash/PSRAM)."
 )
@@ -35,8 +35,8 @@ _INSTALL_STEP = (
     "https://github.com/59psi/SporePrint.git && cd SporePrint && ./install.sh). It installs "
     "Docker, writes a LAN-trust .env with the MQTT broker credentials ('server' + the smart-plug "
     "user 'sp-3p'), creates the broker TLS certificates, starts the stack and prints the "
-    "dashboard URL. Do not use setup.sh — it is the developer script, and the API key it "
-    "generates makes the dashboard return 401. (Pi set up with setup.sh earlier? Blank "
+    "dashboard URL. Do not use setup.sh — it is the developer-workstation script. (A Pi set up "
+    "with an older setup.sh has an API key that makes the dashboard return 401: blank "
     "SPOREPRINT_API_KEY in .env, set SPOREPRINT_ALLOW_UNAUTHENTICATED=true, then docker compose "
     "up -d server.)"
 )
@@ -81,7 +81,15 @@ def _mqtt_credential_step(node_ids: str) -> str:
     )
 
 
-def _portal_step(extra: str = "") -> str:
+def _portal_step(extra: str = "", *, cams: bool = False) -> str:
+    # The ESP32-CAM has no BOOT gesture (its GPIO 0 is the camera clock): its
+    # portal gesture is IO13 to GND (board_profile_esp32cam.h), and its
+    # portal has no personality select or peripherals.
+    cam_note = (
+        " Cameras: their portal has no personality or peripherals, and there is no BOOT "
+        "gesture — to reopen a camera's portal, short its IO13 header pin to a GND pin for "
+        "3-10 s, then release (no button on that pin; longer than 10 s factory-resets)."
+    )
     return (
         "Each ESP32 opens the 'SporePrint-Setup' WiFi AP on first boot — join it and enter: WiFi "
         "SSID + password; Pi address (sporeprint.local or the Pi's IP); the MQTT username and "
@@ -92,6 +100,7 @@ def _portal_step(extra: str = "") -> str:
         + " Once a node has connected it no longer reopens this AP when WiFi drops (it retries "
         "every 60 s) — to reopen the portal, hold BOOT for 3-10 s and release; holding longer "
         "than 10 s factory-resets."
+        + (cam_note if cams else "")
     )
 
 
@@ -138,9 +147,10 @@ def _inserts_step(inserts: str, screws: str) -> str:
     return (
         "HEAT-SET INSERTS AND SCREWS TO BUY (not in the tier price; counts from the "
         f"models/README.md shopping list at default presets): inserts {inserts}; screws {screws}. "
-        "Sizes are the ruthex RX / CNC Kitchen standard (M2.5 x 5.7, M3 x 5.7, M4 x 8.1, "
-        "M5 x 9.5) the pockets are sized for; ruthex's M2/M3/M4/M5 box (Amazon B08K1BVGN9, "
-        "~$30) covers every size except M2.5, which is sold separately"
+        "The pockets are sized for ruthex RX inserts (M2.5 x 5.7, M3 x 5.7, M4 x 8.1, M5 x 9.5; "
+        "CNC Kitchen's M3/M4/M5 match, but CNC Kitchen's M2.5 is M2.5 x 4, too short). Buy "
+        "the ruthex M2/M3/M4/M5 assortment (Amazon B08K1BVGN9, ~$30) + a separate ruthex "
+        "RX-M2.5x5.7 pack — the assortment has no M2.5"
     )
 
 
@@ -314,11 +324,14 @@ _10K_RESISTOR = Component(
     name="10K Ohm Resistor",
     role="Gate pull-down — keeps each MOSFET off while the ESP32 boots",
     price_approx="$0.05",
-    pack_price="$4",
-    url="https://www.amazon.com/s?k=10k+ohm+resistor",
+    pack_price="$5.49",
+    url="https://www.amazon.com/s?k=10k+ohm+resistor+1%2F4w",
     category="misc",
     notes="One per MOSFET, gate to source/GND (plus the reed switch's pull-up in All the "
-          "Things). Sold in 100-packs (~$4, e.g. California JOS B0BDKY8VQG).",
+          "Things). Sold in 100-packs (~$5.50, e.g. B07HDGX5LM, 1/4 W metal film — the same "
+          "listing family as the 100 Ω pack; California JOS B0B4JFPHTW, ~$5, is also 1/4 W). "
+          "Buy 1/4 W: 1/2 W bodies (~9 x Ø3.2 mm) won't seat in relay_board_mount.scad's "
+          "resistor footprint.",
 )
 
 _100R_RESISTOR = Component(
@@ -908,7 +921,8 @@ TIER_RECOMMENDED = HardwareTier(
         _mqtt_credential_step("climate-01, relay-01, lighting-01, cam-01"),
         _portal_step(
             "The camera's portal asks for the same WiFi / Pi address / MQTT fields; it uploads "
-            "frames to http://<Pi address>:8000."
+            "frames to http://<Pi address>:8000.",
+            cams=True,
         ),
         "SENSOR PLACEMENT — Climate node (SHT31 + SCD41 + BH1750): Mount the sensor boards inside "
         "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber "
@@ -1063,9 +1077,9 @@ TIER_ALL = HardwareTier(
     ],
     components=[
         _RPI, _RPI_COOLER, _RPI_SD, _RPI_PSU,
-        _for_tier(_ESP32, quantity=5, pack_price="$30",
-                  tier_note="This tier: 4 nodes (2 climate, relay, lighting) + 1 spare — a "
-                            "6-pack (B0DSZBH9N9, ~$30) is cheapest."),
+        _for_tier(_ESP32, quantity=6, pack_price="$30",
+                  tier_note="This tier: 4 nodes (2 climate, relay, lighting) + 2 spares — the "
+                            "pinned 6-pack (B0DSZBH9N9, ~$30) is cheapest."),
         _for_tier(_SHT31, quantity=2),
         _for_tier(_BH1750, quantity=2),
         _for_tier(_SCD41, quantity=2,
@@ -1140,8 +1154,8 @@ TIER_ALL = HardwareTier(
                   "EXTERNAL 10K pull-up from GPIO 35 to 3V3 (input-only pins 34-39 have no "
                   "internal pulls; the 10K is in the parts list). Magnet on the door, switch on "
                   "the frame; tick 'Door reed switch' under Optional peripherals in the relay "
-                  "node's setup portal. Wired to the NO terminal instead (open with the door "
-                  "shut)? Also tick 'Door contact wired on its NO terminal — invert' (NVS "
+                  "node's setup portal. Wired to the NO terminal instead? Also tick 'Door "
+                  "contact wired on its NO terminal (open with the door shut) — invert' (NVS "
                   "reed_inv; for a node in service send cmd/config {\"peripherals\": "
                   "{\"reed_inv\": true}}), or move the lead to NC. Moulded housing — no printed "
                   "mount needed.",
@@ -1243,7 +1257,7 @@ TIER_ALL = HardwareTier(
         "WITHOUT diodes — LED strips are resistive: white (GPIO 25), blue (GPIO 26), red (GPIO "
         "27), far-red (GPIO 14)",
         _PLATFORMIO_STEP,
-        _flash_nodes_step("the four node boards (and the spare, if you like)"),
+        _flash_nodes_step("the four node boards (and the spares, if you like)"),
         _CAM_FLASH_STEP,
         _mqtt_credential_step("climate-01, climate-02, relay-01, lighting-01, cam-01, cam-02"),
         _portal_step(
@@ -1251,7 +1265,8 @@ TIER_ALL = HardwareTier(
             "climate-02 and the top-down camera as cam-02. On the relay node tick 'HX711 "
             "load-cell scale' and 'Door reed switch' under Optional peripherals (nodes already in "
             "service: cmd/config {\"peripherals\": {\"hx711\": true, \"reed\": true}}). The "
-            "cameras upload frames to http://<Pi address>:8000."
+            "cameras upload frames to http://<Pi address>:8000.",
+            cams=True,
         ),
         "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each set of sensor "
         "boards inside a ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of "
@@ -1292,9 +1307,9 @@ TIER_ALL = HardwareTier(
         "Mount the door contact on the door frame (magnet on the door): COM to GPIO 35, the alarm "
         "'NC' terminal to GND (closed while the door is shut — check with a meter), and an "
         "EXTERNAL 10K pull-up from GPIO 35 to 3V3 (input-only pins 34-39 have no internal "
-        "pulls). Wired to NO instead? Tick 'Door contact wired on its NO terminal — invert' in "
-        "the portal (or send cmd/config {\"peripherals\": {\"reed_inv\": true}}), or move the "
-        "lead to NC",
+        "pulls). Wired to NO instead? Tick 'Door contact wired on its NO terminal (open with the "
+        "door shut) — invert' in the portal (or send cmd/config {\"peripherals\": "
+        "{\"reed_inv\": true}}), or move the lead to NC",
         "Connect the peristaltic pump to the relay node's aux channel (GPIO 14) via IRLZ44N + "
         "UF4007, mounted in pump_bracket with its tube ports pointing up or sideways. Sterilize "
         "the tubing and use FDA-grade silicone on the substrate line; the pump suits drip "

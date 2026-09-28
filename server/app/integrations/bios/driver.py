@@ -41,6 +41,8 @@ class BiosDriver(HttpVendorDriver):
     tier_required: ClassVar[str] = "free"
     config_schema: ClassVar[type[BaseModel]] = BiosConfig
     secret_fields: ClassVar[set[str]] = {"api_key"}
+    # api_key is sent to base_url: a new base_url needs the key re-entered.
+    secret_bound_fields: ClassVar[frozenset[str]] = frozenset({"base_url"})
 
     async def test_connection(self) -> IntegrationHealth:
         cfg: BiosConfig | None = self._cfg  # type: ignore[assignment]

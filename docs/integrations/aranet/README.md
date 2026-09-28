@@ -23,7 +23,11 @@ Aranet readings unchanged. Free-tier — traffic stays on the LAN.
 3. In the Pi LAN UI at `/integrations`, find the Aranet row and click
    *Configure*:
    - `base_url`: e.g. `http://10.0.0.42` (mDNS hostnames OK).
-   - `api_key`: paste the value from step 1.
+   - `api_key`: paste the value from step 1. A later save keeps the stored
+     key when `api_key` is omitted or sent back as its `••••last4` preview
+     (`""` clears it) — except when the save changes `base_url`: the key is
+     only ever sent to the address it was entered for, so a new `base_url`
+     needs the key re-entered (422 otherwise).
    - `poll_seconds`: 60 s is plenty — Aranet sensors only radio every
      ~10 minutes anyway.
    - Leave `sensor_mappings` empty for now; we'll fill it in next.

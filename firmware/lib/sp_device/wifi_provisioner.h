@@ -16,7 +16,8 @@
 //   Pi address (broker host; default sporeprint.local)
 //   MQTT username/password (optional)
 //   Node id (optional; default node-XXXX from MAC)
-//   Personality: climate / relay / lighting
+//   Personality: climate / relay / lighting (node image only — the camera
+//     has no channel bank and ignores it, so its portal doesn't show it)
 //   OTA password (optional but recommended, min 12 chars enforced at use)
 //   HMAC signing key (optional; empty keeps the warn+accept migration
 //     posture — the operator sees a warning per accepted command)
@@ -51,8 +52,15 @@ class WifiProvisioner {
 public:
     // `peripheral_opts`: render + save the Tier-3 peripheral checkboxes. Only
     // the node image builds those drivers — the camera keeps the default.
-    explicit WifiProvisioner(NvsKvStore& kv, bool peripheral_opts = false)
-        : kv_(kv), peripheral_opts_(peripheral_opts) {}
+    // `personality_opt`: render + save the "Node personality" select. Only
+    // the node image has a channel bank — the camera keeps the default (its
+    // portal used to show the select although the image ignores it). When
+    // off, a stored personality is left untouched.
+    explicit WifiProvisioner(NvsKvStore& kv, bool peripheral_opts = false,
+                             bool personality_opt = false)
+        : kv_(kv),
+          peripheral_opts_(peripheral_opts),
+          personality_opt_(personality_opt) {}
 
     // Try the stored credentials. Returns true when WL_CONNECTED inside
     // `timeout_ms`. Non-throwing, no reboot — caller decides what's next.
@@ -71,6 +79,7 @@ public:
 private:
     NvsKvStore& kv_;
     bool peripheral_opts_;
+    bool personality_opt_;
 };
 
 }  // namespace sp_device

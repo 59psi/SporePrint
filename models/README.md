@@ -25,7 +25,7 @@ matching size. See [Heat-set inserts](#heat-set-inserts) and the
 | [`esp32_case.scad`](#esp32_casescad) | ESP32-WROOM-32 38-pin DevKit (narrow USB-C default; DevKitC V4, wide clones, ESP32-S3-DevKitC-1 presets) | 2 (base + lid) | 4 × M3 | every tier |
 | [`sensor_mount.scad`](#sensor_mountscad--sensor_bracketscad) | SHT31-D/SHT4x + SCD-41/SCD-40 (or SCD-30) + BH1750 on one STEMMA QT chain | 2 (body + lid) | 4 × M3, 6 × M2.5 | every tier |
 | [`sensor_bracket.scad`](#sensor_mountscad--sensor_bracketscad) | Carries `sensor_mount` on wire-shelf wires | 1 | 2 × M3 (enclosure joint) | every tier |
-| [`cam_mount.scad`](#cam_mountscad) | AI-Thinker ESP32-CAM on its ESP32-CAM-MB | 4 (cradle, lid, arm, washer ×2) | 4 × M3, 1 × M5 | Recommended, All the Things |
+| [`cam_mount.scad`](#cam_mountscad) | AI-Thinker ESP32-CAM on its ESP32-CAM-MB | 5 (cradle, lid, arm, 2 washers) | 4 × M3, 1 × M5 | Recommended, All the Things |
 | [`hx711_scale.scad`](#hx711_scalescad) | 5 kg straight-bar load cell + HX711 board | 2 (base + platform) | 4 × M4, 2 × M2.5 | All the Things |
 | [`pump_bracket.scad`](#pump_bracketscad) | Adafruit 1150 / Kamoer NKP peristaltic pump | 1 | 2 × M2.5 (pump flange) | All the Things |
 | [`relay_board_mount.scad`](#relay_board_mountscad) | 4-channel IRLZ44N switch board (relay **and** lighting node) | 1 | none (4 × M3 with `mount="insert"`) | Recommended, All the Things |
@@ -231,7 +231,7 @@ onto the downward header pins inside the case.
 | Bay | Board | Dimensions |
 |-----|-------|------------|
 | 1 (temp/RH) | Adafruit **2857** SHT31-D, current STEMMA QT revision. Drop-ins: **5665** SHT45, **5776** SHT41, **4885** SHT40 | 25.40 × 17.78, 4 × Ø2.5 holes on 20.32 × 12.70. The old "18.0 × 12.7" figure is the pre-2021 board. |
-| 2 (CO2) | Adafruit **5190** SCD-41 / **5187** SCD-40, or Pimoroni **PIM587** | 25.40 × 22.86, Ø3.0 holes on 20.32 × 17.78, 8.1 mm tall (page: 7.7). The PIM587 (about 24 × 21 × 8) has no published holes: it rests on the posts, needs a foam pad, and must be last on the chain. |
+| 2 (CO2) | Adafruit **5190** SCD-41 / **5187** SCD-40, or Pimoroni **PIM587** | 25.40 × 22.86, Ø3.0 holes on 20.32 × 17.78, 7.7 mm tall (board file + product page). The PIM587 (about 24 × 21 × 8) has no published holes: it rests on the posts, needs a foam pad, and must be last on the chain. |
 | 2 with `scd30=true` | Adafruit **4867** SCD-30 | 50.80 × 25.40, Ø2.5 holes on 45.72 × 20.32, 8.8 mm tall; both QT ports on one short edge |
 | 3 (light) | Adafruit **4681** BH1750 | 25.40 × 17.78, holes as bay 1. The lid has a flared Ø20 window over the die. |
 
@@ -492,7 +492,9 @@ WHT/BLU/RED/FR). Every part is through-hole, soldered underneath inside a
   (1715721)**. Seat 11.0 × 10.6, open on the wire side.
 - 100 Ω + 10 kΩ ¼ W axial resistors (Yageo MFR-25) and a DO-41 flyback diode
   (1N4007 / UF4007 / 1N5819), all on 10.16 mm footprints.
-- Optional **Aavid/Boyd 574502B00000G** (or B03300G) clip-on heatsinks.
+- **Aavid/Boyd 574502B00000G** (or B03300G) clip-on heatsinks with
+  `heatsink=true`: optional (recommended above ~1 A per channel, required
+  above ~2 A) and not in the BOM.
 
 **Piece:**
 - **One** part: plate 100 × 48.5 × 9 mm at a 20 mm channel pitch (117.4 mm
@@ -509,8 +511,9 @@ WHT/BLU/RED/FR). Every part is through-hole, soldered underneath inside a
 - Zip ties ≤ 2.5 × 1.3 through the end slot pairs.
 - Per board:
   - 4 × IRLZ44N
-  - 4 × 100 Ω and 4 × 10 kΩ
-  - 4 × DO-41 diodes
+  - 4 × 100 Ω and 4 × 10 kΩ (¼ W — ½ W bodies don't fit the seats)
+  - 4 × DO-41 diodes (relay board only: the lighting board's LED strips are
+    resistive and take no flyback diodes)
   - 8 × 2-pos terminals (4 with `input_terminals=false`)
 
 **Presets:**
@@ -525,8 +528,10 @@ WHT/BLU/RED/FR). Every part is through-hole, soldered underneath inside a
 
 **Print:**
 - No supports. Bridges are at most 11 mm.
-- Use **PETG** for the lighting node or any channel above about 0.5 A, and
-  fit the heatsinks for LED strips. PLA is fine for fans.
+- Use **PETG** for the lighting node or any channel above about 0.5 A. PLA
+  is fine for fans. A strip cut to closet length stays around 1 A per
+  channel, where a bare upright TO-220 copes; fit the heatsinks above that
+  (see Fits).
 
 **Solder, then trim** every lead to ≤ 3 mm below the plate. The TO-220 legs
 must be cut.
@@ -620,9 +625,11 @@ frame clears M4). Real flex-duct OD varies with the wire helix; at exactly
 
 All insert geometry comes from [`lib/sp_inserts.scad`](lib/sp_inserts.scad).
 The inserts are standard knurled brass inserts as sold by **ruthex** and
-**CNC Kitchen** (and their clones). Each pocket is the vendor's pilot
-diameter plus 1.0 mm of extra depth, so displaced plastic has somewhere to
-go. Each pocket mouth has a 0.5 mm lead-in chamfer so the insert self-centres.
+**CNC Kitchen** (and their clones); the M2.5 size is ruthex's RX-M2.5x5.7
+(CNC Kitchen's M2.5 is × 4). What to buy is under the
+[shopping list](#shopping-list-inserts-and-screws). Each pocket is the
+vendor's pilot diameter plus 1.0 mm of extra depth, so displaced plastic has
+somewhere to go. Each pocket mouth has a 0.5 mm lead-in chamfer so the insert self-centres.
 
 | Size | Insert (L) | Example SKU | Pocket Ø × depth | Min wall | Min boss Ø × h | Clearance Ø | Counterbore Ø × depth | Self-tap pilot Ø |
 |------|-----------|-------------|------------------|----------|----------------|-------------|-----------------------|------------------|
@@ -731,9 +738,10 @@ Adjust the counts if you print more or fewer.
 | M5 × 16 SHCS | 1 | 2 |
 | M4 washer, DIN 125 | 4 | 4 |
 
-Inserts are usually sold in packs of 50–100 per size. An assortment with
-M2.5, M3 and M4 covers everything except the single M5 per camera; with
-`-D pivot_d=4` the camera uses M4 instead.
+**Where to buy:** the **ruthex M2/M3/M4/M5 assortment** (Amazon B08K1BVGN9,
+~$30) **+ a separate ruthex RX-M2.5x5.7 pack** — the assortment has no M2.5.
+CNC Kitchen's M3/M4/M5 inserts match the pockets too, but CNC Kitchen's M2.5
+is M2.5 × 4, too short for the M2.5 × 5.7 pockets.
 
 Preset swaps:
 

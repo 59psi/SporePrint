@@ -138,7 +138,9 @@ _ALERT_REPEAT_SECONDS = {"warning": 5 * 60, "emergency": 15 * 60}
 # OFF rule (a cutoff) is true for as long as the chamber is in range, so it used
 # to re-send — and log — the same OFF every cooldown (every 60 s). Now a repeat
 # OFF is only re-sent every _OFF_REASSERT_SECONDS as a safety net (or at once
-# if a smart plug reports it was switched back ON). Any ON clears the entry.
+# if a smart plug reports it was switched back ON). Any ON clears the entry:
+# an engine ON in _send_rule_action, any other ON through note_actuator_on
+# (manual/cloud/plug commands, a node reporting the channel ON).
 _last_off_sent: dict[str, float] = {}
 _OFF_REASSERT_SECONDS = 15 * 60
 
@@ -1435,6 +1437,27 @@ async def note_actuator_off(
                  ", ".join(cleared), channel)
 
 
+async def note_actuator_on(target: str, channel: str | None) -> None:
+    """Tell the engine this actuator may be ON because of something outside it.
+
+    For a path that switches an actuator on (or sends it any non-OFF command)
+    without going through _fire_rule: a manual node or plug command, a cloud
+    command, or the node's own report that a channel is ON (a physical
+    override button). Call it after the command was actually published.
+
+    Drops the redundant-OFF suppression (_last_off_sent) for the actuator, so
+    a rule whose cutoff condition still holds re-sends its OFF at the next
+    evaluation instead of waiting out _OFF_REASSERT_SECONDS. Safety ceilings
+    are not touched: they only time automation's own ONs. A plug target also
+    clears the entry kept under its other name (plug id vs ``plug-<role>``).
+    """
+    targets = {target}
+    if channel is None and await is_plug_target(target):
+        targets = await plug_aliases(target)
+    for t in targets:
+        _last_off_sent.pop(_safety_key(t, channel), None)
+
+
 # Session-end safing (sessions.service) switches actuators OFF outside
 # automation. That module can't import this one (this one imports it), so it
 # calls back through its actuator-off listener list.
@@ -1821,7 +1844,8 @@ async def _skip_redundant_off(rule: AutomationRule, target: str, plug: bool) -> 
     An OFF to a smart plug that isn't paired reaches no device (it used to log
     a 'failed' firing and a warning every minute). An OFF to an actuator this
     engine already switched off less than _OFF_REASSERT_SECONDS ago is skipped
-    too — unless a plug reports it is ON again (switched on by hand). Past that
+    too — unless a plug reports it is ON again (switched on by hand), or an ON
+    since then went through note_actuator_on (which drops the entry). Past that
     window the OFF is re-sent as a safety net.
     """
     if not _is_plain_off(rule.action):

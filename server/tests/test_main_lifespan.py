@@ -1,8 +1,10 @@
 """Boot-time wiring in app.main's lifespan and its periodic tasks.
 
-* The database is converted to auto_vacuum=INCREMENTAL at startup, before any
-  writer task exists (the conversion is a full VACUUM holding the write lock),
-  so the nightly retention job never needs the writer-stalling VACUUM.
+* A small existing database is converted to auto_vacuum=INCREMENTAL at
+  startup, so the nightly retention job never needs the writer-stalling
+  VACUUM. The conversion runs only AFTER MQTT (the rules engine) has started
+  and the persisted safety watchdogs are re-armed, and a database too big to
+  rewrite quickly is left to the nightly retention window.
 * Overdue-phase INFO reminders (sessions.check_phase_reminders) run daily.
 * The coredump directory is created up front, so an unwritable data volume is
   reported at boot rather than when a node's first panic dump is lost.
@@ -10,10 +12,17 @@
 
 import asyncio
 import datetime as dt
+import logging
 
 import aiosqlite
 import pytest
+from fastapi.testclient import TestClient
 
+import app.automation.engine
+import app.cloud.service
+import app.mqtt
+import app.retention.service
+import app.weather.service
 from app import main
 from app.config import settings
 from app.db import get_db
@@ -55,6 +64,103 @@ def failing_conversion(monkeypatch):
 async def test_a_failed_conversion_never_blocks_boot(failing_conversion, client):
     assert failing_conversion == [True]
     assert client.get("/api/health").status_code == 200
+
+
+async def _forever(*_args):
+    await asyncio.Event().wait()
+
+
+@pytest.fixture()
+def boot_order(monkeypatch):
+    """Boot the real lifespan, recording when each safety-relevant step ran."""
+    order: list[str] = []
+
+    def _start_mqtt(sio):
+        order.append("mqtt")
+        return _forever()
+
+    async def _rehydrate():
+        order.append("rehydrate_watchdogs")
+        return 0
+
+    async def _start_integrations():
+        order.append("integrations")
+
+    async def _convert():
+        order.append("auto_vacuum")
+        return False
+
+    monkeypatch.setattr(app.mqtt, "start_mqtt", _start_mqtt)
+    monkeypatch.setattr(app.weather.service, "start_weather_polling", _forever)
+    monkeypatch.setattr(app.retention.service, "start_retention_task", _forever)
+    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _forever)
+    monkeypatch.setattr(main, "_daily_retrain", _forever)
+    monkeypatch.setattr(main, "_nightly_weather_aggregate", _forever)
+    monkeypatch.setattr(main, "_node_liveness_sweeper", _forever)
+    monkeypatch.setattr(app.automation.engine, "rehydrate_safety_watchdogs", _rehydrate)
+    monkeypatch.setattr(main, "_start_enabled_integrations", _start_integrations)
+    monkeypatch.setattr(app.retention.service, "ensure_incremental_auto_vacuum", _convert)
+    return order
+
+
+def test_conversion_runs_after_mqtt_and_the_safety_watchdogs(boot_order):
+    """The one-time VACUUM can take minutes on an SD card. Before, it ran
+    first, so for that whole time the rules engine was down and a persisted
+    safety ceiling (a smart-plug heater held ON, no firmware backstop) was
+    neither re-armed nor tripped."""
+    with TestClient(main.app) as client:
+        assert client.get("/api/health").status_code == 200
+    assert "auto_vacuum" in boot_order
+    converted_at = boot_order.index("auto_vacuum")
+    for step in ("mqtt", "rehydrate_watchdogs", "integrations"):
+        assert boot_order.index(step) < converted_at, boot_order
+
+
+async def test_a_big_legacy_database_is_left_to_the_nightly_window(
+        legacy_db, monkeypatch, main_log, client_factory):
+    monkeypatch.setattr(main, "_BOOT_AUTO_VACUUM_MAX_BYTES", 1)
+    with client_factory() as client:
+        assert client.get("/api/health").status_code == 200
+    assert await _pragma("auto_vacuum") == 0
+    assert any("nightly" in m for m in main_log), main_log
+
+
+async def test_a_converted_big_database_logs_nothing(monkeypatch, main_log, client_factory):
+    assert await _pragma("auto_vacuum") == 2
+    monkeypatch.setattr(main, "_BOOT_AUTO_VACUUM_MAX_BYTES", 1)
+    with client_factory():
+        pass
+    assert not any("auto_vacuum" in m for m in main_log), main_log
+
+
+@pytest.fixture()
+def main_log():
+    """Messages app.main logs. caplog cannot see them: the lifespan's
+    configure_logging() replaces the root handlers."""
+    messages: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            messages.append(record.getMessage())
+
+    handler = _Collect(level=logging.INFO)
+    logger = logging.getLogger("app.main")
+    logger.addHandler(handler)
+    yield messages
+    logger.removeHandler(handler)
+
+
+@pytest.fixture()
+def client_factory(monkeypatch):
+    """Like conftest's `client`, but the test decides when to boot."""
+    monkeypatch.setattr(app.mqtt, "start_mqtt", _forever)
+    monkeypatch.setattr(app.weather.service, "start_weather_polling", _forever)
+    monkeypatch.setattr(app.retention.service, "start_retention_task", _forever)
+    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _forever)
+    monkeypatch.setattr(main, "_daily_retrain", _forever)
+    monkeypatch.setattr(main, "_nightly_weather_aggregate", _forever)
+    monkeypatch.setattr(main, "_node_liveness_sweeper", _forever)
+    return lambda: TestClient(main.app, raise_server_exceptions=False)
 
 
 # ── daily phase reminders (sessions-species cross-need 1, srv-rest#13) ─────

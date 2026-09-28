@@ -71,12 +71,14 @@ void MqttLink::connect_attempt() {
 
     Serial.printf("[MQTT] Connecting as '%s' (user=%s)...\n", client_id.c_str(),
                   user_ptr ? user_ptr : "<anonymous>");
+    ++attempts_;
     if (!mqtt_.connect(client_id.c_str(), user_ptr, pass_ptr, lwt_topic.c_str(),
                        1, true, lwt_payload)) {
         Serial.printf("[MQTT] Failed, rc=%d\n", mqtt_.state());
         return;
     }
     Serial.println("[MQTT] Connected.");
+    ++successes_;
     if (ever_connected_) ++reconnects_;
     ever_connected_ = true;
 

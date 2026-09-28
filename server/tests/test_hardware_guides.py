@@ -23,8 +23,9 @@ from pathlib import Path
 
 import pytest
 
-from app.builder.hardware_guides import TIERS
+from app.builder.hardware_guides import _ESP32_CAM, _S3_PIN_MAP, TIERS
 from app.builder.models import HardwareTier, usd
+from app.builder.service import _HARDWARE_CONTRACT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = REPO_ROOT / "firmware"
@@ -32,6 +33,7 @@ BOARD_PROFILE = FIRMWARE / "boards" / "board_profile_esp32dev.h"
 S3_PROFILE = FIRMWARE / "boards" / "board_profile_esp32s3.h"
 PERSONALITY = FIRMWARE / "lib" / "sp_core" / "personality.h"
 PLATFORMIO_INI = FIRMWARE / "platformio.ini"
+PROVISIONER = FIRMWARE / "lib" / "sp_device" / "wifi_provisioner.cpp"
 
 TIER_IDS = [t.id for t in TIERS]
 _GPIO_RE = re.compile(r"GPIO\s*(\d+(?:\s*/\s*\d+)*)")
@@ -320,3 +322,72 @@ def test_capabilities_only_claim_implemented_features(tier_id):
     for item in items:
         for pat in _UNIMPLEMENTED:
             assert not re.search(pat, item), f"{tier_id}: {item!r} claims an unimplemented feature"
+
+
+# ── final-review wording (consistency pass) ─────────────────────────────────
+
+
+def test_builder_contract_names_the_bom_camera_packs_sensor():
+    """The Builder's Assistant must not say the BOM pack ships OV3660: the
+    pinned AITRIP 2-pack ships OV2640 (OV3660 is the HiLetgo/Aideepen packs)."""
+    m = re.search(r"AITRIP 2-pack: two AI-Thinker ESP32-CAMs \((OV\d{4})\)", _ESP32_CAM.notes)
+    assert m, "the BOM camera line no longer names the AITRIP pack's sensor"
+    bom_sensor = m.group(1)
+    assert f"{bom_sensor} (the BOM AITRIP 2-pack)" in _HARDWARE_CONTRACT
+    for other in {"OV2640", "OV3660", "OV5640"} - {bom_sensor}:
+        assert not re.search(rf"{other} \([^)]*BOM", _HARDWARE_CONTRACT), (
+            f"the contract ties {other} to the BOM pack")
+    assert "auto-detected" in _HARDWARE_CONTRACT
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_setup_sh_warning_matches_the_current_script(tier_id):
+    """setup.sh runs LAN-trust now; only an OLDER setup.sh run left an API key."""
+    for s in _tier(tier_id).setup_steps:
+        if not re.search(r"(?<![\w-])setup\.sh", s):
+            continue
+        assert "API key it generates" not in s, s
+        if "API key" in s:
+            assert re.search(r"older setup\.sh", s), s
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_camera_tiers_teach_the_io13_portal_gesture(tier_id):
+    """The ESP32-CAM has no BOOT gesture (GPIO 0 is XCLK): its portal gesture
+    is IO13 shorted to GND for 3-10 s (board_profile_esp32cam.h)."""
+    cam_pin = re.search(r"#define SP_PIN_FACTORY_RESET (\d+)",
+                        _read(FIRMWARE / "boards" / "board_profile_esp32cam.h")).group(1)
+    tier = _tier(tier_id)
+    portal = next(s for s in tier.setup_steps if "SporePrint-Setup" in s)
+    if not _qty(tier, r"ESP32-CAM"):
+        assert f"IO{cam_pin}" not in portal
+        return
+    assert re.search(rf"IO{cam_pin}[^.]*GND[^.]*3-10 s", portal), portal
+    assert re.search(r"[Cc]amera[^.]*no personality", portal), portal
+
+
+def test_s3_pin_map_gives_the_mhz19_wire_direction():
+    """SP_UART_CO2_RX is the ESP32's RX: the sensor's TX goes to it."""
+    s3 = _pin_map(S3_PROFILE)
+    rx, tx = s3["SP_UART_CO2_RX"][0], s3["SP_UART_CO2_TX"][0]
+    assert f"MH-Z19C TX→{rx} / RX→{tx}" in _S3_PIN_MAP
+    assert "RX/TX" not in _S3_PIN_MAP
+
+
+def test_tier3_esp32_quantity_is_the_pinned_six_pack():
+    tier = _tier("all_the_things")
+    esp = next(c for c in tier.components if c.name.startswith("ESP32-WROOM-32"))
+    assert "6-pack (B0DSZBH9N9" in esp.notes
+    assert esp.quantity == 6, "the pinned buy is a 6-pack: 4 nodes + 2 spares"
+    assert esp.line_cost() == usd("$30")
+
+
+def test_10k_example_is_a_quarter_watt_part():
+    """relay_board_mount's resistor seats fit 1/4 W bodies (6.3 x Ø2.4)."""
+    header = _read(REPO_ROOT / "models" / "relay_board_mount.scad")
+    assert "1/4 W axial" in header
+    for tier in TIERS:
+        for c in tier.components:
+            if re.search(r"\b10K\b", c.name):
+                assert "B0BDKY8VQG" not in c.notes, "B0BDKY8VQG is a 1/2 W part"
+                assert "1/4 W" in c.notes and "1/2 W" in c.notes, c.notes

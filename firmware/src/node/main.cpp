@@ -108,7 +108,8 @@ static sp_device::NvsKvStore kv;
 static sp_device::NodeConfig cfg;
 // The node image offers the Tier-3 peripheral checkboxes (MH-Z19C, HX711,
 // reed) — the only builds that construct those drivers.
-static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/true);
+static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/true,
+                                               /*personality_opt=*/true);
 static WiFiClient wifi_client;
 static WiFiClientSecure wifi_client_secure;
 // Transport selection + runtime CA-fetch retry (fw-node#2).
@@ -170,7 +171,9 @@ static sp::ThresholdAlert co2_hi_alert(sp::ThresholdAlert::Dir::Above, 4000.0f, 
 static sp::AlertLatch temp_rh_fail_alert;
 static sp::AlertLatch scd_stale_alert, mhz_stale_alert, lux_stale_alert,
     hx_stale_alert;
-static sp::AlertLatch tls_downgrade_alert;  // Secure MQTT on plaintext fallback
+// Secure MQTT on the plaintext fallback: entry + hourly, and at once when the
+// reason changes (tls_policy.h TlsDowngradeLatch).
+static sp::TlsDowngradeLatch tls_downgrade_alert;
 
 // HX711 tare / calibrate: averaged fresh samples, never the cached one.
 static sp::ScaleCalibrator scale_cal;
@@ -785,12 +788,13 @@ static void check_alerts() {
                 "Scale stale - no HX711 samples", "HX711");
 
     // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly
-    // until the runtime CA fetch pins a CA and the link moves to TLS.
-    if (tls_downgrade_alert.due(tls_link.fallback(), now) &&
+    // until a fetched CA verifies on TLS and is pinned. The message says why
+    // (no CA yet, cert name mismatch, 8883 unreachable, ...) and a new
+    // reason is announced at once.
+    const sp::TlsFailReason tls_down = tls_link.downgrade();
+    if (tls_downgrade_alert.due(tls_down, now) &&
         emit_alert(sp::kAlertTlsDowngrade, (float)cfg.broker_port,
-                   "Secure MQTT is on but no Pi CA is pinned - running on "
-                   "plaintext (credentials unencrypted); retrying the CA "
-                   "fetch"))
+                   sp::tls_downgrade_message(tls_down)))
         tls_downgrade_alert.emitted(now);
 }
 
@@ -898,6 +902,7 @@ static void publish_heartbeat() {
     in.emit_tls = true;
     in.tls = tls_link.tls();
     in.tls_fallback = tls_link.fallback();
+    in.ca_fp = tls_link.ca_fp();  // additive: which CA the TLS link trusts
     in.board = SP_BOARD_NAME;
 
     JsonDocument doc;
@@ -1104,7 +1109,8 @@ void setup() {
     }
 
     // 6. MQTT + services. The transport follows tls_policy.h: plain, TLS
-    //    against the pinned Pi CA, the loud plaintext fallback, or (Require
+    //    against the pinned Pi CA, a TLS trial of a candidate CA (pinned
+    //    only after a CONNACK), the loud plaintext fallback, or (Require
     //    TLS) no MQTT until a CA is pinned.
     sp_device::MqttTransport xport = tls_link.select();
     mqtt = new sp_device::MqttLink(*xport.client, cfg.node_id.c_str(),
@@ -1178,9 +1184,11 @@ void loop() {
             break;
     }
 
-    // Secure MQTT with no pinned CA: at most one bounded CA fetch per pass on
-    // a backoff (tls_policy.h). A pass that fetched starts no MQTT connect
-    // attempt — the two together would overrun the WDT (link_budget.h).
+    // Secure MQTT with no verified CA: judge a running trial (commit on a
+    // CONNACK, else back to plaintext / fail-closed), or at most one bounded
+    // CA fetch per pass on a backoff (tls_policy.h). A pass that fetched
+    // starts no MQTT connect attempt — the two together would overrun the WDT
+    // (link_budget.h).
     const bool ca_fetched = tls_link.loop(now, boot_down, *mqtt);
     mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, boot_down));
     ota->loop();

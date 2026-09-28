@@ -9,14 +9,21 @@
 * A secret that can no longer be decrypted (Fernet key lost/rotated) must not
   500 the whole integrations listing — the operator has to be able to load the
   page to re-enter credentials.
+* A kept (omitted / masked) secret is never sent to a new destination: a PUT
+  that changes a driver's secret_bound_fields must re-enter the secret.
 """
 
 from __future__ import annotations
 
+from typing import get_args
+
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
+from app.cloud import integrations_proxy
 from app.config import settings
 from app.integrations import _registry, _settings_store as store
 from app.integrations._keystore import reset_fernet_cache
@@ -170,3 +177,170 @@ async def test_listing_survives_lost_fernet_key(grafana, fresh_keystore, monkeyp
     row = await store.load("grafana", grafana.secret_fields)
     assert row.config["bearer_token"] == "new-tok-5678"
     assert row.unreadable_secrets == frozenset()
+
+
+# ── a kept secret stays bound to where it is sent ────────────────────
+#
+# GET redacts api_key, and an omitted or masked secret keeps the stored value.
+# Aranet, Agrowtek and BIOS send that key to a caller-controlled base_url, so
+# "keep the stored key" may only hold while base_url is unchanged. Otherwise
+# anyone who can PUT a config (LAN-trust, the cloud put_config RPC) could point
+# the stored key at their own host without ever seeing it.
+
+_URL_KEY_DRIVERS = ("aranet", "agrowtek", "bios")
+_TRUSTED_URL = "http://10.0.0.42"
+_OPERATOR_KEY = "OPERATOR-SECRET-KEY-1234"
+
+
+@pytest.fixture(params=_URL_KEY_DRIVERS)
+async def url_driver(request, fresh_keystore):
+    drv = _registry.registered_drivers()[request.param]
+    saved = drv._cfg
+    await _registry.put_config(drv.name, {"enabled": False, "config": {
+        "base_url": _TRUSTED_URL, "api_key": _OPERATOR_KEY}})
+    yield drv
+    await drv.stop()
+    drv._cfg = saved
+
+
+async def _stored(drv):
+    return (await store.load(drv.name, drv.secret_fields)).config
+
+
+@pytest.mark.parametrize("key_sent", ["omitted", "masked preview"])
+async def test_new_base_url_needs_the_key_re_entered(url_driver, key_sent):
+    cfg = {"base_url": "http://attacker.example:8080"}
+    if key_sent == "masked preview":
+        cfg["api_key"] = (await _registry.get_config(url_driver.name))["config"]["api_key"]
+        assert cfg["api_key"] == "••••1234"
+
+    with pytest.raises(HTTPException) as exc:
+        await _registry.put_config(url_driver.name, {"enabled": False, "config": cfg})
+
+    assert exc.value.status_code == 422
+    assert "api_key" in exc.value.detail and "base_url" in exc.value.detail
+    stored = await _stored(url_driver)
+    assert stored["base_url"] == _TRUSTED_URL
+    assert stored["api_key"] == _OPERATOR_KEY
+    # The driver never held the new URL together with the stored key.
+    assert url_driver.config.base_url == _TRUSTED_URL
+
+
+async def test_new_base_url_with_the_key_re_entered_is_saved(url_driver):
+    await _registry.put_config(url_driver.name, {"enabled": False, "config": {
+        "base_url": "http://10.0.0.77", "api_key": "NEW-KEY-5678"}})
+    stored = await _stored(url_driver)
+    assert (stored["base_url"], stored["api_key"]) == ("http://10.0.0.77", "NEW-KEY-5678")
+
+
+async def test_same_base_url_keeps_the_stored_key(url_driver):
+    # The settings form PUTs the whole config back with the masked key; the
+    # trailing slash is normalised away by the schema, so it is the same URL.
+    masked = (await _registry.get_config(url_driver.name))["config"]["api_key"]
+    await _registry.put_config(url_driver.name, {"enabled": False, "config": {
+        "base_url": _TRUSTED_URL + "/", "api_key": masked, "poll_seconds": 120}})
+    await _registry.put_config(url_driver.name, {"enabled": False, "config": {
+        "base_url": _TRUSTED_URL, "poll_seconds": 90}})
+    stored = await _stored(url_driver)
+    assert stored["api_key"] == _OPERATOR_KEY
+    assert stored["poll_seconds"] == 90
+    assert url_driver.config.api_key == _OPERATOR_KEY
+
+
+async def test_blanking_the_url_is_not_a_new_destination(url_driver):
+    """With no base_url the key goes nowhere, so a partial PUT that blanks it
+    is not refused; a later new URL still needs the key re-entered."""
+    await _registry.put_config(url_driver.name, {"enabled": False, "config": {"poll_seconds": 60}})
+    assert (await _stored(url_driver))["base_url"] == ""
+    with pytest.raises(HTTPException) as exc:
+        await _registry.put_config(url_driver.name, {"enabled": False, "config": {
+            "base_url": "http://attacker.example"}})
+    assert exc.value.status_code == 422
+    assert (await _stored(url_driver))["api_key"] == _OPERATOR_KEY
+
+
+async def test_explicit_empty_key_with_a_new_url_clears_it(url_driver):
+    await _registry.put_config(url_driver.name, {"enabled": False, "config": {
+        "base_url": "http://10.0.0.99", "api_key": ""}})
+    stored = await _stored(url_driver)
+    assert (stored["base_url"], stored["api_key"]) == ("http://10.0.0.99", "")
+
+
+async def test_legacy_unnormalised_stored_url_counts_as_unchanged(url_driver):
+    # A row saved before the schema normalised base_url.
+    await store.save(url_driver.name, False,
+                     {"base_url": _TRUSTED_URL + "/", "api_key": _OPERATOR_KEY},
+                     url_driver.secret_fields)
+    await _registry.put_config(url_driver.name, {"enabled": False, "config": {
+        "base_url": _TRUSTED_URL}})
+    assert (await _stored(url_driver))["api_key"] == _OPERATOR_KEY
+
+
+async def test_cloud_put_config_rpc_cannot_redirect_the_key(url_driver):
+    with pytest.raises(HTTPException) as exc:
+        await integrations_proxy._dispatch("put_config", url_driver.name, {
+            "enabled": False, "config": {"base_url": "http://attacker.example"}})
+    assert exc.value.status_code == 422
+    assert (await _stored(url_driver))["base_url"] == _TRUSTED_URL
+
+
+async def test_redirect_is_a_422_over_http(url_driver):
+    app = FastAPI()
+    app.include_router(_registry.router, prefix="/api/integrations")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+        resp = await client.put(f"/api/integrations/{url_driver.name}/config", json={
+            "enabled": False, "config": {"base_url": "http://attacker.example"}})
+    assert resp.status_code == 422
+    assert "re-enter" in resp.json()["detail"]
+
+
+# Config fields that look like a network destination but never receive the
+# driver's secret, each with the reason. Any other such field must be listed
+# in the driver's secret_bound_fields.
+_NOT_A_SECRET_DESTINATION = {
+    # Local transport polls devices unauthenticated; the password only ever
+    # goes to the fixed api.pulsegrow.com.
+    ("pulse", "local_broadcast_addr"),
+    ("pulse", "local_device_urls"),
+    # A region selects one of the fixed TP-Link cloud hosts.
+    ("tapo", "cloud_region"),
+    # KLAP: the plug must first prove it knows sha256(sha1(email) +
+    # sha1(password)) (handshake1 is verified before handshake2 is sent), so
+    # an attacker-chosen ip learns nothing derived from the password.
+    ("tapo", "devices[].ip"),
+}
+_DESTINATION_TOKENS = {"url", "urls", "host", "hosts", "ip", "ips", "addr",
+                       "address", "endpoint", "server", "region"}
+
+
+def _schema_field_paths(model, prefix=""):
+    for name, field in model.model_fields.items():
+        yield prefix + name
+        for arg in (field.annotation, *get_args(field.annotation)):
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                yield from _schema_field_paths(arg, f"{prefix}{name}[].")
+
+
+def test_every_secret_destination_field_is_bound():
+    """Audit guard for new drivers: a host/URL-like field next to a secret is
+    bound to it, or is recorded above with why the secret never goes there."""
+    for slug, drv in _registry.registered_drivers().items():
+        if not drv.secret_fields:
+            assert not drv.secret_bound_fields, slug
+            continue
+        for path in _schema_field_paths(drv.config_schema):
+            leaf = path.rsplit(".", 1)[-1]
+            if leaf in drv.secret_fields or not _DESTINATION_TOKENS & set(leaf.split("_")):
+                continue
+            assert path in drv.secret_bound_fields or (slug, path) in _NOT_A_SECRET_DESTINATION, (
+                f"{slug}.{path} looks like where {sorted(drv.secret_fields)} is sent: add it "
+                "to secret_bound_fields, or record here why the secret never goes there"
+            )
+
+
+def test_bound_fields_are_real_schema_fields():
+    for slug, drv in _registry.registered_drivers().items():
+        assert set(drv.secret_bound_fields) <= set(drv.config_schema.model_fields), slug
+    for slug in _URL_KEY_DRIVERS:
+        assert "base_url" in _registry.registered_drivers()[slug].secret_bound_fields, slug

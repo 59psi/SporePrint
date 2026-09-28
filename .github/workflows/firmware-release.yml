@@ -40,7 +40,7 @@ jobs:
       contents: read
     strategy:
       matrix:
-        env: [node_esp32, node_esp32s3, cam]
+        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,17 +129,25 @@ jobs:
           body: |
             ESP32 firmware for SporePrint chambers (v2).
 
-            **Two images cover everything:**
+            **Two images cover everything** (a node image per board, plus
+            the camera):
             - `node_esp32.zip` — unified node, ESP32-WROOM-32 (climate /
               relay / lighting; pick the personality in the setup portal).
-            - `node_esp32s3.zip` — unified node, ESP32-S3-DevKitC-1
-              (bench verification pending; WROOM-32 is canonical).
-            - `cam.zip` — camera image, AI-Thinker ESP32-CAM (OV2640).
+            - `node_esp32s3.zip` — unified node, ESP32-S3-DevKitC-1 with
+              quad flash (N8 / N8R8 / N16R8). Does NOT boot on the N32R16V.
+              (Bench verification pending; WROOM-32 is canonical.)
+            - `node_esp32s3_n32r16v.zip` — unified node,
+              ESP32-S3-DevKitC-1-N32R16V (octal flash + PSRAM). Use this
+              one, not `node_esp32s3.zip`, for the N32R16V board.
+            - `cam.zip` — camera image, AI-Thinker ESP32-CAM (OV2640,
+              OV3660 or OV5640, auto-detected).
 
             Each archive contains the built `.bin` files. Flash with
             esptool, the PlatformIO `-t upload` flow, or the on-Pi OTA
             pipeline. On first boot a node opens the `SporePrint-Setup`
-            WiFi portal for provisioning.
+            WiFi portal for provisioning. OTA: push the archive that
+            matches the node's board (its heartbeat `board` field) — an
+            image built for another board may not boot.
 
             Source + build instructions:
             https://github.com/59psi/SporePrint/tree/main/firmware

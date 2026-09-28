@@ -16,6 +16,8 @@ import pytest
 
 from app.builder.hardware_guides import TIERS, TIER_ALL, TIER_RECOMMENDED
 from app.db import SCHEMA
+from app.hardware.service import PERIPHERAL_KEYS
+from app.main import app as server_app
 from app.species.profiles import BUILTIN_PROFILES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +26,9 @@ README = ROOT / "README.md"
 AGENTS = ROOT / "AGENTS.md"
 GUIDE = DOCS / "hardware-build-guide.md"
 FW_SECURITY = DOCS / "firmware-security.md"
+DUAL_REPO = DOCS / "dual-repo-architecture.md"
+MODELS = ROOT / "models"
+MODELS_README = MODELS / "README.md"
 SVGS = sorted(DOCS.glob("*.svg"))
 TIER_SVGS = sorted(DOCS.glob("wiring-tier*.svg"))
 SVG_NS = "{http://www.w3.org/2000/svg}"
@@ -320,6 +325,151 @@ def test_readme_and_agents_counts_match_the_code():
         for n in re.findall(r"(\d+) (?:SQLite )?tables", text):
             assert int(n) == n_tables, f"{doc.name} says {n} tables, db.py has {n_tables}"
     assert f"{n_species} built-in species profiles" in _read(README)
+
+
+def _server_modules() -> int:
+    return sum(1 for p in (ROOT / "server" / "app").iterdir() if (p / "__init__.py").is_file())
+
+
+def _api_operations() -> int:
+    paths = server_app.openapi()["paths"]
+    verbs = {"get", "post", "put", "patch", "delete"}
+    return sum(1 for ops in paths.values() for verb in ops if verb in verbs)
+
+
+# Every doc that states the server's size. dual-repo-architecture.md carried
+# "17 router groups · 106 endpoints" long after the rest moved on.
+_COUNT_DOCS = [README, AGENTS, DOCS / "data-flow.md", DUAL_REPO, DOCS / "architecture-overview.svg"]
+
+
+@pytest.mark.parametrize("doc", _COUNT_DOCS, ids=lambda p: p.name)
+def test_server_module_endpoint_and_table_counts_match_the_code(doc):
+    n_modules, n_ops = _server_modules(), _api_operations()
+    n_tables = len(set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)))
+    text = _read(doc)
+    modules = re.findall(r"\b(\d+) (?:server )?(?:modules|router groups)\b", text)
+    ops = re.findall(r"\b(\d+) (?:API )?(?:operations|endpoints)\b", text)
+    assert modules or ops, f"{doc.name} no longer states the server's size — drop it from _COUNT_DOCS"
+    assert all(int(n) == n_modules for n in modules), f"{doc.name}: {modules} vs {n_modules} modules"
+    assert all(int(n) == n_ops for n in ops), f"{doc.name}: {ops} vs {n_ops} API operations"
+    for n in re.findall(r"\b(\d+) (?:SQLite )?tables\b", text):
+        assert int(n) == n_tables, f"{doc.name} says {n} tables, db.py has {n_tables}"
+
+
+def test_dual_repo_doc_names_the_real_licence():
+    licence = _read(ROOT / "LICENSE")
+    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in licence
+    text = _read(DUAL_REPO)
+    assert "MIT License" not in text
+    assert "AGPL-3.0" in text
+
+
+# ── Final-review consistency (portal gestures, reed label, models) ────
+
+
+def _portal_reed_invert_label() -> str:
+    """The reed_inv checkbox label exactly as the setup portal renders it."""
+    src = _read(ROOT / "firmware" / "lib" / "sp_device" / "wifi_provisioner.cpp")
+    m = re.search(r'checkbox\("reed_inv",\s*[^,]+,\s*((?:"[^"]*"\s*)+)\)', src)
+    assert m, "wifi_provisioner.cpp no longer renders a reed_inv checkbox"
+    label = "".join(re.findall(r'"([^"]*)"', m.group(1)))
+    return label.replace("&nbsp;", "").replace("\\u2014", "—").strip()
+
+
+def _quoted_reed_labels(text: str) -> list[str]:
+    flat = re.sub(r"\s+", " ", text)
+    return re.findall(r"[\"'](Door contact wired on its NO[^\"']*)[\"']", flat)
+
+
+def test_reed_invert_label_is_quoted_as_the_portal_renders_it():
+    label = _portal_reed_invert_label()
+    assert "(open with the door shut)" in label
+    sources = {GUIDE.name: _read(GUIDE)}
+    for tier in TIERS:
+        sources[tier.id] = "\n".join([*tier.setup_steps, *(c.notes for c in tier.components)])
+    quoted = {name: _quoted_reed_labels(text) for name, text in sources.items()}
+    assert quoted[GUIDE.name] and quoted[TIER_ALL.id], "the reed invert label is no longer quoted"
+    for name, labels in quoted.items():
+        assert all(q == label for q in labels), f"{name}: {labels} vs the portal's {label!r}"
+
+
+def test_build_guide_camera_portal_has_no_personality_or_peripherals():
+    guide = re.sub(r"\s+", " ", _read(GUIDE))
+    m = re.search(r"\*\*The camera's portal\*\*([^\n]*?)\*\*Reopening", guide)
+    assert m, "the camera-portal paragraph moved"
+    assert re.search(r"no personality or (optional )?peripherals", m.group(1)), m.group(1)
+
+
+def test_build_guide_peripherals_endpoint_lists_every_key_the_server_takes():
+    provision = _section(_read(GUIDE), "Provision each node")
+    body = re.search(r"/api/hardware/nodes/<node_id>/peripherals`[^`]*`(\{[^`]*\})`", provision)
+    assert body, "the peripherals endpoint example moved"
+    for key in PERIPHERAL_KEYS:
+        assert f'"{key}"' in body.group(1), f"the build guide's peripherals body misses {key}"
+
+
+def test_provision_node_teaches_the_portal_gesture_not_a_factory_reset():
+    # A 10 s factory reset wipes WiFi, MQTT login, OTA password and
+    # personality; the portal reopens with a 3-10 s hold and blank password
+    # fields keep their saved values. The cam has no button on GPIO 13.
+    text = _read(ROOT / "scripts" / "provision-node.sh")
+    for stale in ("factory-reset hold 10 s", "factory-reset button", "GPIO 13 on the cam",
+                  "re-enter with it"):
+        assert stale not in text, f"provision-node.sh still says {stale!r}"
+    assert "BOOT 3-10 s" in text and "IO13 to GND 3-10 s" in text
+    assert "blank" in text
+
+
+def _scad_header(name: str) -> str:
+    lines = []
+    for line in _read(MODELS / name).splitlines():
+        if not line.startswith("//"):
+            break
+        lines.append(line[2:].strip())
+    return " ".join(lines)
+
+
+def test_switch_board_heatsinks_and_diodes_match_the_bom():
+    # BOM: heatsinks are not bought (recommended above ~1 A, required above
+    # ~2 A); diodes go on the relay board only (LED strips are resistive).
+    readme = re.sub(r"\s+", " ", _section(_read(MODELS_README), "relay_board_mount.scad"))
+    header = _scad_header("relay_board_mount.scad")
+    for name, text in (("models/README.md", readme), ("relay_board_mount.scad", header)):
+        assert "heatsinks for LED strips" not in text, f"{name} makes heatsinks mandatory"
+        assert re.search(r"heatsinks?[^.]*optional[^.]*~1 A[^.]*~2 A[^.]*not in the BOM", text,
+                         re.I), f"{name}: heatsink guidance differs from the BOM"
+        assert re.search(r"DO-41 diodes? \(relay board only", text), (
+            f"{name}: the lighting board takes no flyback diodes")
+
+
+def test_insert_sourcing_is_one_recommendation():
+    # ruthex's M2/M3/M4/M5 box has no M2.5; CNC Kitchen's M2.5 is x 4, not 5.7.
+    sources = {GUIDE.name: _read(GUIDE), MODELS_README.name: _read(MODELS_README)}
+    for tier in TIERS:
+        sources[tier.id] = "\n".join(tier.setup_steps)
+    for name, text in sources.items():
+        flat = re.sub(r"\s+", " ", text)
+        assert "B08K1BVGN9" in flat and "RX-M2.5x5.7 pack" in flat, name
+        assert re.search(r"CNC Kitchen's M2\.5 (insert )?is (M2\.5 )?[×x] ?4", flat), name
+        assert "CNC Kitchen standard (M2.5" not in flat, name
+        assert "covers everything except the single M5" not in flat, name
+
+
+def test_models_readme_matches_the_model_headers():
+    readme = _read(MODELS_README)
+    # cam_mount: the default print plate's piece count.
+    plate = re.search(r"default print plate: ([^)]*)\)", _scad_header("cam_mount.scad"))
+    assert plate, "cam_mount.scad header no longer names its default print plate"
+    pieces = sum(int(m.group(1) or 1) for m in
+                 re.finditer(r"(?:^|\+)\s*(?:(\d+) )?[a-z]", plate.group(1)))
+    row = next(line for line in readme.splitlines() if line.startswith("| [`cam_mount.scad`]"))
+    assert re.search(rf"\| {pieces} \(", row), f"cam_mount prints {pieces} pieces: {row}"
+    # sensor_mount: one SCD-41 height in the README and the file header.
+    header_h = re.search(r"SCD-41 / 5187 SCD-40:.{0,80}?([\d.]+) mm tall",
+                         _scad_header("sensor_mount.scad")).group(1)
+    scd_row = next(line for line in readme.splitlines() if "SCD-41 / **5187**" in line)
+    assert re.findall(r"([\d.]+) mm tall", scd_row) == [header_h], scd_row
+    assert not re.search(r"mm tall \(page: [\d.]+\)", scd_row), scd_row
 
 
 def test_agents_md_firmware_constraints_match_v2():

@@ -132,6 +132,7 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
     // guide's "accept the default" used to land on an id the ACL denies).
     const bool node_id_auto = kv_.get_string("node_id", "").empty();
     const bool peripheral_opts = peripheral_opts_;
+    const bool personality_opt = personality_opt_;
 
     // Secrets are never pre-filled from NVS. A refused /save, though, hands
     // the form back with what was just SUBMITTED — the operator's own values,
@@ -171,21 +172,23 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
                            node_id_auto ? current.node_id : std::string(),
                            "maxlength='32' pattern='[A-Za-z0-9_\\-]*' "
                            "title='letters, digits, - or _'");
-        // Personality selector.
-        page += "<label>Node personality</label><br>"
-                "<select name='personality' style='width:100%;padding:8px;margin:4px 0 12px;'>";
-        const char* opts[] = {"climate", "relay", "lighting"};
-        for (const char* o : opts) {
-            page += "<option value='";
-            page += o;
-            page += "'";
-            if (strcmp(o, sp::personality_str(v.personality)) == 0)
-                page += " selected";
-            page += ">";
-            page += o;
-            page += "</option>";
+        // Personality selector (node image only — the camera ignores it).
+        if (personality_opt) {
+            page += "<label>Node personality</label><br>"
+                    "<select name='personality' style='width:100%;padding:8px;margin:4px 0 12px;'>";
+            const char* opts[] = {"climate", "relay", "lighting"};
+            for (const char* o : opts) {
+                page += "<option value='";
+                page += o;
+                page += "'";
+                if (strcmp(o, sp::personality_str(v.personality)) == 0)
+                    page += " selected";
+                page += ">";
+                page += o;
+                page += "</option>";
+            }
+            page += "</select><br>";
         }
-        page += "</select><br>";
         page += text_field("OTA password", "ota_pass", echo.ota_pass,
                            "password",
                            "min 12 chars; blank keeps the saved one; none "
@@ -244,7 +247,8 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
         if (portal.arg("mqtt_pass").length())
             cfg.mqtt_pass = arg_str(portal, "mqtt_pass");
         sp::Personality p;
-        if (sp::personality_from_str(portal.arg("personality").c_str(), &p))
+        if (personality_opt &&
+            sp::personality_from_str(portal.arg("personality").c_str(), &p))
             cfg.personality = p;
         if (portal.arg("ota_pass").length()) cfg.ota_pass = arg_str(portal, "ota_pass");
         if (portal.arg("hmac_key").length()) cfg.hmac_key = arg_str(portal, "hmac_key");

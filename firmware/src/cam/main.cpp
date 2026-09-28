@@ -102,7 +102,10 @@ static_assert(sp_cam::kPidOv5640 == OV5640_PID, "cam_policy PID drift");
 
 static sp_device::NvsKvStore kv;
 static sp_device::NodeConfig cfg;
-static sp_device::WifiProvisioner provisioner(kv);
+// No peripheral fieldset and no personality select: the camera builds
+// neither the Tier-3 drivers nor a channel bank.
+static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/false,
+                                               /*personality_opt=*/false);
 static WiFiClient wifi_client;
 static WiFiClientSecure wifi_client_secure;
 static sp_device::TlsSupervisor tls_link(cfg, kv, wifi_client,
@@ -129,7 +132,7 @@ static uint32_t restart_requested_ms = 0;
 // (the cam has no channels, so the watchdog's safe-mode actions are unused).
 static sp::LinkWatchdog link_wd;
 static uint32_t wifi_reconnects = 0;
-static sp::AlertLatch tls_downgrade_alert;
+static sp::TlsDowngradeLatch tls_downgrade_alert;  // tls_policy.h
 
 static bool camera_ok = false;
 static sp_cam::SensorProfile sensor = sp_cam::sensor_profile_none();
@@ -356,6 +359,7 @@ static void publish_heartbeat() {
     in.emit_tls = true;  // additive: the MQTT transport in use (fw-node#2)
     in.tls = tls_link.tls();
     in.tls_fallback = tls_link.fallback();
+    in.ca_fp = tls_link.ca_fp();  // additive: which CA the TLS link trusts
     in.board = SP_BOARD_NAME;
 
     JsonDocument doc;
@@ -572,8 +576,9 @@ void loop() {
             break;
     }
 
-    // Secure MQTT with no pinned CA: at most one bounded CA fetch per pass;
-    // no MQTT connect attempt in the same pass (tls_policy.h).
+    // Secure MQTT with no verified CA: judge a running trial, or at most one
+    // bounded CA fetch per pass; no MQTT connect attempt in a fetch pass
+    // (tls_policy.h).
     const bool ca_fetched = tls_link.loop(now, reset_down, *mqtt);
     mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, reset_down));
     ota->loop();
@@ -611,11 +616,12 @@ void loop() {
     if (due.telemetry) publish_health();
     if (due.heartbeat) publish_heartbeat();
 
-    // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly.
-    if (mqtt->connected() && tls_downgrade_alert.due(tls_link.fallback(), now) &&
+    // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly,
+    // and at once when the reason changes (no CA yet, cert name mismatch,
+    // 8883 unreachable, ...), until a fetched CA verifies and is pinned.
+    const sp::TlsFailReason tls_down = tls_link.downgrade();
+    if (mqtt->connected() && tls_downgrade_alert.due(tls_down, now) &&
         emit_alert(sp::kAlertTlsDowngrade, (float)cfg.broker_port,
-                   "Secure MQTT is on but no Pi CA is pinned - running on "
-                   "plaintext (credentials unencrypted); retrying the CA "
-                   "fetch"))
+                   sp::tls_downgrade_message(tls_down)))
         tls_downgrade_alert.emitted(now);
 }

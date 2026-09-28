@@ -1,7 +1,7 @@
 from typing import Literal
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic import ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Model used by every Claude feature unless SPOREPRINT_CLAUDE_MODEL overrides it.
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
@@ -44,8 +44,15 @@ class Settings(BaseSettings):
     cloud_require_signed_integrations: bool = False
     # Where the operator's browser reaches the Pi dashboard (nginx UI port),
     # e.g. for links printed on QR labels. The default is the mDNS name plus
-    # the compose UI port.
+    # the compose UI port. Its host is also an allowed Host header (below).
     public_ui_url: str = "http://sporeprint.local:3001"
+    # DNS-rebinding guard (app/host_allow.py): requests are served only for
+    # Host names no outside attacker can point at the Pi — IP literals in
+    # private ranges, localhost, *.local/*.lan/*.home.arpa/*.internal, dotless
+    # names and public_ui_url's host. Comma list of extra names ("pi.example.
+    # net"), "*.suffix" wildcards, IPs or CIDRs you reach the Pi by; "*"
+    # disables the check.
+    allowed_hosts: str = ""
     # If set, all /api/* requests and Socket.IO connects must present
     # Authorization: Bearer <api_key>. Empty means no auth. install.sh
     # leaves it empty and writes SPOREPRINT_ALLOW_UNAUTHENTICATED=true
@@ -93,7 +100,31 @@ class Settings(BaseSettings):
     # acceptable — there is intentionally no remote-recovery path.
     integration_key_path: str = "data/db/.integration-key"
 
-    model_config = {"env_prefix": "SPOREPRINT_", "env_file": ".env"}
+    # extra="ignore": bare metal reads server/.env, and a copy of the
+    # repo-root .env carries TZ, FORWARDED_ALLOW_IPS and compose-only keys.
+    # Refusing unknown keys ("Extra inputs are not permitted") kept the server
+    # from booting at all. env_ignore_empty is deliberately NOT set: a blank
+    # str keeps its meaning (an empty ntfy_url disables notifications); blank
+    # non-str values are handled by _blank_non_str_is_default below.
+    model_config = SettingsConfigDict(
+        env_prefix="SPOREPRINT_", env_file=".env", extra="ignore",
+    )
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_non_str_is_default(cls, value, info: ValidationInfo):
+        """`SPOREPRINT_PORT=` means the default, not a boot-time crash loop.
+
+        A kept-but-emptied key (compose `${VAR:-}`, an edited .env) failed
+        int/bool/Literal validation. Every non-str default is the safe one
+        (allow_unauthenticated=False, mqtt_require_signing="auto"). A
+        malformed non-blank value still fails loudly.
+        """
+        if isinstance(value, str) and not value.strip():
+            field = cls.model_fields[info.field_name]
+            if field.annotation is not str:
+                return field.get_default(call_default_factory=True)
+        return value
 
     @field_validator("claude_model", mode="before")
     @classmethod

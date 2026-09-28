@@ -23,6 +23,9 @@ class AranetDriver(IntegrationDriver):
     tier_required: ClassVar[str] = "free"
     config_schema: ClassVar[type[BaseModel]] = AranetConfig
     secret_fields: ClassVar[set[str]] = {"api_key"}
+    # api_key goes out as X-API-Key to base_url: a new base_url needs the
+    # key re-entered.
+    secret_bound_fields: ClassVar[frozenset[str]] = frozenset({"base_url"})
 
     def __init__(self) -> None:
         self._cfg: AranetConfig = AranetConfig()

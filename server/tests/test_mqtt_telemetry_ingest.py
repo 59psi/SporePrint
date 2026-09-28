@@ -5,8 +5,10 @@ Shared wire contract (firmware <-> Pi):
     frames keep an uptime-based ts. Any ts < 1_000_000_000 is unsynced and the
     Pi stamps arrival time.
   * Frames replayed from the node's offline buffer carry `"replay": true`.
-  * Replayed frames, and synced frames more than 120 s old, are STORED but never
-    evaluated by the rules engine and never overwrite a newer latest reading.
+  * Replayed frames, and frames older than the node's newest live frame, are
+    STORED but never evaluated by the rules engine and never overwrite a newer
+    latest reading. How far a ts is from the Pi's clock never matters (see
+    test_mqtt_clock_skew.py).
 """
 
 import sqlite3
@@ -200,17 +202,35 @@ async def test_synced_replay_frame_stored_at_its_time_not_evaluated(rules_spy, c
     assert _latest(await get_latest("climate-01"), "humidity") == 88.0
 
 
-async def test_stale_synced_frame_without_replay_flag_not_evaluated(rules_spy, cloud_forwards):
+async def test_out_of_order_synced_frame_without_replay_flag_not_evaluated(rules_spy, cloud_forwards):
+    """A frame older than the node's newest live one is late: history only.
+    (Being far behind the Pi's clock no longer counts — see
+    test_mqtt_clock_skew.py.)"""
     sio = _Sio()
-    old = time.time() - 600  # > 120 s old
+    now = time.time()
+    await _handle_message(sio, "sporeprint/climate-01/telemetry",
+                          {"humidity": 88.0, "ts": now})
+    old = now - 60
     await _handle_message(sio, "sporeprint/climate-01/telemetry",
                           {"humidity": 70.0, "ts": old})
-    assert rules_spy == []
-    assert sio.named("telemetry") == []
+    assert [r["humidity"] for _, r in rules_spy] == [88.0]
+    assert [d["humidity"] for d in sio.named("telemetry")] == [88.0]
+    rows = await _rows("climate-01", "humidity")
+    assert len(rows) == 2 and abs(rows[0]["timestamp"] - old) < 0.01
+    # Forwarded to the cloud at its real time, flagged as not live.
+    assert [(p["ts"], p.get("replay")) for _, p in cloud_forwards] == [(now, None), (old, True)]
+
+
+async def test_synced_frame_far_behind_the_pi_clock_is_still_evaluated(rules_spy, cloud_forwards):
+    sio = _Sio()
+    old = time.time() - 600  # the node's clock is 10 min behind the Pi's
+    await _handle_message(sio, "sporeprint/climate-01/telemetry",
+                          {"humidity": 70.0, "ts": old})
+    assert [r["humidity"] for _, r in rules_spy] == [70.0]
+    assert len(sio.named("telemetry")) == 1
     rows = await _rows("climate-01", "humidity")
     assert len(rows) == 1 and abs(rows[0]["timestamp"] - old) < 0.01
-    # Forwarded to the cloud at its real time, flagged as not live.
-    assert [(p["ts"], p["replay"]) for _, p in cloud_forwards] == [(old, True)]
+    assert [(p["ts"], p.get("replay")) for _, p in cloud_forwards] == [(old, None)]
 
 
 async def test_recent_synced_frame_is_live(rules_spy):
@@ -254,8 +274,11 @@ async def test_unsynced_threshold_is_one_billion(rules_spy):
                           {"humidity": 50.0, "ts": 1_000_000_000})
     assert (await _rows("n1", "humidity"))[0]["timestamp"] >= t0 - 1
     assert (await _rows("n2", "humidity"))[0]["timestamp"] == 1_000_000_000
-    # n2's 2001 timestamp is a (very) stale synced frame: stored, not evaluated.
-    assert [n for n, _ in rules_spy] == ["n1"]
+    # n2's 2001 timestamp is a synced clock that is (very) wrong: stored at its
+    # own time, reported as skew, and still evaluated — the Pi's clock never
+    # decides whether a frame reaches the safety checks.
+    assert [n for n, _ in rules_spy] == ["n1", "n2"]
+    assert get_reliability_counters()["node_clock_skew"]["n2"]["skewed"] is True
 
 
 async def test_locked_database_does_not_skip_rules(rules_spy, monkeypatch):

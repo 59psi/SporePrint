@@ -16,7 +16,8 @@ LAN, exactly like Arduino's espota.py sender:
 3. Node replies ``OK``, then connects BACK to us over TCP on <host_port>
    and pulls the image. Each chunk is acked with the decimal byte count the
    node flashed; the final ack is ``OK`` once Update.end() succeeds and the
-   node reboots into the new image.
+   node reboots into the new image. Only a connection from the node's own
+   address is served; any other peer is logged and closed.
 
 <host_port> is the fixed ``CALLBACK_PORT`` (3233), not an ephemeral port:
 under docker-compose the server sits on a bridge network, the node's
@@ -37,8 +38,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import os
+import socket
 import time
 from typing import Callable
 
@@ -240,6 +243,50 @@ async def push_firmware(node_id: str, ip: str, port: int, password: str,
         await _push_once(*args)
 
 
+def _peer_host(writer) -> str | None:
+    """The remote address of an accepted callback connection, or None."""
+    peer = writer.get_extra_info("peername")
+    if isinstance(peer, (tuple, list)) and peer:
+        return str(peer[0])
+    return None
+
+
+def _same_host(peer: str | None, expected: str) -> bool:
+    """Is ``peer`` the address ``expected``? IPv4-mapped IPv6 peers
+    (``::ffff:10.0.0.5``, a dual-stack listener) and IPv6 zone ids match
+    their plain form; anything that isn't an IP compares as text."""
+    if not peer:
+        return False
+
+    def _norm(value: str):
+        try:
+            addr = ipaddress.ip_address(value.split("%", 1)[0])
+        except ValueError:
+            return value.strip().lower()
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            return addr.ipv4_mapped
+        return addr
+
+    return _norm(peer) == _norm(expected)
+
+
+async def _allowed_peers(ip: str) -> set[str]:
+    """The addresses the target node may connect back from: ``ip`` itself
+    when it is an IP literal (the registry stores the node's heartbeat IP),
+    else every address the name resolves to."""
+    try:
+        ipaddress.ip_address(ip.split("%", 1)[0])
+        return {ip}
+    except ValueError:
+        pass
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            ip, None, type=socket.SOCK_STREAM)
+    except OSError as e:
+        raise OtaPushError(f"cannot resolve node address {ip!r}: {e.strerror or e}")
+    return {str(info[4][0]) for info in infos} or {ip}
+
+
 async def _push_once(node_id: str, ip: str, port: int, password: str,
                      image: bytes, invite_timeout: float,
                      invite_retry: float, stall_timeout: float,
@@ -252,8 +299,23 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
     # TCP server first — the invitation advertises its port and the node
     # connects back to the source IP of our UDP datagram.
     conn_fut: asyncio.Future = loop.create_future()
+    # Only the target node may take the connect-back. The fixed callback port
+    # is published on every interface, so any LAN host can connect to it; the
+    # first peer used to win, receive the image and "confirm" the flash while
+    # the real node's connection was closed. (Docker's DNAT keeps the node's
+    # source address for LAN traffic, so the check holds under compose.)
+    allowed = await _allowed_peers(ip)
+    refused: set[str] = set()
 
     async def _on_connect(reader, writer):
+        peer = _peer_host(writer)
+        if not any(_same_host(peer, a) for a in allowed):
+            if peer not in refused:
+                refused.add(peer)
+                log.warning("OTA push to %s: refused callback connection from %s "
+                            "(expected the node at %s)", node_id, peer, ip)
+            writer.close()
+            return
         if conn_fut.done():
             writer.close()
             return

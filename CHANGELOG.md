@@ -19,6 +19,18 @@ signing vectors are unchanged. Firmware details are in
 - **Update a Docker Pi with `git pull && ./install.sh`** — `install.sh` writes
   the new `.env` keys; `git pull && docker compose up -d --build` alone does
   not. `install.sh` run inside a checkout no longer pulls by itself.
+- **Secure MQTT nodes on the plaintext fallback start pinning the CA.** Under
+  Docker `GET /api/provision/ca` used to return 404 (the server container had
+  no `ca.crt`), so every node with Secure MQTT ticked ran on plaintext. Run
+  `./install.sh` before the nodes see the new server: it re-issues the broker
+  certificate with every Pi IPv4 in its names. Current firmware pins a fetched
+  CA only after a TLS connection with it succeeds and otherwise stays on
+  plaintext with a `tls_downgrade` alert that names the reason. **Firmware
+  from before this release pins the CA at its next reboot without that
+  check:** if the certificate does not cover the node's Pi address (an IP the
+  old certificate lacks), that node loses MQTT, drops to safe mode after
+  10 min, and needs physical access (portal gesture or factory reset). Point
+  nodes at `sporeprint.local`, or update their firmware first.
 - **Schedules move to local time.** `install.sh` writes the host's time zone
   into `.env` as `TZ` (compose passes `TZ=${TZ:-UTC}`) and warns. Rule times
   typed in UTC to compensate must be changed back, or set `TZ=UTC`. Use a
@@ -30,10 +42,14 @@ signing vectors are unchanged. Firmware details are in
   `server/.env`). A cloud-paired Pi without a key refuses every node command,
   so run `./install.sh` or `./scripts/provision-node.sh`, then
   `docker compose up -d server`, before pairing.
-- **First boot converts the database** to incremental auto-vacuum with one
-  full `VACUUM` (duration logged), before MQTT and automation start. It needs
-  free disk of 2 × the DB size + 64 MB; otherwise it is skipped with a WARNING
-  and retried next boot.
+- **The database moves to incremental auto-vacuum** with one full `VACUUM`
+  (duration logged). A database up to 32 MB converts at the end of startup,
+  after MQTT, the rules engine, the re-armed safety watchdogs and the vendor
+  drivers are running. A bigger one is not rewritten at boot (that stalled
+  ingest and safety for minutes on an SD card): the nightly retention window
+  converts it once at least a quarter of the file is free pages. The
+  conversion needs free disk of 2 × the DB size + 64 MB; otherwise it is
+  skipped with a WARNING and retried.
 - **Tasmota plugs need Full Topic `tasmota/%topic%/%prefix%/`** and the `sp-3p`
   login. Plugs on Tasmota's default Full Topic never reached the Pi.
 - **Coredumps moved** to `<DB dir>/coredumps` (Docker: `/data/db/coredumps`, on
@@ -109,10 +125,21 @@ signing vectors are unchanged. Firmware details are in
 - **Reed invert** (portal checkbox / `cmd/config {"peripherals":
   {"reed_inv": true}}`) for door contacts wired on NO.
 - New env **`node_esp32s3_n32r16v`** for the ESP32-S3-DevKitC-1-N32R16V (same
-  pin map as `node_esp32s3`).
+  pin map as `node_esp32s3`), built by CI and shipped as
+  `node_esp32s3_n32r16v.zip` in every release (`node_esp32s3.zip` does not
+  boot on that board).
 - Heartbeat on its own clock (min(publish interval, 5 min)); Secure MQTT never
   downgrades silently (`tls_downgrade` alert, CA-fetch retries, optional
   "Require TLS"); heartbeat `tls` and `board` keys.
+- **Secure MQTT verifies before it pins.** A fetched CA is only a candidate:
+  the node tries TLS on 8883 with it from RAM and writes it to NVS only after
+  the broker's CONNACK. A failed trial goes back to plaintext (or stays off
+  MQTT with "Require TLS"), backs off, and the `tls_downgrade` alert says why
+  (certificate name mismatch or another CA, 8883 unreachable, TLS error,
+  login refused). A verified pin is final. A CA an older image pinned without
+  this check is re-verified as a candidate. New optional heartbeat key
+  `ca_fp`: SHA-256 of the pinned CA PEM.
+- The camera's setup portal no longer shows the node-personality select.
 - Safety: `aux` max-on 60 s by default and per-channel `max_on_sec`; an explicit
   OFF wins over `pwm`/`level`; 10-min MQTT-loss safe mode; channels off at OTA
   start; OTA rollback on node and camera.
@@ -122,8 +149,11 @@ signing vectors are unchanged. Firmware details are in
   staleness alerts; exact library pins (PubSubClient 2.8, ArduinoJson 7.4.3).
 
 ### Added
-- `POST /api/hardware/nodes/{id}/peripherals` (`{"mhz19"|"hx711"|"reed": bool}`)
-  sends a signed `cmd/config`; the node reboots ~1.5 s later if its set changed.
+- `POST /api/hardware/nodes/{id}/peripherals`
+  (`{"mhz19"|"hx711"|"reed"|"reed_inv": bool}`) sends a signed `cmd/config`;
+  the node reboots ~1.5 s later if its driver set changed. `reed_inv` (a door
+  contact wired on its NO terminal) applies live, so the endpoint takes every
+  key the firmware does.
 - Overdue-phase reminders: a daily 09:00 (container-local `TZ`) INFO "Phase
   check — <session>" for each grow past its phase's expected duration
   (`phase_reminders` task).
@@ -157,8 +187,11 @@ signing vectors are unchanged. Firmware details are in
   for 15 min (WARNING page, CRITICAL if the OFF fails); life-safety rules
   (priority ≥ 20, absolute thresholds) run with no session; species-scoped
   rules match `lions-mane` and `lions_mane`; redundant OFFs to unpaired plugs
-  are skipped; cron catch-up; scheduled FAE runs only when the phase's
-  `fae_mode` is scheduled or continuous; new `profile_ref` `temp_mid_f`;
+  are skipped, and a repeat OFF is re-sent only every 15 min unless something
+  switched the actuator back ON — a manual, cloud or plug command, or a node
+  reporting the channel ON, drops that suppression so the cutoff rule re-sends
+  its OFF at the next evaluation; cron catch-up; scheduled FAE runs only when
+  the phase's `fae_mode` is scheduled or continuous; new `profile_ref` `temp_mid_f`;
   `growth_form` antler/conk picks the CO₂ params; `bulk_bag` is sealed until
   fruiting; the rule `notification` flag now pages (WARNING < priority 20 ≤
   CRITICAL). Seeded templates are upgraded on boot unless edited (a WARNING
@@ -178,9 +211,17 @@ signing vectors are unchanged. Firmware details are in
 - Node liveness: any telemetry frame from a registered node refreshes
   `last_seen`, so nodes on a 15 min–1 h publish interval no longer flap
   offline.
-- Telemetry: `ts < 1e9` is treated as unsynced; replayed or stale frames are
-  stored but not evaluated or pushed live; readings are tagged with their
-  grow; history charts fall through every rollup tier.
+- Telemetry: `ts < 1e9` is treated as unsynced; replayed (`"replay": true`)
+  and out-of-order frames (up to 120 s older than the node's newest live
+  frame; a bigger step back is the node's clock being corrected and
+  re-baselines) are stored but not evaluated or pushed live; readings are
+  tagged with their grow; history charts fall through every rollup tier. The
+  Pi's own clock
+  never decides whether a frame is live: a Pi clock running minutes fast no
+  longer silently stops automation and safety thresholds for every synced
+  node. Pi-vs-node clock skew is measured per node, logged as a rate-limited
+  WARNING past 120 s, and reported (with non-live frame counts) under
+  `reliability` in `GET /api/health/detail/system`.
 - Notifications: ntfy is published through its JSON API (titles with em dashes
   or °F now arrive); identical CRITICAL pages collapse for 15 min; temperature
   and humidity EMERGENCY pages dedupe per node, parameter and direction; node
@@ -208,8 +249,12 @@ signing vectors are unchanged. Firmware details are in
   calculator and shopping list scale correctly; species setpoints match
   CLAUDE.md §4b (pink oyster, cordyceps, king trumpet CO₂);
   `POST /api/experiments/{id}/analyze` is the preferred route.
-- Integrations: sending back a masked `••••last4` secret keeps it, `""` clears
-  it; a lost or changed `.integration-key` shows "re-enter the credentials";
+- Integrations: sending back a masked `••••last4` secret (or omitting it)
+  keeps it, `""` clears it — but a kept secret stays bound to where it is
+  sent: changing a driver's `secret_bound_fields` (`base_url` for Aranet,
+  Agrowtek and BIOS) without re-entering the secret returns 422, so a config
+  PUT can no longer redirect a stored key to another host. A lost or changed
+  `.integration-key` shows "re-enter the credentials";
   vendor health transitions that happen while the cloud link is down are
   retried until delivered.
 - `GET /api/provision/ca` is public in API-key mode, so Secure-MQTT nodes can
@@ -232,6 +277,43 @@ signing vectors are unchanged. Firmware details are in
   90 days and thins vision frames; new index
   `idx_rollup_node_sensor_time` speeds long-range charts.
 
+### Security
+- **DNS-rebinding guard.** The API and Socket.IO answer only for Host names an
+  outside attacker cannot point at the Pi: private, loopback, link-local,
+  CGNAT (Tailscale) and IPv6 unique-local IP literals; `localhost`, `*.local`,
+  `*.lan`, `*.home`, `*.home.arpa`, `*.internal`, `*.localdomain`; dotless
+  names; the host of `SPOREPRINT_PUBLIC_UI_URL`; and the new
+  `SPOREPRINT_ALLOWED_HOSTS` (comma list of names, `*.suffix`, IPs or CIDRs;
+  `*` turns the check off). Anything else gets **421** with the setting to
+  change. `GET /api/health` and `GET /api/provision/ca` stay open. Reach the
+  Pi by a public DNS name (Tailscale MagicDNS `*.ts.net`, a reverse-proxy
+  domain)? Add it to `SPOREPRINT_ALLOWED_HOSTS`.
+- **Stored integration secrets stay bound to their destination** (see
+  Integrations above): a config `PUT` that changes `base_url` must re-enter
+  the key.
+- **Broker service accounts never become nodes.** Frames under
+  `sporeprint/<id>/…` for `server`, `sp-3p`, `sp-cmd`, `sp-telemetry` or the
+  Pi's own MQTT user are dropped (WARNING once) before registration or rule
+  evaluation, `POST /api/hardware/claim` refuses those ids, and node rows an
+  older server registered under them are deleted when MQTT starts. A leaked
+  smart-plug credential can no longer register a node, claim a node type or
+  feed the rules engine.
+- **OTA connect-back peer check** (see Deploy): only the node being flashed
+  can take the image.
+- **Secure MQTT verifies before it pins** and reports `ca_fp` (see Firmware).
+- A bearer token with non-ASCII bytes gets 401 instead of a 500 (the API-key
+  check compares UTF-8 bytes, as the Grafana `/metrics` check already did).
+- **`X-Forwarded-For` is trusted from one address only.** The ui and server
+  containers share a fixed `edge` network (`SPOREPRINT_EDGE_SUBNET`, default
+  `172.31.253.0/28`; ui `.2`, server `.3`), and `FORWARDED_ALLOW_IPS`
+  defaults to the ui address instead of the whole `172.16.0.0/12` bridge
+  range, whose gateway relays IPv6 and loopback clients of the published
+  `:8000` that could forge the header. Move all four settings together if
+  compose reports a pool overlap.
+- `server/.dockerignore` keeps `data/`, SQLite files, `.integration-key` and
+  `cloud.env` (the cloud device token) out of the image when the server was
+  run from `server/`.
+
 ### Deploy
 - `install.sh`: writes `TZ`, generates the command-signing key, issues the
   broker certificate with IP and DNS SANs for every host IPv4 (re-issued from
@@ -251,8 +333,10 @@ signing vectors are unchanged. Firmware details are in
   an existing one); `add-node-mqtt-user.sh` mentions the key; broker password
   edits run inside the broker image and reload the `mqtt` service.
 - Pi-pushed node OTA uses fixed TCP port 3233 (published in compose), runs one
-  push at a time and retries invitations. `generate-ota-keypair.py` creates the
-  private key 0600 atomically.
+  push at a time and retries invitations. The connect-back listener accepts
+  only the node being flashed: another LAN host that connects first is logged
+  and closed, and can no longer take the image and report a fake success.
+  `generate-ota-keypair.py` creates the private key 0600 atomically.
 - Images pinned: `eclipse-mosquitto:2.1.2-alpine`, `binwiederhier/ntfy:v2.28.0`,
   `nginx:1.30.5-alpine` and `python:3.12.14-slim` by digest. The server image
   installs exactly `server/uv.lock` (hash-checked).
@@ -279,6 +363,10 @@ signing vectors are unchanged. Firmware details are in
   replies, Wemo port probing (49153/49152/49154/49155/49151, `host:port`
   pins), Pulse session reuse, Grafana contamination counter.
 - Upgrading a database created before v3.3.0 no longer crashes `init_db`.
+- The server boots when `server/.env` holds keys that are not settings (a copy
+  of the repo-root `.env` with `TZ` or `FORWARDED_ALLOW_IPS`) and when a
+  non-string setting is present but blank (`SPOREPRINT_PORT=` means the
+  default). A malformed non-blank value still fails loudly.
 - The Tapo KLAP `set_power` integration test is no longer `xfail`.
 - The CHANGELOG's earlier unreleased model entries (TAL220-only scale, saddle
   pump clamp, "Adafruit 1150 = Kamoer" wording) are superseded by the

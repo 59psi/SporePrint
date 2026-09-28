@@ -50,11 +50,12 @@ public:
     void begin(const char* host, uint16_t port, const char* user,
                const char* pass, bool connect_now = true);
 
-    // Move the link onto another transport (the Pi CA got pinned at runtime
-    // → TLS on 8883). Publishes the retained offline status the LWT would
-    // (so the Pi isn't left showing "online" if the new transport can't
-    // connect), drops the connection, and lets the next allowed loop() pass
-    // reconnect on the new transport. `transport` must outlive the link.
+    // Move the link onto another transport (a candidate Pi CA to try on TLS
+    // 8883, or back to plaintext when that trial failed — tls_policy.h).
+    // Publishes the retained offline status the LWT would (so the Pi isn't
+    // left showing "online" if the new transport can't connect), drops the
+    // connection, and lets the next allowed loop() pass reconnect on the new
+    // transport. `transport` must outlive the link.
     void switch_transport(Client& transport, uint16_t port);
 
     // Pump: reconnect window + PubSubClient loop. Call every loop pass with
@@ -65,6 +66,14 @@ public:
 
     bool connected() { return mqtt_.connected(); }
     uint32_t reconnect_count() const { return reconnects_; }
+    // Connect attempts actually started (a pass skipped because WiFi is down
+    // does not count) and those that got a CONNACK — the TLS trial's "has the
+    // candidate been tried yet, and did it connect" (tls_policy.h).
+    uint32_t connect_attempts() const { return attempts_; }
+    uint32_t connect_successes() const { return successes_; }
+    // PubSubClient::state(): why the last attempt failed (tls_policy.h
+    // classify_tls_trial_failure).
+    int state() { return mqtt_.state(); }
 
     // Streamed publish. Returns false when disconnected or the write fails.
     bool publish(const char* topic, JsonDocument& doc, bool retain = false);
@@ -101,6 +110,8 @@ private:
     std::string pass_;
     uint32_t last_attempt_ms_ = 0;
     uint32_t reconnects_ = 0;
+    uint32_t attempts_ = 0;
+    uint32_t successes_ = 0;
     bool ever_connected_ = false;
     MessageFn cmd_fn_ = nullptr;
     void* cmd_ctx_ = nullptr;

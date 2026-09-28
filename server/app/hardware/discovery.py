@@ -13,6 +13,11 @@ cannot adopt hardware the Pi has never heard from.
 """
 
 from ..db import get_db
+from ..mqtt import is_reserved_node_id
+
+
+class ReservedNodeIdError(ValueError):
+    """The id is a broker service account (app.mqtt.RESERVED_NODE_IDS)."""
 
 
 async def _ensure_claims_table(db) -> None:
@@ -59,7 +64,13 @@ async def claim_node(node_id: str) -> bool:
     """Adopt a heartbeat-known node. Returns False if the node is unknown.
 
     Idempotent: re-claiming an already-claimed node succeeds without change.
+    Raises ReservedNodeIdError for a broker service account name (server,
+    sp-3p, ...): those publish through the per-node ACL patterns but are
+    never nodes, even if an older server registered one.
     """
+    if is_reserved_node_id(node_id):
+        raise ReservedNodeIdError(
+            f"'{node_id}' is a reserved broker service account, not a node")
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT 1 FROM hardware_nodes WHERE node_id = ?", (node_id,)

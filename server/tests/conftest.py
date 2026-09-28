@@ -140,6 +140,18 @@ def _reset_engine_state():
 
 
 @pytest.fixture(autouse=True)
+def _reset_mqtt_clock_state():
+    """Clear the per-node telemetry ordering / clock-skew bookkeeping in mqtt.py
+    (a node's newest live ts from one test would make the next test's frames
+    look out of order)."""
+    import app.mqtt as mqtt
+    mqtt._node_newest_ts.clear()
+    mqtt._node_clock.clear()
+    mqtt._skew_logged_at.clear()
+    mqtt._reserved_drop_logged.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_notification_state():
     """Clear notification dedup tracking between tests."""
     import app.notifications.service as svc

@@ -23,7 +23,7 @@ firmware and the current bill of materials actually use — not an approximation
 | | **Bare Bones** ~$205 | **Recommended** ~$485 | **All the Things** ~$660 |
 |---|---|---|---|
 | What it does | Monitors. Humidifier on a smart plug. | Full automation — fans, lights, camera, CO₂. | Everything, two shelves, plus scale + door + pump. |
-| ESP32 nodes | 1 (climate) | 3 (climate, relay, lighting) + 1 camera | 4 (2 climate, relay, lighting) + 1 spare + 2 cameras |
+| ESP32 nodes | 1 (climate) | 3 (climate, relay, lighting) + 1 camera | 4 (2 climate, relay, lighting) + 2 spares (one 6-pack) + 2 cameras |
 | Sensors | Temp/RH, light | + CO₂ | + 2nd shelf, load cell, door contact |
 | Actuators | 1 smart plug | 3 fans + aux, 2 LED channels, 2 plugs | + red/far-red, peristaltic pump, 4 plugs |
 | 12 V supply | none | 12 V 5 A (60 W) | 12 V 10 A (120 W) |
@@ -111,11 +111,12 @@ default presets, from the `models/README.md` shopping list):
 | Recommended | 10 × M2.5 × 5.7, 26 × M3 × 5.7, 12 × M4 × 8.1, 1 × M5 × 9.5 (3 fan ducts) | 10 × M2.5 × 6, 22 × M3 × 6, 4 × M3 × 16, 12 × M4 × 35, 1 × M5 × 16 |
 | All the Things | 20 × M2.5 × 5.7, 40 × M3 × 5.7, 16 × M4 × 8.1, 2 × M5 × 9.5 (3 fan ducts) | 16 × M2.5 × 6, 2 × M2.5 × 8, 2 × M2.5 × 10, 36 × M3 × 6, 4 × M3 × 16, 2 × M4 × 16, 2 × M4 × 25, 12 × M4 × 35, 2 × M5 × 16, 4 × M4 × 8 set screws, 4 × M4 DIN 125 washers |
 
-The inserts are the ruthex RX / CNC Kitchen standard sizes (M2.5 × 5.7,
-M3 × 5.7, M4 × 8.1, M5 × 9.5) the pockets are sized for. ruthex's M2/M3/M4/M5
-box (Amazon B08K1BVGN9, ~$30) covers every size except M2.5, which is sold
-separately. The switch boards mount with 4 × M3 × 16 pan-head (or #4 × ¾" wood)
-screws each.
+The pockets are sized for ruthex RX inserts (M2.5 × 5.7, M3 × 5.7, M4 × 8.1,
+M5 × 9.5). CNC Kitchen's M3/M4/M5 match, but CNC Kitchen's M2.5 is M2.5 × 4,
+too short. Buy the **ruthex M2/M3/M4/M5 assortment** (Amazon B08K1BVGN9,
+~$30) **+ a separate ruthex RX-M2.5x5.7 pack** — the assortment has no M2.5.
+The switch boards mount with 4 × M3 × 16 pan-head (or #4 × ¾" wood) screws
+each.
 
 ---
 
@@ -210,8 +211,9 @@ ESP32 GPIO ──[100Ω]── Gate                     +12V ── Load (fan) �
   will kill the MOSFET without it. Use an ultrafast **UF4007** (same DO-41
   package) or a 1N5819/SS14 Schottky, because the channels PWM at 25 kHz; a
   plain 1N4007 is fine only on a channel that just switches on/off.
-- Keep each channel ≤ ~2 A, or fit clip-on TO-220 heatsinks
-  (`relay_board_mount -D heatsink=true`).
+- Clip-on TO-220 heatsinks are optional and not in the BOM: recommended above
+  ~1 A per channel, required above ~2 A (`relay_board_mount -D heatsink=true`).
+  A strip cut to closet length stays around 1 A.
 
 Run Dupont jumpers (female end on the ESP32 pin) from GPIO 25 / 26 / 27 / 14 and
 a GND pin into the J1 terminals.
@@ -370,9 +372,9 @@ Then: on first boot every node raises a WiFi access point called
    one image behave as the right node.*
 6. **Optional peripherals** — MH-Z19C CO₂ sensor (UART), HX711 load-cell
    scale, door reed switch (and, under it, "Door contact wired on its NO
-   terminal — invert"). These are **config-flag** devices. Unlike the I²C
-   sensors they are never autodetected: if you wired one and don't tick it,
-   it will silently never report.
+   terminal (open with the door shut) — invert"). These are **config-flag**
+   devices. Unlike the I²C sensors they are never autodetected: if you wired
+   one and don't tick it, it will silently never report.
 7. Optionally: **OTA password** (at least 12 characters, or OTA stays off),
    **Command signing key** (the key `provision-node.sh` printed — with it the
    node rejects unsigned, forged, replayed or redirected commands), and
@@ -384,8 +386,9 @@ you typed still filled in.
 
 The node reboots and appears on your dashboard within about 30 seconds.
 
-**The camera's portal** asks for the same WiFi, Pi address, MQTT and optional
-fields (no personality, no peripherals). It uploads frames to
+**The camera's portal** has no personality or peripherals: it asks only for
+the same WiFi, Pi address, MQTT and optional fields (OTA password, signing
+key, Secure MQTT, NTP server). It uploads frames to
 `http://<Pi address>:8000`.
 
 **Reopening the portal later.** A node whose settings have connected before no
@@ -400,17 +403,24 @@ telemetry, keeps its channels off and retries WiFi every 60 s.
 
 **Nodes already in service** don't need a factory reset to add a peripheral:
 `POST /api/hardware/nodes/<node_id>/peripherals` with
-`{"mhz19": true|false, "hx711": true|false, "reed": true|false}` sends the
-signed `cmd/config`, and the node reboots about 1.5 s later if its set changed.
+`{"mhz19": true|false, "hx711": true|false, "reed": true|false, "reed_inv": true|false}`
+(any subset) sends the signed `cmd/config`. The node reboots about 1.5 s later
+if its set of drivers changed; `reed_inv` applies live, with no reboot.
 
-**Secure MQTT.** Ticking it pins the Pi's CA (fetched from
-`/api/provision/ca`, which stays public in API-key mode) and connects on 8883.
-Use `sporeprint.local` (or a DHCP-reserved IP — install.sh puts every Pi IPv4
-into the certificate) as the Pi address. If no CA could be pinned yet, the node
-falls back to plaintext **loudly**: an ERROR log, a `tls_downgrade` alert,
-`tls:false` in its heartbeat, and CA-fetch retries after 1, 2, 4 and 8 min,
-then every 15 min; the first success moves it to TLS with no reboot. Tick
-**Require TLS** to have the node stay offline instead of falling back.
+**Secure MQTT.** Ticking it makes the node fetch the Pi's CA (from
+`/api/provision/ca`, which stays public in API-key mode) and try TLS on 8883
+with it. The CA is pinned only once that TLS connection works (the broker
+accepts the login); from then on the node stays on TLS. Use
+`sporeprint.local` (or a DHCP-reserved IP — install.sh puts every Pi IPv4
+into the certificate) as the Pi address. Until a CA is pinned, the node falls
+back to plaintext **loudly**: an ERROR log, a `tls_downgrade` alert whose
+message says why (no CA yet, certificate name mismatch or another CA, nothing
+on 8883, TLS error, login refused), `tls:false` in its heartbeat, and
+fetch-and-try retries after 1, 2, 4 and 8 min, then every 15 min, with no
+reboot. A certificate that does not name the node's Pi address is never
+pinned: re-run `./install.sh` on the Pi or use `sporeprint.local`. Tick
+**Require TLS** to have the node stay offline instead of falling back. The
+heartbeat's `ca_fp` is the SHA-256 of the CA the node pinned.
 
 **More than one chamber?** List every node (climate, relay, light, camera) in
 its chamber in the app. While grows run in two chambers, a node listed in no
@@ -497,12 +507,13 @@ MC-31B) with **COM / NO / NC** screw terminals; supply your own hookup wire.
 > (A 10 kΩ is in the parts kit.)
 
 Tick **Door reed switch** in the relay node's setup portal. Wired it to the
-**NO** terminal instead (open with the door shut)? Either move the lead to NC,
-or tick **"Door contact wired on its NO terminal — invert"** under the door
-switch (NVS `reed_inv`). For a node in service send `cmd/config
-{"peripherals": {"reed_inv": true}}` — `POST
+**NO** terminal instead? Either move the lead to NC, or tick **"Door contact
+wired on its NO terminal (open with the door shut) — invert"** under the door
+switch (NVS `reed_inv`). For a node in service, `POST
+/api/hardware/nodes/relay-01/peripherals` with `{"reed_inv": true}` (or send
+`cmd/config {"peripherals": {"reed_inv": true}}` through `POST
 /api/hardware/nodes/relay-01/command` with body
-`{"channel": "config", "peripherals": {"reed_inv": true}}`. It applies live,
+`{"channel": "config", "peripherals": {"reed_inv": true}}`). It applies live,
 with no reboot and no false door event.
 
 **Peristaltic pump.** Adafruit 1150 (12 V, ~100 mL/min) to the relay node's
@@ -588,7 +599,7 @@ Work down this list. Each step proves the one before it.
 | Node command returns 503 | The broker is down, or the Pi is cloud-paired with no `SPOREPRINT_MQTT_HMAC_KEY`. Run `./install.sh` (or `./scripts/provision-node.sh`), then `docker compose up -d server`. |
 | Schedules run hours off | The Pi's `TZ` is unset or unknown. Set a canonical Region/City (e.g. `America/Chicago`) as `TZ` in `.env`, then `docker compose up -d server`. |
 | Dashboard returns 401 everywhere | `SPOREPRINT_API_KEY` is set (an old `setup.sh` run generated one). Blank it, set `SPOREPRINT_ALLOW_UNAUTHENTICATED=true`, then `docker compose up -d server`. See [auth.md](auth.md). |
-| `tls_downgrade` alert from a node | Secure MQTT is ticked but no Pi CA is pinned yet; the node is on plaintext and retrying. Check the Pi address resolves from the node and that `/api/provision/ca` answers. |
+| `tls_downgrade` alert from a node | Secure MQTT is ticked but no Pi CA is pinned yet; the node is on plaintext and retrying. The message names the reason. "cert name mismatch": the node's Pi address is not in the broker certificate — re-run `./install.sh` on the Pi (it adds every Pi IPv4) or set the node's Pi address to `sporeprint.local`. No CA: check the Pi address resolves from the node and that `/api/provision/ca` answers. |
 | Camera never uploads | Its Pi address doesn't reach `http://<Pi address>:8000` from the camera, or the camera is on a USB port that can't supply 1 A. |
 | Can't reopen a camera's portal | There is no button on GPIO 13 — short IO13 to GND for 3–10 s (§9). |
 | Blue light doesn't trigger Cordyceps | You bought a generic blue strip (~465 nm), not a true 450 nm one. |

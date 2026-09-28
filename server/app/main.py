@@ -4,13 +4,18 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .config import settings
+from .db import get_db
 from .hardware.coredumps import coredump_dir
 from .health.service import update_task
+from .host_allow import HostAllowMiddleware
+from .retention import service as retention_service
 from .sessions.service import check_phase_reminders
 
 # Socket.IO accepts wildcard origins because engineio's CORS implementation only
@@ -34,7 +39,7 @@ async def lifespan(app: FastAPI):
 
     from .automation.service import seed_builtin_rules
     from .cloud.service import start_cloud_connector
-    from .retention.service import ensure_incremental_auto_vacuum, start_retention_task
+    from .retention.service import start_retention_task
     from .weather.service import start_weather_polling
 
     # v3.4.9 Debt 5 — configure structured logging with request_id
@@ -64,15 +69,6 @@ async def lifespan(app: FastAPI):
         )
 
     await init_db()
-    # One-time switch of an existing database to auto_vacuum=INCREMENTAL (a
-    # full VACUUM holding the write lock), done here before any writer task
-    # exists. New databases are created in that mode; afterwards this is a
-    # no-op. A failure (e.g. disk full) is logged and boot continues — the
-    # nightly job only loses its ability to hand freed pages back.
-    try:
-        await ensure_incremental_auto_vacuum()
-    except Exception as e:
-        log.error("auto_vacuum conversion failed; continuing boot: %s", e)
     _ensure_coredump_dir(log)
     await seed_builtins()
     await seed_builtin_rules()
@@ -131,6 +127,9 @@ async def lifespan(app: FastAPI):
     # not up yet this push is dropped, which is harmless because the connector
     # re-pushes the snapshot on every (re)connect.
     await push_state_snapshot()
+    # Last, once MQTT (the rules engine), the re-armed safety watchdogs and
+    # the vendor drivers are all running: the one-time auto_vacuum rewrite.
+    await _convert_to_incremental_auto_vacuum(log)
     yield
     await _stop_all_integrations()
     for task in tasks:
@@ -202,6 +201,44 @@ def _ensure_coredump_dir(log: logging.Logger) -> None:
     if not os.access(path, os.W_OK | os.X_OK):
         log.error("Coredump directory %s is not writable — node panic dumps "
                   "will be lost", path)
+
+
+# The one-time auto_vacuum conversion is a full VACUUM: it rewrites the whole
+# file while holding the write lock. Up to this size that is seconds on a Pi
+# SD card. A bigger database is left to the nightly retention window, which
+# converts once a large share of the file is free (retention._vacuum), rather
+# than stalling MQTT ingest and rule writes for minutes after every upgrade.
+_BOOT_AUTO_VACUUM_MAX_BYTES = 32 * 1024 * 1024
+
+
+async def _convert_to_incremental_auto_vacuum(log: logging.Logger) -> None:
+    """Switch a small existing database to auto_vacuum=INCREMENTAL at boot.
+
+    Called at the END of startup: MQTT (the rules engine), the rehydrated
+    safety watchdogs and the vendor drivers are already running, so a
+    persisted safety ceiling is re-armed (or tripped) before the rewrite, not
+    after it. New databases are created incremental, so this is a no-op for
+    them. A failure (e.g. disk full) is logged and boot continues — the
+    nightly job only loses its ability to hand freed pages back.
+    """
+    try:
+        try:
+            size = Path(settings.database_path).stat().st_size
+        except OSError:
+            size = 0
+        if size <= _BOOT_AUTO_VACUUM_MAX_BYTES:
+            await retention_service.ensure_incremental_auto_vacuum()
+            return
+        async with get_db() as db:
+            mode = await retention_service._pragma_int(db, "PRAGMA auto_vacuum")
+        if mode != retention_service._AUTO_VACUUM_INCREMENTAL:
+            log.info(
+                "Database is %.0f MB and not in auto_vacuum=INCREMENTAL mode; "
+                "leaving the one-time conversion VACUUM to the nightly retention "
+                "window instead of stalling writers at boot", size / 1e6,
+            )
+    except Exception as e:
+        log.error("auto_vacuum conversion failed; continuing boot: %s", e)
 
 
 # Overdue-phase reminders (INFO) go out once a day at this local hour
@@ -459,4 +496,7 @@ async def _sio_disconnect(sid):
     track_client_disconnect(sid)
 
 
-socket_app = socketio.ASGIApp(sio, app)
+# Outermost layer: the Host allow-list (DNS-rebinding guard, app/host_allow.py)
+# wraps Socket.IO as well as every FastAPI route. uvicorn serves this object
+# (server/Dockerfile CMD), so nothing reaches the app for an unlisted Host.
+socket_app = HostAllowMiddleware(socketio.ASGIApp(sio, app))

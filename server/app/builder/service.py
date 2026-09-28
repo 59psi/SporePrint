@@ -173,8 +173,8 @@ _HARDWARE_CONTRACT = """## Firmware Images and Boards (PlatformIO envs)
   - climate: sensors only, no channels
   - relay: 4 switch channels fae, exhaust, circulation, aux (25 kHz PWM, pwm 0-255; aux drives the misting pump and cuts off after 60 s unless cmd/config max_on_sec raises it)
   - lighting: 4 dim channels white, blue, red, far_red (10-bit level 0-1023) plus scenes colonization_dark, pinning_daylight, fruiting_standard, cordyceps_blue, lions_mane_gentle
-- Sensors autodetected on the I2C bus at boot: SHT3x/SHT4x temp+RH (0x44/0x45), SCD4x CO2 (0x62) or SCD30 (0x61), BH1750 lux (0x23/0x5C). Optional peripherals, enabled in the setup portal or by cmd/config {{"peripherals": {{"mhz19": bool, "hx711": bool, "reed": bool}}}}: MH-Z19C CO2 (UART), HX711 load-cell scale, door reed switch.
-- Camera node — env {cam_envs}: AI-Thinker ESP32-CAM ONLY. Its image sensor is auto-detected at boot: OV2640, OV3660 (what the current BOM 2-pack ships) or OV5640. ESP32-S3 camera boards (ESP32-S3-CAM, Freenove, XIAO ESP32S3 Sense, Waveshare) are NOT supported by the shipped firmware — never recommend one; a second camera is another AI-Thinker ESP32-CAM.
+- Sensors autodetected on the I2C bus at boot: SHT3x/SHT4x temp+RH (0x44/0x45), SCD4x CO2 (0x62) or SCD30 (0x61), BH1750 lux (0x23/0x5C). Optional peripherals, enabled in the setup portal or by cmd/config {{"peripherals": {{"mhz19": bool, "hx711": bool, "reed": bool, "reed_inv": bool}}}}: MH-Z19C CO2 (UART), HX711 load-cell scale, door reed switch (reed_inv inverts a door contact wired on its NO terminal and applies live; changing mhz19/hx711/reed reboots the node).
+- Camera node — env {cam_envs}: AI-Thinker ESP32-CAM ONLY. Its image sensor is OV2640 (the BOM AITRIP 2-pack) or OV3660 (current HiLetgo/Aideepen packs) or OV5640, auto-detected at boot. ESP32-S3 camera boards (ESP32-S3-CAM, Freenove, XIAO ESP32S3 Sense, Waveshare) are NOT supported by the shipped firmware — never recommend one; a second camera is another AI-Thinker ESP32-CAM.
 
 ## Reserved GPIOs — never assign these to new hardware
 ESP32-WROOM-32 node (node_esp32):

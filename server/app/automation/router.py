@@ -6,6 +6,7 @@ from ..db import get_db
 from .models import AutomationRule, ManualOverride
 from .engine import (
     set_override, get_overrides, clear_override as clear_override_engine, note_actuator_off,
+    note_actuator_on,
 )
 from .service import deserialize_rule_row, serialize_rule_data, validate_action_channel
 from .smart_plugs import get_all_plugs, paired_plug, register_plug, send_plug_command
@@ -159,8 +160,14 @@ async def command_plug(plug_id: str, data: dict):
         raise HTTPException(
             503, f"Command to plug '{plug_id}' not published — MQTT broker unavailable",
         )
+    # Exactly what the plug is sent (send_plug_command only changes case), so a
+    # state the plug won't read as OFF never clears a ceiling.
     if str(state).lower() == "off":
         # A manual OFF ends whatever automation ON a safety ceiling was timing;
         # without this the next automation ON keeps the stale deadline.
         await note_actuator_off(plug_id, None, sent_at=sent_at)
+    else:
+        # A manual ON (or anything but a plain OFF): a rule cutoff must
+        # re-send its OFF rather than skip it as a redundant repeat.
+        await note_actuator_on(plug_id, None)
     return {"status": "sent", "plug_id": plug_id, "state": state}
