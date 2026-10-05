@@ -137,8 +137,11 @@ def _component(c) -> dict:
         "notes": c.notes,
     }
     if c.pack_price:
-        # One pack covers `quantity`: the line costs packPrice once.
+        # A pack line: N chambers buy ceil(quantity x N / packSize) packs at
+        # packPrice (Component.line_cost). Set together with pack_size.
         out["packPrice"] = c.pack_price
+    if c.pack_size:
+        out["packSize"] = c.pack_size
     out["shared"] = bool(c.shared)
     return out
 

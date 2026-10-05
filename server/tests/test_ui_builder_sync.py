@@ -19,6 +19,7 @@ of the minified bundle. These tests fail when:
     refresh just the fallback data.
 """
 import importlib.util
+import math
 import re
 import shutil
 from pathlib import Path
@@ -153,16 +154,24 @@ def test_fallback_links_resolve(fallback):
         assert d["sourceUrl"] == f"https://github.com/59psi/SporePrint/blob/main/docs/{d['filename']}", d
 
 
-def test_fallback_totals_match_the_bom(fallback):
-    # The page prices a line as packPrice once (one pack covers the quantity),
-    # otherwise priceApprox x quantity; for one chamber that is parts_cost().
+@pytest.mark.parametrize("chambers", [1, 4, 12])
+def test_fallback_totals_match_the_bom(fallback, chambers):
+    # The page's rule (pi-ui lib/builder-data.ts lineCost), mirroring
+    # Component.line_cost: a shared line is bought once; a pack line buys
+    # ceil(units / packSize) packs at packPrice; else priceApprox x units.
     def usd(s):
         return float(s.lstrip("$").replace(",", ""))
 
+    def line_cost(c):
+        units = c["quantity"] if c["shared"] else c["quantity"] * chambers
+        if c.get("packPrice"):
+            packs = math.ceil(units / c["packSize"]) if c.get("packSize") else (1 if c["shared"] else chambers)
+            return usd(c["packPrice"]) * packs
+        return usd(c["priceApprox"]) * units
+
     for tier, ui in zip(TIERS, fallback["tiers"], strict=True):
-        total = sum(usd(c["packPrice"]) if c.get("packPrice") else usd(c["priceApprox"]) * c["quantity"]
-                    for c in ui["components"])
-        assert total == pytest.approx(tier.parts_cost(), abs=0.005), tier.id
+        total = sum(line_cost(c) for c in ui["components"])
+        assert total == pytest.approx(tier.parts_cost(chambers), abs=0.005), tier.id
         shared = sum(1 for c in ui["components"] if c["shared"])
         assert shared == sum(1 for c in tier.components if c.shared), tier.id
 
@@ -173,6 +182,9 @@ def _ui_component(c: dict) -> dict:
     out.update(priceApprox=c["price_approx"], notes=c.get("notes") or "")
     if c.get("pack_price"):
         out["packPrice"] = c["pack_price"]
+    size = c.get("pack_size")
+    if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+        out["packSize"] = size
     if isinstance(c.get("shared"), bool):
         out["shared"] = c["shared"]
     return out

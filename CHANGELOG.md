@@ -60,7 +60,7 @@ signing vectors are unchanged. Firmware details are in
 ### Hardware (Builder BOM, `GET /api/builder/tiers`)
 - **Tier totals are now ~$290 / ~$745 / ~$960** (were ~$180 / ~$390 / ~$555),
   re-checked live on 2026-09-27, and now include the cabling, consumables,
-  heat-set inserts and screws. Of that, ~$72 / ~$226 / ~$254 is reusable kits
+  heat-set inserts and screws. Of that, ~$72 / ~$217 / ~$245 is reusable kits
   and spools that cover more than one chamber. They exclude the tri-spectrum
   strip's shipping and duty (~$10+) and tools. README and the build guide use
   the same numbers.
@@ -79,8 +79,28 @@ signing vectors are unchanged. Firmware details are in
   cables (USB-C climate, micro-USB camera MBs). New optional field
   `Component.shared` and categories `wiring` / `hardware`; the wiring rows
   come from `_power_rows()`.
-- New optional API field `Component.pack_price`: when set, one pack covers the
-  quantity; `price_approx` stays the per-unit price.
+- New optional API fields `Component.pack_price` and `Component.pack_size`
+  for pack-sold lines. `quantity` counts the units a tier needs per chamber,
+  `price_approx` is the per-unit price inside the pinned pack, `pack_price`
+  that pack's price and `pack_size` its units; N chambers buy
+  `ceil(quantity x N / pack_size)` packs (`Component.line_cost(chambers)`,
+  `HardwareTier.parts_cost(chambers)`), and `shared` lines never multiply.
+  Every pack line now has this one shape. The camera 2-pack, USB charger
+  2-packs, 1 ft USB-C 3-pack, micro-USB 2-pack, NA-SEC3 3-pack, DC pigtail
+  2-pack, KF301 30-pack and door-contact 2-set used to count packs (so ×4
+  chambers bought 8 cameras for 4), and the ESP32 / IRLZ44N / resistor /
+  diode packs were bought once per chamber (×4 bought four 100-packs of
+  resistors). One-chamber totals are unchanged; at ×4 / ×12 chambers the
+  tiers come to $484.60 / $1,011.80, $1,712.38 / $4,342.18 and
+  $2,519.78 / $6,673.87. All the Things now lists 4 ESP32 boards (the 6-pack
+  leaves 2 spares) instead of 6. The inline fuse holders are two per chamber
+  from a 10-pack instead of a shared line, so the reusable-kit share is
+  ~$72 / ~$217 / ~$245.
+- Setup steps name the Builder's current tabs (Firmware, Models) and the
+  dashboard's Hardware page, and check a smart plug with
+  `GET /api/automation/plugs` — the dashboard has no plug panel. The weather
+  API's "unavailable" message names `SPOREPRINT_WEATHER_LON` in full, and the
+  setup-step span check rejects name fragments such as `_LON`.
 - New lines: Raspberry Pi Active Cooler (all tiers); Adafruit 4397 + 4210
   STEMMA QT cables (the climate node is now a no-solder daisy chain, replacing
   the M-F jumpers); USB-A to USB-C cables, USB-A to micro-USB cables (camera
@@ -152,10 +172,11 @@ signing vectors are unchanged. Firmware details are in
   `hardware/3d` and `hardware/wiring` (both 404), raw GitHub `.scad`
   downloads that cannot render without `models/lib/`, and a false
   "slicer-ready STL exports" claim.
-- Shopping list: a pack-priced line counts its pack price once. `shared`
-  parts are bought once per installation, and every other line is multiplied
-  by the chamber count. The total shows the shared and per-chamber parts
-  separately, and smart plugs, wiring and hardware have their own sections.
+- Shopping list: `shared` parts are bought once per installation and every
+  other line's units scale with the chamber count; a pack-sold line buys whole
+  packs (`pack_size`, above), so totals equal `parts_cost(N)`. The total shows
+  the shared and chambered parts separately, and smart plugs, wiring and
+  hardware have their own sections.
 - Models: each card shows the title and description from the model's `.scad`
   header and downloads the Pi's self-contained file (`lib/` inlined). There is
   a "download all (.zip)" link, and "browse repo" opens `models/`.
@@ -164,8 +185,9 @@ signing vectors are unchanged. Firmware details are in
 - Firmware: one card per image (unified node, camera), downloaded as the Pi's
   self-contained ZIP. An image is listed for a tier when one of its PlatformIO
   envs is a tier target, which covers `node_esp32s3_n32r16v`.
-- Resources: the repo is labelled AGPL-3.0 (it said MIT), and the dead
-  Discord and forum links are removed.
+- Resources: the repo is labelled AGPL-3.0 (it said MIT). The dead forum
+  link is removed, and the dead Discord invite is replaced by a plain-text
+  "coming soon" placeholder with no link.
 - **`scripts/sync_ui_builder_data.py` now verifies the bundle instead of
   patching a static copy.** `--check` confirms that the bundle requests
   `/api/builder/*` live and has none of the old static Builder's dead links or
@@ -185,7 +207,8 @@ signing vectors are unchanged. Firmware details are in
     size" link. If the Pi's SVG does not load, the page shows the same
     generated diagram from the bundle instead of the old hand-drawn sketch,
     which clipped labels, put pin labels under wires and cut off the legend.
-    The connection, BOM and firmware-file tables scroll inside their own box.
+    The firmware-file table scrolls inside its own box; the BOM and
+    connection tables stack as cards on narrow screens (third rebuild below).
   - Setup: the backticked commands, paths and topics show as code with a copy
     button. On a plain-http Pi the button falls back to `execCommand("copy")`.
     Copying or selecting text no longer ticks the step. Ticks are now stored
@@ -194,8 +217,6 @@ signing vectors are unchanged. Firmware details are in
     matching new steps.
   - Firmware: each image card lists the `pio run -t upload -e <env>` command
     for each board, with copy buttons.
-  - Resources: Discord returns as a "coming soon" placeholder with no link.
-    The forum stays removed.
   - "Send BOM to /shopping" now hands the tier and chamber count to the
     Shopping List. That page no longer shows demo rows or a restock banner:
     it lists the sent BOM (live from `/api/builder/tiers/{id}`, totals equal
@@ -224,6 +245,29 @@ signing vectors are unchanged. Firmware details are in
   - Single-column model cards no longer leave blank bands.
   - Cost captions use whole dollars, and the stale "Pi's estimate" clause is
     removed.
+- **`ui/dist` rebuilt after a third browser audit.**
+  - Pack-sold parts show units and the whole packs that buy them ("×4 · 2
+    packs of 2", "$5.49 / pack of 100 · ~$0.05 ea") on the Builder's Shopping
+    tab, the Shopping List and its CSV. Totals equal `parts_cost(N)` at every
+    chamber count; the caption splits shared from chambered parts and says
+    what whole packs save. Tier cards and the Overview count BOM lines and
+    units separately.
+  - Builder: below 900 px the BOM and wiring-connection tables stack as cards
+    instead of scrolling (the Buy link and wiring notes were cut off between
+    1024 and 1340 px). The tier and chamber count stay in the URL, "Send BOM"
+    is a real link (`/shopping?bom=…&chambers=…`), and offline the camera
+    firmware card lists `cam_policy.h` as well as `main.cpp`.
+  - Shopping List: one message when the sessions can't be read; a hand-set
+    grow count shows as an override with a reset; a count change refetches
+    only that species; the two 404s are told apart; the CSV defuses every
+    formula-like cell (`-1+2`, a leading tab); custom items validate their
+    name and link inline.
+  - The phone drawer is a modal dialog (focus kept inside, page behind it
+    inert, focus restored on close).
+  - Species cards size to their content; Contamination pills follow one
+    severity ladder (critical red, high amber) and list every entry; Sessions
+    show the session name; Sessions and Transcripts pin their row action
+    instead of scrolling the page; long automation conditions wrap.
 
 ### Enclosures (`models/`)
 - **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,

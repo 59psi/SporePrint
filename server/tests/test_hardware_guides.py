@@ -24,6 +24,7 @@ must name something this repo has (see "setup-step code spans").
 
 import functools
 import json
+import math
 import os
 import re
 import shlex
@@ -34,7 +35,7 @@ import pytest
 import yaml
 
 from app.builder.hardware_guides import _ESP32_CAM, _S3_PIN_MAP, TIERS
-from app.builder.models import HardwareTier, usd
+from app.builder.models import Component, HardwareTier, usd
 from app.builder.service import _HARDWARE_CONTRACT
 from app.main import app as server_app
 
@@ -129,12 +130,151 @@ def test_estimated_cost_matches_the_components(tier_id):
     )
 
 
-def test_pack_priced_passives_are_counted_once():
-    """A 125-pack of diodes is bought once, whatever the quantity."""
-    tier = _tier("all_the_things")
-    diode = next(c for c in tier.components if "UF4007" in c.name)
-    assert diode.pack_price
-    assert diode.line_cost() == usd(diode.pack_price)
+# ── pack-sold lines and the chamber multiplier ─────────────────────────────
+#
+# A pack-sold line counts UNITS: quantity is what the tier needs per chamber,
+# price_approx the per-unit price within the pinned pack, pack_price that
+# pack's price and pack_size its units. N chambers buy ceil(quantity x N /
+# pack_size) packs. The Builder used to scale such lines as "one pack per
+# chamber" — or, where quantity counted packs, as N x packs — so x4 chambers
+# bought four camera 2-packs (8 cameras) and four 100-packs of resistors.
+
+CHAMBERS = (1, 4, 12)
+
+# Packs bought at x1 / x4 / x12 chambers for every pack line. Changing a pack
+# or a quantity must change this table on purpose. pi-ui's builder-data
+# tests pin the same numbers (frontend/packages/pi-ui, private monorepo).
+EXPECTED_PACKS = {
+    "recommended": {
+        "ESP32-WROOM-32 DevKit": (3, 3, (1, 4, 12)),
+        "IRLZ44N": (6, 10, (1, 3, 8)),
+        "100 Ohm Resistor": (6, 100, (1, 1, 1)),
+        "10K Ohm Resistor": (6, 100, (1, 1, 1)),
+        "Flyback Diode": (4, 125, (1, 1, 1)),
+        "2-pos 5.08 mm PCB Screw Terminals": (16, 30, (1, 3, 7)),
+        "DC Barrel Pigtail": (1, 2, (1, 2, 6)),
+        "ESP32-CAM": (1, 2, (1, 2, 6)),
+        "USB-A to USB-C Data Cable, 1 ft": (2, 3, (1, 3, 8)),
+        "USB-A to Micro-USB Data Cable": (1, 2, (1, 2, 6)),
+        "USB Wall Charger": (4, 2, (2, 8, 24)),
+        "Inline ATC/ATO Blade Fuse Holders": (2, 10, (1, 1, 3)),
+        "Noctua NA-SEC3": (3, 3, (1, 4, 12)),
+    },
+    "all_the_things": {
+        "ESP32-WROOM-32 DevKit": (4, 6, (1, 3, 8)),
+        "IRLZ44N": (8, 10, (1, 4, 10)),
+        "100 Ohm Resistor": (8, 100, (1, 1, 1)),
+        "10K Ohm Resistor": (9, 100, (1, 1, 2)),
+        "Flyback Diode": (4, 125, (1, 1, 1)),
+        "2-pos 5.08 mm PCB Screw Terminals": (16, 30, (1, 3, 7)),
+        "DC Barrel Pigtail": (1, 2, (1, 2, 6)),
+        "ESP32-CAM": (2, 2, (1, 4, 12)),
+        "USB-A to USB-C Data Cable, 1 ft": (2, 3, (1, 3, 8)),
+        "USB-A to Micro-USB Data Cable": (2, 2, (1, 4, 12)),
+        "USB Wall Charger": (6, 2, (3, 12, 36)),
+        "Magnetic Door Contact": (1, 2, (1, 2, 6)),
+        "Inline ATC/ATO Blade Fuse Holders": (2, 10, (1, 1, 3)),
+        "Noctua NA-SEC3": (3, 3, (1, 4, 12)),
+    },
+    "bare_bones": {
+        "USB Wall Charger": (1, 2, (1, 2, 6)),
+    },
+}
+
+# parts_cost() at x1 / x4 / x12 chambers. x1 is what estimated_cost rounds;
+# pi-ui's bomTotals() must return the same three figures for each tier.
+EXPECTED_TOTALS = {
+    "bare_bones": (290.90, 484.60, 1011.80),
+    "recommended": (747.83, 1712.38, 4342.18),
+    "all_the_things": (964.68, 2519.78, 6673.87),
+}
+
+
+def _pack_lines(tier: HardwareTier) -> list[Component]:
+    return [c for c in tier.components if c.pack_price or c.pack_size]
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_pack_fields_come_together_and_price_one_unit(tier_id):
+    """No legacy pack line: pack_price and pack_size are set together, and
+    price_approx is the pack's own per-unit price (to the cent)."""
+    for c in _pack_lines(_tier(tier_id)):
+        assert c.pack_price and c.pack_size >= 2, f"{c.name}: pack_price without pack_size or vice versa"
+        per_unit = usd(c.pack_price) / c.pack_size
+        assert abs(usd(c.price_approx) - per_unit) <= 0.01, (
+            f"{c.name}: price_approx {c.price_approx} is not {c.pack_price} / {c.pack_size}")
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_pack_named_lines_carry_their_pack_size(tier_id):
+    """A line sold as an 'N-pack' / 'N-set' counts units, not packs."""
+    for c in _tier(tier_id).components:
+        m = re.search(r"(\d+)-(?:pack|set)\b", c.name)
+        if m and not c.shared:
+            assert c.pack_size == int(m.group(1)), f"{c.name}: pack_size {c.pack_size}"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_every_pack_line_buys_whole_packs_per_chamber_count(tier_id):
+    tier = _tier(tier_id)
+    lines = {c.name: c for c in _pack_lines(tier)}
+    expected = EXPECTED_PACKS[tier_id]
+    assert len(lines) == len(expected), sorted(lines)
+    for prefix, (quantity, size, packs) in expected.items():
+        c = next(c for name, c in lines.items() if name.startswith(prefix))
+        assert (c.quantity, c.pack_size) == (quantity, size), c.name
+        for n, want in zip(CHAMBERS, packs, strict=True):
+            units = c.units(n)
+            assert units == quantity * n, c.name
+            assert c.packs(n) == want == math.ceil(units / size), (c.name, n)
+            assert (want - 1) * size < units <= want * size, (c.name, n)  # the fewest packs
+            assert c.line_cost(n) == pytest.approx(want * usd(c.pack_price)), (c.name, n)
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_shared_lines_never_multiply(tier_id):
+    for c in _tier(tier_id).components:
+        if c.shared:
+            for n in CHAMBERS:
+                assert c.units(n) == c.quantity, c.name
+                assert c.line_cost(n) == c.line_cost(), c.name
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_tier_totals_per_chamber_count(tier_id):
+    tier = _tier(tier_id)
+    got = tuple(round(tier.parts_cost(n), 2) for n in CHAMBERS)
+    assert got == EXPECTED_TOTALS[tier_id]
+    assert tier.parts_cost() == pytest.approx(sum(c.line_cost() for c in tier.components))
+
+
+def test_pack_math_rounds_up_to_whole_packs():
+    part = Component(name="x", role="", quantity=6, price_approx="$1", pack_price="$10",
+                     pack_size=10, url="https://example.com", category="misc")
+    assert [part.packs(n) for n in (1, 2, 3, 5)] == [1, 2, 2, 3]  # 6, 12, 18, 30 units
+    assert part.line_cost(5) == 30
+    exact = part.model_copy(update={"quantity": 5})
+    assert [exact.packs(n) for n in (1, 2, 3)] == [1, 1, 2]  # 10 units fill one pack
+    single = part.model_copy(update={"pack_price": "", "pack_size": 0})
+    assert single.packs(4) == 0 and single.line_cost(4) == 24
+    with pytest.raises(ValueError):
+        part.line_cost(0)
+
+
+def test_legacy_pack_price_without_size_keeps_one_pack_per_chamber():
+    legacy = Component(name="x", role="", quantity=6, price_approx="$0.05", pack_price="$5.49",
+                       url="https://example.com", category="misc")
+    assert [legacy.packs(n) for n in (1, 4)] == [1, 4]
+    assert legacy.line_cost(4) == pytest.approx(4 * 5.49)
+    shared = legacy.model_copy(update={"shared": True})
+    assert shared.packs(4) == 1 and shared.line_cost(4) == 5.49
+
+
+def test_api_exposes_pack_size(client):
+    for tier in TIERS:
+        body = client.get(f"/api/builder/tiers/{tier.id}").json()
+        assert [c["pack_size"] for c in body["components"]] == [c.pack_size for c in tier.components]
+        assert [c["quantity"] for c in body["components"]] == [c.quantity for c in tier.components]
 
 
 # ── switch-stage quantities ─────────────────────────────────────────────────
@@ -249,23 +389,18 @@ def test_climate_sensors_daisy_chain_over_stemma_qt(tier_id):
 # ── power ───────────────────────────────────────────────────────────────────
 
 
-def _pack(name: str) -> int:
-    m = re.search(r"(\d+)-pack", name, re.I)
-    return int(m.group(1)) if m else 1
-
-
 @pytest.mark.parametrize(
     "tier_id,nodes,cams",
     [("bare_bones", 1, 0), ("recommended", 3, 1), ("all_the_things", 4, 2)],
 )
 def test_every_board_has_usb_power_and_a_cable(tier_id, nodes, cams):
+    # Quantities count units (cubes, cables, cameras), never packs.
     tier = _tier(tier_id)
-    bricks = sum(c.quantity * _pack(c.name) for c in tier.components if "USB Wall Charger" in c.name)
-    usb_c = sum(c.quantity * _pack(c.name) for c in tier.components if "USB-A to USB-C" in c.name)
-    micro = sum(c.quantity * _pack(c.name) for c in tier.components if "USB-A to Micro-USB" in c.name)
-    assert bricks >= nodes + cams
-    assert usb_c >= nodes
-    assert micro >= cams
+    assert _qty(tier, r"USB Wall Charger") == nodes + cams
+    assert _qty(tier, r"USB-A to USB-C") == nodes
+    assert _qty(tier, r"USB-A to Micro-USB") == cams
+    assert _qty(tier, r"^ESP32-CAM") == cams
+    assert _qty(tier, r"^ESP32-WROOM-32") == nodes
     for c in tier.components:
         assert "ESP32-S3" not in c.role, f"{c.name}: the BOM board is the WROOM-32"
 
@@ -389,7 +524,8 @@ def test_tier3_esp32_quantity_is_the_pinned_six_pack():
     tier = _tier("all_the_things")
     esp = next(c for c in tier.components if c.name.startswith("ESP32-WROOM-32"))
     assert "6-pack (B0DSZBH9N9" in esp.notes
-    assert esp.quantity == 6, "the pinned buy is a 6-pack: 4 nodes + 2 spares"
+    assert esp.quantity == 4, "4 node boards per chamber; the 6-pack leaves 2 spares"
+    assert esp.pack_size == 6 and esp.packs() == 1
     assert esp.line_cost() == usd("$30")
 
 
@@ -459,8 +595,7 @@ def test_every_tier_can_mount_and_route_what_it_prints(tier_id):
 def test_in_chamber_boards_get_six_foot_cables(tier_id, in_chamber_nodes, cams):
     tier = _tier(tier_id)
     assert _qty(tier, r"USB-C Data Cable, 6 ft") == in_chamber_nodes
-    micro = [c for c in tier.components if "Micro-USB Data Cable, 6 ft (2-pack)" in c.name]
-    assert sum(c.quantity * 2 for c in micro) >= cams
+    assert _qty(tier, r"Micro-USB Data Cable, 6 ft") == cams
     assert not _has(tier, r"Micro-USB Data Cable, 3 ft")
 
 
@@ -477,7 +612,7 @@ def test_surge_strip_has_an_outlet_per_brick():
     # Pi PSU + 12V brick + USB cubes + smart plugs must fit the chosen strip.
     outlets = {"bare_bones": 6, "recommended": 12, "all_the_things": 12}
     for tier in TIERS:
-        cubes = sum(c.quantity * 2 for c in tier.components if c.name.startswith("USB Wall Charger"))
+        cubes = _qty(tier, r"^USB Wall Charger")
         bricks = 1 + (1 if _has(tier, r"12V Power Supply") else 0)
         plugs = _qty(tier, r"Tasmota")
         assert bricks + cubes + plugs <= outlets[tier.id], tier.id
@@ -509,7 +644,10 @@ def test_shared_lines_are_kits_or_pi_side_only():
 #                  Topic t a plug-t rule target. A FullTopic must reach the Pi
 #                  (sp-3p may publish it, the server subscribes) — except
 #                  Tasmota's default, which the steps say the broker drops
-#   env name       SPOREPRINT_* that docker-compose.yml passes or install.sh sets
+#   env name       SPOREPRINT_* that docker-compose.yml passes or install.sh sets,
+#                  as a whole word (a prefix of a longer name does not count)
+#   fragment       `_LON`, `WEATHER_` — a name cut short never passes, even
+#                  where some file prints the same fragment
 #   -D / x="y"     an OpenSCAD parameter a model declares, with a valid value
 #   path           exists (repo root, models/ or scripts/); .env is install.sh's
 #   cmd/<x>        an endpoint the node's command router serves
@@ -752,8 +890,11 @@ def _check_span(span: str, before: str, f: SimpleNamespace) -> str | None:
         return _check_json(span, f)
     if span.startswith("Backlog "):
         return _check_backlog(span, before, f)
+    if re.fullmatch(r"_\w*|\w*_", span):
+        return "a fragment of a name — write the whole name"
     if m := re.fullmatch(r"(SPOREPRINT_[A-Z0-9_]+)(=\S+)?", span):
-        return None if m.group(1) in f.compose_text or m.group(1) in f.install else (
+        whole = re.compile(rf"(?<![\w-]){re.escape(m.group(1))}(?![\w-])")
+        return None if whole.search(f.compose_text) or whole.search(f.install) else (
             f"{m.group(1)} is neither passed by docker-compose.yml nor set by install.sh")
     if span.startswith("-D "):
         return _check_scad_param(shlex.split(span)[1], f)
@@ -813,6 +954,64 @@ def test_every_code_span_names_something_the_repo_has(tier_id):
             if err := _check_span(m.group(1), step[:m.start()], f):
                 problems.append(f"step {i}: `{m.group(1)}` — {err}")
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize("span,ok", [
+    ("SPOREPRINT_WEATHER_LON", True),
+    ("SPOREPRINT_WEATHER_LAT", True),
+    ("_LON", False),            # what the weather step and the API message used to say
+    ("_LAT", False),
+    ("SPOREPRINT_WEATHER_", False),
+    ("SPOREPRINT_WEATHER_LO", False),  # a prefix of a real name
+    ("WEATHER_LON", False),     # only ever inside SPOREPRINT_WEATHER_LON
+])
+def test_code_span_check_rejects_name_fragments(span, ok):
+    assert (_check_span(span, "", _facts()) is None) is ok
+
+
+def test_weather_unavailable_message_names_both_env_names(client):
+    """The API message spells out both names, so no doc or step can quote a
+    `_LON`-style fragment back from the server's own text."""
+    body = client.get("/api/weather/current").json()
+    assert body["status"] == "unavailable"
+    named = set(re.findall(r"SPOREPRINT_\w+", body["message"]))
+    assert named == {"SPOREPRINT_WEATHER_LAT", "SPOREPRINT_WEATHER_LON"}, body["message"]
+    assert not re.search(r"(?<!\w)_[A-Z]", body["message"]), body["message"]
+
+
+# ── dashboard names in the steps ────────────────────────────────────────────
+#
+# Steps send the reader to Builder tabs and dashboard pages by name. Those
+# names are checked against the dashboard this repo ships (ui/dist, the
+# compiled pi-ui): the old "Builder page → ESP32 Firmware section", "Builder →
+# 3D Models" and "Dashboard hardware panel" named things the page no longer has.
+
+UI_DIST = REPO_ROOT / "ui" / "dist" / "assets"
+
+
+@functools.cache
+def _dashboard_names() -> tuple[frozenset[str], frozenset[str]]:
+    """(Builder tab ids, sidebar page labels) from the compiled dashboard."""
+    js = "\n".join(p.read_text(errors="replace") for p in UI_DIST.glob("*.js"))
+    tabs = re.search(r'\["overview"((?:,"\w+")+)\]', js)
+    assert tabs, "the Builder tab list is not in ui/dist — rebuilt with other tab ids?"
+    pages = re.findall(r'\{to:"/[\w/-]*",label:"([^"]+)"\}', js)
+    assert "Builder" in pages and "Hardware" in pages, pages
+    return frozenset(["overview", *re.findall(r'"(\w+)"', tabs.group(1))]), frozenset(pages)
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_steps_name_real_builder_tabs_and_pages(tier_id):
+    tabs, pages = _dashboard_names()
+    for step in _tier(tier_id).setup_steps:
+        prose = _CODE_RE.sub("", step)
+        for m in re.finditer(r"Builder(?: page)? → ([\w ]+?)(?= tab\b|[;:,.)—]|$)", prose):
+            assert m.group(1).lower() in tabs and prose[m.end():].startswith(" tab"), (
+                f"{tier_id}: 'Builder → {m.group(1)}' is not a Builder tab ({sorted(tabs)})")
+        for m in re.finditer(r"\b([A-Z]\w*(?: [A-Z]\w*)*) page\b", prose):
+            assert m.group(1) in pages, f"{tier_id}: no {m.group(1)!r} page in the dashboard nav"
+        for stale in ("ESP32 Firmware section", "3D Models", "hardware panel"):
+            assert stale not in prose, f"{tier_id}: stale dashboard name {stale!r}"
 
 
 def test_setup_steps_mark_the_commands_people_copy():

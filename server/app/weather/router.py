@@ -16,7 +16,7 @@ router = APIRouter()
 async def current_weather():
     weather = get_current_weather()
     if not weather:
-        return {"status": "unavailable", "message": "Weather data not available. Configure SPOREPRINT_WEATHER_LAT and _LON."}
+        return {"status": "unavailable", "message": "Weather data not available. Configure SPOREPRINT_WEATHER_LAT and SPOREPRINT_WEATHER_LON."}
     return weather
 
 

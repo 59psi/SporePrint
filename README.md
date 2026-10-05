@@ -340,7 +340,7 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 
 ### Hardware Builder
 
-- **3 hardware tiers** -- Bare Bones (~$290), Recommended (~$745), All the Things (~$960); of that, ~$72 / ~$226 / ~$254 is reusable kits and spools (wire, connectors, fuses, heat-shrink, ties, inserts, screws, solder) that cover more than one chamber
+- **3 hardware tiers** -- Bare Bones (~$290), Recommended (~$745), All the Things (~$960); of that, ~$72 / ~$217 / ~$245 is reusable kits and spools (wire, connectors, fuses, heat-shrink, ties, inserts, screws, solder) that cover more than one chamber
 - **Shopping lists** -- complete parts lists with purchase links, re-checked live 2026-09-27, including the cabling and consumables (surge strip, pigtail, WAGO connectors, inline fuses, 18 / 22 AWG wire, fan extensions, heat-shrink, grommets, inserts, screws)
 - **Wiring diagrams** -- color-coded SVG diagrams for each tier, served by the Pi at `/api/builder/diagrams/<file>.svg`
 - **Step-by-step assembly** -- guides for building sensor and actuator nodes
@@ -568,7 +568,7 @@ Species can also be imported as custom JSON profiles for varieties not in the bu
 | **Recommended** | ~$745 | + SCD41 CO₂, relay node (3 fans + aux), lighting node (white + 450 nm blue), 1 camera, 2 plugs, 12 V 5 A PSU with fused WAGO distribution (3 A relay / 5 A lighting), 12-outlet strip |
 | **All the Things** | ~$960 | + 2nd climate node, all 4 light channels (660 nm red, 730 nm far-red), HX711 scale, door contact, peristaltic pump, 4 plugs, 2nd camera, 12 V 10 A PSU (3 A / 7.5 A fuses), 12-outlet + 2 USB-A strip |
 
-Costs are the sum of the Builder's parts list (`server/app/builder/hardware_guides.py`), re-checked 2026-09-27, and include the cabling, consumables, heat-set inserts and screws. Of that, ~$72 / ~$226 / ~$254 is reusable kits and spools (wire, WAGO connectors, fuses, heat-shrink, zip ties, VELCRO, grommets, inserts, screws, solder, the Dupont and breadboard kits) that cover more than one chamber — the Builder page's chamber count leaves those shared lines at one. They leave out the tri-spectrum strip's shipping from China and import duty (~$10+) and your tools (listed in the build guide).
+Costs are the sum of the Builder's parts list (`server/app/builder/hardware_guides.py`), re-checked 2026-09-27, and include the cabling, consumables, heat-set inserts and screws. Of that, ~$72 / ~$217 / ~$245 is reusable kits and spools (wire, WAGO connectors, fuses, heat-shrink, zip ties, VELCRO, grommets, inserts, screws, solder, the Dupont and breadboard kits) that cover more than one chamber — the Builder page's chamber count leaves those shared lines at one. They leave out the tri-spectrum strip's shipping from China and import duty (~$10+) and your tools (listed in the build guide).
 
 The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams (one per tier + a system overview), step-by-step assembly instructions for each tier, and 10 parametric OpenSCAD 3D-printable enclosure models (Pi case, ESP32 case, sensor mount + bracket, camera mount, HX711 load-cell scale, peristaltic pump bracket, relay/lighting switch board, power supply mount, fan duct).
 

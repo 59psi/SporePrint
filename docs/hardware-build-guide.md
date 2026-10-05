@@ -32,7 +32,7 @@ firmware and the current bill of materials actually use — not an approximation
 | 12 V supply | none | 12 V 5 A (60 W) | 12 V 10 A (120 W) |
 | 12 V distribution | none | 14 AWG pigtail → WAGO 221 → inline 3 A (relay) + 5 A (lighting) fuses, 18 AWG runs | same, with a 7.5 A lighting fuse |
 | Mains | 6-outlet surge strip | 12-outlet surge strip | 12-outlet + 2 USB-A surge strip |
-| Reusable kits in the price | ~$72 | ~$226 | ~$254 |
+| Reusable kits in the price | ~$72 | ~$217 | ~$245 |
 | Build time | ~2 hours | ~5 hours | ~8 hours |
 
 Prices are the sum of the Builder's parts list — boards, sensors, supplies

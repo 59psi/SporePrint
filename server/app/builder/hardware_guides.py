@@ -3,8 +3,11 @@
 Prices, links and stock were re-checked live on 2026-09-27 (hardware BOM
 audit). Rules this file keeps, pinned by tests/test_hardware_guides.py:
 
-- price_approx is the per-unit price as a plain "$N" string. Parts that are
-  only sold in packs also carry pack_price; the tier cost counts that once.
+- price_approx is the per-unit price as a plain "$N" string. A pack-sold
+  line counts UNITS: quantity is what the tier needs per chamber,
+  price_approx the per-unit price within the pinned pack, pack_price that
+  pack's price and pack_size its units, so N chambers buy
+  ceil(quantity x N / pack_size) packs (Component.line_cost).
 - estimated_cost stays within 10% of HardwareTier.parts_cost().
 - One 100 ohm gate resistor and one 10K pull-down per IRLZ44N (plus the reed
   switch's 10K pull-up); flyback diodes only on the inductive relay channels.
@@ -72,7 +75,7 @@ _HEATSINK_NOTE = (
 
 _PLATFORMIO_STEP = (
     "Install PlatformIO on your computer: `pip install platformio` (or download each node's ZIP "
-    "from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)"
+    "from the Builder page → Firmware tab — self-contained, no git clone needed)"
 )
 
 
@@ -144,13 +147,14 @@ def _tasmota_step(plugs: str, topics: str) -> str:
         "MqttPort 1883; MqttUser sp-3p; MqttPassword <password>; Topic humidifier; FullTopic "
         "tasmota/%topic%/%prefix%/`. The Topic becomes the plug id (`humidifier` → "
         "`plug-humidifier`), which is exactly what the built-in rules drive. Toggle the plug and "
-        "check it appears on the dashboard. Heater: ≤ 1500 W (≤ 1200 W preferred) on one plug"
+        "check that `GET /api/automation/plugs` lists it with its new state. Heater: ≤ 1500 W "
+        "(≤ 1200 W preferred) on one plug"
     )
 
 
 def _print_step(parts: str) -> str:
     return (
-        "PRINT THE ENCLOSURES (`models/` or Builder → 3D Models; PLA or PETG, 0.2 mm layers, no "
+        "PRINT THE ENCLOSURES (`models/` or the Builder page → Models tab; PLA or PETG, 0.2 mm layers, no "
         f"supports) with the preset for each part you bought: {parts} Every multi-piece "
         "enclosure is held together by brass heat-set inserts + ISO 4762 socket-head screws — "
         "press the inserts into the finished print with a soldering iron (`models/README.md` → "
@@ -315,13 +319,14 @@ _IRLZ44N = Component(
     role="Logic-level low-side switch for each fan / pump / LED channel",
     price_approx="$1",
     pack_price="$10",
+    pack_size=10,
     url="https://www.amazon.com/s?k=IRLZ44N+mosfet",
     category="actuator",
     notes="Logic-level, TO-220, 55 V. Rds(on) 22 mΩ @ 10 V / 25 mΩ @ 5 V / 35 mΩ @ 4 V (not "
           "specified at 3.3 V). Do NOT substitute the IRFZ44N — a standard-gate part that won't "
           "fully turn on from a 3.3 V GPIO and shows up in the same search. Amazon sells 10-12 "
-          "packs (~$10); genuine Infineon from distributors: Newark 63J7709 (~$1.44) or DigiKey "
-          "IRLZ44NPBF-ND (~$1.80). Keep each channel ≤ ~2 A, or fit clip-on TO-220 heatsinks "
+          "packs (~$10; priced here as the 10-pack, e.g. B0CBKH4XGL); genuine Infineon from "
+          "distributors: Newark 63J7709 (~$1.44) or DigiKey IRLZ44NPBF-ND (~$1.80). Keep each channel ≤ ~2 A, or fit clip-on TO-220 heatsinks "
           "(relay_board_mount -D heatsink=true).",
 )
 
@@ -330,6 +335,7 @@ _FLYBACK_DIODE = Component(
     role="Flyback protection across each inductive load (fans, pump)",
     price_approx="$0.05",
     pack_price="$6",
+    pack_size=125,
     url="https://www.amazon.com/dp/B07Q6LLGKH",
     category="misc",
     notes="Reverse-biased across each fan or pump (cathode band to +12V). The firmware PWMs "
@@ -344,6 +350,7 @@ _10K_RESISTOR = Component(
     role="Gate pull-down — keeps each MOSFET off while the ESP32 boots",
     price_approx="$0.05",
     pack_price="$5.49",
+    pack_size=100,
     url="https://www.amazon.com/s?k=10k+ohm+resistor+1%2F4w",
     category="misc",
     notes="One per MOSFET, gate to source/GND (plus the reed switch's pull-up in All the "
@@ -358,6 +365,7 @@ _100R_RESISTOR = Component(
     role="Gate resistor — one in series with each MOSFET gate (GPIO → 100 Ω → gate)",
     price_approx="$0.05",
     pack_price="$5.49",
+    pack_size=100,
     url="https://www.amazon.com/s?k=100+ohm+resistor",
     category="misc",
     notes="Every wiring row's 'via 100R': limits the GPIO's gate-charge current and damps "
@@ -368,11 +376,15 @@ _100R_RESISTOR = Component(
 _SCREW_TERMINALS = Component(
     name="2-pos 5.08 mm PCB Screw Terminals, KF301-2P (30-pack)",
     role="Load and control-input terminals on the relay_board_mount switch boards",
-    price_approx="$6",
+    quantity=16,
+    price_approx="$0.20",
+    pack_price="$6",
+    pack_size=30,
     url="https://www.amazon.com/dp/B0DPYF3M41",
     category="misc",
     notes="relay_board_mount.scad seats 8 per board (J2 load output + J1 control input per "
-          "channel; 4 with -D input_terminals=false). The relay and lighting boards use 16. "
+          "channel; 4 with -D input_terminals=false): 16 per chamber for the relay and lighting "
+          "boards, so one 30-pack covers one chamber (a second chamber needs a second pack). "
           "Also fits DG301 or Phoenix MKDS 1,5/2-5,08. This listing's stock is thin — any "
           "KF301-2P 5.0/5.08 mm straight-pin pack works (e.g. ZYAMY 30 x 2-pin + 20 x 3-pin, "
           "B07T8GZ3T6).",
@@ -450,18 +462,23 @@ _TRISPECTRUM = Component(
 _DC_PIGTAIL = Component(
     name="DC Barrel Pigtail, 5.5 x 2.5 mm female, 14 AWG (2-pack)",
     role="Takes the 12V PSU's barrel plug to the switch boards' +12V / GND buses",
-    price_approx="$8",
+    price_approx="$4",
+    pack_price="$8",
+    pack_size=2,
     url="https://www.amazon.com/dp/B0DXTQ1LYT",
     category="power",
     notes="The Facmogu bricks end in a 5.5 x 2.5 mm plug (centre +). Use a 2.5 mm female — a "
           "5.5 x 2.1 jack makes spring-only contact that heats up at several amps. Pre-tinned "
-          "ends go into the switch boards' bus wiring; the second pigtail is a spare.",
+          "ends go into the switch boards' bus wiring. One per chamber's 12V brick: the 2-pack "
+          "covers two chambers (or leaves a spare).",
 )
 
 _ESP32_CAM = Component(
     name="ESP32-CAM (AI-Thinker, OV2640 or OV3660) — 2-pack with ESP32-CAM-MB programmers",
     role="Camera node — captures images for contamination detection + growth tracking",
-    price_approx="$22",
+    price_approx="$11",
+    pack_price="$22",
+    pack_size=2,
     url="https://www.amazon.com/dp/B097BLT24K",
     category="controller",
     notes="AITRIP 2-pack: two AI-Thinker ESP32-CAMs (OV2640) + two ESP32-CAM-MB micro-USB "
@@ -478,7 +495,10 @@ _ESP32_CAM = Component(
 _USB_C_CABLE = Component(
     name="USB-A to USB-C Data Cable, 1 ft (3-pack)",
     role="Power + programming for each ESP32 node (USB-C DevKit)",
-    price_approx="$7",
+    quantity=2,
+    price_approx="$2.33",
+    pack_price="$7",
+    pack_size=3,
     url="https://www.amazon.com/dp/B0D12JLQMT",
     category="power",
     notes="SUNGUY braided, data-capable (charge-only cables won't flash). USB-A pairs with the "
@@ -504,13 +524,15 @@ _USB_C_CABLE_6FT = Component(
 _MICRO_USB_CABLE = Component(
     name="USB-A to Micro-USB Data Cable, 6 ft (2-pack)",
     role="Power + programming for each ESP32-CAM-MB (micro-USB) — the cameras sit inside the chamber",
-    price_approx="$10",
+    price_approx="$5",
+    pack_price="$10",
+    pack_size=2,
     url="https://www.amazon.com/dp/B071S5NPG9",
     category="power",
     notes="Amazon Basics, data-capable, rated to 2.1 A. 6 ft reaches from a camera inside the "
           "chamber to its 5V cube on the surge strip outside. The AITRIP / Aideepen "
           "ESP32-CAM-MB programmers are micro-USB (USB-C MB boards need a USB-C cable instead). "
-          "Single: B07232M876 (~$9).",
+          "One per camera. Single: B07232M876 (~$9).",
 )
 
 # ── Mains, cabling, connectors and assembly consumables ─────────
@@ -607,12 +629,15 @@ _WAGO = Component(
 _FUSE_HOLDERS = Component(
     name="Inline ATC/ATO Blade Fuse Holders, 14 AWG (10-pack)",
     role="One fuse per 12V branch, right after the WAGO split",
-    price_approx="$9",
+    quantity=2,
+    price_approx="$0.90",
+    pack_price="$9",
+    pack_size=10,
     url="https://www.amazon.com/dp/B07426WCLM",
     category="wiring",
-    shared=True,
-    notes="Nilight NI-FH01, 14 AWG leads, covered holder (no IP rating — mount it outside the "
-          "chamber). Fuse ratings: relay board 3 A; lighting board 5 A on the 5 A PSU "
+    notes="Two per chamber (relay branch + lighting branch), so one 10-pack covers five "
+          "chambers. Nilight NI-FH01, 14 AWG leads, covered holder (no IP rating — mount it "
+          "outside the chamber). Fuse ratings: relay board 3 A; lighting board 5 A on the 5 A PSU "
           "(Recommended), 7.5 A on the 10 A PSU (All the Things). IP66 alternate: VANTRONIK "
           "6-pack (B081YDV8PS, ~$6).",
 )
@@ -632,14 +657,18 @@ _FUSES = Component(
 _FAN_EXTENSIONS = Component(
     name="Noctua NA-SEC3 4-pin Fan Extension Cables, 60 cm (3-pack)",
     role="Carry each fan's 12V leads out of the chamber to the relay switch board",
-    price_approx="$10",
+    quantity=3,
+    price_approx="$3.33",
+    pack_price="$10",
+    pack_size=3,
     url="https://www.amazon.com/dp/B09RPLPBQH",
     category="wiring",
     notes="Fan + its bundled 30 cm extension + an NA-SEC3 reaches ~1.1 m. Cut the FAR (header) "
           "end of the extension — never the fan's own lead — and land pin 1 (GND) on the "
           "channel's J2 '−' (MOSFET drain) and pin 2 (+12V) on J2 '+'; the tach and PWM wires "
           "stay unused (the MOSFET switches the fan's supply). Identify wires by pin position, "
-          "not colour. One pack per chamber's 3 fans. 30 cm set: NA-SEC1 (B00KG3K9AM).",
+          "not colour. One per fan — a 3-pack per chamber's 3 fans. 30 cm set: NA-SEC1 "
+          "(B00KG3K9AM).",
 )
 
 _HEAT_SHRINK = Component(
@@ -825,7 +854,9 @@ _SOLDER = Component(
 _USB_CHARGER = Component(
     name="USB Wall Charger 5V 2A, UL-listed (2-pack)",
     role="5V power for the ESP32 nodes and cameras — one port per board",
-    price_approx="$8",
+    price_approx="$4",
+    pack_price="$8",
+    pack_size=2,
     url="https://www.amazon.com/dp/B0DQ43LMRH",
     category="power",
     notes="UL-listed USB-A 5V/2A cubes (it stays plugged in beside a humidifier, so buy "
@@ -1195,7 +1226,7 @@ TIER_RECOMMENDED = HardwareTier(
     ],
     components=[
         _RPI, _RPI_COOLER, _RPI_SD, _RPI_PSU,
-        _for_tier(_ESP32, quantity=3, pack_price="$18",
+        _for_tier(_ESP32, quantity=3, price_approx="$6", pack_price="$18", pack_size=3,
                   tier_note="This tier: 3 nodes (climate, relay, lighting) — one HiLetgo 3-pack "
                             "(B0CNYK7WT2, ~$18)."),
         _SHT31,
@@ -1234,11 +1265,11 @@ TIER_RECOMMENDED = HardwareTier(
         ),
         _DC_PIGTAIL,
         _ESP32_CAM,
-        _for_tier(_USB_C_CABLE, quantity=1, tier_note="This tier: the relay + lighting nodes (outside the chamber)."),
+        _for_tier(_USB_C_CABLE, quantity=2, tier_note="This tier: the relay + lighting nodes (outside the chamber)."),
         _USB_C_CABLE_6FT,
         _MICRO_USB_CABLE,
-        _for_tier(_USB_CHARGER, quantity=2,
-                  tier_note="This tier: 2 packs = 4 cubes (3 nodes + 1 camera)."),
+        _for_tier(_USB_CHARGER, quantity=4,
+                  tier_note="This tier: 4 cubes (3 nodes + 1 camera)."),
         _tasmota_plug(2, "humidifier; heater or cooler"),
         _SURGE_STRIP_12,
         _WIRE_18AWG,
@@ -1365,7 +1396,8 @@ TIER_RECOMMENDED = HardwareTier(
             "Peltier cooler (at the chamber wall).",
             "`humidifier`, and `heater` or `cooler`",
         ),
-        "Open `http://<pi-ip>:3001` — verify all nodes appear on the Dashboard hardware panel",
+        "Open `http://<pi-ip>:3001` — verify every node appears on its Hardware page (Monitor → "
+        "Hardware)",
         "Camera frames should appear in the Vision page within 15 minutes of the camera booting",
     ],
 )
@@ -1480,9 +1512,9 @@ TIER_ALL = HardwareTier(
     ],
     components=[
         _RPI, _RPI_COOLER, _RPI_SD, _RPI_PSU,
-        _for_tier(_ESP32, quantity=6, pack_price="$30",
-                  tier_note="This tier: 4 nodes (2 climate, relay, lighting) + 2 spares — the "
-                            "pinned 6-pack (B0DSZBH9N9, ~$30) is cheapest."),
+        _for_tier(_ESP32, quantity=4, price_approx="$5", pack_price="$30", pack_size=6,
+                  tier_note="This tier: 4 nodes (2 climate, relay, lighting) — the pinned 6-pack "
+                            "(B0DSZBH9N9, ~$30) is the cheapest per board and leaves 2 spares."),
         _for_tier(_SHT31, quantity=2),
         _for_tier(_BH1750, quantity=2),
         _for_tier(_SCD41, quantity=2,
@@ -1519,15 +1551,15 @@ TIER_ALL = HardwareTier(
                   "(uncut, the white roll + every tri-spectrum channel alone reach ~10 A).",
         ),
         _DC_PIGTAIL,
-        _for_tier(_ESP32_CAM, quantity=1,
-                  tier_note="This tier: the 2-pack is exactly its two cameras (front + "
-                            "top-down), each on its own MB."),
-        _for_tier(_USB_C_CABLE, quantity=1,
-                  tier_note="This tier: the relay + lighting nodes (outside the chamber) + a spare."),
+        _for_tier(_ESP32_CAM, quantity=2,
+                  tier_note="This tier: two cameras (front + top-down) — one 2-pack, each on "
+                            "its own MB."),
+        _for_tier(_USB_C_CABLE, quantity=2,
+                  tier_note="This tier: the relay + lighting nodes (outside the chamber)."),
         _for_tier(_USB_C_CABLE_6FT, quantity=2, tier_note="This tier: both climate nodes (inside the chamber)."),
-        _for_tier(_MICRO_USB_CABLE, quantity=1, tier_note="This tier: the 2-pack covers both cameras."),
-        _for_tier(_USB_CHARGER, quantity=3,
-                  tier_note="This tier: 3 packs = 6 cubes (4 nodes + 2 cameras)."),
+        _for_tier(_MICRO_USB_CABLE, quantity=2, tier_note="This tier: both cameras."),
+        _for_tier(_USB_CHARGER, quantity=6,
+                  tier_note="This tier: 6 cubes (4 nodes + 2 cameras)."),
         _tasmota_plug(4, "humidifier; dehumidifier; space heater; Peltier cooler"),
         Component(
             name="HX711 Load Cell Amplifier (Adafruit 5974) + 5kg Load Cell (Adafruit 4541)",
@@ -1549,13 +1581,15 @@ TIER_ALL = HardwareTier(
         Component(
             name="Magnetic Door Contact (wired alarm reed switch, 2-set)",
             role="Door sensor — door-open telemetry + alerts",
-            price_approx="$10",
+            price_approx="$5",
+            pack_price="$10",
+            pack_size=2,
             url="https://www.amazon.com/dp/B0BX2ZRZ8T",
             category="sensor",
             notes="weideer MC-31B surface-mount contacts with COM / NO / NC screw terminals "
                   "(run two conductors of the 22 AWG 4-conductor cable back to the relay node); "
-                  "one set per door, the second is a spare. Use "
-                  "COM + the alarm 'NC' terminal — closed while the magnet is present, i.e. "
+                  "one set per chamber door, so the 2-set covers two chambers (or leaves a "
+                  "spare). Use COM + the alarm 'NC' terminal — closed while the magnet is present, i.e. "
                   "door shut; check continuity with a meter. COM to GPIO 35, NC to GND, and an "
                   "EXTERNAL 10K pull-up from GPIO 35 to 3V3 (input-only pins 34-39 have no "
                   "internal pulls; the 10K is in the parts list). Magnet on the door, switch on "
@@ -1769,7 +1803,8 @@ TIER_ALL = HardwareTier(
             "cooler (at the chamber wall).",
             "`humidifier`, `dehumidifier`, `heater`, `cooler`",
         ),
-        "Open `http://<pi-ip>:3001` — verify all nodes, cameras, and plugs appear on the Dashboard",
+        "Open `http://<pi-ip>:3001` — verify every node and both cameras appear on its Hardware "
+        "page (Monitor → Hardware), and that `GET /api/automation/plugs` lists all four plugs",
         "Camera frames should appear in the Vision page within 15 minutes. Verify both front and "
         "top-down views are capturing",
     ],
