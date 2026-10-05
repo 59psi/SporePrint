@@ -182,8 +182,8 @@
   <rect x="923" y="490" width="14" height="28" rx="3" fill="#2a0a0a" stroke="#ef4444" stroke-width="1.2"/>
   <line x1="930.0" y1="494" x2="930.0" y2="514" stroke="#fca5a5" stroke-width="1"/>
   <text x="930.0" y="486" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700"></text>
-  <text x="916" y="503" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">3 A fuse</text>
-  <text x="916" y="514" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">relay branch</text>
+  <text x="916" y="515" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">3 A fuse</text>
+  <text x="916" y="525" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">relay branch</text>
   <line x1="590" y1="564" x2="590" y2="652" stroke="#4b5563" stroke-width="3"/>
   <line x1="930" y1="564" x2="930" y2="652" stroke="#ef4444" stroke-width="3"/>
   <rect x="923" y="584" width="14" height="28" rx="3" fill="#2a0a0a" stroke="#ef4444" stroke-width="1.2"/>

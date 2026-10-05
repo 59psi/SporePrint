@@ -43,6 +43,39 @@ async def test_export_markdown_format():
     assert "## Phase Timeline" in md
 
 
+async def test_export_markdown_header_omits_unset_fields():
+    """NULL session columns are left out, never printed as Python ``None``."""
+    await seed_builtins()
+    s = await create_session(
+        SessionCreate(name="Sparse", species_profile_id="lions_mane", substrate="masters_mix")
+    )
+    md = await export_markdown(s["id"])
+    assert "None" not in md
+    assert "- **Species**: Lion's Mane (*Hericium erinaceus*)" in md
+    # substrate set, volume unset → no empty parentheses
+    assert "- **Substrate**: masters_mix\n" in md
+    # neither inoculation date nor method → no line at all
+    assert "Inoculated" not in md
+    assert "- **Status**: active" in md
+
+
+async def test_export_markdown_header_keeps_set_details():
+    await seed_builtins()
+    s = await create_session(
+        SessionCreate(
+            name="Full",
+            species_profile_id="blue_oyster",
+            substrate="straw",
+            substrate_volume="10 L",
+            inoculation_date="2026-09-01",
+            inoculation_method="grain spawn",
+        )
+    )
+    md = await export_markdown(s["id"])
+    assert "- **Substrate**: straw (10 L)" in md
+    assert "- **Inoculated**: 2026-09-01 (grain spawn)" in md
+
+
 async def test_export_markdown_includes_harvest():
     await seed_builtins()
     s = await create_session(SessionCreate(name="Harvest MD", species_profile_id="blue_oyster"))

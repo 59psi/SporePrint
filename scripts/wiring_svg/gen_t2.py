@@ -100,8 +100,8 @@ s.text(930, 555, "WAGO 221-413 +12V", fill=RED_T, size=7, weight="700", anchor="
 s.line(590, 540, 590, 478, GND, 3, cap=None)
 s.line(930, 540, 930, 478, RED, 3, cap=None)
 s.fuse(923, 490, 14, 28, "", vertical=True)
-s.text(916, 503, "3 A fuse", fill=RED_T, size=8, weight="700", anchor="end")
-s.text(916, 514, "relay branch", fill=T3, size=7, anchor="end")
+s.text(916, 515, "3 A fuse", fill=RED_T, size=8, weight="700", anchor="end")
+s.text(916, 525, "relay branch", fill=T3, size=7, anchor="end")
 # branches down to the lighting board
 s.line(590, 564, 590, 652, GND, 3, cap=None)
 s.line(930, 564, 930, 652, RED, 3, cap=None)

@@ -201,11 +201,16 @@ server refuses to start on a non-empty key it does not know, such as `TZ` or
 
 The dashboard source is not in this repo: it lives in the parent monorepo
 (`frontend/packages/pi-ui`), and this repo ships the pre-built bundle in
-`ui/dist`, which the `ui` container serves. Its Builder page carries a static
-copy of the hardware tiers, 3D-model list and wiring-diagram links;
-`scripts/sync_ui_builder_data.py` rewrites that copy from the server's BOM
-(`cd server && uv run python ../scripts/sync_ui_builder_data.py`), and
-`server/tests/test_ui_builder_sync.py` fails when it is stale.
+`ui/dist`, which the `ui` container serves. Its Builder page reads this
+server live: the BOM from `/api/builder/tiers`, the 3D models from
+`/api/builder/models`, the wiring diagrams from `/api/builder/diagrams` and
+the firmware ZIPs from `/api/builder/firmware`. If one of those requests
+fails, that resource falls back to a copy built into the bundle, and a pill
+at the top of the page says whether you are seeing live or built-in data.
+The built-in copy is generated from this repo when the dashboard is built.
+`server/tests/test_ui_builder_sync.py` fails when the bundle stops reading
+the API live, or when its built-in copy no longer matches this server.
+[Development](#development) shows how to rebuild or refresh it.
 
 ### ESP32 Firmware
 
@@ -700,8 +705,26 @@ docker compose config --quiet
 ```
 
 The dashboard is built in the parent monorepo (`frontend/packages/pi-ui`) and
-committed here as `ui/dist`. After a BOM or model change, re-sync its Builder
-data with `scripts/sync_ui_builder_data.py` (see Quick Start).
+committed here as `ui/dist`, which nginx serves as-is (`index.html` plus the
+hashed files in `assets/`). Its Builder page's built-in fallback comes from
+`frontend/packages/design/src/data/builder.generated.ts`, which the
+monorepo's `scripts/port_builder.py` generates from this repo's BOM, model
+headers and wiring SVGs. To rebuild, run this from the monorepo root:
+
+```bash
+python3 scripts/port_builder.py --public-repo <SporePrint checkout>
+pnpm -C frontend --filter @sporeprint/pi-ui build
+rsync -a --delete --checksum frontend/packages/pi-ui/dist/ <SporePrint checkout>/ui/dist/
+```
+
+A change here to the BOM, a model header, a wiring SVG or a PlatformIO env
+makes the built-in copy stale. If the monorepo cannot be rebuilt in the same
+change, refresh the copy inside the bundle instead:
+`cd server && uv run python ../scripts/sync_ui_builder_data.py`. Add
+`--check` to verify without writing. The script only rewrites that data. If
+the bundle has stopped reading `/api/builder/*` live, or still has the old
+static Builder's dead `hardware/3d` / `hardware/wiring` links, it exits 1 and
+asks for the rebuild.
 
 ### Dependencies
 

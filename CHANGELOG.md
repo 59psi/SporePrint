@@ -104,6 +104,16 @@ signing vectors are unchanged. Firmware details are in
   Topic / Full Topic; ESP32-CAM-MB flashing (hold IO0, tap RST if the upload
   won't start); print presets per part; heat-set insert and screw counts per
   tier; PSU load budgets; the S3 pin map wherever `node_esp32s3` is named.
+- Setup steps wrap every shell command, file path, JSON payload, MQTT topic,
+  env name and config key in backticks (`` `like this` ``), so the Builder can
+  show them as copyable code. Component notes and wiring rows stay plain.
+  `tests/test_hardware_guides.py` checks that each marked span exists in the
+  repo: scripts (and that they are executable), pio envs, compose services and
+  published ports, `/api` routes, the keys the node reads from `cmd/config`,
+  OpenSCAD parameters and their values, the install URLs, and the broker ACL
+  for the Tasmota topics. The weather step now spells out
+  `SPOREPRINT_WEATHER_LON` (it said `_LON`), and the Tasmota step names the
+  topic that the default Full Topic publishes (`stat/<topic>/POWER`).
 - Capability bullets that described unimplemented features were removed (kWh,
   PID, timelapse, quiet hours, EXIF, sensor fallback/divergence, correlation
   reports, local CNN).
@@ -130,6 +140,90 @@ signing vectors are unchanged. Firmware details are in
   share, fuse ratings, WAGO parts and wire gauges in the build guide and SVGs,
   the common ground in every guide and diagram, the strip sizes, and the
   per-tier insert sourcing.
+
+### Dashboard (`ui/dist`)
+- **The Builder page reads this Pi live.** `ui/dist` is rebuilt from the
+  monorepo's pi-ui. The page now loads the BOM (`/api/builder/tiers` and
+  `/tiers/{id}`), the models, the wiring diagrams and the firmware ZIPs from
+  the Pi. If a request fails, that resource falls back to a copy generated
+  from this repo at build time, and a pill at the top of the page says which
+  data is on screen. This replaces the stale static copy, which had a
+  pre-audit BOM with no cabling, "browse repo" and wiring links to
+  `hardware/3d` and `hardware/wiring` (both 404), raw GitHub `.scad`
+  downloads that cannot render without `models/lib/`, and a false
+  "slicer-ready STL exports" claim.
+- Shopping list: a pack-priced line counts its pack price once. `shared`
+  parts are bought once per installation, and every other line is multiplied
+  by the chamber count. The total shows the shared and per-chamber parts
+  separately, and smart plugs, wiring and hardware have their own sections.
+- Models: each card shows the title and description from the model's `.scad`
+  header and downloads the Pi's self-contained file (`lib/` inlined). There is
+  a "download all (.zip)" link, and "browse repo" opens `models/`.
+- Wiring: the tier's SVG as the Pi serves it (click for full size), with a
+  link to its GitHub source. The connection table uses the live wiring rows.
+- Firmware: one card per image (unified node, camera), downloaded as the Pi's
+  self-contained ZIP. An image is listed for a tier when one of its PlatformIO
+  envs is a tier target, which covers `node_esp32s3_n32r16v`.
+- Resources: the repo is labelled AGPL-3.0 (it said MIT), and the dead
+  Discord and forum links are removed.
+- **`scripts/sync_ui_builder_data.py` now verifies the bundle instead of
+  patching a static copy.** `--check` confirms that the bundle requests
+  `/api/builder/*` live and has none of the old static Builder's dead links or
+  claims. It also confirms that the built-in copy matches this server: the
+  tiers exactly as in `hardware_guides.py`, plus the models, diagrams and
+  firmware envs. Without `--check`, the script rewrites only stale built-in
+  data, in place. `tests/test_ui_builder_sync.py` enforces all of this and
+  also checks the built-in copy against the API's actual responses.
+- The rebuild also brings in the other pi-ui and design-package changes made
+  in the monorepo since the previous `ui/dist` (cloud#73), from the v5.0.0
+  release work and the fixes after it.
+- **`ui/dist` rebuilt again: the Builder page fits a phone, and the Shopping
+  List shows your build.** Checked in Chrome on every tier and tab, from 320
+  to 1600 px wide: nothing sticks out of its box and the page never scrolls
+  sideways.
+  - Wiring: the tier diagram scales to its box's width, with an "open full
+    size" link. If the Pi's SVG does not load, the page shows the same
+    generated diagram from the bundle instead of the old hand-drawn sketch,
+    which clipped labels, put pin labels under wires and cut off the legend.
+    The connection, BOM and firmware-file tables scroll inside their own box.
+  - Setup: the backticked commands, paths and topics show as code with a copy
+    button. On a plain-http Pi the button falls back to `execCommand("copy")`.
+    Copying or selecting text no longer ticks the step. Ticks are now stored
+    per step id instead of per position, so adding a step no longer moves
+    them. Ticks saved by the released dashboard are carried over to the
+    matching new steps.
+  - Firmware: each image card lists the `pio run -t upload -e <env>` command
+    for each board, with copy buttons.
+  - Resources: Discord returns as a "coming soon" placeholder with no link.
+    The forum stays removed.
+  - "Send BOM to /shopping" now hands the tier and chamber count to the
+    Shopping List. That page no longer shows demo rows or a restock banner:
+    it lists the sent BOM (live from `/api/builder/tiers/{id}`, totals equal
+    to the Builder's), grow supplies for each species with an active session
+    (`/api/species/{id}/shopping-list`), and your custom items.
+  - Below 768 px the navigation rail becomes a drawer behind a menu button,
+    on every page.
+- **`ui/dist` rebuilt after a second browser audit.**
+  - Tables on Sessions, Transcripts, Inventory, Cultures and Contamination
+    now scroll inside their own column. From 1180 to about 1600 px they ran
+    under the right-hand panel.
+  - Sessions shows a new session as day 0 (it showed "20710d"), and it
+    counts toward the 30-day yield.
+  - Timeline tags name the event (NEW, PHASE, …) instead of truncating it
+    ("SESSI").
+  - The transcript preview renders bold, italic and code. Species show their
+    common names.
+  - The CLOUD KPI no longer breaks mid-word.
+  - The Shopping List's hardware tables now line up, and below 900 px each
+    row becomes a card. "Open in builder →" keeps the build and chamber
+    count.
+  - Builder firmware file names are their download links, so the table fits
+    a phone.
+  - The wiring cards show a thumbnail with a readable "full-size svg →"
+    label.
+  - Single-column model cards no longer leave blank bands.
+  - Cost captions use whole dollars, and the stale "Pi's estimate" clause is
+    removed.
 
 ### Enclosures (`models/`)
 - **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,
@@ -397,6 +491,14 @@ signing vectors are unchanged. Firmware details are in
   CI and release; the release job alone gets write access.
 
 ### Fixed
+- Transcript markdown (`GET /api/transcript/sessions/{id}/transcript?format=markdown`)
+  no longer prints Python `None` for unset session fields. The header used
+  `session.get(key, 'N/A')`, but a NULL column is present with value None, so
+  it printed lines such as `**Substrate**: masters_mix (None)` and
+  `**Inoculated**: None (None)`. A missing value now drops its line, and a
+  missing detail drops its parentheses. The header fields are a list
+  (`- **Species**: …`), so they render on separate lines in any markdown
+  viewer.
 - Plugs following the build guide never registered (missing Full Topic and
   credentials) — docs, Builder steps and the install summary now say both.
 - Tapo local KLAP handshake (real devices authenticate), Kasa multi-segment

@@ -16,16 +16,27 @@ defect the 2026-09 hardware audit found in that file:
 - missing USB power for every node and camera (docs#25), M-F jumpers where the
   sensors chain over STEMMA QT, and capability bullets with no code behind
   them (docs#26).
+
+The setup steps also mark commands, paths, payloads, topics, env names and
+config keys as `code` for the Builder to render copyable; every marked span
+must name something this repo has (see "setup-step code spans").
 """
 
+import functools
+import json
+import os
 import re
+import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from app.builder.hardware_guides import _ESP32_CAM, _S3_PIN_MAP, TIERS
 from app.builder.models import HardwareTier, usd
 from app.builder.service import _HARDWARE_CONTRACT
+from app.main import app as server_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = REPO_ROOT / "firmware"
@@ -348,7 +359,7 @@ def test_setup_sh_warning_matches_the_current_script(tier_id):
             continue
         assert "API key it generates" not in s, s
         if "API key" in s:
-            assert re.search(r"older setup\.sh", s), s
+            assert re.search(r"older `?setup\.sh", s), s
 
 
 @pytest.mark.parametrize("tier_id", TIER_IDS)
@@ -481,3 +492,337 @@ def test_shared_lines_are_kits_or_pi_side_only():
             if c.shared:
                 assert (c.category in ("wiring", "hardware", "misc")
                         or c.name.startswith(("Raspberry Pi", "microSD"))), c.name
+
+
+# ── setup-step code spans ───────────────────────────────────────────────────
+#
+# The Builder renders each `backticked` span of a setup step as copyable code,
+# so every span is something a reader pastes or types — it must name what
+# this repo really has. _check_span() sorts a span into a kind and checks it:
+#
+#   URL            a raw GitHub path that exists here; the clone URL install.sh
+#                  uses; http://<pi>:PORT on a port docker-compose.yml publishes
+#   API call       "POST /api/..." is a route + method the server serves
+#   JSON payload   a cmd/config body: top-level keys the node firmware's
+#                  handle_config_cmd reads, nested keys sp_core knows
+#   Tasmota        Backlog: MqttPort is a broker listener, MqttUser an ACL user,
+#                  Topic t a plug-t rule target. A FullTopic must reach the Pi
+#                  (sp-3p may publish it, the server subscribes) — except
+#                  Tasmota's default, which the steps say the broker drops
+#   env name       SPOREPRINT_* that docker-compose.yml passes or install.sh sets
+#   -D / x="y"     an OpenSCAD parameter a model declares, with a valid value
+#   path           exists (repo root, models/ or scripts/); .env is install.sh's
+#   cmd/<x>        an endpoint the node's command router serves
+#   node id        an id add-node-mqtt-user.sh accepts
+#   shell command  every command of a && / | chain: scripts exist and are
+#                  executable, cd targets exist, pio envs and compose
+#                  services exist, git clone fetches this repo
+#   anything else  a model name, or appears verbatim in the code the Pi runs
+
+_CODE_RE = re.compile(r"`([^`]*)`")
+MODELS = REPO_ROOT / "models"
+COMPOSE = REPO_ROOT / "docker-compose.yml"
+INSTALL_SH = REPO_ROOT / "install.sh"
+ACL = REPO_ROOT / "config" / "mosquitto" / "acl.conf"
+MOSQUITTO_CONF = REPO_ROOT / "config" / "mosquitto" / "mosquitto.conf"
+NODE_MAIN = FIRMWARE / "src" / "node" / "main.cpp"
+CMD_ROUTER = FIRMWARE / "lib" / "sp_core" / "cmd_router.h"
+ADD_NODE_USER = REPO_ROOT / "scripts" / "add-node-mqtt-user.sh"
+SERVER_APP = REPO_ROOT / "server" / "app"
+_PATH_SUFFIXES = {".sh", ".scad", ".h", ".cpp", ".md", ".py", ".ini", ".svg", ".csv", ".yml"}
+# Tasmota FullTopic placeholders, expanded to the state topic a plug publishes.
+_TASMOTA_EXPAND = {"%topic%": "humidifier", "<topic>": "humidifier", "%prefix%": "stat"}
+
+
+def _mqtt_match(pattern: str, topic: str) -> bool:
+    p, t = pattern.split("/"), topic.split("/")
+    for i, seg in enumerate(p):
+        if seg == "#":
+            return True
+        if i >= len(t) or (seg != "+" and seg != t[i]):
+            return False
+    return len(p) == len(t)
+
+
+def _acl_grants(text: str) -> dict[str, list[tuple[str, str]]]:
+    """{user: [(access, topic filter)]} from the broker's acl.conf."""
+    grants: dict[str, list[tuple[str, str]]] = {}
+    user = None
+    for line in text.splitlines():
+        if m := re.match(r"user\s+(\S+)", line):
+            user = m.group(1)
+            grants[user] = []
+        elif line.startswith("pattern"):
+            user = None
+        elif (m := re.match(r"topic\s+(read|write|readwrite)\s+(\S+)", line)) and user:
+            grants[user].append((m.group(1), m.group(2)))
+    return grants
+
+
+@functools.cache
+def _facts() -> SimpleNamespace:
+    compose = yaml.safe_load(_read(COMPOSE))
+    services = compose["services"]
+    published = {str(p).split(":")[0] for s in services.values() for p in s.get("ports", [])}
+    install = _read(INSTALL_SH)
+    repo_url = re.search(r'REPO_URL="\$\{SPOREPRINT_REPO_URL:-([^}]+)\}"', install)
+    assert repo_url, "install.sh no longer names its default repo URL"
+    scad_decls: dict[str, list[str]] = {}
+    for f in sorted([*MODELS.glob("*.scad"), *MODELS.glob("lib/*.scad")]):
+        text = f.read_text()
+        for name in set(re.findall(r"^(\w+)\s*=", text, re.M)):
+            scad_decls.setdefault(name, []).append(text)
+    main = _read(NODE_MAIN)
+    config_cmd = re.search(r"static void handle_config_cmd\(.*?\n}\n", main, re.S)
+    assert config_cmd, "handle_config_cmd moved out of the node firmware's main.cpp"
+    node_id_re = re.search(r'NODE_ID" =~ (\^\S+\$) \]\]', _read(ADD_NODE_USER))
+    assert node_id_re, "add-node-mqtt-user.sh no longer validates the node id"
+    # What the Pi actually runs: firmware, models, broker config, compose,
+    # install + scripts, and the server outside the Builder's own prose.
+    corpus = [_read(PLATFORMIO_INI), _read(COMPOSE), install,
+              *(p.read_text() for p in (REPO_ROOT / "config" / "mosquitto").glob("*.conf")),
+              *(p.read_text() for p in (REPO_ROOT / "scripts").glob("*.sh")),
+              *(p.read_text() for p in MODELS.rglob("*.scad")),
+              *(p.read_text() for p in FIRMWARE.glob("[bls]*/**/*") if p.suffix in (".h", ".cpp")),
+              *(p.read_text() for p in SERVER_APP.rglob("*.py") if "builder" not in p.parts)]
+    return SimpleNamespace(
+        envs=set(re.findall(r"^\[env:([\w-]+)\]", _read(PLATFORMIO_INI), re.M)),
+        services=set(services),
+        published_ports=published,
+        install=install,
+        compose_text=_read(COMPOSE),
+        repo_url=repo_url.group(1),
+        routes={path: set(ops) for path, ops in server_app.openapi()["paths"].items()},
+        scad_decls=scad_decls,
+        model_stems={p.stem for p in MODELS.glob("*.scad")},
+        config_cmd=config_cmd.group(0),
+        sp_core="\n".join(p.read_text() for p in (FIRMWARE / "lib" / "sp_core").glob("*.h")),
+        cmd_router=_read(CMD_ROUTER),
+        acl=_acl_grants(_read(ACL)),
+        listeners=set(re.findall(r"^listener\s+(\d+)", _read(MOSQUITTO_CONF), re.M)),
+        mqtt_py=_read(SERVER_APP / "mqtt.py"),
+        rule_targets=set(re.findall(r'target="([\w-]+)"',
+                                    _read(SERVER_APP / "automation" / "templates.py"))),
+        node_id_re=re.compile(node_id_re.group(1)),
+        corpus="\n".join(corpus),
+    )
+
+
+def _check_url(url: str, f: SimpleNamespace) -> str | None:
+    slug = f.repo_url.removeprefix("https://github.com/").removesuffix(".git")
+    if m := re.fullmatch(r"https://raw\.githubusercontent\.com/([^/]+/[^/]+)/main/(.+)", url):
+        if m.group(1) != slug:
+            return f"raw URL is not this repo ({slug})"
+        return None if (REPO_ROOT / m.group(2)).is_file() else f"{m.group(2)} is not in the repo"
+    if url.startswith("https://github.com/"):
+        return None if url == f.repo_url else f"not the repo install.sh clones ({f.repo_url})"
+    if m := re.fullmatch(r"http://(<[^>]+>|sporeprint\.local):(\d+)/?", url):
+        return None if m.group(2) in f.published_ports else (
+            f"port {m.group(2)} is not published by docker-compose.yml")
+    return "unrecognised URL"
+
+
+def _check_api(method: str, path: str, f: SimpleNamespace) -> str | None:
+    for route, ops in f.routes.items():
+        if re.fullmatch(re.sub(r"\{[^}]+\}", "[^/]+", route), path) and method.lower() in ops:
+            return None
+    return "no such route on the server"
+
+
+def _check_json(payload: str, f: SimpleNamespace) -> str | None:
+    body = re.sub(r"<[^>]+>", "1", payload)
+    body = re.sub(r":\s*N\b", ": 1", body)
+    try:
+        doc = json.loads(body)
+    except json.JSONDecodeError as e:
+        return f"not JSON ({e})"
+    if not isinstance(doc, dict):
+        return "not a JSON object"
+    for key, value in doc.items():
+        if f'doc["{key}"]' not in f.config_cmd:
+            return f"the node's handle_config_cmd does not read {key!r}"
+        for sub in value if isinstance(value, dict) else ():
+            if f'"{sub}"' not in f.sp_core:
+                return f"sp_core knows no {key}.{sub!r}"
+    return None
+
+
+def _check_scad_param(assign: str, f: SimpleNamespace) -> str | None:
+    name, _, value = assign.partition("=")
+    files = f.scad_decls.get(name)
+    if not files:
+        return f"no model declares the parameter {name!r}"
+    if value.startswith('"'):
+        if not any(value in text for text in files):
+            return f"{value} is not an option of {name}"
+    elif value not in ("true", "false"):
+        return f"unexpected value {value!r}"
+    return None
+
+
+def _check_tasmota_topic(topic: str, before: str, f: SimpleNamespace) -> str | None:
+    state = topic
+    for k, v in _TASMOTA_EXPAND.items():
+        state = state.replace(k, v)
+    if state.endswith("/"):
+        state += "POWER"
+    granted = any(_mqtt_match(t, state) for access, t in f.acl.get("sp-3p", ())
+                  if "write" in access)
+    heard = any(_mqtt_match(t, state) for t in re.findall(r'subscribe\("([^"]+)"\)', f.mqtt_py))
+    if re.search(r"(default|publishes)\s*$", before):
+        # The step names this as what NOT to use: the broker must refuse it.
+        return f"{state} is accepted — the step says the broker drops it" if granted else None
+    if not granted:
+        return f"the sp-3p plug login may not publish {state}"
+    return None if heard else f"the server does not subscribe to {state}"
+
+
+def _check_backlog(cmd: str, before: str, f: SimpleNamespace) -> str | None:
+    settings = dict(part.strip().split(" ", 1) for part in cmd.removeprefix("Backlog ").split(";"))
+    unknown = set(settings) - {"MqttHost", "MqttPort", "MqttUser", "MqttPassword", "Topic", "FullTopic"}
+    if unknown:
+        return f"unexpected Tasmota commands {sorted(unknown)}"
+    if settings.get("MqttPort") not in f.listeners:
+        return f"MqttPort {settings.get('MqttPort')} is not a broker listener"
+    if settings.get("MqttUser") not in f.acl:
+        return f"MqttUser {settings.get('MqttUser')} has no ACL"
+    if f"plug-{settings.get('Topic')}" not in f.rule_targets:
+        return f"no built-in rule drives plug-{settings.get('Topic')}"
+    return _check_tasmota_topic(settings.get("FullTopic", ""), "", f)
+
+
+def _check_path(path: str, f: SimpleNamespace) -> str | None:
+    if path == ".env":
+        return None if ".env" in f.install else "install.sh does not write .env"
+    for base in (REPO_ROOT, MODELS, REPO_ROOT / "scripts"):
+        if (base / path).exists() and (not path.endswith("/") or (base / path).is_dir()):
+            return None
+    return "no such file in the repo"
+
+
+def _check_shell(chain: str, f: SimpleNamespace) -> str | None:
+    cwd, clones = REPO_ROOT, {}
+    for cmd in re.split(r"\s*(?:&&|\|)\s*", chain):
+        words = shlex.split(cmd)
+        prog, args = words[0], words[1:]
+        if prog == "curl":
+            for url in (a for a in args if "://" in a):
+                if err := _check_url(url, f):
+                    return f"{url}: {err}"
+        elif prog == "bash":
+            pass
+        elif prog == "git":
+            if args[:1] != ["clone"] or args[1] != f.repo_url:
+                return f"{cmd!r} does not clone {f.repo_url}"
+            clones[Path(args[1]).stem] = REPO_ROOT
+        elif prog == "cd":
+            cwd = clones.get(args[0]) or cwd / args[0]
+            if not cwd.is_dir():
+                return f"cd {args[0]}: no such directory"
+        elif prog == "pio":
+            env = args[args.index("-e") + 1] if "-e" in args else None
+            if not (cwd / "platformio.ini").is_file():
+                return f"{cmd!r} runs outside a PlatformIO project"
+            if env not in f.envs:
+                return f"pio env {env!r} is not in platformio.ini"
+        elif prog == "pip":
+            if args != ["install", "platformio"]:
+                return f"unexpected pip command {cmd!r}"
+        elif prog == "docker":
+            if args[:1] != ["compose"] or not (cwd / "docker-compose.yml").is_file():
+                return f"{cmd!r} is not docker compose in the repo"
+            services = [a for a in args[2:] if not a.startswith("-")]
+            if not set(services) <= f.services:
+                return f"compose services {sorted(set(services) - f.services)} do not exist"
+        elif prog.startswith("./"):
+            script = cwd / prog
+            if not script.is_file() or not os.access(script, os.X_OK):
+                return f"{prog} is not an executable script in the repo"
+        else:
+            return f"unknown command {prog!r}"
+    return None
+
+
+def _check_span(span: str, before: str, f: SimpleNamespace) -> str | None:
+    if span.startswith(("http://", "https://")):
+        return _check_url(span, f)
+    if m := re.fullmatch(r"(GET|POST|PUT|PATCH|DELETE) (/api/\S+)", span):
+        return _check_api(m.group(1), m.group(2), f)
+    if span.startswith("{"):
+        return _check_json(span, f)
+    if span.startswith("Backlog "):
+        return _check_backlog(span, before, f)
+    if m := re.fullmatch(r"(SPOREPRINT_[A-Z0-9_]+)(=\S+)?", span):
+        return None if m.group(1) in f.compose_text or m.group(1) in f.install else (
+            f"{m.group(1)} is neither passed by docker-compose.yml nor set by install.sh")
+    if span.startswith("-D "):
+        return _check_scad_param(shlex.split(span)[1], f)
+    if re.fullmatch(r'\w+=("[^"]*"|\w+)', span):
+        return _check_scad_param(span, f)
+    if "%" in span or re.match(r"(stat|tele|cmnd)/", span):
+        return _check_tasmota_topic(span, before, f)
+    if m := re.fullmatch(r"cmd/(\w+)", span):
+        return None if f'"{m.group(1)}"' in f.cmd_router else "the node serves no such cmd endpoint"
+    if " " in span:
+        return _check_shell(span, f)
+    if span == ".env" or span.startswith("./") or span.endswith("/") \
+            or Path(span).suffix in _PATH_SUFFIXES:
+        return _check_path(span, f)
+    if re.fullmatch(r"(climate|relay|lighting|cam)-\d+", span):
+        return None if f.node_id_re.fullmatch(span) else "add-node-mqtt-user.sh rejects this id"
+    if span in f.model_stems:
+        return None
+    if re.search(rf"(?<![\w-]){re.escape(span)}(?![\w-])", f.corpus):
+        return None
+    return "names nothing in the repo"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_setup_step_code_marks_are_balanced(tier_id):
+    for i, step in enumerate(_tier(tier_id).setup_steps):
+        assert step.count("`") % 2 == 0, f"step {i}: unbalanced backtick in {step!r}"
+        assert "``" not in step, f"step {i}: empty or doubled code mark in {step!r}"
+        for span in _CODE_RE.findall(step):
+            assert span and span == span.strip(), f"step {i}: code span {span!r} has edge spaces"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_only_setup_steps_carry_code_marks(tier_id):
+    """Component notes, wiring rows and capability text render as plain text."""
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for v in value.values():
+                yield from strings(v)
+        elif isinstance(value, list):
+            for v in value:
+                yield from strings(v)
+
+    data = _tier(tier_id).model_dump(exclude={"setup_steps"})
+    marked = [s for s in strings(data) if "`" in s]
+    assert not marked, f"{tier_id}: code marks outside the setup steps: {marked}"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_every_code_span_names_something_the_repo_has(tier_id):
+    f = _facts()
+    problems = []
+    for i, step in enumerate(_tier(tier_id).setup_steps):
+        for m in _CODE_RE.finditer(step):
+            if err := _check_span(m.group(1), step[:m.start()], f):
+                problems.append(f"step {i}: `{m.group(1)}` — {err}")
+    assert not problems, "\n".join(problems)
+
+
+def test_setup_steps_mark_the_commands_people_copy():
+    """The commands a reader has to run are marked, not buried in prose."""
+    must_mark = ["curl -fsSL", "pio run -t upload -e node_esp32", "./scripts/add-node-mqtt-user.sh",
+                 "docker compose up -d server", "tasmota/%topic%/%prefix%/"]
+    for tier in TIERS:
+        spans = [s for step in tier.setup_steps for s in _CODE_RE.findall(step)]
+        for cmd in must_mark:
+            assert any(cmd in s for s in spans), f"{tier.id}: {cmd!r} is not in a code span"
+        prose = "\n".join(_CODE_RE.sub("", step) for step in tier.setup_steps)
+        for bare in ("pio run", "docker compose", "./scripts/", "curl ", "cmd/config", "{\""):
+            assert bare not in prose, f"{tier.id}: {bare!r} appears outside a code span"

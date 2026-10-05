@@ -235,6 +235,24 @@ async def export_json(session_id: int) -> dict | None:
     }
 
 
+def _md_field(label: str, value, detail=None) -> str | None:
+    """One header line, ``- **Label**: value (detail)``, or None to leave it out.
+
+    Unset session columns are NULL, so ``session.get(key, 'N/A')`` printed a
+    literal ``None``; a missing value drops the line and a missing detail drops
+    the parentheses. Only the detail is shown when the value is unset.
+    """
+    def text(v) -> str:
+        return "" if v is None else str(v).strip()
+
+    main, extra = text(value), text(detail)
+    if not main and not extra:
+        return None
+    if main and extra:
+        return f"- **{label}**: {main} ({extra})"
+    return f"- **{label}**: {main or extra}"
+
+
 async def export_markdown(session_id: int) -> str | None:
     """Export session transcript as human-readable markdown (None if unknown)."""
     data = await export_json(session_id)
@@ -243,16 +261,23 @@ async def export_markdown(session_id: int) -> str | None:
     session = data["session"]
     # A custom profile can be deleted after sessions reference it.
     profile = data.get("species_profile") or {}
+    scientific = profile.get("scientific_name")
 
+    header = [
+        _md_field(
+            "Species",
+            profile.get("common_name") or session["species_profile_id"],
+            f"*{scientific}*" if scientific else None,
+        ),
+        _md_field("Category", profile.get("category")),
+        _md_field("Substrate", session.get("substrate"), session.get("substrate_volume")),
+        _md_field("Inoculated", session.get("inoculation_date"), session.get("inoculation_method")),
+        _md_field("Status", session["status"]),
+    ]
     lines = [
         f"# Session: {session['name']}",
         "",
-        f"**Species**: {profile.get('common_name', session['species_profile_id'])} "
-        f"(*{profile.get('scientific_name', '')}*)",
-        f"**Category**: {profile.get('category', 'unknown')}",
-        f"**Substrate**: {session.get('substrate', 'N/A')} ({session.get('substrate_volume', 'N/A')})",
-        f"**Inoculated**: {session.get('inoculation_date', 'N/A')} ({session.get('inoculation_method', 'N/A')})",
-        f"**Status**: {session['status']}",
+        *(line for line in header if line),
         "",
         "## Yield",
         f"- Wet: {session.get('total_wet_yield_g', 0)}g",

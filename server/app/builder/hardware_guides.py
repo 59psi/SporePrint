@@ -12,59 +12,75 @@ audit). Rules this file keeps, pinned by tests/test_hardware_guides.py:
   and follows the channel order of firmware/lib/sp_core/personality.h.
 - A tier's copy of a shared part PREPENDS its tier note to the shared buying
   guidance instead of replacing it (see _for_tier).
+- Setup steps wrap every command, path, payload, topic, env name and config
+  key in backticks, and each one names something the repo really has. No
+  other field uses backticks.
 """
 
 from .models import CapabilityGroup, Component, HardwareTier, WiringConnection
 
 # ── Shared text ─────────────────────────────────────────────────
 
+# Setup steps mark every shell command, file path, JSON payload, MQTT topic,
+# env name and config key as `code` (Markdown-style backticks) so the Builder
+# can render it copyable; tests/test_hardware_guides.py checks each span
+# against the repo. No other field uses backticks: component notes, wiring
+# rows and capability text stay plain.
+
+
+def _plain(text: str) -> str:
+    """Setup-step text for a plain field (a component note): no code marks."""
+    return text.replace("`", "")
+
+
 # srv-hw#15: the S3 is a supported alternative, but it has its own pin map.
-_S3_PIN_MAP = (
-    "ESP32-S3-DevKitC-1 builds use env node_esp32s3 (N8 / N8R8 / N16R8) or node_esp32s3_n32r16v "
-    "(the Espressif N32R16V sold on Amazon — plain node_esp32s3 does not boot on it) and a "
-    "DIFFERENT pin map "
-    "(firmware/boards/board_profile_esp32s3.h): SDA 8, SCL 9, channels GPIO 4/5/6/7, HX711 "
+_S3_PIN_MAP_STEP = (
+    "ESP32-S3-DevKitC-1 builds use env `node_esp32s3` (N8 / N8R8 / N16R8) or "
+    "`node_esp32s3_n32r16v` (the Espressif N32R16V sold on Amazon — plain `node_esp32s3` does "
+    "not boot on it) and a DIFFERENT pin map "
+    "(`firmware/boards/board_profile_esp32s3.h`): SDA 8, SCL 9, channels GPIO 4/5/6/7, HX711 "
     "DOUT/SCK 10/11, reed 12, MH-Z19C TX→16 / RX→17 — every wiring row and step here is for the "
     "WROOM-32 (SDA 21, SCL 22, channels 25/26/27/14); never wire an S3 to GPIO 26-37 (octal "
     "flash/PSRAM)."
 )
+_S3_PIN_MAP = _plain(_S3_PIN_MAP_STEP)
 
 _INSTALL_STEP = (
-    "Install SporePrint on the Pi with the one-command installer: curl -fsSL "
-    "https://raw.githubusercontent.com/59psi/SporePrint/main/install.sh | bash (or git clone "
-    "https://github.com/59psi/SporePrint.git && cd SporePrint && ./install.sh). It installs "
-    "Docker, writes a LAN-trust .env with the MQTT broker credentials ('server' + the smart-plug "
-    "user 'sp-3p'), creates the broker TLS certificates, starts the stack and prints the "
-    "dashboard URL. Do not use setup.sh — it is the developer-workstation script. (A Pi set up "
-    "with an older setup.sh has an API key that makes the dashboard return 401: blank "
-    "SPOREPRINT_API_KEY in .env, set SPOREPRINT_ALLOW_UNAUTHENTICATED=true, then docker compose "
-    "up -d server.)"
+    "Install SporePrint on the Pi with the one-command installer: `curl -fsSL "
+    "https://raw.githubusercontent.com/59psi/SporePrint/main/install.sh | bash` (or `git clone "
+    "https://github.com/59psi/SporePrint.git && cd SporePrint && ./install.sh`). It installs "
+    "Docker, writes a LAN-trust `.env` with the MQTT broker credentials (`server` + the "
+    "smart-plug user `sp-3p`), creates the broker TLS certificates, starts the stack and prints "
+    "the dashboard URL. Do not use `setup.sh` — it is the developer-workstation script. (A Pi "
+    "set up with an older `setup.sh` has an API key that makes the dashboard return 401: blank "
+    "`SPOREPRINT_API_KEY` in `.env`, set `SPOREPRINT_ALLOW_UNAUTHENTICATED=true`, then "
+    "`docker compose up -d server`.)"
 )
 
 _WEATHER_STEP = (
-    "Optional weather-predictive automation: set SPOREPRINT_WEATHER_LAT and _LON in the "
-    "SporePrint folder's .env, then run docker compose up -d server ('restart' does not re-read "
-    ".env)"
+    "Optional weather-predictive automation: set `SPOREPRINT_WEATHER_LAT` and "
+    "`SPOREPRINT_WEATHER_LON` in the SporePrint folder's `.env`, then run "
+    "`docker compose up -d server` (`docker compose restart` does not re-read `.env`)"
 )
 
 # Clip-on heatsinks are not in the BOM: a strip cut to closet length stays
 # around 1 A per channel, where a bare upright TO-220 copes.
 _HEATSINK_NOTE = (
-    "add -D heatsink=true if you fit clip-on TO-220 heatsinks, e.g. Aavid 574502B00000G (not "
+    "add `-D heatsink=true` if you fit clip-on TO-220 heatsinks, e.g. Aavid 574502B00000G (not "
     "in this list) — worth it on an LED channel above ~1 A, needed above ~2 A"
 )
 
 _PLATFORMIO_STEP = (
-    "Install PlatformIO on your computer: pip install platformio (or download each node's ZIP "
+    "Install PlatformIO on your computer: `pip install platformio` (or download each node's ZIP "
     "from the Builder page → ESP32 Firmware section — self-contained, no git clone needed)"
 )
 
 
 def _flash_nodes_step(boards: str) -> str:
     return (
-        f"Flash {boards}: cd firmware && pio run -t upload -e node_esp32 — ONE unified image "
+        f"Flash {boards}: `cd firmware && pio run -t upload -e node_esp32` — ONE unified image "
         "covers climate/relay/lighting (you pick the personality per node in its setup portal). "
-        + _S3_PIN_MAP
+        + _S3_PIN_MAP_STEP
     )
 
 
@@ -73,11 +89,11 @@ def _mqtt_credential_step(node_ids: str) -> str:
     # username == node id, so every node needs its own credential first.
     return (
         "Create each node's MQTT login BEFORE provisioning it — on the Pi, in the SporePrint "
-        f"folder, run ./scripts/add-node-mqtt-user.sh <node_id> once per board ({node_ids}). "
+        f"folder, run `./scripts/add-node-mqtt-user.sh <node_id>` once per board ({node_ids}). "
         "It prints the Node ID, the MQTT username (always equal to the node id — the broker ACL "
         "scopes each node to its own topics by username) and a password. Recommended (and "
-        "required once the Pi is cloud-paired): run ./scripts/provision-node.sh for the command "
-        "signing key, then docker compose up -d server"
+        "required once the Pi is cloud-paired): run `./scripts/provision-node.sh` for the command "
+        "signing key, then `docker compose up -d server`"
     )
 
 
@@ -92,8 +108,8 @@ def _portal_step(extra: str = "", *, cams: bool = False) -> str:
     )
     return (
         "Each ESP32 opens the 'SporePrint-Setup' WiFi AP on first boot — join it and enter: WiFi "
-        "SSID + password; Pi address (sporeprint.local or the Pi's IP); the MQTT username and "
-        "MQTT password printed by add-node-mqtt-user.sh (leave Node id blank — it becomes the "
+        "SSID + password; Pi address (`sporeprint.local` or the Pi's IP); the MQTT username and "
+        "MQTT password printed by `add-node-mqtt-user.sh` (leave Node id blank — it becomes the "
         "MQTT username); the node personality (climate / relay / lighting); and optionally an "
         "OTA password, the command signing key (HMAC) and the Secure MQTT (TLS) toggle."
         + (f" {extra}" if extra else "")
@@ -106,10 +122,10 @@ def _portal_step(extra: str = "", *, cams: bool = False) -> str:
 
 _CAM_FLASH_STEP = (
     "Flash each ESP32-CAM: seat it on its ESP32-CAM-MB programmer board, plug the MB's "
-    "micro-USB into your computer and run cd firmware && pio run -t upload -e cam. If the upload "
-    "doesn't start, hold IO0 on the MB, tap RST, release IO0 and retry (no FTDI adapter or GPIO 0 "
-    "jumper needed). Leave each camera on its MB — the MB is also its USB power input, and "
-    "cam_mount.scad holds the CAM + MB stack"
+    "micro-USB into your computer and run `cd firmware && pio run -t upload -e cam`. If the "
+    "upload doesn't start, hold IO0 on the MB, tap RST, release IO0 and retry (no FTDI adapter "
+    "or GPIO 0 jumper needed). Leave each camera on its MB — the MB is also its USB power "
+    "input, and `cam_mount.scad` holds the CAM + MB stack"
 )
 
 
@@ -120,25 +136,25 @@ def _tasmota_step(plugs: str, topics: str) -> str:
         f"SMART PLUG SETUP — {plugs} Plug each Athom Tasmota plug into an outlet OUTSIDE the "
         "humid chamber. Power it on, join its 'tasmota-XXXXXX-NNNN' WiFi AP, open 192.168.4.1 "
         "and enter your WiFi credentials. Then in the Tasmota web UI: Configuration → MQTT → "
-        "Host = the Pi's IP, Port = 1883, User = sp-3p, Password = SPOREPRINT_MQTT_3P_PASSWORD "
-        "(from the .env in the Pi's SporePrint folder), Topic = the plug's role "
-        f"({topics}), Full Topic = tasmota/%topic%/%prefix%/ — REQUIRED: Tasmota's default "
-        "%prefix%/%topic%/ publishes stat/…, which the broker silently drops, so the plug never "
-        "appears. Console equivalent: Backlog MqttHost <pi-ip>; MqttPort 1883; MqttUser sp-3p; "
-        "MqttPassword <password>; Topic humidifier; FullTopic tasmota/%topic%/%prefix%/. The "
-        "Topic becomes the plug id (humidifier → plug-humidifier), which is exactly what the "
-        "built-in rules drive. Toggle the plug and check it appears on the dashboard. Heater: "
-        "≤ 1500 W (≤ 1200 W preferred) on one plug"
+        "Host = the Pi's IP, Port = `1883`, User = `sp-3p`, Password = "
+        "`SPOREPRINT_MQTT_3P_PASSWORD` (from the `.env` in the Pi's SporePrint folder), Topic = "
+        f"the plug's role ({topics}), Full Topic = `tasmota/%topic%/%prefix%/` — REQUIRED: "
+        "Tasmota's default `%prefix%/%topic%/` publishes `stat/<topic>/POWER`, which the broker "
+        "silently drops, so the plug never appears. Console equivalent: `Backlog MqttHost <pi-ip>; "
+        "MqttPort 1883; MqttUser sp-3p; MqttPassword <password>; Topic humidifier; FullTopic "
+        "tasmota/%topic%/%prefix%/`. The Topic becomes the plug id (`humidifier` → "
+        "`plug-humidifier`), which is exactly what the built-in rules drive. Toggle the plug and "
+        "check it appears on the dashboard. Heater: ≤ 1500 W (≤ 1200 W preferred) on one plug"
     )
 
 
 def _print_step(parts: str) -> str:
     return (
-        "PRINT THE ENCLOSURES (models/ or Builder → 3D Models; PLA or PETG, 0.2 mm layers, no "
+        "PRINT THE ENCLOSURES (`models/` or Builder → 3D Models; PLA or PETG, 0.2 mm layers, no "
         f"supports) with the preset for each part you bought: {parts} Every multi-piece "
         "enclosure is held together by brass heat-set inserts + ISO 4762 socket-head screws — "
-        "press the inserts into the finished print with a soldering iron (models/README.md → "
-        "Heat-set inserts). No inserts? Render with -D 'SP_FASTENER=\"self_tap\"' and use "
+        "press the inserts into the finished print with a soldering iron (`models/README.md` → "
+        "Heat-set inserts). No inserts? Render with `-D 'SP_FASTENER=\"self_tap\"'` and use "
         "self-tapping screws"
     )
 
@@ -146,7 +162,7 @@ def _print_step(parts: str) -> str:
 def _inserts_step(inserts: str, screws: str) -> str:
     return (
         "HEAT-SET INSERTS AND SCREWS (the insert and screw lines in this parts list; counts "
-        f"from the models/README.md shopping list at default presets): inserts {inserts}; "
+        f"from the `models/README.md` shopping list at default presets): inserts {inserts}; "
         f"screws {screws}. The pockets are sized for ruthex RX inserts (M2.5 x 5.7, M3 x 5.7, "
         "M4 x 8.1, M5 x 9.5; CNC Kitchen's M3/M4/M5 match, but CNC Kitchen's M2.5 is M2.5 x 4, "
         "too short). Press each insert flush with a soldering iron (insert tip, ~220-245 °C)"
@@ -1031,14 +1047,14 @@ TIER_BARE_BONES = HardwareTier(
     firmware_targets=["node_esp32"],
     setup_steps=[
         "Set up the Raspberry Pi: flash Raspberry Pi OS (64-bit) with Raspberry Pi Imager — set "
-        "the hostname to 'sporeprint' in its advanced options (ESP32 nodes find the MQTT broker "
-        "at sporeprint.local) and enable SSH + WiFi. Fit the Active Cooler before casing the Pi",
+        "the hostname to `sporeprint` in its advanced options (ESP32 nodes find the MQTT broker "
+        "at `sporeprint.local`) and enable SSH + WiFi. Fit the Active Cooler before casing the Pi",
         _INSTALL_STEP,
         _print_step(
-            "pi_case (default: Pi 5 + Active Cooler); esp32_case (default preset narrow_usbc fits "
-            "the pinned narrow USB-C DevKit — devkitc_v4 / wide_usbc / s3_devkitc1 for other "
-            "boards); sensor_mount + sensor_bracket (defaults; -D scd30=true on both only for an "
-            "SCD30)."
+            "`pi_case` (default: Pi 5 + Active Cooler); `esp32_case` (default preset `narrow_usbc` "
+            "fits the pinned narrow USB-C DevKit — `devkitc_v4` / `wide_usbc` / `s3_devkitc1` for "
+            "other boards); `sensor_mount` + `sensor_bracket` (defaults; `-D scd30=true` on both "
+            "only for an SCD30)."
         ),
         _inserts_step(
             "10 x M2.5 x 5.7 and 14 x M3 x 5.7",
@@ -1051,13 +1067,13 @@ TIER_BARE_BONES = HardwareTier(
         "strips unsoldered",
         _PLATFORMIO_STEP,
         _flash_nodes_step("the node"),
-        _mqtt_credential_step("e.g. climate-01"),
+        _mqtt_credential_step("e.g. `climate-01`"),
         _portal_step("Choose the climate personality."),
         "SENSOR PLACEMENT — Climate node (SHT31 + BH1750): Mount the sensor boards inside the "
-        "ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber at "
+        "ventilated sensor enclosure (`sensor_mount.scad`). Place at CENTER of growing chamber at "
         "SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity at "
         "substrate level are what matter for mushroom growth, not ambient room temp. Clip the "
-        "sensor_bracket onto a wire shelf (zip ties through the clip webs), or use the bracket's "
+        "`sensor_bracket` onto a wire shelf (zip ties through the clip webs), or use the bracket's "
         "suction cup on glass walls. AVOID placing near heat sources (heaters, lights), direct "
         "airflow (fan output), or dead air zones (corners). The BH1750 looks up through the lid's "
         "light window — face it toward the light source, not the floor",
@@ -1067,10 +1083,10 @@ TIER_BARE_BONES = HardwareTier(
         "ESP32 draws < 0.5 A — and tidy the run with zip ties",
         _tasmota_step(
             "Connect your humidifier (ultrasonic, inside the chamber or piped in via tubing).",
-            "humidifier",
+            "`humidifier`",
         ),
-        "Open http://<pi-ip>:3001 (install.sh printed it; http://sporeprint.local:3001 if mDNS "
-        "works) — you should see live sensor data on the dashboard",
+        "Open `http://<pi-ip>:3001` (`install.sh` printed it; `http://sporeprint.local:3001` if "
+        "mDNS works) — you should see live sensor data on the dashboard",
     ],
 )
 
@@ -1262,18 +1278,18 @@ TIER_RECOMMENDED = HardwareTier(
     firmware_targets=["node_esp32", "cam"],
     setup_steps=[
         "Set up the Raspberry Pi: flash Raspberry Pi OS (64-bit) with Raspberry Pi Imager — set "
-        "the hostname to 'sporeprint' in its advanced options (nodes find the MQTT broker at "
-        "sporeprint.local) and enable SSH + WiFi. Fit the Active Cooler before casing the Pi",
+        "the hostname to `sporeprint` in its advanced options (nodes find the MQTT broker at "
+        "`sporeprint.local`) and enable SSH + WiFi. Fit the Active Cooler before casing the Pi",
         _INSTALL_STEP,
         _WEATHER_STEP,
         _print_step(
-            "pi_case (default: Pi 5 + Active Cooler); 3 x esp32_case (default preset narrow_usbc "
-            "fits the HiLetgo 3-pack; devkitc_v4 / wide_usbc / s3_devkitc1 for other boards); "
-            "sensor_mount + sensor_bracket (defaults; -D scd30=true on both only for an SCD30); "
-            "cam_mount (default, CAM + MB stack); relay_board_mount twice — -D 'node=\"relay\"' "
-            "and -D 'node=\"lighting\"' (lighting board in PETG; " + _HEATSINK_NOTE + "); "
-            "power_supply_mount (default psu=\"facmogu_5a\" fits the pinned Facmogu 5A); "
-            "fan_duct (default) for each fan you duct."
+            "`pi_case` (default: Pi 5 + Active Cooler); 3 x `esp32_case` (default preset "
+            "`narrow_usbc` fits the HiLetgo 3-pack; `devkitc_v4` / `wide_usbc` / `s3_devkitc1` for "
+            "other boards); `sensor_mount` + `sensor_bracket` (defaults; `-D scd30=true` on both "
+            "only for an SCD30); `cam_mount` (default, CAM + MB stack); `relay_board_mount` twice — "
+            "`-D 'node=\"relay\"'` and `-D 'node=\"lighting\"'` (lighting board in PETG; "
+            + _HEATSINK_NOTE + "); `power_supply_mount` (default `psu=\"facmogu_5a\"` fits the "
+            "pinned Facmogu 5A); `fan_duct` (default) for each fan you duct."
         ),
         _inserts_step(
             "10 x M2.5 x 5.7, 26 x M3 x 5.7, 12 x M4 x 8.1 and 1 x M5 x 9.5 (3 fan ducts)",
@@ -1283,12 +1299,12 @@ TIER_RECOMMENDED = HardwareTier(
         "sockets on the ESP32's 3.3V (red), GND (black), GPIO 21 SDA (blue) and GPIO 22 SCL "
         "(yellow) pins, its QT plug into the SHT31-D; then 4210 QT-QT cables SHT31-D → SCD41 → "
         "BH1750. No soldering, no breadboard",
-        "Build the relay switch board on relay_board_mount (node=\"relay\"), per channel: "
+        "Build the relay switch board on `relay_board_mount` (`node=\"relay\"`), per channel: "
         "IRLZ44N, 100 Ω from the J1 IN terminal to the gate, 10K from gate to source, UF4007 "
         "across the J2 load terminals (cathode to +12V), source to the GND bus. Run Dupont "
         "jumpers (female end on the ESP32 pin) from GPIO 25 / 26 / 27 / 14 and a GND pin into "
         "the J1 terminals",
-        "Build the lighting switch board the same way (node=\"lighting\") but "
+        "Build the lighting switch board the same way (`node=\"lighting\"`) but "
         "WITHOUT diodes — LED strips are resistive. Populate channels 0 and 1: white 6500K on "
         "GPIO 25, blue 450 nm on GPIO 26. The lighting personality also exposes GPIO 27 + GPIO "
         "14 (red 660 nm / far-red 730 nm); leave them unpopulated for now and add them later "
@@ -1296,22 +1312,22 @@ TIER_RECOMMENDED = HardwareTier(
         _PLATFORMIO_STEP,
         _flash_nodes_step("each node"),
         _CAM_FLASH_STEP,
-        _mqtt_credential_step("climate-01, relay-01, lighting-01, cam-01"),
+        _mqtt_credential_step("`climate-01`, `relay-01`, `lighting-01`, `cam-01`"),
         _portal_step(
             "The camera's portal asks for the same WiFi / Pi address / MQTT fields; it uploads "
-            "frames to http://<Pi address>:8000.",
+            "frames to `http://<Pi address>:8000`.",
             cams=True,
         ),
         "SENSOR PLACEMENT — Climate node (SHT31 + SCD41 + BH1750): Mount the sensor boards inside "
-        "the ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of growing chamber "
+        "the ventilated sensor enclosure (`sensor_mount.scad`). Place at CENTER of growing chamber "
         "at SUBSTRATE LEVEL — not near the ceiling where hot air rises. Temperature and humidity "
         "at substrate level are what matter for mushroom growth, not ambient room temp. Clip the "
-        "sensor_bracket onto a wire shelf, or use its suction cup on glass walls. AVOID placing "
+        "`sensor_bracket` onto a wire shelf, or use its suction cup on glass walls. AVOID placing "
         "near heat sources (heaters, lights), direct airflow (fan output), or dead air zones "
         "(corners). CO2 SPECIFIC: the SCD41 needs air moving around it — the chimney vents in "
         "the enclosure are critical for accurate readings. LIGHT SPECIFIC: the BH1750 looks up "
         "through the lid's light window — face it toward the LED strips",
-        "RELAY NODE PLACEMENT: Mount both switch boards (relay_board_mount.scad) OUTSIDE the grow "
+        "RELAY NODE PLACEMENT: Mount both switch boards (`relay_board_mount.scad`) OUTSIDE the grow "
         "chamber — electronics do not belong in 85-95% RH. Fix them to the outside wall or a "
         "nearby shelf with 4 x M3 x 16 pan-head (or #4 x 3/4\" wood) screws through the corner "
         "feet, or zip ties through the end slots. Route wires into the chamber through a small "
@@ -1319,7 +1335,7 @@ TIER_RECOMMENDED = HardwareTier(
         "Connect fans to the relay node: FAE fan to channel 0 (GPIO 25), exhaust to channel 1 "
         "(GPIO 26), circulation to channel 2 (GPIO 27). Aux (channel 3, GPIO 14) has a 60 s "
         "max-on backstop by default — if you use it for something other than a misting pump, "
-        "raise it with cmd/config {\"max_on_sec\": {\"aux\": N}}",
+        "raise it with `cmd/config` `{\"max_on_sec\": {\"aux\": N}}`",
         "Connect LED strips to the lighting node: the white strip to channel 0 (GPIO 25); the "
         "tri-spectrum strip's BLUE wire to channel 1 (GPIO 26) and its common wire to +12V — "
         "insulate its red and green wires",
@@ -1339,7 +1355,7 @@ TIER_RECOMMENDED = HardwareTier(
         "CAMERA PLACEMENT: Two recommended positions — (1) FRONT-FACING at substrate level, angled "
         "slightly upward to capture pin formation and fruiting body development, or (2) TOP-DOWN "
         "above the substrate looking straight down for overall colonization progress. Use "
-        "cam_mount.scad — suction cup on a glass door, screws, or zip ties to a shelf rail. "
+        "`cam_mount.scad` — suction cup on a glass door, screws, or zip ties to a shelf rail. "
         "Distance: 15-30cm from substrate for good detail without fish-eye distortion. The "
         "camera's flash LED (GPIO 4) fires for every capture, so photos stay consistent while "
         "ambient light varies",
@@ -1347,9 +1363,9 @@ TIER_RECOMMENDED = HardwareTier(
             "Humidifier plug: an ultrasonic humidifier (inside the chamber or piped in). "
             "Heater/cooler plug: a space heater (outside, aimed at the chamber intake) or a "
             "Peltier cooler (at the chamber wall).",
-            "humidifier, and heater or cooler",
+            "`humidifier`, and `heater` or `cooler`",
         ),
-        "Open http://<pi-ip>:3001 — verify all nodes appear on the Dashboard hardware panel",
+        "Open `http://<pi-ip>:3001` — verify all nodes appear on the Dashboard hardware panel",
         "Camera frames should appear in the Vision page within 15 minutes of the camera booting",
     ],
 )
@@ -1635,20 +1651,21 @@ TIER_ALL = HardwareTier(
     firmware_targets=["node_esp32", "cam"],
     setup_steps=[
         "Set up the Raspberry Pi: flash Raspberry Pi OS (64-bit) with Raspberry Pi Imager — set "
-        "the hostname to 'sporeprint' in its advanced options (nodes find the MQTT broker at "
-        "sporeprint.local) and enable SSH + WiFi. Fit the Active Cooler before casing the Pi",
+        "the hostname to `sporeprint` in its advanced options (nodes find the MQTT broker at "
+        "`sporeprint.local`) and enable SSH + WiFi. Fit the Active Cooler before casing the Pi",
         _INSTALL_STEP,
         _WEATHER_STEP + " — this tier's predictive rules need it",
         _print_step(
-            "pi_case (default: Pi 5 + Active Cooler); 4 x esp32_case (default preset narrow_usbc "
-            "fits the narrow USB-C DevKits — measure 6-pack boards and use devkitc_v4 / "
-            "wide_usbc if they are wider); 2 x sensor_mount + 2 x sensor_bracket (defaults; -D "
-            "scd30=true on both only for an SCD30); 2 x cam_mount (default); relay_board_mount "
-            "twice — -D 'node=\"relay\"' and -D 'node=\"lighting\"' (lighting board in PETG; "
-            + _HEATSINK_NOTE + "); power_supply_mount -D 'psu=\"facmogu_10a\"' (PETG); hx711_scale "
-            "(defaults cell=\"bar75\" hx_board=\"ada5974\" fit the Adafruit 4541 + 5974; "
-            "cell=\"tal220\" for 80 mm TAL220 bars; 5 walls, ≥ 40% infill); pump_bracket "
-            "(default pump=\"adafruit_1150\"); fan_duct (default) for each fan you duct."
+            "`pi_case` (default: Pi 5 + Active Cooler); 4 x `esp32_case` (default preset "
+            "`narrow_usbc` fits the narrow USB-C DevKits — measure 6-pack boards and use "
+            "`devkitc_v4` / `wide_usbc` if they are wider); 2 x `sensor_mount` + 2 x "
+            "`sensor_bracket` (defaults; `-D scd30=true` on both only for an SCD30); 2 x "
+            "`cam_mount` (default); `relay_board_mount` twice — `-D 'node=\"relay\"'` and "
+            "`-D 'node=\"lighting\"'` (lighting board in PETG; " + _HEATSINK_NOTE + "); "
+            "`power_supply_mount` `-D 'psu=\"facmogu_10a\"'` (PETG); `hx711_scale` (defaults "
+            "`cell=\"bar75\"` `hx_board=\"ada5974\"` fit the Adafruit 4541 + 5974; "
+            "`cell=\"tal220\"` for 80 mm TAL220 bars; 5 walls, ≥ 40% infill); `pump_bracket` "
+            "(default `pump=\"adafruit_1150\"`); `fan_duct` (default) for each fan you duct."
         ),
         _inserts_step(
             "20 x M2.5 x 5.7, 40 x M3 x 5.7, 16 x M4 x 8.1 and 2 x M5 x 9.5 (3 fan ducts)",
@@ -1662,37 +1679,39 @@ TIER_ALL = HardwareTier(
         "BH1750",
         "Wire climate node #2 identically on a second ESP32 — it goes on a different shelf for "
         "per-shelf monitoring",
-        "Build the relay switch board on relay_board_mount (node=\"relay\"), per channel: "
+        "Build the relay switch board on `relay_board_mount` (`node=\"relay\"`), per channel: "
         "IRLZ44N, 100 Ω from the J1 IN terminal to the gate, 10K from gate to source, UF4007 "
         "across the J2 load terminals (cathode to +12V), source to the GND bus. Run Dupont "
         "jumpers (female end on the ESP32 pin) from GPIO 25 / 26 / 27 / 14 and a GND pin into "
         "the J1 terminals",
-        "Build the lighting switch board the same way (node=\"lighting\") but "
+        "Build the lighting switch board the same way (`node=\"lighting\"`) but "
         "WITHOUT diodes — LED strips are resistive: white (GPIO 25), blue (GPIO 26), red (GPIO "
         "27), far-red (GPIO 14)",
         _PLATFORMIO_STEP,
         _flash_nodes_step("the four node boards (and the spares, if you like)"),
         _CAM_FLASH_STEP,
-        _mqtt_credential_step("climate-01, climate-02, relay-01, lighting-01, cam-01, cam-02"),
+        _mqtt_credential_step(
+            "`climate-01`, `climate-02`, `relay-01`, `lighting-01`, `cam-01`, `cam-02`"
+        ),
         _portal_step(
             "Node identity is set here, not at flash time: the second climate node logs in as "
-            "climate-02 and the top-down camera as cam-02. On the relay node tick 'HX711 "
+            "`climate-02` and the top-down camera as `cam-02`. On the relay node tick 'HX711 "
             "load-cell scale' and 'Door reed switch' under Optional peripherals (nodes already in "
-            "service: cmd/config {\"peripherals\": {\"hx711\": true, \"reed\": true}}). The "
-            "cameras upload frames to http://<Pi address>:8000.",
+            "service: `cmd/config` `{\"peripherals\": {\"hx711\": true, \"reed\": true}}`). "
+            "The cameras upload frames to `http://<Pi address>:8000`.",
             cams=True,
         ),
         "SENSOR PLACEMENT — Climate nodes (SHT31 + SCD41 + BH1750): Mount each set of sensor "
-        "boards inside a ventilated sensor enclosure (sensor_mount.scad). Place at CENTER of "
+        "boards inside a ventilated sensor enclosure (`sensor_mount.scad`). Place at CENTER of "
         "growing chamber at SUBSTRATE LEVEL — not near the ceiling where hot air rises. "
         "Temperature and humidity at substrate level are what matter for mushroom growth, not "
         "ambient room temp. For the second climate node, place on a different shelf at the same "
-        "height relative to that shelf's substrate. Clip each sensor_bracket onto a wire shelf, "
+        "height relative to that shelf's substrate. Clip each `sensor_bracket` onto a wire shelf, "
         "or use its suction cup on glass walls. AVOID placing near heat sources (heaters, "
         "lights), direct airflow (fan output), or dead air zones (corners). CO2 SPECIFIC: the "
         "SCD41 needs air moving around it — the chimney vents are critical. LIGHT SPECIFIC: the "
         "BH1750 looks up through the lid's light window — face it toward the LED strips",
-        "RELAY NODE PLACEMENT: Mount both switch boards (relay_board_mount.scad) OUTSIDE the grow "
+        "RELAY NODE PLACEMENT: Mount both switch boards (`relay_board_mount.scad`) OUTSIDE the grow "
         "chamber — electronics do not belong in 85-95% RH. Fix them to the outside wall or a "
         "nearby shelf with 4 x M3 x 16 pan-head (or #4 x 3/4\" wood) screws through the corner "
         "feet, or zip ties through the end slots, and bundle the 12V wires with zip ties. Route "
@@ -1705,30 +1724,30 @@ TIER_ALL = HardwareTier(
         "(GPIO 26), RED wire (660 nm) to ch 2 (GPIO 27), GREEN wire (730 nm far-red) to ch 3 "
         "(GPIO 14), and its common wire to +12V. One physical strip, three channels",
         "CAMERA PLACEMENT: Use BOTH recommended positions for full coverage — (1) FRONT-FACING "
-        "camera (cam-01) at substrate level, angled slightly upward to capture pin formation and "
-        "fruiting body development. (2) TOP-DOWN camera (cam-02) above the substrate looking "
-        "straight down for overall colonization progress. Use cam_mount.scad — suction cup on a "
+        "camera (`cam-01`) at substrate level, angled slightly upward to capture pin formation and "
+        "fruiting body development. (2) TOP-DOWN camera (`cam-02`) above the substrate looking "
+        "straight down for overall colonization progress. Use `cam_mount.scad` — suction cup on a "
         "glass door, screws, or zip ties to a shelf rail. Distance: 15-30cm from substrate for "
         "good detail without fish-eye distortion. The camera's flash LED (GPIO 4) fires for every "
         "capture, so photos stay consistent while ambient light varies",
         "Wire the HX711 to the RELAY node's spare GPIOs (DOUT = GPIO 32, SCK = GPIO 33; 3.3V + "
         "GND), load cell red to E+ and black to E−, leave the rate switch at 10 SPS, and mount "
-        "the cell in hx711_scale under the grow block. Tare and calibrate once — send "
-        "{\"tare\":true}, then {\"calibrate_scale\":<known grams>} as cmd/config (POST "
-        "/api/hardware/nodes/relay-01/command with channel \"config\") — keeping the platform still "
-        "until the '[CMD] scale tared/calibrated' log line appears; after that weight_g rides in "
-        "telemetry in grams",
+        "the cell in `hx711_scale` under the grow block. Tare and calibrate once — send "
+        "`{\"tare\":true}`, then `{\"calibrate_scale\":<known grams>}` as `cmd/config` "
+        "(`POST /api/hardware/nodes/relay-01/command` with channel `\"config\"`) — keeping the "
+        "platform still until the '[CMD] scale tared/calibrated' log line appears; after that "
+        "`weight_g` rides in telemetry in grams",
         "Mount the door contact on the door frame (magnet on the door): COM to GPIO 35, the alarm "
         "'NC' terminal to GND (closed while the door is shut — check with a meter), and an "
         "EXTERNAL 10K pull-up from GPIO 35 to 3V3 (input-only pins 34-39 have no internal "
         "pulls). Wired to NO instead? Tick 'Door contact wired on its NO terminal (open with the "
-        "door shut) — invert' in the portal (or send cmd/config {\"peripherals\": "
-        "{\"reed_inv\": true}}), or move the lead to NC",
+        "door shut) — invert' in the portal (or send `cmd/config` `{\"peripherals\": "
+        "{\"reed_inv\": true}}`), or move the lead to NC",
         "Connect the peristaltic pump to the relay node's aux channel (GPIO 14) via IRLZ44N + "
-        "UF4007, mounted in pump_bracket with its tube ports pointing up or sideways. Sterilize "
+        "UF4007, mounted in `pump_bracket` with its tube ports pointing up or sideways. Sterilize "
         "the tubing and use FDA-grade silicone on the substrate line; the pump suits drip "
         "hydration better than atomizing nozzles. Aux stops itself after 60 s by default "
-        "(raise with cmd/config {\"max_on_sec\": {\"aux\": N}} if you repurpose it)",
+        "(raise with `cmd/config` `{\"max_on_sec\": {\"aux\": N}}` if you repurpose it)",
         "POWER (12V): 12V 10A PSU → DC barrel pigtail → WAGO 221-413 splits +12V into two "
         "inline fuses — 3 A to the relay board's +12V bus (fans + pump), 7.5 A to the lighting "
         "board's — and a WAGO 221-415 joins the pigtail GND to both boards' GND buses. Every 12V "
@@ -1748,9 +1767,9 @@ TIER_ALL = HardwareTier(
             "Dehumidifier plug: a dehumidifier (outside the chamber, intake facing it). Heater "
             "plug: a space heater (outside, aimed at the chamber intake). Cooler plug: a Peltier "
             "cooler (at the chamber wall).",
-            "humidifier, dehumidifier, heater, cooler",
+            "`humidifier`, `dehumidifier`, `heater`, `cooler`",
         ),
-        "Open http://<pi-ip>:3001 — verify all nodes, cameras, and plugs appear on the Dashboard",
+        "Open `http://<pi-ip>:3001` — verify all nodes, cameras, and plugs appear on the Dashboard",
         "Camera frames should appear in the Vision page within 15 minutes. Verify both front and "
         "top-down views are capturing",
     ],
