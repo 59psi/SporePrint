@@ -8,6 +8,15 @@ audit). Rules this file keeps, pinned by tests/test_hardware_guides.py:
   price_approx the per-unit price within the pinned pack, pack_price that
   pack's price and pack_size its units, so N chambers buy
   ceil(quantity x N / pack_size) packs (Component.line_cost).
+- A kit or spool the chambers use up (inserts, screws, WAGO splices, fuses,
+  jumpers, wire by the foot, solder by the gram, VELCRO straps, zip ties,
+  heat-shrink, grommets) is such a per-chamber pack line, never `shared`:
+  quantity counts what ONE chamber takes (a mixed kit counts the size the
+  chambers use up first), and the Pi case's share of the same packs is
+  `shared_units`, bought once. Only the Pi side, the bench breadboard and a
+  kit only the Pi case draws on stay `shared` — a bulk pack that covers 16
+  chambers still under-buys for 17 (the Builder takes up to 99). Insert and
+  screw counts come from the models/README.md shopping list.
 - estimated_cost stays within 10% of HardwareTier.parts_cost().
 - One 100 ohm gate resistor and one 10K pull-down per IRLZ44N (plus the reed
   switch's 10K pull-up); flyback diodes only on the inductive relay channels.
@@ -393,12 +402,16 @@ _SCREW_TERMINALS = Component(
 _DUPONT = Component(
     name="Dupont Jumper Wires, M-F / M-M / F-F (120 pcs, 20 cm)",
     role="Gate + GND runs from each ESP32's header pins into the switch board's J1 terminals",
-    price_approx="$7",
+    unit="M-F jumper",
+    price_approx="$0.18",
+    pack_price="$7",
+    pack_size=40,
     url="https://www.amazon.com/dp/B01EV70C78",
     category="misc",
-    shared=True,
-    notes="ELEGOO 120-pc mix. Female end onto the ESP32's downward header pin, male end into "
-          "the J1 screw terminal (IN = GPIO, − = GND). The M-M wires serve the breadboard.",
+    notes="ELEGOO 120-pc mix: 40 each of M-F, M-M and F-F. Counted in M-F jumpers, one per J1 "
+          "terminal an ESP32 drives (each wired gate + one GND per switch board). Female end "
+          "onto the ESP32's downward header pin, male end into the J1 screw terminal (IN = "
+          "GPIO, − = GND). The M-M wires serve the breadboard.",
 )
 
 _BREADBOARD = Component(
@@ -410,7 +423,8 @@ _BREADBOARD = Component(
     shared=True,
     notes="BOJACK: 4 solderless breadboards (830 + 400 tie points) + 126 flexible jumpers. The "
           "permanent build solders each switch stage into the printed relay_board_mount.scad "
-          "chassis instead.",
+          "chassis instead. A bench tool, not used up: bring each node up on it, then the next, "
+          "so one kit serves any number of chambers.",
 )
 
 _NOCTUA = Component(
@@ -578,37 +592,50 @@ _SURGE_STRIP_12_USB = Component(
 _WIRE_22AWG = Component(
     name="22 AWG Stranded Hookup Wire, 6 colours x 10 ft (silicone)",
     role="Gate / signal / GND jumpers on the switch boards, short splices, ESP32 GND to the GND bus",
-    price_approx="$13",
+    quantity=2,
+    unit="ft",
+    price_approx="$1.30",
+    pack_price="$13",
+    pack_size=10,
     url="https://www.amazon.com/dp/B089CQHRDT",
     category="wiring",
-    shared=True,
     notes="Fermerry tinned-copper silicone wire (black, red, blue, white, green, yellow; 600 V). "
-          "Use it for everything that carries signal or < 1 A; the 12V feeds use the 18 AWG "
-          "pair. Comes with a few heat-shrink pieces. 25 ft/colour version: B089D29FHC (~$20).",
+          "Counted in feet of black, the colour the build uses most: the GND jumpers on a "
+          "chamber's two switch boards and its splices take ~2 ft, and the pack has 10 ft of "
+          "each colour, so one pack covers 5 chambers. Use it for everything that carries "
+          "signal or < 1 A; the 12V feeds use the 18 AWG pair. Comes with a few heat-shrink "
+          "pieces. 25 ft/colour version: B089D29FHC (~$20).",
 )
 
 _WIRE_18AWG = Component(
     name="18 AWG 2-Conductor Red/Black Wire, 100 ft",
     role="12V feeds: PSU → WAGO split → fuses → switch-board buses → LED strips, fans' and pump's runs",
-    price_approx="$26",
+    unit="ft",
+    price_approx="$0.26",
+    pack_price="$26",
+    pack_size=100,
     url="https://www.amazon.com/dp/B07CWQ6JPB",
     category="wiring",
-    shared=True,
     notes="MILAPEAK bonded red/black pair, pure tinned copper (not CCA). 18 AWG is the "
           "build's 12V standard: good for the ≤ 7.5 A fused branches over these short runs. "
-          "Recommended uses ~20 ft, All the Things ~35 ft. Shorter: BNTECHGO 18 AWG silicone "
-          "25 ft (B0779QRR58, ~$15).",
+          "Counted in feet of the pair (the WAGO-to-board feeds and every strip and pump "
+          "lead). Shorter: BNTECHGO 18 AWG silicone 25 ft (B0779QRR58, ~$15).",
 )
 
 _CABLE_22_4 = Component(
     name="22 AWG 4-Conductor Stranded Cable, 50 ft (UL 2464)",
     role="HX711 run and door-contact run from the chamber back to the relay node",
-    price_approx="$20",
+    quantity=12,
+    unit="ft",
+    price_approx="$0.40",
+    pack_price="$20",
+    pack_size=50,
     url="https://www.amazon.com/dp/B0CN76J8KR",
     category="wiring",
-    shared=True,
-    notes="ENERJOUR UL 2464, tinned copper, black / red / yellow / white. HX711 run: red 3.3V, "
-          "black GND, yellow DOUT → GPIO 32, white SCK → GPIO 33. Door-contact run: two "
+    notes="ENERJOUR UL 2464, tinned copper, black / red / yellow / white. Counted in feet: two "
+          "runs a chamber (HX711, door contact), ~6 ft (2 m) each — the reach of the in-chamber "
+          "boards' 6 ft USB cables — so one 50 ft spool covers 4 chambers. HX711 run: red "
+          "3.3V, black GND, yellow DOUT → GPIO 32, white SCK → GPIO 33. Door-contact run: two "
           "conductors, COM → GPIO 35, NC → GND. Shielded alternate for long or noisy runs: "
           "B0D9JTVS2P (~$28).",
 )
@@ -616,14 +643,18 @@ _CABLE_22_4 = Component(
 _WAGO = Component(
     name="WAGO 221 Lever Connectors, 12-pc assortment (221-412 / 413 / 415 / 2401)",
     role="12V distribution: split the PSU's +12V to the two fused branches; join the GND bus",
-    price_approx="$12",
+    unit="chamber set",
+    price_approx="$4",
+    pack_price="$12",
+    pack_size=3,
     url="https://www.amazon.com/dp/B0CJ5QF4Z2",
     category="wiring",
-    shared=True,
-    notes="Genuine WAGO, 24-12 AWG, 20 A. A 221-413 splits the pigtail's +12V into the two "
-          "fuse holders; a 221-415 joins the pigtail's GND to both switch boards' GND buses "
-          "and each ESP32's GND (the common ground the gate drive needs). Keep them outside "
-          "the chamber. 36-pc kit: B08W3QXN9B (~$26).",
+    notes="Genuine WAGO, 24-12 AWG, 20 A: 3 each of 221-412, 221-413, 221-415 and 221-2401. "
+          "Counted in chamber sets: each chamber's 12V distribution takes one 221-413 and one "
+          "221-415, so one assortment covers 3 chambers. The 221-413 splits the pigtail's "
+          "+12V into the two fuse holders; the 221-415 joins the pigtail's GND to both switch "
+          "boards' GND buses and each ESP32's GND (the common ground the gate drive needs). "
+          "Keep them outside the chamber. 36-pc kit: B08W3QXN9B (~$26).",
 )
 
 _FUSE_HOLDERS = Component(
@@ -635,7 +666,7 @@ _FUSE_HOLDERS = Component(
     pack_size=10,
     url="https://www.amazon.com/dp/B07426WCLM",
     category="wiring",
-    notes="Two per chamber (relay branch + lighting branch), so one 10-pack covers five "
+    notes="Two per chamber (relay branch + lighting branch), so one 10-pack covers 5 "
           "chambers. Nilight NI-FH01, 14 AWG leads, covered holder (no IP rating — mount it "
           "outside the chamber). Fuse ratings: relay board 3 A; lighting board 5 A on the 5 A PSU "
           "(Recommended), 7.5 A on the 10 A PSU (All the Things). IP66 alternate: VANTRONIK "
@@ -645,13 +676,16 @@ _FUSE_HOLDERS = Component(
 _FUSES = Component(
     name="ATC Blade Fuse Assortment, 150 pc (2-35 A)",
     role="3 A / 5 A / 7.5 A fuses for the inline holders, plus spares",
-    price_approx="$10",
+    unit="chamber set",
+    price_approx="$0.67",
+    pack_price="$10",
+    pack_size=15,
     url="https://www.amazon.com/dp/B07VWRK2VD",
     category="wiring",
-    shared=True,
     notes="Riseuvo: 15 each of 2 / 3 / 5 / 7.5 / 10 / 15 / 20 / 25 / 30 / 35 A, with a puller. "
           "Fit 3 A on the relay branch and 5 A (Recommended) or 7.5 A (All the Things) on the "
-          "lighting branch.",
+          "lighting branch. Counted in chamber sets — one relay fuse + one lighting fuse — so "
+          "one box covers 15 chambers.",
 )
 
 _FAN_EXTENSIONS = Component(
@@ -674,82 +708,102 @@ _FAN_EXTENSIONS = Component(
 _HEAT_SHRINK = Component(
     name="Adhesive-Lined Heat Shrink Tubing Kit, 3:1 (400 pc)",
     role="Seal every splice and LED-strip joint against 85-95% RH",
-    price_approx="$12",
+    quantity=25,
+    price_approx="$0.03",
+    pack_price="$12",
+    pack_size=400,
     url="https://www.amazon.com/dp/B0BVVMCY86",
     category="hardware",
-    shared=True,
-    notes="Eventronic dual-wall 3:1, 7 sizes 3/32\"-3/4\". Use 1/2\"-3/4\" over the IP65 / IP67 "
-          "strip-to-lead joints and the small sizes on splices; it also caps the tri-spectrum "
-          "strip's unused red and green wires on the Recommended tier.",
+    notes="Eventronic dual-wall 3:1, 7 sizes 3/32\"-3/4\". Counted in pieces of any size. Use "
+          "1/2\"-3/4\" over the IP65 / IP67 strip-to-lead joints and the small sizes on splices; "
+          "it also caps the tri-spectrum strip's unused red and green wires on the Recommended "
+          "tier.",
 )
 
 _ZIP_TIES = Component(
     name="UV-Resistant Zip Ties, 4\" / 6\" / 8\" / 12\" (400 pc)",
     role="Printed-mount tie slots, shelf clips and cable routing",
-    price_approx="$13",
+    quantity=25,
+    price_approx="$0.03",
+    pack_price="$13",
+    pack_size=400,
     url="https://www.amazon.com/dp/B09SSPXBPR",
     category="hardware",
-    shared=True,
     notes="Superun nylon 6/6: 2.5 mm (4\"), 3.6 mm (6\") and 4.8 mm (8\", 12\") widths — the "
           "printed parts' slots take ≤ 2.5 mm (cam_mount, relay board), ≤ 3.6 mm (esp32_case, "
-          "hx711_scale, pump_bracket) and ≤ 4.8 mm (pi_case ears, sensor_bracket, PSU mount).",
+          "hx711_scale, pump_bracket) and ≤ 4.8 mm (pi_case ears, sensor_bracket, PSU mount). "
+          "Counted in ties of any length: a chamber takes up to ~25 (the mounts' tie slots, "
+          "both sides of the wall grommet, the shelf runs), so one pack covers 16 chambers.",
 )
 
 _ZIP_TIES_DUCT = Component(
     name="Zip Ties, 18\" (457 mm) UV-resistant, 60 lb (100 pc)",
     role="Clamp 4-inch flex duct onto each fan_duct collar",
-    price_approx="$9",
+    quantity=3,
+    price_approx="$0.09",
+    pack_price="$9",
+    pack_size=100,
     url="https://www.amazon.com/dp/B0BR3FY296",
     category="hardware",
-    shared=True,
     notes="Tantti Supply, 0.19\" (4.8 mm) wide — the fan_duct finger tunnels take ≤ 4.8 mm x "
           "1.4 mm ties. One per fan_duct: the tie loops ~340 mm around the collar through its "
           "four fingers, so a 14\" (356 mm) tie is too short to lock; 16\"+ works, 18\" leaves "
           "slack for imperial 4\" duct. Heavier 120 lb+ ties are 7.6 mm wide and won't fit. A 4\" "
-          "worm-drive hose clamp above the fingers also works.",
+          "worm-drive hose clamp above the fingers also works. Three a chamber (one per fan "
+          "duct), so one pack covers 33 chambers.",
 )
 
 _HOOK_LOOP = Component(
     name="VELCRO ONE-WRAP Strap Roll, 3/4\" x 12 ft",
     role="The two 12\" straps that hold the 12V PSU in power_supply_mount, plus cable bundling",
-    price_approx="$7",
+    quantity=2,
+    unit="strap",
+    price_approx="$0.58",
+    pack_price="$7",
+    pack_size=12,
     url="https://www.amazon.com/dp/B000078CUB",
     category="hardware",
-    shared=True,
-    notes="Cut two 12\" (300 mm) straps for power_supply_mount.scad's 20 mm strap slots; the "
-          "rest bundles cable runs.",
+    notes="Counted in 12\" (300 mm) straps: each chamber's power_supply_mount takes two through "
+          "its 20 mm strap slots, and the 12 ft roll cuts 12, so one roll covers 6 chambers. "
+          "What is left bundles cable runs (zip ties do the same job).",
 )
 
 _GROMMETS = Component(
     name="Rubber Grommet Kit, 1/4\" - 1\" (188 pc)",
     role="Cable pass-through into the grow chamber / tent wall",
-    price_approx="$13",
+    unit="large grommet",
+    price_approx="$0.65",
+    pack_price="$13",
+    pack_size=20,
     url="https://www.amazon.com/dp/B094XY2GVR",
     category="hardware",
-    shared=True,
     notes="Vrupin assortment incl. 7/8\" and 1\" grommets. Drill 7/8\" or 1\" for the main "
           "pass-through: USB overmolds (~13 x 7 mm) and 4-pin fan plugs pass before the "
-          "grommet is seated. A tent's own cable port works too.",
+          "grommet is seated. A tent's own cable port works too. Counted in large grommets, "
+          "one a chamber: the kit has about ten each of 7/8\" and 1\" (the 168 smaller ones "
+          "are spares), so one kit covers 20 chambers.",
 )
 
 _INSERTS_M3 = Component(
     name="ruthex Heat-Set Inserts M3 x 5.7 (100 pc)",
     role="M3 threads in the printed cases (pi_case, esp32_case, sensor_mount, sensor_bracket)",
-    price_approx="$10",
+    price_approx="$0.10",
+    pack_price="$10",
+    pack_size=100,
     url="https://www.amazon.com/dp/B08BCRZZS3",
     category="hardware",
-    shared=True,
-    notes="RX-M3x5.7 brass, the size the M3 pockets are designed around (Ø4.0 x 6.7 mm). This "
-          "tier needs 14. Install with a soldering iron at ~220-245 °C until flush.",
+    notes="RX-M3x5.7 brass, the size the M3 pockets are designed around (Ø4.0 x 6.7 mm). "
+          "Install with a soldering iron at ~220-245 °C until flush.",
 )
 
 _INSERTS_ASSORTMENT = Component(
     name="ruthex Heat-Set Insert Assortment M2 / M3 / M4 / M5 (270 pc)",
     role="M3 / M4 / M5 threads in every printed case, duct and mount",
-    price_approx="$30",
+    price_approx="$0.30",
+    pack_price="$30",
+    pack_size=100,
     url="https://www.amazon.com/dp/B08K1BVGN9",
     category="hardware",
-    shared=True,
     notes="70 x RX-M2x4, 100 x RX-M3x5.7, 50 x RX-M4x8.1, 50 x RX-M5x9.5 — covers this tier's "
           "M3, M4 (fan ducts) and M5 (camera pivot) inserts. It has no M2.5: see the M2.5 "
           "line. CNC Kitchen's M3 / M4 / M5 inserts match these pockets too.",
@@ -758,10 +812,11 @@ _INSERTS_ASSORTMENT = Component(
 _INSERTS_M25 = Component(
     name="Heat-Set Inserts M2.5 (70 pc, ~4.5 mm OD x 6 mm)",
     role="M2.5 threads: Pi standoffs, sensor board posts, HX711 posts, pump flange",
-    price_approx="$9",
+    price_approx="$0.13",
+    pack_price="$9",
+    pack_size=70,
     url="https://www.amazon.com/dp/B0CT8V76RL",
     category="hardware",
-    shared=True,
     notes="uxcell brass knurled inserts — fit the Ø3.6 x 6.7 mm M2.5 pockets (press flush). "
           "Thin stock: the exact design part is ruthex RX-M2.5x5.7, which Amazon US doesn't "
           "carry — 3DJake sells it (https://www.3djake.com/ruthex/threaded-insert-m25-70-pieces, "
@@ -772,24 +827,28 @@ _INSERTS_M25 = Component(
 _SCREWS_M25 = Component(
     name="M2.5 Socket Head Screw Kit, 304 stainless (6 / 8 / 10 / 12 mm + nuts)",
     role="Pi to its standoffs, sensor boards, HX711 board, pump flange",
-    price_approx="$9",
+    unit="M2.5 x 6 screw",
+    price_approx="$0.23",
+    pack_price="$9",
+    pack_size=40,
     url="https://www.amazon.com/dp/B0C7ZRTH3Q",
     category="hardware",
-    shared=True,
-    notes="mxuteuk: 40 x M2.5x6, 25 x M2.5x8, 20 x M2.5x10, 15 x M2.5x12. Stainless because "
-          "the in-chamber parts live at 85-95% RH. Use x6 for the Pi (x8 bottoms out in its "
-          "pocket).",
+    notes="mxuteuk: 40 x M2.5x6, 25 x M2.5x8, 20 x M2.5x10, 15 x M2.5x12. Counted in M2.5 x 6, "
+          "the size the chambers use up first. Stainless because the in-chamber parts live at "
+          "85-95% RH. Use x6 for the Pi (x8 bottoms out in its pocket).",
 )
 
 _SCREWS_M3X6 = Component(
     name="M3 x 6 mm Socket Head Screws, 304 stainless (100 pc)",
     role="Lid and board screws into the M3 inserts",
-    price_approx="$8",
+    price_approx="$0.08",
+    pack_price="$8",
+    pack_size=100,
     url="https://www.amazon.com/dp/B089KR3XHR",
     category="hardware",
-    shared=True,
-    notes="iexcell, 5.5 mm head. The most-used size: 10 (Bare Bones) to 36 (All the Things). "
-          "Budget alternative covering M3 x 6-20: mxuteuk M3 kit (B0C7ZPZ214, ~$8, black steel).",
+    notes="iexcell, 5.5 mm head. The most-used size: 10 a chamber (Bare Bones) to 36 (All the "
+          "Things); the Pi case takes none. Budget alternative covering M3 x 6-20: mxuteuk M3 "
+          "kit (B0C7ZPZ214, ~$8, black steel).",
 )
 
 _SCREWS_KIT = Component(
@@ -807,23 +866,31 @@ _SCREWS_KIT = Component(
 _SCREWS_M4 = Component(
     name="M4 Socket Head Screw Kit, 304 stainless (25-50 mm + washers)",
     role="M4 x 35 fan screws through each fan into the fan_duct inserts; M4 x 25 for the scale",
-    price_approx="$9",
+    quantity=12,
+    unit="fan-duct screw",
+    price_approx="$0.24",
+    pack_price="$9",
+    pack_size=38,
     url="https://www.amazon.com/dp/B0DCVTWC5B",
     category="hardware",
-    shared=True,
     notes="VGBUY: 15 x M4x25, 15 x M4x30, 13 x M4x35, 10 each M4x40/45/50, nuts, lock + flat "
-          "washers. 4 x M4 x 35 per fan_duct (x30 / x40 also fit).",
+          "washers. 4 x M4 x 35 per fan_duct (x30 / x40 also fit). Counted in fan-duct screws: "
+          "12 a chamber (3 ducts) from the kit's 38 that fit (15 x30 + 13 x35 + 10 x40), so one "
+          "kit covers 3 chambers.",
 )
 
 _SET_SCREWS_M4 = Component(
     name="M4 x 8 mm Cup-Point Set Screws, 304 stainless (50 pc)",
     role="hx711_scale's adjustable overload stops",
-    price_approx="$8",
+    quantity=4,
+    price_approx="$0.16",
+    pack_price="$8",
+    pack_size=50,
     url="https://www.amazon.com/dp/B0D8TJ4DHB",
     category="hardware",
-    shared=True,
     notes="QWUEE. Four go into the platform's M4 inserts as overload stops (medium threadlocker "
-          "or nylon-patch screws). Flat-point alternate: B0B39272FF.",
+          "or nylon-patch screws), so the 50-pack covers 12 chambers. Flat-point alternate: "
+          "B0B39272FF.",
 )
 
 _PUMP_TUBING = Component(
@@ -841,12 +908,15 @@ _PUMP_TUBING = Component(
 _SOLDER = Component(
     name="Lead-Free Rosin-Core Solder, 0.8 mm (50 g)",
     role="Switch-board joints and LED-strip leads",
-    price_approx="$10",
+    unit="g",
+    price_approx="$0.20",
+    pack_price="$10",
+    pack_size=50,
     url="https://www.amazon.com/dp/B07QZX9LG2",
     category="hardware",
-    shared=True,
     notes="ZSHX Sn99 / Ag0.3 / Cu0.7 with rosin flux (melts 217 °C). The relay_board_mount "
-          "switch boards are soldered point-to-point underneath. Bigger reel: AUSTOR 100 g "
+          "switch boards are soldered point-to-point underneath. Counted in grams, at ~0.05 g a "
+          "joint. Bigger reel: AUSTOR 100 g "
           "(B01M071WEE, ~$18). A soldering iron with a heat-set insert tip installs the "
           "inserts too (tools aren't BOM lines — see the build guide's tool list).",
 )
@@ -1067,11 +1137,20 @@ TIER_BARE_BONES = HardwareTier(
         _SURGE_STRIP_6,
         _ZIP_TIES,
         _GROMMETS,
-        _INSERTS_M3,
-        _for_tier(_INSERTS_M25, quantity=1, tier_note="This tier needs 10 (Pi standoffs, sensor posts)."),
-        _SCREWS_M25,
-        _SCREWS_M3X6,
-        _for_tier(_SCREWS_KIT, quantity=1, tier_note="This tier uses its M3 x 16 (Pi lid)."),
+        _for_tier(_INSERTS_M3, quantity=10, shared_units=4,
+                  tier_note="This tier: 10 a chamber (esp32_case 4, sensor_mount 4, sensor_bracket "
+                            "2) + 4 once for pi_case, so one 100-pack covers 9 chambers."),
+        _for_tier(_INSERTS_M25, quantity=6, shared_units=4,
+                  tier_note="This tier: 6 a chamber (sensor_mount posts) + 4 once for the pi_case "
+                            "standoffs, so one 70-pack covers 11 chambers."),
+        _for_tier(_SCREWS_M25, quantity=6, shared_units=4,
+                  tier_note="This tier: 6 x M2.5 x 6 a chamber (sensor boards) + 4 once for the "
+                            "Pi, so one kit covers 6 chambers."),
+        _for_tier(_SCREWS_M3X6, quantity=10,
+                  tier_note="This tier: 10 a chamber, so one 100-pack covers 10 chambers."),
+        _for_tier(_SCREWS_KIT, quantity=1,
+                  tier_note="This tier uses only its M3 x 16 (the Pi lid's 4) — Pi side, bought "
+                            "once."),
     ],
     wiring=_climate_chain("ESP32", ["SHT31-D", "BH1750"]),
     wiring_diagram="See docs/wiring-tier1-bare-bones.svg for full wiring diagram with color-coded signal, I2C, power, and ground lines.",
@@ -1243,7 +1322,9 @@ TIER_RECOMMENDED = HardwareTier(
                   tier_note="This tier: 4 — the relay node's fan/aux channels only (LED strips "
                             "are resistive)."),
         _SCREW_TERMINALS,
-        _DUPONT,
+        _for_tier(_DUPONT, quantity=8,
+                  tier_note="This tier: 8 a chamber (relay GPIO 25 / 26 / 27 / 14 + GND, lighting "
+                            "GPIO 25 / 26 + GND), so one kit covers 5 chambers."),
         _NOCTUA,
         _WHITE_STRIP,
         _for_tier(_TRISPECTRUM, quantity=1,
@@ -1272,24 +1353,43 @@ TIER_RECOMMENDED = HardwareTier(
                   tier_note="This tier: 4 cubes (3 nodes + 1 camera)."),
         _tasmota_plug(2, "humidifier; heater or cooler"),
         _SURGE_STRIP_12,
-        _WIRE_18AWG,
+        _for_tier(_WIRE_18AWG, quantity=20,
+                  tier_note="This tier: ~20 ft a chamber, so one 100 ft spool covers 5 chambers."),
         _WIRE_22AWG,
         _WAGO,
         _FUSE_HOLDERS,
         _FUSES,
         _FAN_EXTENSIONS,
-        _HEAT_SHRINK,
+        _for_tier(_HEAT_SHRINK, quantity=15,
+                  tier_note="This tier: ~15 pieces a chamber (the strip-to-lead joints, splices "
+                            "and the strip's capped red and green wires), so one kit covers 26 "
+                            "chambers."),
         _ZIP_TIES,
         _ZIP_TIES_DUCT,
         _HOOK_LOOP,
         _GROMMETS,
-        _INSERTS_ASSORTMENT,
-        _for_tier(_INSERTS_M25, quantity=1, tier_note="This tier needs 10."),
-        _SCREWS_M25,
-        _SCREWS_M3X6,
-        _SCREWS_KIT,
+        _for_tier(_INSERTS_ASSORTMENT, quantity=12, price_approx="$0.60", pack_size=50, unit="M4 insert",
+                  tier_note="This tier: counted in M4 inserts, the size a Recommended chamber "
+                            "uses up first — 12 a chamber (3 fan ducts) of the kit's 50; its 100 "
+                            "M3 cover 22 a chamber + 4 for pi_case, its 50 M5 one camera pivot "
+                            "each — so one kit covers 4 chambers."),
+        _for_tier(_INSERTS_M25, quantity=6, shared_units=4,
+                  tier_note="This tier: 6 a chamber (sensor_mount posts) + 4 once for the pi_case "
+                            "standoffs, so one 70-pack covers 11 chambers."),
+        _for_tier(_SCREWS_M25, quantity=6, shared_units=4,
+                  tier_note="This tier: 6 x M2.5 x 6 a chamber (sensor boards) + 4 once for the "
+                            "Pi, so one kit covers 6 chambers."),
+        _for_tier(_SCREWS_M3X6, quantity=22,
+                  tier_note="This tier: 22 a chamber, so one 100-pack covers 4 chambers."),
+        _for_tier(_SCREWS_KIT, quantity=1, price_approx="$1", pack_price="$10", pack_size=10,
+                  shared=False, unit="M5 x 16 screw",
+                  tier_note="This tier: counted in M5 x 16 (camera pivot), the size the chambers "
+                            "use up — 1 a chamber of the kit's 10; its M3 x 16 cover the Pi lid "
+                            "(4) — so one kit covers 10 chambers."),
         _SCREWS_M4,
-        _SOLDER,
+        _for_tier(_SOLDER, quantity=5,
+                  tier_note="This tier: ~5 g a chamber (~90 joints: two switch boards, the strip "
+                            "leads), so one 50 g reel covers 10 chambers."),
         _BREADBOARD,
     ],
     wiring=[
@@ -1530,7 +1630,9 @@ TIER_ALL = HardwareTier(
                   tier_note="This tier: 4 — the relay node's fans + pump (LED strips are "
                             "resistive)."),
         _SCREW_TERMINALS,
-        _DUPONT,
+        _for_tier(_DUPONT, quantity=10,
+                  tier_note="This tier: 10 a chamber (relay and lighting GPIO 25 / 26 / 27 / 14 + "
+                            "GND each), so one kit covers 4 chambers."),
         _NOCTUA,
         _WHITE_STRIP,
         _for_tier(_TRISPECTRUM, quantity=1,
@@ -1617,27 +1719,51 @@ TIER_ALL = HardwareTier(
                   "by default.",
         ),
         _SURGE_STRIP_12_USB,
-        _WIRE_18AWG,
+        _for_tier(_WIRE_18AWG, quantity=35,
+                  tier_note="This tier: ~35 ft a chamber (the red / far-red and pump leads on top "
+                            "of Recommended's runs), so one 100 ft spool covers 2 chambers."),
         _WIRE_22AWG,
         _CABLE_22_4,
         _WAGO,
         _FUSE_HOLDERS,
         _FUSES,
         _FAN_EXTENSIONS,
-        _HEAT_SHRINK,
+        _for_tier(_HEAT_SHRINK, quantity=25,
+                  tier_note="This tier: ~25 pieces a chamber (+ the pump leads and the 22/4 cable "
+                            "ends), so one kit covers 16 chambers."),
         _ZIP_TIES,
         _ZIP_TIES_DUCT,
         _HOOK_LOOP,
         _GROMMETS,
         _PUMP_TUBING,
-        _INSERTS_ASSORTMENT,
-        _for_tier(_INSERTS_M25, quantity=1, tier_note="This tier needs 20."),
-        _SCREWS_M25,
-        _SCREWS_M3X6,
-        _SCREWS_KIT,
-        _SCREWS_M4,
+        _for_tier(_INSERTS_ASSORTMENT, quantity=36, shared_units=4, unit="M3 insert",
+                  tier_note="This tier: counted in M3 inserts, the size an All the Things chamber "
+                            "uses up first — 36 a chamber (4 ESP32 cases, 2 sensor mounts + "
+                            "brackets, 2 camera mounts) + 4 once for pi_case, of the kit's 100; "
+                            "its 50 M4 cover 16 a chamber (scale + 3 fan ducts), its 50 M5 two "
+                            "camera pivots each — so one kit covers 2 chambers."),
+        _for_tier(_INSERTS_M25, quantity=16, shared_units=4,
+                  tier_note="This tier: 16 a chamber (2 sensor mounts, hx711_scale, pump_bracket) "
+                            "+ 4 once for the pi_case standoffs, so one 70-pack covers 4 "
+                            "chambers."),
+        _for_tier(_SCREWS_M25, quantity=12, shared_units=4,
+                  tier_note="This tier: 12 x M2.5 x 6 a chamber (2 sensor mounts) + 4 once for the "
+                            "Pi; the scale's 2 x M2.5 x 10 and the pump's 2 x M2.5 x 8 a chamber "
+                            "come from its 20 and 25 — so one kit covers 3 chambers."),
+        _for_tier(_SCREWS_M3X6, quantity=36,
+                  tier_note="This tier: 36 a chamber, so one 100-pack covers 2 chambers."),
+        _for_tier(_SCREWS_KIT, quantity=2, price_approx="$1", pack_price="$10", pack_size=10,
+                  shared=False, unit="M5 x 16 screw",
+                  tier_note="This tier: counted in M5 x 16 (camera pivots), the size the chambers "
+                            "use up — 2 a chamber of the kit's 10, with the scale's 2 x M4 x 16 "
+                            "from its 10; its M3 x 16 cover the Pi lid (4) — so one kit covers 5 "
+                            "chambers."),
+        _for_tier(_SCREWS_M4, quantity=12,
+                  tier_note="This tier also takes the scale's 2 x M4 x 25 a chamber from its 15."),
         _SET_SCREWS_M4,
-        _SOLDER,
+        _for_tier(_SOLDER, quantity=7,
+                  tier_note="This tier: ~7 g a chamber (~130 joints: two switch boards, the strip, "
+                            "pump and scale leads), so one 50 g reel covers 7 chambers."),
         _BREADBOARD,
     ],
     wiring=[

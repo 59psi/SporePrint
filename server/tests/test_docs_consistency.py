@@ -475,26 +475,26 @@ def test_insert_sourcing_is_one_recommendation():
 
 # ── Cabling standard (2026-10 cabling pass) ──────────────────────────
 
-_PI_SIDE = ("Raspberry Pi", "microSD")
-
-
-def _reusable_kits(tier) -> str:
-    """The spools / assortments / kits share of a tier's price: every
-    `shared` line except the Pi side (one per installation, not a kit)."""
-    total = sum(c.line_cost() for c in tier.components
-                if c.shared and not c.name.startswith(_PI_SIDE))
-    return f"~${round(total)}"
+def _second_chamber(tier) -> str:
+    """What a second chamber adds to a tier's price: parts_cost(2) -
+    parts_cost(1). The Pi side is bought once, and kits, spools and multi-packs
+    are bought in whole packs a second chamber may still draw on."""
+    return f"~${round(tier.parts_cost(2) - tier.parts_cost(1))}"
 
 
 @pytest.mark.parametrize("doc", [README, GUIDE], ids=lambda p: p.name)
-def test_reusable_kit_share_matches_the_bom(doc):
-    kits = [_reusable_kits(t) for t in TIERS]
+def test_second_chamber_cost_matches_the_bom(doc):
+    adds = [_second_chamber(t) for t in TIERS]
     flat = re.sub(r"\s+", " ", _read(doc))
     if doc is GUIDE:
-        assert f"| Reusable kits in the price | {' | '.join(kits)} |" in flat, kits
+        assert f"| A second chamber adds | {' | '.join(adds)} |" in flat, adds
     else:
-        assert " / ".join(kits) in flat, f"README should state the reusable kits as {kits}"
+        assert f"a second chamber adds {' / '.join(adds)}" in flat.lower(), (
+            f"README should state what a second chamber adds as {adds}")
     assert "more than one chamber" in flat
+    # The old "reusable kits" share (every shared line except the Pi side)
+    # stopped meaning anything once the kits became per-chamber pack lines.
+    assert "Reusable kits in the price" not in flat and "reusable kits and spools" not in flat
 
 
 def _fuses(tier) -> tuple[str, str]:

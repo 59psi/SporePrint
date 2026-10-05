@@ -141,52 +141,96 @@ def test_estimated_cost_matches_the_components(tier_id):
 
 CHAMBERS = (1, 4, 12)
 
-# Packs bought at x1 / x4 / x12 chambers for every pack line. Changing a pack
-# or a quantity must change this table on purpose. pi-ui's builder-data
-# tests pin the same numbers (frontend/packages/pi-ui, private monorepo).
+# (quantity, shared_units, pack_size, packs bought at x1 / x4 / x12 chambers)
+# for every pack line. Changing a pack or a quantity must change this table on
+# purpose. pi-ui's builder-data tests pin the same numbers (frontend/packages/
+# pi-ui, private monorepo). shared_units is the Pi case's share of the same
+# packs, bought once: N chambers need quantity x N + shared_units units.
 EXPECTED_PACKS = {
     "recommended": {
-        "ESP32-WROOM-32 DevKit": (3, 3, (1, 4, 12)),
-        "IRLZ44N": (6, 10, (1, 3, 8)),
-        "100 Ohm Resistor": (6, 100, (1, 1, 1)),
-        "10K Ohm Resistor": (6, 100, (1, 1, 1)),
-        "Flyback Diode": (4, 125, (1, 1, 1)),
-        "2-pos 5.08 mm PCB Screw Terminals": (16, 30, (1, 3, 7)),
-        "DC Barrel Pigtail": (1, 2, (1, 2, 6)),
-        "ESP32-CAM": (1, 2, (1, 2, 6)),
-        "USB-A to USB-C Data Cable, 1 ft": (2, 3, (1, 3, 8)),
-        "USB-A to Micro-USB Data Cable": (1, 2, (1, 2, 6)),
-        "USB Wall Charger": (4, 2, (2, 8, 24)),
-        "Inline ATC/ATO Blade Fuse Holders": (2, 10, (1, 1, 3)),
-        "Noctua NA-SEC3": (3, 3, (1, 4, 12)),
+        "ESP32-WROOM-32 DevKit": (3, 0, 3, (1, 4, 12)),
+        "IRLZ44N": (6, 0, 10, (1, 3, 8)),
+        "100 Ohm Resistor": (6, 0, 100, (1, 1, 1)),
+        "10K Ohm Resistor": (6, 0, 100, (1, 1, 1)),
+        "Flyback Diode": (4, 0, 125, (1, 1, 1)),
+        "2-pos 5.08 mm PCB Screw Terminals": (16, 0, 30, (1, 3, 7)),
+        "Dupont Jumper Wires": (8, 0, 40, (1, 1, 3)),
+        "DC Barrel Pigtail": (1, 0, 2, (1, 2, 6)),
+        "ESP32-CAM": (1, 0, 2, (1, 2, 6)),
+        "USB-A to USB-C Data Cable, 1 ft": (2, 0, 3, (1, 3, 8)),
+        "USB-A to Micro-USB Data Cable": (1, 0, 2, (1, 2, 6)),
+        "USB Wall Charger": (4, 0, 2, (2, 8, 24)),
+        "18 AWG 2-Conductor": (20, 0, 100, (1, 1, 3)),
+        "22 AWG Stranded Hookup": (2, 0, 10, (1, 1, 3)),
+        "WAGO 221": (1, 0, 3, (1, 2, 4)),
+        "Inline ATC/ATO Blade Fuse Holders": (2, 0, 10, (1, 1, 3)),
+        "ATC Blade Fuse Assortment": (1, 0, 15, (1, 1, 1)),
+        "Noctua NA-SEC3": (3, 0, 3, (1, 4, 12)),
+        "Adhesive-Lined Heat Shrink": (15, 0, 400, (1, 1, 1)),
+        "UV-Resistant Zip Ties": (25, 0, 400, (1, 1, 1)),
+        "Zip Ties, 18": (3, 0, 100, (1, 1, 1)),
+        "VELCRO ONE-WRAP": (2, 0, 12, (1, 1, 2)),
+        "Rubber Grommet Kit": (1, 0, 20, (1, 1, 1)),
+        "ruthex Heat-Set Insert Assortment": (12, 0, 50, (1, 1, 3)),
+        "Heat-Set Inserts M2.5": (6, 4, 70, (1, 1, 2)),
+        "M2.5 Socket Head Screw Kit": (6, 4, 40, (1, 1, 2)),
+        "M3 x 6 mm Socket Head Screws": (22, 0, 100, (1, 1, 3)),
+        "Socket Head Screw Kit M2.5-M8": (1, 0, 10, (1, 1, 2)),
+        "M4 Socket Head Screw Kit": (12, 0, 38, (1, 2, 4)),
+        "Lead-Free Rosin-Core Solder": (5, 0, 50, (1, 1, 2)),
     },
     "all_the_things": {
-        "ESP32-WROOM-32 DevKit": (4, 6, (1, 3, 8)),
-        "IRLZ44N": (8, 10, (1, 4, 10)),
-        "100 Ohm Resistor": (8, 100, (1, 1, 1)),
-        "10K Ohm Resistor": (9, 100, (1, 1, 2)),
-        "Flyback Diode": (4, 125, (1, 1, 1)),
-        "2-pos 5.08 mm PCB Screw Terminals": (16, 30, (1, 3, 7)),
-        "DC Barrel Pigtail": (1, 2, (1, 2, 6)),
-        "ESP32-CAM": (2, 2, (1, 4, 12)),
-        "USB-A to USB-C Data Cable, 1 ft": (2, 3, (1, 3, 8)),
-        "USB-A to Micro-USB Data Cable": (2, 2, (1, 4, 12)),
-        "USB Wall Charger": (6, 2, (3, 12, 36)),
-        "Magnetic Door Contact": (1, 2, (1, 2, 6)),
-        "Inline ATC/ATO Blade Fuse Holders": (2, 10, (1, 1, 3)),
-        "Noctua NA-SEC3": (3, 3, (1, 4, 12)),
+        "ESP32-WROOM-32 DevKit": (4, 0, 6, (1, 3, 8)),
+        "IRLZ44N": (8, 0, 10, (1, 4, 10)),
+        "100 Ohm Resistor": (8, 0, 100, (1, 1, 1)),
+        "10K Ohm Resistor": (9, 0, 100, (1, 1, 2)),
+        "Flyback Diode": (4, 0, 125, (1, 1, 1)),
+        "2-pos 5.08 mm PCB Screw Terminals": (16, 0, 30, (1, 3, 7)),
+        "Dupont Jumper Wires": (10, 0, 40, (1, 1, 3)),
+        "DC Barrel Pigtail": (1, 0, 2, (1, 2, 6)),
+        "ESP32-CAM": (2, 0, 2, (1, 4, 12)),
+        "USB-A to USB-C Data Cable, 1 ft": (2, 0, 3, (1, 3, 8)),
+        "USB-A to Micro-USB Data Cable": (2, 0, 2, (1, 4, 12)),
+        "USB Wall Charger": (6, 0, 2, (3, 12, 36)),
+        "Magnetic Door Contact": (1, 0, 2, (1, 2, 6)),
+        "18 AWG 2-Conductor": (35, 0, 100, (1, 2, 5)),
+        "22 AWG Stranded Hookup": (2, 0, 10, (1, 1, 3)),
+        "22 AWG 4-Conductor": (12, 0, 50, (1, 1, 3)),
+        "WAGO 221": (1, 0, 3, (1, 2, 4)),
+        "Inline ATC/ATO Blade Fuse Holders": (2, 0, 10, (1, 1, 3)),
+        "ATC Blade Fuse Assortment": (1, 0, 15, (1, 1, 1)),
+        "Noctua NA-SEC3": (3, 0, 3, (1, 4, 12)),
+        "Adhesive-Lined Heat Shrink": (25, 0, 400, (1, 1, 1)),
+        "UV-Resistant Zip Ties": (25, 0, 400, (1, 1, 1)),
+        "Zip Ties, 18": (3, 0, 100, (1, 1, 1)),
+        "VELCRO ONE-WRAP": (2, 0, 12, (1, 1, 2)),
+        "Rubber Grommet Kit": (1, 0, 20, (1, 1, 1)),
+        "ruthex Heat-Set Insert Assortment": (36, 4, 100, (1, 2, 5)),
+        "Heat-Set Inserts M2.5": (16, 4, 70, (1, 1, 3)),
+        "M2.5 Socket Head Screw Kit": (12, 4, 40, (1, 2, 4)),
+        "M3 x 6 mm Socket Head Screws": (36, 0, 100, (1, 2, 5)),
+        "Socket Head Screw Kit M2.5-M8": (2, 0, 10, (1, 1, 3)),
+        "M4 Socket Head Screw Kit": (12, 0, 38, (1, 2, 4)),
+        "M4 x 8 mm Cup-Point Set Screws": (4, 0, 50, (1, 1, 1)),
+        "Lead-Free Rosin-Core Solder": (7, 0, 50, (1, 1, 2)),
     },
     "bare_bones": {
-        "USB Wall Charger": (1, 2, (1, 2, 6)),
+        "USB Wall Charger": (1, 0, 2, (1, 2, 6)),
+        "UV-Resistant Zip Ties": (25, 0, 400, (1, 1, 1)),
+        "Rubber Grommet Kit": (1, 0, 20, (1, 1, 1)),
+        "ruthex Heat-Set Inserts M3 x 5.7": (10, 4, 100, (1, 1, 2)),
+        "Heat-Set Inserts M2.5": (6, 4, 70, (1, 1, 2)),
+        "M2.5 Socket Head Screw Kit": (6, 4, 40, (1, 1, 2)),
+        "M3 x 6 mm Socket Head Screws": (10, 0, 100, (1, 1, 2)),
     },
 }
 
 # parts_cost() at x1 / x4 / x12 chambers. x1 is what estimated_cost rounds;
 # pi-ui's bomTotals() must return the same three figures for each tier.
 EXPECTED_TOTALS = {
-    "bare_bones": (290.90, 484.60, 1011.80),
-    "recommended": (747.83, 1712.38, 4342.18),
-    "all_the_things": (964.68, 2519.78, 6673.87),
+    "bare_bones": (290.90, 484.60, 1047.80),
+    "recommended": (747.83, 1733.38, 4618.18),
+    "all_the_things": (964.68, 2613.78, 7154.87),
 }
 
 
@@ -220,12 +264,12 @@ def test_every_pack_line_buys_whole_packs_per_chamber_count(tier_id):
     lines = {c.name: c for c in _pack_lines(tier)}
     expected = EXPECTED_PACKS[tier_id]
     assert len(lines) == len(expected), sorted(lines)
-    for prefix, (quantity, size, packs) in expected.items():
+    for prefix, (quantity, pi_units, size, packs) in expected.items():
         c = next(c for name, c in lines.items() if name.startswith(prefix))
-        assert (c.quantity, c.pack_size) == (quantity, size), c.name
+        assert (c.quantity, c.shared_units, c.pack_size) == (quantity, pi_units, size), c.name
         for n, want in zip(CHAMBERS, packs, strict=True):
             units = c.units(n)
-            assert units == quantity * n, c.name
+            assert units == quantity * n + pi_units, c.name
             assert c.packs(n) == want == math.ceil(units / size), (c.name, n)
             assert (want - 1) * size < units <= want * size, (c.name, n)  # the fewest packs
             assert c.line_cost(n) == pytest.approx(want * usd(c.pack_price)), (c.name, n)
@@ -261,6 +305,16 @@ def test_pack_math_rounds_up_to_whole_packs():
         part.line_cost(0)
 
 
+def test_shared_units_are_bought_once_on_top_of_the_chambers():
+    # The Pi case's 4 M2.5 inserts come out of the same 70-pack the chambers
+    # use: N chambers need 6N + 4, never 10N.
+    part = Component(name="x", role="", quantity=6, shared_units=4, price_approx="$0.13",
+                     pack_price="$9", pack_size=70, url="https://example.com", category="hardware")
+    assert [part.units(n) for n in (1, 2, 11, 12)] == [10, 16, 70, 76]
+    assert [part.packs(n) for n in (1, 11, 12)] == [1, 1, 2]
+    assert part.line_cost(12) == 18
+
+
 def test_legacy_pack_price_without_size_keeps_one_pack_per_chamber():
     legacy = Component(name="x", role="", quantity=6, price_approx="$0.05", pack_price="$5.49",
                        url="https://example.com", category="misc")
@@ -270,10 +324,48 @@ def test_legacy_pack_price_without_size_keeps_one_pack_per_chamber():
     assert shared.packs(4) == 1 and shared.line_cost(4) == 5.49
 
 
+# What a line counts when it is not whole pieces of the named part (2026-10
+# browser audit: "18 AWG … 100 ft | ×420 · 5 packs of 100 · ~$0.26 ea" — 420
+# what?). Every other line counts pieces ("").
+EXPECTED_UNITS = {
+    "18 AWG 2-Conductor": "ft",
+    "22 AWG Stranded Hookup": "ft",
+    "22 AWG 4-Conductor": "ft",
+    "Lead-Free Rosin-Core Solder": "g",
+    "VELCRO ONE-WRAP": "strap",
+    "WAGO 221": "chamber set",
+    "ATC Blade Fuse Assortment": "chamber set",
+    "Dupont Jumper Wires": "M-F jumper",
+    "Rubber Grommet Kit": "large grommet",
+    "M2.5 Socket Head Screw Kit": "M2.5 x 6 screw",
+    "M4 Socket Head Screw Kit": "fan-duct screw",
+    # mixed kits counted in a different size per tier (their notes say which)
+    "ruthex Heat-Set Insert Assortment": {"recommended": "M4 insert", "all_the_things": "M3 insert"},
+    "Socket Head Screw Kit M2.5-M8": {"bare_bones": "", "recommended": "M5 x 16 screw",
+                                      "all_the_things": "M5 x 16 screw"},
+}
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_lines_bought_by_length_weight_or_kit_piece_say_what_they_count(tier_id):
+    for c in _tier(tier_id).components:
+        key = next((k for k in EXPECTED_UNITS if c.name.startswith(k)), None)
+        want = EXPECTED_UNITS.get(key, "") if key else ""
+        if isinstance(want, dict):
+            want = want[tier_id]
+        assert c.unit == want, (tier_id, c.name, c.unit)
+        if c.unit:
+            # only a pack line counts something other than the part itself
+            assert c.pack_size and c.pack_price, c.name
+            assert c.unit == c.unit.strip() and not c.unit.endswith("s"), c.name  # singular
+
+
 def test_api_exposes_pack_size(client):
     for tier in TIERS:
         body = client.get(f"/api/builder/tiers/{tier.id}").json()
+        assert [c["unit"] for c in body["components"]] == [c.unit for c in tier.components]
         assert [c["pack_size"] for c in body["components"]] == [c.pack_size for c in tier.components]
+        assert [c["shared_units"] for c in body["components"]] == [c.shared_units for c in tier.components]
         assert [c["quantity"] for c in body["components"]] == [c.quantity for c in tier.components]
 
 
@@ -627,6 +719,231 @@ def test_shared_lines_are_kits_or_pi_side_only():
             if c.shared:
                 assert (c.category in ("wiring", "hardware", "misc")
                         or c.name.startswith(("Raspberry Pi", "microSD"))), c.name
+
+
+# ── Kits and spools the chambers use up ─────────────────────────
+# Every kit and spool used to be `shared` — bought once whatever the chamber
+# count — although each chamber consumes from it, so a multi-chamber shopping
+# list under-bought from ~3-4 chambers up: the WAGO assortment (3 x 221-413 +
+# 3 x 221-415, one of each per chamber) stayed one kit at x4 and x12, the
+# 100 M3 inserts of the ruthex assortment one kit for 12 All the Things
+# chambers that press 436. Now such a line counts what ONE chamber takes, in
+# whole packs, with the Pi case's share of the same pack as `shared_units`.
+
+# Up to the Builder's chamber input's maximum (99), past each bulk pack's
+# coverage (16 zip ties / heat-shrink, 20 grommets, 33 duct ties).
+UNDER_BUY_CHAMBERS = (1, 2, 4, 6, 12, 16, 17, 21, 34, 99)
+MODELS_README = REPO_ROOT / "models" / "README.md"
+_PI_SIDE = ("Raspberry Pi", "microSD")
+
+# What each fastener kit holds, keyed by the models/README.md shopping-list
+# rows its sizes fill. A mixed kit's line counts ONE of these sizes (the one
+# the chambers use up first); the checks below cover every size.
+KIT_CONTENTS = {
+    "ruthex Heat-Set Inserts M3 x 5.7": {"M3 × 5.7 insert": 100},
+    "ruthex Heat-Set Insert Assortment": {
+        "M3 × 5.7 insert": 100, "M4 × 8.1 insert": 50, "M5 × 9.5 insert": 50},
+    "Heat-Set Inserts M2.5": {"M2.5 × 5.7 insert": 70},
+    "M2.5 Socket Head Screw Kit": {
+        "M2.5 × 6 SHCS": 40, "M2.5 × 8 SHCS (or pan head)": 25, "M2.5 × 10 SHCS": 20},
+    "M3 x 6 mm Socket Head Screws": {"M3 × 6 SHCS": 100},
+    "Socket Head Screw Kit M2.5-M8": {"M3 × 16 SHCS": 10, "M4 × 16 SHCS": 10, "M5 × 16 SHCS": 10},
+    # fan_duct takes M4 x 30, x35 or x40 (models/README.md): 15 + 13 + 10.
+    "M4 Socket Head Screw Kit": {"M4 × 25 SHCS": 15, "M4 × 35 SHCS / button head": 38},
+    "M4 x 8 mm Cup-Point Set Screws": {"M4 × 8 set screw": 50},
+}
+# The scale's 4 DIN 125 washers come from the M4 kit's washer bag, whose count
+# the listing does not pin.
+_UNCOUNTED_ROWS = {"M4 washer, DIN 125"}
+
+_BENCH_TOOLS = ("Breadboard",)
+_COVERS_RE = re.compile(r"covers (\d+) chambers")
+
+
+@functools.cache
+def _fastener_use() -> dict[str, tuple[dict[str, int], dict[str, int]]]:
+    """{tier id: ({row: units a chamber}, {row: pi_case units})} from the
+    models/README.md insert + screw shopping list: tier total minus pi_case."""
+    text = _read(MODELS_README)
+    section = text[text.index("## Shopping list (inserts and screws)"):]
+    pi_row = re.search(r"^\| `pi_case` \| ([^|]+) \| ([^|]+) \|", section, re.M)
+    assert pi_row, "models/README.md shopping list has no pi_case row"
+    pi: dict[str, int] = {}
+    for column, kind in ((pi_row.group(1), "insert"), (pi_row.group(2), "SHCS")):
+        for n, size, length in re.findall(r"(\d+) × (M[\d.]+)×([\d.]+)", column):
+            pi[f"{size} × {length} {kind}"] = int(n)
+    head = re.search(r"^\| Item \| One of each model \| (.+) \|$", section, re.M)
+    assert head, "models/README.md has no per-tier totals table"
+    names = [cell.strip() for cell in head.group(1).split("|")]
+    assert names == [t.name for t in TIERS], names
+    totals: dict[str, dict[str, int]] = {t.id: {} for t in TIERS}
+    for line in section[head.end():].split("\n\n")[0].splitlines()[2:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        for tier, cell in zip(TIERS, cells[2:], strict=True):
+            totals[tier.id][cells[0]] = 0 if cell == "—" else int(cell)
+    assert set(pi) <= set(totals[TIERS[0].id]), sorted(set(pi) - set(totals[TIERS[0].id]))
+    out = {}
+    for tier in TIERS:
+        rows = totals[tier.id]
+        chamber = {row: n - pi.get(row, 0) for row, n in rows.items()}
+        assert min(chamber.values()) >= 0, (tier.id, chamber)
+        out[tier.id] = (chamber, {row: pi.get(row, 0) for row in rows})
+    return out
+
+
+def _kit_lines(tier: HardwareTier) -> list[tuple[Component, dict[str, int]]]:
+    out = []
+    for c in tier.components:
+        key = next((k for k in KIT_CONTENTS if c.name.startswith(k)), None)
+        if key:
+            out.append((c, KIT_CONTENTS[key]))
+    return out
+
+
+def _kits_bought(c: Component, chambers: int) -> int:
+    """Whole kits a line buys: its packs, or its units for a kit bought singly."""
+    return c.packs(chambers) if c.pack_size else c.units(chambers)
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_fastener_kits_count_what_the_models_use(tier_id):
+    """A per-chamber kit line counts one of its sizes exactly as the models
+    use it: quantity = a chamber's units, shared_units = the Pi case's,
+    pack_size = that size's count in the kit. A shared kit serves the Pi
+    case alone."""
+    tier = _tier(tier_id)
+    chamber, pi = _fastener_use()[tier_id]
+    covered = set()
+    for c, contents in _kit_lines(tier):
+        covered |= set(contents)
+        if c.shared:
+            assert all(chamber[row] == 0 for row in contents), (
+                f"{c.name}: chambers use it up, so it cannot be bought once")
+            continue
+        counted = [row for row, per_kit in contents.items()
+                   if (c.quantity, c.shared_units, c.pack_size) == (chamber[row], pi[row], per_kit)]
+        assert counted, (f"{c.name}: quantity {c.quantity} / shared_units {c.shared_units} / "
+                         f"pack_size {c.pack_size} match no size of models/README.md")
+    needed = {row for row, n in chamber.items() if n + pi[row] > 0} - _UNCOUNTED_ROWS
+    assert needed <= covered, f"{tier_id}: no BOM kit carries {sorted(needed - covered)}"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_no_fastener_size_is_under_bought(tier_id):
+    """Every insert and screw size the printed parts take, for N chambers +
+    the Pi case, fits in the kits the line buys — counted per size, so a
+    mixed kit's other sizes are checked too."""
+    tier = _tier(tier_id)
+    chamber, pi = _fastener_use()[tier_id]
+    for n in UNDER_BUY_CHAMBERS:
+        capacity: dict[str, int] = {}
+        for c, contents in _kit_lines(tier):
+            for row, per_kit in contents.items():
+                capacity[row] = capacity.get(row, 0) + _kits_bought(c, n) * per_kit
+        for row, have in capacity.items():
+            need = chamber[row] * n + pi[row]
+            assert need <= have, f"{tier_id} x{n}: {row} needs {need}, the kits hold {have}"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_no_per_chamber_line_is_under_bought(tier_id):
+    for c in _tier(tier_id).components:
+        if c.shared or not c.pack_size:
+            continue
+        for n in UNDER_BUY_CHAMBERS:
+            need = c.quantity * n + c.shared_units
+            assert c.units(n) == need, (c.name, n)
+            assert need <= c.packs(n) * c.pack_size, (c.name, n)
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_shared_units_only_on_per_chamber_pack_lines(tier_id):
+    for c in _tier(tier_id).components:
+        assert c.shared_units >= 0, c.name
+        if c.shared_units:
+            assert c.pack_size and not c.shared, c.name
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_pack_notes_state_how_many_chambers_one_pack_covers(tier_id):
+    """A consumable pack that serves several chambers says how many, and the
+    number is the pack math's (for a fastener kit: its tightest size)."""
+    tier = _tier(tier_id)
+    chamber, pi = _fastener_use()[tier_id]
+    kits = {c.name: contents for c, contents in _kit_lines(tier)}
+    for c in tier.components:
+        if c.shared or not c.pack_size:
+            continue
+        covers = (c.pack_size - c.shared_units) // c.quantity
+        stated = [int(n) for n in _COVERS_RE.findall(c.notes)]
+        if c.category in ("wiring", "hardware") or c.name.startswith("Dupont"):
+            if covers >= 2:
+                assert stated, f"{tier_id}: {c.name} never says how many chambers one pack covers"
+        assert all(s == covers for s in stated), (c.name, stated, covers)
+        if c.name in kits:
+            tightest = min((per_kit - pi[row]) // chamber[row]
+                           for row, per_kit in kits[c.name].items() if chamber[row])
+            assert tightest == covers, (c.name, tightest, covers)
+
+
+# The bulk consumables (zip ties, heat-shrink, grommets, 18" duct ties) used
+# to be `shared` because one pack covered the Builder's largest preset (12
+# chambers) — but its chamber input takes up to 99, and from 17 chambers
+# those lists under-bought (2026-10 browser audit, ×40 All the Things: one
+# 400-pack of zip ties for ~1,000). Only what no chamber uses up is bought
+# once.
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_only_the_pi_side_and_bench_tools_are_bought_once(tier_id):
+    tier = _tier(tier_id)
+    chamber, _ = _fastener_use()[tier_id]
+    kits = {c.name: contents for c, contents in _kit_lines(tier)}
+    for c in tier.components:
+        if not c.shared or c.name.startswith(_PI_SIDE + _BENCH_TOOLS):
+            continue
+        assert c.name in kits, f"{tier_id}: {c.name} is bought once — what stops N chambers using it up?"
+        # a kit only the Pi case draws on
+        assert all(chamber[row] == 0 for row in kits[c.name]), c.name
+        assert "Pi side" in c.notes, c.name
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_bulk_consumables_count_what_one_chamber_takes(tier_id):
+    tier = _tier(tier_id)
+    fans = _qty(tier, r"^Noctua NF-A8")
+    for c in tier.components:
+        if c.name.startswith(("UV-Resistant Zip Ties", "Adhesive-Lined Heat Shrink", "Rubber Grommet Kit")):
+            assert not c.shared and c.pack_size >= 20, c.name
+        if c.name.startswith("Zip Ties, 18"):  # one per fan_duct
+            assert (c.quantity, c.pack_size, c.shared) == (fans, 100, False), c.name
+        if c.name.startswith("Rubber Grommet Kit"):  # one large grommet a chamber
+            assert c.quantity == 1, c.name
+
+
+@pytest.mark.parametrize("tier_id", ["recommended", "all_the_things"])
+def test_wiring_consumables_follow_the_wiring_rows(tier_id):
+    tier = _tier(tier_id)
+
+    def line(prefix):
+        return next(c for c in tier.components if c.name.startswith(prefix))
+
+    # One M-F Dupont per J1 terminal an ESP32 drives: each wired gate + one GND
+    # per switch board.
+    j1 = [w for w in tier.wiring
+          if w.from_device in ("ESP32 (Relay)", "ESP32 (Lighting)")
+          and ("IRLZ44N" in w.to_device or "switch board" in w.to_device)]
+    assert line("Dupont").quantity == len(j1)
+    # One 221-413 + one 221-415 per chamber; the assortment holds 3 of each.
+    wagos = {w.to_device for w in tier.wiring if w.to_device.startswith("WAGO 221")}
+    assert wagos == {"WAGO 221-413", "WAGO 221-415"}
+    wago = line("WAGO 221")
+    assert wago.quantity == 1 and wago.pack_size == 3
+    assert "3 each of 221-412, 221-413, 221-415 and 221-2401" in wago.notes
+    # A fuse holder per branch, one fuse set (relay + lighting rating) per chamber.
+    fuse_rows = [w for w in tier.wiring if w.to_device.startswith("Inline fuse")]
+    assert line("Inline ATC/ATO").quantity == len(fuse_rows) == 2
+    assert line("ATC Blade Fuse Assortment").quantity == 1
+    # Two 12" straps per power_supply_mount, one PSU brick per chamber.
+    assert line("VELCRO").quantity == 2 * _qty(tier, r"^12V Power Supply")
 
 
 # ── setup-step code spans ───────────────────────────────────────────────────

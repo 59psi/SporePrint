@@ -27,11 +27,13 @@ class Component(BaseModel):
     category: str  # "controller" | "sensor" | "actuator" | "power" | "plug" | "misc"
     notes: str = ""
     # Pack-sold lines (resistors, diodes, MOSFETs, dev-board and camera
-    # multi-packs, cable and charger packs): `quantity` counts the UNITS this
-    # tier needs per chamber, price_approx is the per-unit price within the
-    # pack, pack_price is the price of the pinned pack and pack_size the units
-    # in it. A line then costs ceil(units / pack_size) packs, so packs are
-    # shared across chambers (one 100-pack of resistors covers 12 chambers).
+    # multi-packs, cable and charger packs, insert and screw kits, wire by
+    # the foot): `quantity` counts the UNITS this tier needs per chamber,
+    # price_approx is the per-unit price within the pack, pack_price is the
+    # price of the pinned pack and pack_size the units in it. A line then
+    # costs ceil(units / pack_size) packs, so packs are shared across
+    # chambers (one 100-pack of resistors covers 12 chambers). A mixed kit
+    # counts the size the chambers use up first (its notes say which).
     # pack_price "" = bought singly. Additive API fields.
     pack_price: str = ""
     # Units in one pinned pack; 0 = sold singly. A legacy line with
@@ -39,16 +41,36 @@ class Component(BaseModel):
     # line (one pack per chamber).
     pack_size: int = 0
     # One per installation rather than per chamber: the Pi side (Pi, its PSU,
-    # cooler, microSD) and multi-use packs/spools (wire, connectors, inserts,
-    # screws, consumables). The Builder's "chambers to build" multiplier
-    # leaves these at their own quantity. Additive API field.
+    # cooler, microSD), bench tools, and a kit only the Pi case draws on. The
+    # Builder's "chambers to build" multiplier leaves these at their own
+    # quantity. Anything the chambers use up (inserts, screws, WAGO splices,
+    # wire by the foot, zip ties, heat-shrink, grommets) is a per-chamber
+    # pack line instead, so N chambers buy enough packs at any N — a bulk
+    # pack that covers 16 chambers would under-buy for 17, and the Builder
+    # takes up to 99. Additive API field.
     shared: bool = False
+    # Units of a per-chamber pack line that the one-per-installation side
+    # (the Pi case) takes from the SAME packs, bought once: N chambers need
+    # quantity x N + shared_units units, i.e. ceil((quantity x N +
+    # shared_units) / pack_size) packs. 0 = none. Only on a pack line that is
+    # not shared. Additive API field.
+    shared_units: int = 0
+    # What quantity, shared_units and pack_size count when it is not whole
+    # pieces of the named part: a measure ("ft" of wire, "g" of solder) or
+    # one piece of a mixed kit ("strap", "chamber set", "M3 insert"). The
+    # dashboard words the line with it — "420 ft · 5 packs of 100 ft · $0.26
+    # / ft", not "×420 · 5 packs of 100 · $0.26 ea". "" = pieces of the part.
+    # Only on a pack line. Additive API field.
+    unit: str = ""
 
     def units(self, chambers: int = 1) -> int:
-        """Units to buy for ``chambers`` chambers (a shared line once)."""
+        """Units to buy for ``chambers`` chambers (a shared line once; a
+        per-chamber line plus the Pi side's ``shared_units`` once)."""
         if chambers < 1:
             raise ValueError(f"chambers must be >= 1, got {chambers}")
-        return self.quantity if self.shared else self.quantity * chambers
+        if self.shared:
+            return self.quantity
+        return self.quantity * chambers + self.shared_units
 
     def packs(self, chambers: int = 1) -> int:
         """Packs to buy for ``chambers`` chambers; 0 for a line bought singly."""

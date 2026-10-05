@@ -32,16 +32,19 @@ firmware and the current bill of materials actually use — not an approximation
 | 12 V supply | none | 12 V 5 A (60 W) | 12 V 10 A (120 W) |
 | 12 V distribution | none | 14 AWG pigtail → WAGO 221 → inline 3 A (relay) + 5 A (lighting) fuses, 18 AWG runs | same, with a 7.5 A lighting fuse |
 | Mains | 6-outlet surge strip | 12-outlet surge strip | 12-outlet + 2 USB-A surge strip |
-| Reusable kits in the price | ~$72 | ~$217 | ~$245 |
+| A second chamber adds | ~$62 | ~$316 | ~$527 |
 | Build time | ~2 hours | ~5 hours | ~8 hours |
 
 Prices are the sum of the Builder's parts list — boards, sensors, supplies
-**and** the cabling, consumables, heat-set inserts and screws. Of that, the
-"reusable kits" row is spools and assortments (wire, WAGO connectors, fuses,
-heat-shrink, zip ties, VELCRO, grommets, inserts, screws, solder, the Dupont
-and breadboard kits) that cover more than one chamber: a second chamber costs
-that much less. The prices do **not** include the tri-spectrum strip's
-shipping from China and import duty (~$10+), or the tools (§1).
+**and** the cabling, consumables, heat-set inserts and screws. A second
+chamber costs less than the first: the Pi side is bought once, and the kits
+and spools (wire, WAGO connectors, fuses, inserts, screws, solder, jumpers,
+VELCRO, zip ties, heat-shrink, grommets) are counted per chamber in whole
+packs that cover more than one chamber, so the Builder page's chamber count
+buys another pack only when the chambers use one up. Only the bench
+breadboard is bought once whatever the count. The
+prices do **not** include the tri-spectrum strip's shipping from China and
+import duty (~$10+), or the tools (§1).
 
 Start at Bare Bones if this is your first build. **Every tier is a strict
 superset of the one before it** — you add boards, you never rewire.

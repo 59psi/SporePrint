@@ -102,13 +102,23 @@ def test_dist_ships_only_referenced_assets():
     assert referenced, "index.html references no assets"
     for name in referenced:
         assert (DIST / "assets" / name).is_file(), f"index.html references missing {name}"
-    texts = html + "".join((DIST / "assets" / n).read_text(encoding="utf-8")
-                           for n in referenced if n.endswith((".js", ".css")))
-    for f in (DIST / "assets").iterdir():
-        if f.name in referenced:
+    # Follow references transitively: a lazy chunk (e.g. the wiring SVGs) is
+    # named only inside the main bundle, and its source map only beside it.
+    assets = {f.name: f for f in (DIST / "assets").iterdir()}
+    reachable = set(referenced)
+    pending = list(referenced)
+    while pending:
+        name = pending.pop()
+        if not name.endswith((".js", ".css")):
             continue
-        is_map = f.suffix == ".map" and f.name.removesuffix(".map") in referenced
-        assert is_map or f.name in texts, f"stale asset left in ui/dist: {f.name}"
+        text = assets[name].read_text(encoding="utf-8")
+        for other in assets:
+            if other not in reachable and other in text:
+                reachable.add(other)
+                pending.append(other)
+    for name in assets:
+        is_map = name.endswith(".map") and name.removesuffix(".map") in reachable
+        assert name in reachable or is_map, f"stale asset left in ui/dist: {name}"
 
 
 # ── the built-in fallback matches this server ─────────────────────────
@@ -157,13 +167,15 @@ def test_fallback_links_resolve(fallback):
 @pytest.mark.parametrize("chambers", [1, 4, 12])
 def test_fallback_totals_match_the_bom(fallback, chambers):
     # The page's rule (pi-ui lib/builder-data.ts lineCost), mirroring
-    # Component.line_cost: a shared line is bought once; a pack line buys
-    # ceil(units / packSize) packs at packPrice; else priceApprox x units.
+    # Component.line_cost: a shared line is bought once; any other line needs
+    # quantity x N + sharedUnits units (the Pi case's share, once); a pack
+    # line buys ceil(units / packSize) packs at packPrice; else priceApprox x
+    # units.
     def usd(s):
         return float(s.lstrip("$").replace(",", ""))
 
     def line_cost(c):
-        units = c["quantity"] if c["shared"] else c["quantity"] * chambers
+        units = c["quantity"] if c["shared"] else c["quantity"] * chambers + c.get("sharedUnits", 0)
         if c.get("packPrice"):
             packs = math.ceil(units / c["packSize"]) if c.get("packSize") else (1 if c["shared"] else chambers)
             return usd(c["packPrice"]) * packs
@@ -185,6 +197,12 @@ def _ui_component(c: dict) -> dict:
     size = c.get("pack_size")
     if isinstance(size, int) and not isinstance(size, bool) and size > 0:
         out["packSize"] = size
+    extra = c.get("shared_units")
+    if isinstance(extra, int) and not isinstance(extra, bool) and extra > 0:
+        out["sharedUnits"] = extra
+    unit = c.get("unit")
+    if isinstance(unit, str) and unit.strip():
+        out["unit"] = unit.strip()
     if isinstance(c.get("shared"), bool):
         out["shared"] = c["shared"]
     return out

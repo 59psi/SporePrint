@@ -60,8 +60,8 @@ signing vectors are unchanged. Firmware details are in
 ### Hardware (Builder BOM, `GET /api/builder/tiers`)
 - **Tier totals are now ~$290 / ~$745 / ~$960** (were ~$180 / ~$390 / ~$555),
   re-checked live on 2026-09-27, and now include the cabling, consumables,
-  heat-set inserts and screws. Of that, ~$72 / ~$217 / ~$245 is reusable kits
-  and spools that cover more than one chamber. They exclude the tri-spectrum
+  heat-set inserts and screws. A second chamber adds ~$62 / ~$316 / ~$527
+  (the Pi side once, kits and spools in whole packs). They exclude the tri-spectrum
   strip's shipping and duty (~$10+) and tools. README and the build guide use
   the same numbers.
 - **Cabling standard + consumables as BOM lines:** a UL-listed surge strip
@@ -90,12 +90,35 @@ signing vectors are unchanged. Firmware details are in
   2-pack, KF301 30-pack and door-contact 2-set used to count packs (so ×4
   chambers bought 8 cameras for 4), and the ESP32 / IRLZ44N / resistor /
   diode packs were bought once per chamber (×4 bought four 100-packs of
-  resistors). One-chamber totals are unchanged; at ×4 / ×12 chambers the
-  tiers come to $484.60 / $1,011.80, $1,712.38 / $4,342.18 and
-  $2,519.78 / $6,673.87. All the Things now lists 4 ESP32 boards (the 6-pack
-  leaves 2 spares) instead of 6. The inline fuse holders are two per chamber
-  from a 10-pack instead of a shared line, so the reusable-kit share is
-  ~$72 / ~$217 / ~$245.
+  resistors). One-chamber totals are unchanged. All the Things now lists 4
+  ESP32 boards (the 6-pack leaves 2 spares) instead of 6. The inline fuse
+  holders are two per chamber from a 10-pack instead of a shared line.
+- **Kits and spools the chambers use up are per-chamber pack lines** (new
+  optional API field `Component.shared_units`). They used to be `shared` —
+  bought once whatever the chamber count — so a multi-chamber shopping list
+  under-bought from ~3–4 chambers up: the WAGO 221 assortment (3 × 221-413 +
+  3 × 221-415, one of each per chamber) stayed one kit at ×4 and ×12, and 12
+  All the Things chambers got one ruthex assortment (100 M3 inserts) for 436.
+  Now `quantity` counts what one chamber takes — inserts and screws from the
+  `models/README.md` shopping list (a mixed kit counts the size the chambers
+  use up first: M4 inserts on Recommended, M3 on All the Things; M2.5 × 6;
+  M5 × 16; the M4 × 30/35/40 fan-duct screws), WAGO 221-413 + 221-415 pairs
+  (3 per assortment), fuse sets (15 per box), M-F Dupont jumpers (40 per
+  kit), VELCRO 12" straps (12 per roll), 18 AWG pair by the foot (~20 / ~35 ft
+  a chamber), the 22/4 cable (~12 ft), 22 AWG hookup (~2 ft of black) and
+  solder by the gram (~5 / ~7 g) — and `shared_units` is the Pi case's share of
+  the same pack (4 M2.5 inserts, 4 M3 inserts, 4 M2.5 × 6), bought once: N
+  chambers buy `ceil((quantity × N + shared_units) / pack_size)` packs. The
+  bulk consumables are per-chamber pack lines too — zip ties (~25 a chamber
+  of 400), heat-shrink (~15 / ~25 pieces of 400), large grommets (1 of the
+  kit's ~20), 18" duct ties (one per fan of 100) — since one pack covering
+  the 12-chamber preset still under-bought from 17 of the Builder's up to 99
+  chambers. Only the Pi side and the bench breadboard stay shared (and Bare
+  Bones' screw kit, which only the Pi lid draws on). One-chamber totals are unchanged;
+  at ×4 / ×12 chambers the tiers come to $484.60 / $1,047.80,
+  $1,733.38 / $4,618.18 and $2,613.78 / $7,154.87. The docs' "reusable kits"
+  share (every shared line except the Pi side) is replaced by what a second
+  chamber adds: ~$62 / ~$316 / ~$527.
 - Setup steps name the Builder's current tabs (Firmware, Models) and the
   dashboard's Hardware page, and check a smart plug with
   `GET /api/automation/plugs` — the dashboard has no plug panel. The weather
@@ -156,8 +179,8 @@ signing vectors are unchanged. Firmware details are in
   bring-up list; new troubleshooting rows (dead board, swapped fan wires).
 - `models/README.md`: per-tier insert and screw totals; the BOM's insert and
   screw kits, the 18" (457 mm) duct tie and the VELCRO straps.
-- `tests/test_docs_consistency.py` pins the new invariants: the reusable-kit
-  share, fuse ratings, WAGO parts and wire gauges in the build guide and SVGs,
+- `tests/test_docs_consistency.py` pins the new invariants: what a second
+  chamber adds, fuse ratings, WAGO parts and wire gauges in the build guide and SVGs,
   the common ground in every guide and diagram, the strip sizes, and the
   per-tier insert sourcing.
 
@@ -250,8 +273,8 @@ signing vectors are unchanged. Firmware details are in
     packs of 2", "$5.49 / pack of 100 · ~$0.05 ea") on the Builder's Shopping
     tab, the Shopping List and its CSV. Totals equal `parts_cost(N)` at every
     chamber count; the caption splits shared from chambered parts and says
-    what whole packs save. Tier cards and the Overview count BOM lines and
-    units separately.
+    what whole packs save. The Overview counts BOM lines and units
+    separately.
   - Builder: below 900 px the BOM and wiring-connection tables stack as cards
     instead of scrolling (the Buy link and wiring notes were cut off between
     1024 and 1340 px). The tier and chamber count stay in the URL, "Send BOM"
@@ -268,6 +291,68 @@ signing vectors are unchanged. Firmware details are in
     severity ladder (critical red, high amber) and list every entry; Sessions
     show the session name; Sessions and Transcripts pin their row action
     instead of scrolling the page; long automation conditions wrap.
+- **`ui/dist` rebuilt after a fourth browser audit.**
+  - The Builder and the Shopping List buy the per-chamber kits above in whole
+    packs (`shared_units` included), so totals equal `parts_cost(N)` at any
+    chamber count from 1 to 99: Bare Bones ×10 now buys two packs of M3
+    inserts for 104. A count outside the presets shows as its own "×7" pill
+    next to a − / + count box. Tier cards price the chosen count ("47 lines ·
+    ~$1,733 for 4 chambers"), and the chamber caption names what is bought
+    once: the Pi side, the bench breadboard and bulk packs that cover 12+
+    chambers.
+  - The Shopping tab, the Shopping List and its CSV word quantities one way
+    ("4 · 2 packs of 2 · 1 spare"), and "(shared)" shows at every chamber
+    count.
+  - The wiring SVGs are their own 173 kB chunk, fetched only when the Wiring
+    tab opens. The main bundle is 1,112 kB (323 kB gzipped), down from
+    1,258 kB (340 kB). `tests/test_ui_builder_sync.py` follows references
+    from `index.html` through the bundle, so that chunk and its source map
+    count as shipped assets.
+  - Offline, the Firmware tab lists files from a listing generated from this
+    repo (raw GitHub links and sizes) instead of a hand-copied list.
+  - Model cards end a cut description on a whole word, and "more" reads the
+    full header from the `.scad` file (the Pi's download first, then GitHub).
+  - Shopping List: notes grow with their text and print in full; a print
+    stylesheet hides the navigation and prints dark on white; ticks and notes
+    follow a part across builds; grow supplies are merged across species, one
+    row per item (spawn stays one row per species).
+  - Species: the 8 novelty species get a filter chip, so the category KPI
+    adds up to the 74 shown; KPI labels fit one line; tags collapse to the 12
+    most used behind an "all 129 tags" toggle; an opened card expands in
+    place, so Tab order matches the screen. Contamination's upload buttons
+    wrap at 390 px.
+- **`ui/dist` rebuilt after a fifth browser audit.**
+  - A printed Shopping List is a table again: the card layout (under 900 px
+    of table) is screen-only, so a Letter or A4 sheet no longer prints one
+    tall card per row (a 4-chamber list ran to 20 pages). The Buy column and
+    the "notes & substitutes" disclosure stay off paper, cells are tighter
+    and the columns size to their content.
+  - Lines counted in something other than pieces say so (new optional API
+    field `Component.unit`): "420 ft · 5 packs of 100 ft · 80 ft spare",
+    "$26 / pack of 100 ft", "~$0.26 / ft"; the WAGO assortment reads "12
+    chamber sets · 4 packs of 3 chamber sets"; solder in grams, VELCRO in
+    straps, the insert and screw kits in the size they are counted in. The
+    Overview counts packs and parts to buy instead of adding feet, grams and
+    pieces, and uses the Shopping tab's "shared, bought once" caption. The
+    CSV writes "×N" and "(shared)" as the table does, one supplier URL per
+    cell, and "lb" for every pound.
+  - The zip ties, heat-shrink, grommets and 18" duct ties are bought per
+    chamber in whole packs (above), so a 17–99-chamber list no longer
+    under-buys them.
+  - Two open Shopping List tabs stay in step: a tick, note, custom item, grow
+    count or build sent in one shows in the other, and every change is
+    written into what is stored, so one tab no longer undoes the other's.
+  - A link's out-of-range `?chambers=` opens on 99 instead of 1, and the URL
+    says what the page shows; an unknown `?bom=` says so.
+  - The sidebar footer (version, uptime) is no longer clipped; the Shopping
+    List's note column is a fifth of the table; Species folds its filters
+    behind one "filters" button on a phone, so the first card is on the
+    first screen; a contamination check without a Claude key says so in
+    words and links to Settings, and the log stacks on a phone.
+  - A species with a session (`lions-mane`) and the same species picked by
+    hand (`lions_mane`) is one grow target on the Shopping List, not two;
+    an unknown `?bom=` link warns on a full page load too; the Overview's
+    cost caption reads like the BOM totals at ×1.
 
 ### Enclosures (`models/`)
 - **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,

@@ -142,6 +142,14 @@ def _component(c) -> dict:
         out["packPrice"] = c.pack_price
     if c.pack_size:
         out["packSize"] = c.pack_size
+    if c.shared_units:
+        # The Pi case's share of a per-chamber pack line, bought once: N
+        # chambers need quantity x N + sharedUnits units.
+        out["sharedUnits"] = c.shared_units
+    if c.unit:
+        # What quantity / packSize count when not pieces ("ft", "g",
+        # "chamber set"): the page words the line with it.
+        out["unit"] = c.unit
     out["shared"] = bool(c.shared)
     return out
 
