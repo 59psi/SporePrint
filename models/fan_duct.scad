@@ -45,7 +45,7 @@
 //   fan_mount = "nut":
 //     4x M4 hex nut (ISO 4032, 7 mm AF x 3.2 mm) dropped into the traps on
 //        the duct side of each boss, + 4x M4 x 35 mm screw as above.
-//   Duct retention: 1x zip tie >= 360 mm (14") long, <= 4.8 mm wide,
+//   Duct retention: 1x zip tie >= 400 mm (16") long — the BOM buys 18" (457 mm) — <= 4.8 mm wide,
 //     <= 1.4 mm thick (threads through the finger tunnels), or a 4"
 //     worm-drive hose clamp (<= 12.7 mm band) on the bare spigot above the
 //     fingers.

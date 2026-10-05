@@ -216,10 +216,44 @@ def test_listing_excludes_lib(models_dir, api):
 
     r = api.get("/api/builder/models")
     assert r.status_code == 200
-    assert r.json() == [
-        {"filename": "a_part.scad", "size_bytes": 9, "url": "/api/builder/models/a_part.scad"},
-        {"filename": "b_part.scad", "size_bytes": 9, "url": "/api/builder/models/b_part.scad"},
-    ]
+    body = r.json()
+    assert [m["filename"] for m in body] == ["a_part.scad", "b_part.scad"]
+    for m in body:
+        assert m["size_bytes"] == 9
+        assert m["url"] == f"/api/builder/models/{m['filename']}"
+        # No header comment: the title falls back to the stem.
+        assert m["title"] == m["filename"][:-5]
+        assert m["description"] == ""
+        assert m["source_url"] == f"{mr.MODELS_REPO_URL.replace('/tree/', '/blob/')}/{m['filename']}"
+
+
+def test_listing_reads_title_and_description_from_the_header(models_dir, api):
+    (models_dir / "widget.scad").write_text(
+        "// SporePrint Widget Holder\n"
+        "// Two printed pieces joined by\n"
+        "// 4 x M3 heat-set inserts.\n"
+        "//\n"
+        "// ── FITS ──\n"
+        "cube(1);\n"
+    )
+    (m,) = api.get("/api/builder/models").json()
+    assert m["title"] == "Widget Holder"
+    assert m["description"] == "Two printed pieces joined by 4 x M3 heat-set inserts."
+
+
+def test_every_shipped_model_has_a_title_and_description():
+    # The Builder's Models tab renders these; a model without a summary
+    # paragraph shows up blank.
+    for f in sorted((mr._REPO_ROOT / "models").glob("*.scad")):
+        title, description = mr._model_header(f)
+        assert title and title != f.stem, f.name
+        assert len(description) >= 40, (f.name, description)
+        assert not description[0].islower(), (f.name, description)
+
+
+def test_models_repo_url_points_at_the_models_directory():
+    assert mr.MODELS_REPO_URL == "https://github.com/59psi/SporePrint/tree/main/models"
+    assert (mr._REPO_ROOT / "models").is_dir()
 
 
 @pytest.mark.parametrize("path", [

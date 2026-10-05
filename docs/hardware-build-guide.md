@@ -10,9 +10,12 @@ firmware and the current bill of materials actually use — not an approximation
   `server/app/builder/hardware_guides.py`. Prices and stock were re-checked on
   2026-09-27.
 - **Wiring diagrams:** `docs/wiring-tier1-bare-bones.svg`,
-  `docs/wiring-tier2-recommended.svg`, `docs/wiring-tier3-all-the-things.svg`.
-  Open them alongside this guide — they show every connection at once. They
-  use the ESP32-WROOM-32 pin map; S3 boards differ (§8a).
+  `docs/wiring-tier2-recommended.svg`, `docs/wiring-tier3-all-the-things.svg`
+  (and `docs/wiring-overall-system.svg` for the whole system). Open them
+  alongside this guide — they show every connection at once: what sits inside
+  the chamber and what stays outside, the power strip, the 12 V distribution
+  with its fuses, the wire gauge of every run and the common ground. They use
+  the ESP32-WROOM-32 pin map; S3 boards differ (§8a).
 - **Printable enclosures:** `models/*.scad`, documented in
   [`models/README.md`](../models/README.md).
 
@@ -20,18 +23,25 @@ firmware and the current bill of materials actually use — not an approximation
 
 ## 0. Pick a tier
 
-| | **Bare Bones** ~$205 | **Recommended** ~$485 | **All the Things** ~$660 |
+| | **Bare Bones** ~$290 | **Recommended** ~$745 | **All the Things** ~$960 |
 |---|---|---|---|
 | What it does | Monitors. Humidifier on a smart plug. | Full automation — fans, lights, camera, CO₂. | Everything, two shelves, plus scale + door + pump. |
 | ESP32 nodes | 1 (climate) | 3 (climate, relay, lighting) + 1 camera | 4 (2 climate, relay, lighting) + 2 spares (one 6-pack) + 2 cameras |
 | Sensors | Temp/RH, light | + CO₂ | + 2nd shelf, load cell, door contact |
 | Actuators | 1 smart plug | 3 fans + aux, 2 LED channels, 2 plugs | + red/far-red, peristaltic pump, 4 plugs |
 | 12 V supply | none | 12 V 5 A (60 W) | 12 V 10 A (120 W) |
+| 12 V distribution | none | 14 AWG pigtail → WAGO 221 → inline 3 A (relay) + 5 A (lighting) fuses, 18 AWG runs | same, with a 7.5 A lighting fuse |
+| Mains | 6-outlet surge strip | 12-outlet surge strip | 12-outlet + 2 USB-A surge strip |
+| Reusable kits in the price | ~$72 | ~$226 | ~$254 |
 | Build time | ~2 hours | ~5 hours | ~8 hours |
 
-Prices are the sum of the Builder's parts list. They do **not** include the
-tri-spectrum strip's shipping from China and import duty (~$10+), or the
-heat-set inserts and screws for the printed enclosures (§2).
+Prices are the sum of the Builder's parts list — boards, sensors, supplies
+**and** the cabling, consumables, heat-set inserts and screws. Of that, the
+"reusable kits" row is spools and assortments (wire, WAGO connectors, fuses,
+heat-shrink, zip ties, VELCRO, grommets, inserts, screws, solder, the Dupont
+and breadboard kits) that cover more than one chamber: a second chamber costs
+that much less. The prices do **not** include the tri-spectrum strip's
+shipping from China and import duty (~$10+), or the tools (§1).
 
 Start at Bare Bones if this is your first build. **Every tier is a strict
 superset of the one before it** — you add boards, you never rewire.
@@ -78,6 +88,31 @@ Traps that will cost you money or a rebuild:
    `openscad -D scd30=true -o sensor_bracket_scd30.stl models/sensor_bracket.scad`.
 7. **An ESP32-S3 board uses different GPIOs** from every wiring diagram. If you
    buy one, wire it from §8a, not from the diagrams.
+8. **Boards inside the chamber need long USB cables.** The climate node(s) and
+   the camera(s) live in the chamber; their chargers stay outside on the power
+   strip, so they take 6 ft (2 m) cables through the wall grommet. The relay
+   and lighting nodes sit outside next to their switch boards and can use the
+   short cables (§7).
+9. **The cabling is in the BOM — buy it with the boards.** The surge strip,
+   the 12 V pigtail, WAGO 221 lever connectors, inline fuses, 18 AWG red/black,
+   22 AWG hookup and 22 AWG 4-conductor wire, Noctua fan extensions,
+   heat-shrink, zip ties, VELCRO, grommets, inserts, screws and solder are BOM
+   lines, mapped to where each one goes in §7. Don't substitute thinner wire on
+   the 12 V runs.
+
+### Tools you need
+
+Tools are not in the BOM or the tier prices:
+
+- Soldering iron, with a **heat-set insert tip** for the printed enclosures
+  (the solder itself is the BOM's lead-free solder)
+- Wire strippers and a crimper (ferrules or butt splices)
+- Multimeter — continuity checks for the reed contact, the common ground and
+  the 12 V branches
+- Heat gun (or a lighter, carefully) for the heat-shrink
+- Hex keys 2, 2.5, 3 and 4 mm (the M2.5, M3, M4 and M5 socket heads)
+- Flush cutters — trim leads to ≤ 3 mm under `relay_board_mount`
+- A 3D printer for the enclosures (§2), or a print service
 
 ---
 
@@ -102,7 +137,7 @@ details, fits and presets: [`models/README.md`](../models/README.md).
 | `hx711_scale.scad` | HX711 + 5 kg bar load cell | defaults `cell="bar75"` `hx_board="ada5974"` (Adafruit 4541 + 5974); `cell="tal220"` for 80 mm TAL220 bars; 5 walls, ≥ 40 % infill |
 | `pump_bracket.scad` | Peristaltic pump | default `pump="adafruit_1150"` (flange-mounted, M2.5 into inserts) |
 
-**Heat-set inserts and screws to buy** (not in the tier price; counts at the
+**Heat-set inserts and screws** (BOM lines, in the tier price; counts at the
 default presets, from the `models/README.md` shopping list):
 
 | Tier | Inserts | Screws |
@@ -113,10 +148,23 @@ default presets, from the `models/README.md` shopping list):
 
 The pockets are sized for ruthex RX inserts (M2.5 × 5.7, M3 × 5.7, M4 × 8.1,
 M5 × 9.5). CNC Kitchen's M3/M4/M5 match, but CNC Kitchen's M2.5 is M2.5 × 4,
-too short. Buy the **ruthex M2/M3/M4/M5 assortment** (Amazon B08K1BVGN9,
-~$30) **+ a separate ruthex RX-M2.5x5.7 pack** — the assortment has no M2.5.
+too short. What the BOM buys:
+
+- **Inserts:** Recommended and All the Things — the **ruthex M2/M3/M4/M5
+  assortment** (Amazon B08K1BVGN9, ~$30); Bare Bones needs only M3 and M2.5,
+  so it takes a ruthex M3 × 5.7 100-pack (B08BCRZZS3) instead. Every tier adds
+  **a separate M2.5 × 5.7 pack** — the assortment has no M2.5. The exact
+  design part is ruthex RX-M2.5x5.7 (3DJake sells it; Amazon US doesn't), so
+  the BOM pins uxcell's ~4.5 mm OD × 6 mm M2.5 inserts, which press flush in
+  the same pockets. Avoid 3.5 mm OD × 4 mm M2.5 inserts: they spin.
+- **Screws** (304 stainless — the in-chamber parts live at 85–95 % RH): an
+  M2.5 socket-head kit (× 6 / 8 / 10 / 12), 100 × M3 × 6, an M2.5–M8 kit for
+  the M3 × 16, M4 × 16 and M5 × 16, and (Recommended up) an M4 kit with the
+  M4 × 35 fan screws, M4 × 25 and washers; All the Things adds M4 × 8 set
+  screws for the scale.
+
 The switch boards mount with 4 × M3 × 16 pan-head (or #4 × ¾" wood) screws
-each.
+each, or zip ties through their end slots.
 
 ---
 
@@ -180,6 +228,12 @@ bus and autodetects** whatever is there — SHT3x or SHT4x, SCD4x or SCD30,
 BH1750. You do not configure which sensors you have. If a sensor answers, it
 gets used.
 
+The 4397 is 150 mm long, so the climate ESP32 (in its `esp32_case`) sits in the
+chamber next to the sensor mount. Power it from its own 5 V charger on the power
+strip **outside** the chamber, over a 6 ft (2 m) USB-A → USB-C cable through the
+wall grommet (§7). Nothing else connects to it: there is no breadboard and no
+jumper wiring on any tier's climate node.
+
 > **Using an MH-Z19C instead of the SCD41?** It is UART, not I²C: sensor **TX →
 > GPIO 16**, **RX → GPIO 17**, 5V, common GND. Unlike the I²C parts it is *not*
 > autodetected — tick "MH-Z19C CO2 sensor (UART)" under **Optional peripherals**
@@ -192,16 +246,32 @@ gets used.
 
 Four MOSFET channels switch the 12 V loads. Build each channel on the printed
 `relay_board_mount` (`node="relay"`) with KF301 5.08 mm screw terminals: **J1**
-is the control input (IN = GPIO, − = GND), **J2** the load output. Each channel
-is the same circuit:
+is the control input (IN = GPIO, − = GND), **J2** the load output ("+" on the
++12 V bus, "−" on the drain). Each channel is the same circuit, shown here end
+to end from the 12 V supply (§7) to a fan:
 
 ```
-ESP32 GPIO ──[100Ω]── Gate                     +12V ── Load (fan) ── Drain
-                       │                                              │
-                    [10kΩ]                              UF4007 across the load
-                       │                                (band toward +12V)
-                     Source ── GND bus (shared with the 12 V PSU and the ESP32 GND)
+PSU + ══14 AWG══ WAGO 221-413 ──18 AWG red──[ 3 A fuse ]─ +12 V bus ─ J2 + ──── +12 V wire ───┐
+                                                                         │                    │
+                                                       UF4007, band ─▶  ─┴─                  FAN 12 V
+                                                       to +12 V          ▲         4-pin PWM extension
+                                                                         │         lead; its tach + PWM
+ESP32 GPIO ─Dupont─ J1 IN ──[100 Ω]──┬── G                               │         wires stay unused
+                                     │     IRLZ44N   D ──── drain ─── J2 − ──── GND wire ─────┘
+                                  [10 kΩ]            S
+                                     │               │
+ESP32 GND ──Dupont─ J1 − ────────────┴───────────────┴── GND bus ──18 AWG black── WAGO 221-415 ══14 AWG══ PSU −
+     └─────────── COMMON GROUND: ESP32 GND = J1 − = GND bus = WAGO 221-415 = PSU − (one net) ───────────┘
 ```
+
+- **The common ground is not optional.** Each switch board's GND bus (the 12 V
+  supply's −) must be tied to its own ESP32's GND — that is the J1 "−" jumper.
+  The ESP32 runs from an isolated USB charger, so without that wire the gate
+  signal has no reference and the channel never switches. Do it on the relay
+  board and on the lighting board.
+- The **+12 V branch is fused** at the WAGO end (3 A for the relay board) and
+  runs to the board in 18 AWG red; the GND branch runs in 18 AWG black and is
+  not fused (§7).
 
 - The **100 Ω gate resistor** limits the GPIO's gate-charge current and damps
   ringing at the firmware's 25 kHz PWM.
@@ -216,7 +286,20 @@ ESP32 GPIO ──[100Ω]── Gate                     +12V ── Load (fan) �
   A strip cut to closet length stays around 1 A.
 
 Run Dupont jumpers (female end on the ESP32 pin) from GPIO 25 / 26 / 27 / 14 and
-a GND pin into the J1 terminals.
+a GND pin into the J1 terminals — or 22 AWG stranded hookup wire where a jumper
+won't reach.
+
+**Fans plug in through 4-pin fan extension leads**, so a fan unplugs without
+cutting its own cable: each fan's bundled 30 cm extension plus one **Noctua
+NA-SEC3** (60 cm) reaches about 1.1 m, from inside the chamber to the board.
+Cut the **far (header) end** of the NA-SEC3 — never the fan's own lead — and
+land two of its wires in J2: **pin 1 (GND) → J2 "−"** (the drain) and **pin 2
+(+12 V) → J2 "+"**. Identify them by pin position in the connector, not by
+colour. Pins 3 (tach) and 4 (PWM) stay unused: trim them and cap them with
+heat-shrink. The MOSFET switches the fan's supply on the low side: with its PWM
+pin left open a Noctua runs at full speed whenever the channel is on, and a
+`pwm` value (0–255) in the channel command sets the average through the
+firmware's 25 kHz PWM.
 
 | Channel | GPIO | Drives | Max-on backstop (default) |
 |---|---|---|---|
@@ -238,7 +321,10 @@ Using it for something else? Raise it with `cmd/config
 `{"channel": "config", "max_on_sec": {"aux": 600}}`. It is stored on the node.
 
 **Mount the relay board outside the chamber.** It is electronics in a
-95 %-humidity box otherwise. Route wires in through a small grommeted hole.
+95 %-humidity box otherwise. Its ESP32 sits beside it, also outside, on a short
+USB cable. Only the fan leads (and on All the Things the pump leads and the
+HX711 / door-contact cables) go into the chamber, through the wall grommet
+(§7).
 
 ---
 
@@ -259,6 +345,16 @@ populate as many as you bought strips for.
 The tri-spectrum strip's **common wire goes to +12 V**; each colour wire goes to
 its channel's J2 load terminal.
 
+Each strip feed is an **18 AWG red/black pair**: red from a J2 "+" (the
++12 V bus), black to that channel's J2 "−" (the drain). For the tri-spectrum
+strip, run the pair's red to the common wire and its black to the BLUE wire,
+then one more 18 AWG conductor per extra colour wire (RED → CH2 "−", GREEN →
+CH3 "−"). Solder each joint at the strip and seal it with **adhesive-lined
+heat-shrink** — the chamber runs at 85–95 % RH. The lighting board's own feed
+from the WAGO is fused at **5 A** (Recommended) or **7.5 A** (All the Things),
+and its ESP32's GND goes to J1 "−" exactly like the relay board's (the common
+ground, §5).
+
 - **Recommended** wires channels 0 and 1: the white strip, and only the strip's
   BLUE wire. **Insulate the red and green wires** (heat-shrink each end) until
   you add those channels — you can wire them later **without re-flashing**.
@@ -266,25 +362,139 @@ its channel's J2 load terminal.
 
 ---
 
-## 7. Power
+## 7. Power and cabling
 
-- **12 V loads** (fans, LED strips, pump) run from the 12 V brick through the
-  5.5 × 2.5 mm DC pigtail into the switch boards' +12 V / GND buses (≥ 18 AWG
-  bus wire). Tie each ESP32's GND to that GND bus — the gate signal is
-  referenced to it.
-  - **Recommended:** Facmogu AL-1250, 12 V 5 A (60 W). Keep the load
-    **≤ ~4 A** continuous.
-  - **All the Things:** Facmogu AL-12100, 12 V 10 A (120 W). Keep the load
-    **≤ ~8 A** continuous.
-  - The fans draw little; the LED strips are the load. **Cut the strips to
-    closet length** at their marked cut points: a full white roll is ~40–50 W
-    (3.3–4.2 A) and a full tri-spectrum reel ~72 W (6 A with every channel on).
-  - Use a 2.5 mm female pigtail: a 5.5 × 2.1 jack makes spring-only contact
-    that heats up at several amps.
-- **5 V logic:** each ESP32 node gets its own UL-listed 5 V USB cube and a
-  USB-A to USB-C data cable; each camera gets a cube and a USB-A to micro-USB
-  cable into its ESP32-CAM-MB (the camera needs ≥ 1 A and browns out on weak
-  computer ports). Keep chargers and plugs outside the humid chamber.
+Mains, every supply and charger, the Pi, the smart plugs, the WAGO connectors,
+the fuse holders and both switch boards stay **outside** the chamber. Only
+sensors, cameras, the scale, the door contact and 12 V loads go in, and every
+cable enters through a rubber grommet in the wall (or the tent's cable port).
+The wiring diagrams draw that boundary.
+
+### Mains: the power strip
+
+One **UL-listed surge-protector power strip** with widely spaced outlets, on a
+shelf outside the chamber and off the floor, feeds everything that plugs into
+the wall:
+
+| On the strip | Bare Bones | Recommended | All the Things |
+|---|---|---|---|
+| Pi 27 W USB-C PSU | 1 | 1 | 1 |
+| 5 V USB charger (one per ESP32 / ESP32-CAM-MB) | 1 | 4 | 6 |
+| 12 V PSU brick | — | 1 | 1 |
+| Tasmota smart plug | 1 | 2 | 4 |
+| **Outlets used → the BOM's strip** | 3 → 6 outlets | 8 → 12 outlets | 12 → 12 outlets + 2 USB-A |
+
+Widely spaced (block-space) outlets matter: the ~51 mm Athom plugs, the 12 V
+brick and the Pi PSU are all wide bodies — on Bare Bones leave the outlet
+beside the smart plug free. All the Things fills all 12 outlets; the strip's
+two USB-A ports can power the relay and lighting nodes instead of two cubes.
+Plug the strip straight into a wall outlet, never into another strip, and keep
+its total under its **15 A** rating: a 1500 W space heater alone is 12.5 A, so
+if the heater and the dehumidifier can run together, give the heater's smart
+plug its own wall outlet.
+
+### 12 V power distribution (Recommended and up)
+
+```
+12 V PSU ── DC barrel pigtail, 5.5 × 2.5 mm, 14 AWG
+              ├─ red ───→ WAGO 221-413 (+12 V split) ─┬─[ 3 A fuse ]─── 18 AWG red ───→ relay board +12 V bus
+              │                                       └─[ 5 A fuse ]─── 18 AWG red ───→ lighting board +12 V bus
+              │                                         (7.5 A on All the Things)
+              └─ black ─→ WAGO 221-415 (GND join) ────┬──────────────── 18 AWG black ─→ relay board GND bus    ← relay ESP32 GND (J1 −)
+                                                      └──────────────── 18 AWG black ─→ lighting board GND bus ← lighting ESP32 GND (J1 −)
+```
+
+1. Push the PSU's barrel plug (centre +) into the **5.5 × 2.5 mm** female
+   pigtail. A 5.5 × 2.1 jack makes spring-only contact that heats up at several
+   amps. Check red = +12 V with the multimeter before anything else.
+2. Land the pigtail's red in a **WAGO 221-413** (3-port) and its black in a
+   **WAGO 221-415** (5-port), both from the BOM's WAGO 221 assortment. Each
+   WAGO is one node: every wire in the 221-413 is +12 V, every wire in the
+   221-415 is GND.
+3. From the 221-413, run **one branch per switch board in 18 AWG red, each
+   through an inline ATC blade-fuse holder** right at the WAGO end: **3 A**
+   for the relay board, **5 A** (Recommended) or **7.5 A** (All the Things)
+   for the lighting board. The holders have no IP rating — they stay outside.
+4. From the 221-415, run one **18 AWG black** branch to each board's GND bus.
+   GND branches are not fused.
+5. Tie each ESP32's GND to its own board's J1 "−" — the **common ground** (§5).
+   It reaches the same node as the 221-415; its spare ports are there if you
+   would rather land the ESP32 GND wires on it directly.
+6. Mount the brick in `power_supply_mount` with two 12" straps cut from the
+   ¾" VELCRO ONE-WRAP roll, zip-tie the runs to the shelf and seal every
+   splice with adhesive-lined heat-shrink.
+
+| +12 V branch | Recommended (12 V 5 A PSU) | All the Things (12 V 10 A PSU) | What it carries |
+|---|---|---|---|
+| Relay board | **3 A** fuse | **3 A** fuse | three NF-A8 fans (~0.25 A together), plus the pump on All the Things |
+| Lighting board | **5 A** fuse | **7.5 A** fuse | the LED strips — the real load |
+
+The fuse protects the wiring, not the load: a pinched strip lead in a wet
+chamber blows it long before an 18 AWG run gets hot.
+
+**Load budget:**
+
+- **Recommended:** Facmogu AL-1250, 12 V 5 A (60 W). Keep the load **≤ ~4 A**
+  continuous.
+- **All the Things:** Facmogu AL-12100, 12 V 10 A (120 W). Keep the load
+  **≤ ~8 A** continuous.
+- The fans draw little; the LED strips are the load. **Cut the strips to
+  closet length** at their marked cut points: a full white roll is ~40–50 W
+  (3.3–4.2 A) and a full tri-spectrum reel ~72 W (6 A with every channel on).
+
+### 5 V: USB power for every board
+
+Each ESP32 node and each camera gets its **own UL-listed 5 V USB charger** on
+the strip and its own data-capable cable (charge-only cables won't flash):
+
+| Board | Where it lives | Cable |
+|---|---|---|
+| Climate node(s) | inside, beside the sensor mount | 6 ft (2 m) USB-A → USB-C, through the grommet |
+| Camera(s), on the ESP32-CAM-MB | inside | 6 ft (2 m) USB-A → micro-USB into the MB, through the grommet |
+| Relay node, lighting node | outside, beside their switch boards | 1 ft USB-A → USB-C |
+
+The camera needs ≥ 1 A and browns out on weak computer ports. Keep every
+charger outside the humid chamber.
+
+### Through the chamber wall
+
+What goes in: the in-chamber boards' USB cables, the fan extensions, the
+18 AWG LED-strip pairs, the humidifier's cord, and on All the Things the pump
+leads, the HX711 and door-contact 22 AWG 4-conductor cables and the Peltier
+cooler's cord. Drill a **7/8" or 1" hole** for one rubber grommet from the
+BOM's kit (or use the tent's cable port), pass the USB overmoulds and 4-pin fan
+plugs through **before** you seat the grommet, leave a drip loop below it on
+the outside so condensation runs off before it reaches a connector, and
+zip-tie each bundle on both sides.
+
+### Cables, connectors and consumables
+
+Every line below is in the BOM (the Builder page, or
+`server/app/builder/hardware_guides.py`) — exact parts, pack sizes and prices
+live there. This is where each one goes:
+
+| BOM line | Where it is used | Tiers |
+|---|---|---|
+| Surge-protector power strip | feeds every mains device, outside the chamber: 6 outlets / 12 outlets / 12 outlets + 2 USB-A | all |
+| USB wall chargers, 5 V | one per ESP32 and per ESP32-CAM-MB | all |
+| USB-A → USB-C 6 ft; USB-A → micro-USB 6 ft (2-pack); USB-A → USB-C 1 ft (3-pack) | climate node(s); cameras' MBs; relay + lighting nodes | 6 ft USB-C all; the others Recommended up |
+| STEMMA QT cables, Adafruit 4397 + 4210 | ESP32 header → first sensor, then sensor → sensor (§4) | all |
+| DC barrel pigtail, 5.5 × 2.5 mm, 14 AWG | 12 V PSU → the two WAGOs | Recommended, All the Things |
+| WAGO 221 lever connectors (assortment) | 221-413 splits the +12 V, 221-415 joins GND | Recommended, All the Things |
+| Inline ATC/ATO fuse holders (14 AWG) + ATC fuse assortment | one per +12 V branch: 3 A relay, 5 A / 7.5 A lighting | Recommended, All the Things |
+| 18 AWG 2-conductor red/black wire | every 12 V run: WAGO → each board; J2 → each LED strip and the pump | Recommended, All the Things |
+| Noctua NA-SEC3 4-pin fan extensions | one per fan, after its bundled 30 cm extension (§5) | Recommended, All the Things |
+| 22 AWG stranded hookup wire | gate / signal / GND jumpers on the boards, ESP32 GND → J1 "−", short splices | Recommended, All the Things |
+| Dupont jumpers + breadboard kit | ESP32 header → J1; bench bring-up before soldering | Recommended, All the Things |
+| 22 AWG 4-conductor cable | relay node → HX711 (red 3V3, black GND, yellow DOUT, white SCK); relay node → door contact (§11) | All the Things |
+| Food-grade silicone tubing, 2 × 4 mm | pump → substrate line (§11) | All the Things |
+| Adhesive-lined 3:1 heat-shrink | every splice, every LED-strip joint, unused fan and strip wires | Recommended, All the Things |
+| UV zip ties (2.5 / 3.6 / 4.8 mm) | every cable run; the printed mounts' tie slots | all |
+| 18" (457 mm) UV zip ties, 4.8 mm wide | one per `fan_duct`, round the 4" duct (a 14" tie is too short to lock) | Recommended, All the Things |
+| VELCRO ONE-WRAP ¾" roll | two 12" straps for `power_supply_mount`; cable bundling | Recommended, All the Things |
+| Rubber grommet kit | the 7/8" or 1" pass-through in the chamber wall | all |
+| Heat-set inserts + socket-head screw kits | the printed enclosures (§2, `models/README.md`) | all |
+| Lead-free solder, 0.8 mm | switch boards, strip leads, splices | Recommended, All the Things |
 
 ---
 
@@ -473,14 +683,19 @@ plug — the plugs are not UL/ETL listed.
 
 ## 11. All the Things extras
 
-**Load cell (harvest weight).** HX711 (Adafruit 5974) to the **relay** node;
-leave the board's rate switch at 10 SPS:
+The scale and the door contact sit in or on the chamber, but both wire back to
+the **relay** node outside it. Each gets its own run of **22 AWG 4-conductor
+cable** through the wall grommet (§7); strip, solder and heat-shrink the ends.
 
-| ESP32 | → | HX711 |
-|---|---|---|
-| GPIO 32 | → | DOUT |
-| GPIO 33 | → | SCK |
-| 3V3 / GND | → | VIN / GND |
+**Load cell (harvest weight).** HX711 (Adafruit 5974) to the relay node over
+one 22 AWG 4-conductor cable; leave the board's rate switch at 10 SPS:
+
+| ESP32 (relay node) | → | 22 AWG 4-conductor | → | HX711 |
+|---|---|---|---|---|
+| 3V3 | → | red | → | VIN / VCC |
+| GND | → | black | → | GND |
+| GPIO 32 | ← | yellow | ← | DOUT |
+| GPIO 33 | → | white | → | SCK |
 
 Load cell (Adafruit 4541) red → E+, black → E−, the signal pair → A−/A+ (swap
 A−/A+ if the weight reads negative). Mount it in `hx711_scale` under the grow
@@ -494,7 +709,9 @@ node reports raw counts (`scale_raw`) instead of grams; after, `weight_g` rides
 in telemetry.
 
 **Door contact (reed).** The BOM part is a wired alarm door contact (weideer
-MC-31B) with **COM / NO / NC** screw terminals; supply your own hookup wire.
+MC-31B) with **COM / NO / NC** screw terminals. Run a second 22 AWG
+4-conductor cable from the relay node to it; two conductors are used and two
+are spare.
 
 - **COM → GPIO 35**, the alarm **NC** terminal → **GND**. NC is closed while
   the magnet is present, i.e. with the door shut — check continuity with a
@@ -504,7 +721,8 @@ MC-31B) with **COM / NO / NC** screw terminals; supply your own hookup wire.
 > the ESP32 are input-only and have **no internal pull-up** — the usual
 > `INPUT_PULLUP` trick does not exist on these pins. Skip the resistor and the
 > input floats whenever the door is open, and you will get phantom door events.
-> (A 10 kΩ is in the parts kit.)
+> (A 10 kΩ is in the parts kit.) Solder it at the relay end, between the
+> ESP32's 3V3 and GPIO 35, not out at the door.
 
 Tick **Door reed switch** in the relay node's setup portal. Wired it to the
 **NO** terminal instead? Either move the lead to NC, or tick **"Door contact
@@ -518,11 +736,14 @@ with no reboot and no false door event.
 
 **Peristaltic pump.** Adafruit 1150 (12 V, ~100 mL/min) to the relay node's
 **aux** channel (GPIO 14) through an IRLZ44N + UF4007, exactly like a fan,
-mounted in `pump_bracket` with its tube ports up or sideways. The included
-silicone tubing is **not** food-safe or sterile: sterilize it and use
-FDA-grade silicone tubing on the substrate line. It is low-pressure — good for
-drip hydration, it may not atomize through a misting nozzle. `aux` stops
-itself after 60 s by default.
+mounted in `pump_bracket` with its tube ports up or sideways. Its leads run in
+the **18 AWG red/black pair** like every 12 V run: red → J2 "+", black → J2
+"−" (the UF4007 across them, band to +12 V). The included silicone tubing is
+**not** food-safe or sterile: sterilize it and use the BOM's **food-grade
+silicone tubing** (2 mm ID × 4 mm OD — the 1150's barb size has changed
+between batches, so measure yours first) on the substrate line. It is
+low-pressure — good for drip hydration, it may not atomize through a misting
+nozzle. `aux` stops itself after 60 s by default.
 
 **Cameras.** Front-facing at substrate level angled slightly up (catches
 pinning), and top-down (`cam-02`) for colonization coverage. **15–30 cm** from
@@ -554,25 +775,32 @@ The single most common build mistake is a perfectly-wired sensor in the wrong pl
 Work down this list. Each step proves the one before it.
 
 1. **Pi** — dashboard loads at `http://<pi-ip>:3001`.
-2. **Nodes appear** — each provisioned node shows on the hardware panel within
+2. **12 V wiring, before it is powered** (Recommended and up) — with the
+   12 V brick unplugged, meter for continuity: each ESP32's GND ↔ its board's
+   GND bus ↔ the GND WAGO (the common ground), and **no** continuity between
+   the +12 V WAGO and the GND WAGO. Check each inline fuse is seated (3 A
+   relay, 5 A / 7.5 A lighting). Then plug the brick in and read ~12 V on each
+   board's +12 V bus.
+3. **Nodes appear** — each provisioned node shows on the hardware panel within
    ~30 s of boot. If not: wrong Pi address, wrong WiFi, or a broker login that
    doesn't match the node id.
-3. **Live telemetry** — temperature and humidity update. CO₂ needs a **5-minute
+4. **Live telemetry** — temperature and humidity update. CO₂ needs a **5-minute
    warm-up** before it reads true; ignore the first few minutes.
-4. **Sensors you enabled are actually reporting.** Check the node's health
+5. **Sensors you enabled are actually reporting.** Check the node's health
    panel: it publishes an `expected_missing` list, and an enabled MH-Z19C or
    HX711 that isn't delivering is listed **and** raises a `sensor_failure`
    alert. **A declared-but-missing sensor is an alert, not silence.** The reed
    switch is the exception — electrically, an unwired switch looks like a shut
-   door — so prove it in step 8.
-5. **Actuators** — toggle each channel from the UI and watch the fan spin. A
+   door — so prove it in step 9.
+6. **Actuators** — toggle each channel from the UI and watch the fan spin. A
    channel that does nothing is usually a gate wire on the wrong GPIO or a
-   missing common ground; one that twitches at boot is a missing 10 kΩ
+   missing common ground; a whole board that does nothing is its blown or
+   unseated inline fuse; one that twitches at boot is a missing 10 kΩ
    pull-down.
-6. **Camera** — frames appear on the Vision page within 15 minutes of the cam
+7. **Camera** — frames appear on the Vision page within 15 minutes of the cam
    booting.
-7. **Scale** — tare, then place a known mass. It should read within a gram.
-8. **Door** — open the door; `door_open` flips, and flips back when you shut
+8. **Scale** — tare, then place a known mass. It should read within a gram.
+9. **Door** — open the door; `door_open` flips, and flips back when you shut
    it. If it flickers while the door is **OPEN**, the external 10 kΩ pull-up
    from GPIO 35 to 3V3 is missing (a shut door holds the pin at GND, so it
    looks stable either way). If it reads open with the door shut, the contact
@@ -591,6 +819,8 @@ Work down this list. Each step proves the one before it.
 | S3 node: no sensors, no channels | It was wired from the WROOM-32 diagrams, or flashed with the wrong env. Use the §8a pin map; `node_esp32s3_n32r16v` for the N32R16V board. |
 | CO₂ reads a flat 400 ppm | Still warming up (5 min), or it needs a forced recalibration in fresh outdoor air (`cmd/config {"calibrate_co2": 420}`, 400–2000 ppm). |
 | Fan twitches on at boot | Missing 10 kΩ gate pull-down. |
+| No channel on a board ever switches | The common ground is missing — run the ESP32's GND to that board's J1 "−" (§5). Or the board's inline fuse has blown / isn't seated: check it and look for a pinched or shorted lead on that branch before you replace it. |
+| One fan never spins, the rest do | Its NA-SEC3 extension landed the wrong wires in J2 — go by pin position, not colour: pin 1 (GND) → J2 "−", pin 2 (+12 V) → J2 "+"; the tach and PWM wires stay unused. |
 | MOSFET died | Missing flyback diode (UF4007) across the inductive load. |
 | Pump / aux load stops after a minute | The `aux` channel's 60 s max-on backstop — raise it with `cmd/config {"max_on_sec": {"aux": N}}` (§5). |
 | Door sensor flickers while the door is open | Missing external 10 kΩ pull-up on GPIO 35. |

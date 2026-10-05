@@ -86,6 +86,67 @@ def _cached_list(directory: Path, suffix: str, cache: dict) -> list[dict]:
     return cache["data"]
 
 
+# Public GitHub location of the model sources (shown as "browse repo").
+MODELS_REPO_URL = "https://github.com/59psi/SporePrint/tree/main/models"
+_MODEL_DESCRIPTION_MAX = 240
+
+
+def _model_header(path: Path) -> tuple[str, str]:
+    """(title, description) from a model's leading comment block.
+
+    Every model opens with `// SporePrint <Title>` followed by a one-paragraph
+    summary that ends at the first blank `//` line. Reading it from the file
+    keeps the Builder's Models list from drifting out of date (it used to be a
+    hand-maintained list in the UI that still described the old designs).
+    """
+    title, desc_lines = path.stem, []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            lines = [next(fh, "") for _ in range(16)]
+    except OSError:
+        return title, ""
+    comments = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped.startswith("//"):
+            break
+        comments.append(stripped[2:].strip())
+    if comments and comments[0]:
+        title = re.sub(r"^SporePrint\s+", "", comments[0]) or title
+    for text in comments[1:]:
+        if not text or text.startswith("─") or text.startswith("──"):
+            break
+        desc_lines.append(text)
+    description = " ".join(" ".join(desc_lines).split())
+    if len(description) > _MODEL_DESCRIPTION_MAX:
+        cut = description[:_MODEL_DESCRIPTION_MAX]
+        end = cut.rfind(". ")
+        description = cut[: end + 1] if end > 80 else cut.rstrip() + "…"
+    return title, description
+
+
+def _list_models() -> list[dict]:
+    now = time.time()
+    if now - _models_cache["ts"] < _CACHE_TTL and _models_cache["data"]:
+        return _models_cache["data"]
+    data = []
+    if _MODELS_DIR.exists():
+        for f in sorted(_MODELS_DIR.glob("*.scad")):
+            title, description = _model_header(f)
+            data.append({
+                "filename": f.name,
+                "size_bytes": f.stat().st_size,
+                # Self-contained download: lib/ includes are inlined.
+                "url": f"/api/builder/models/{f.name}",
+                "title": title,
+                "description": description,
+                "source_url": f"{MODELS_REPO_URL}/{f.name}".replace("/tree/", "/blob/"),
+            })
+    _models_cache["data"] = data
+    _models_cache["ts"] = now
+    return data
+
+
 def _bundleable(f: Path) -> bool:
     return f.suffix in _BUNDLE_SUFFIXES or f.name in _BUNDLE_NAMES
 
@@ -309,8 +370,12 @@ def _build_models_bundle() -> bytes:
 @router.get("/models")
 async def list_models():
     """List available OpenSCAD 3D print model files (top level only — the
-    shared helpers under models/lib/ are not printable models)."""
-    return _cached_list(_MODELS_DIR, ".scad", _models_cache)
+    shared helpers under models/lib/ are not printable models).
+
+    Each entry carries `title` and `description` read from the model's own
+    header comment, `url` (self-contained download with lib/ inlined) and
+    `source_url` (the file on GitHub)."""
+    return _list_models()
 
 
 @router.get("/models-bundle.zip")

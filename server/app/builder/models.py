@@ -31,6 +31,11 @@ class Component(BaseModel):
     # covers `quantity` and the tier cost counts pack_price once instead of
     # price_approx x quantity. Empty = bought singly. Additive API field.
     pack_price: str = ""
+    # One per installation rather than per chamber: the Pi side (Pi, its PSU,
+    # cooler, microSD) and multi-use packs/spools (wire, connectors, inserts,
+    # screws, consumables). The Builder's "chambers to build" multiplier
+    # leaves these at their own quantity. Additive API field.
+    shared: bool = False
 
     def line_cost(self) -> float:
         """What this BOM line really costs to buy, in dollars."""

@@ -1,5 +1,6 @@
-// SporePrint ESP32 DevKit Case — two printed pieces (BASE tub + LID) joined
-// by 4 x M3 brass heat-set inserts.
+// SporePrint ESP32 DevKit Case
+// Enclosure for the climate / relay / lighting node's 38-pin ESP32 DevKit:
+// two printed pieces (BASE tub + LID) joined by 4 x M3 brass heat-set inserts.
 //
 // ── Boards it fits  (-D 'preset="..."') ──────────────────────────────────
 //  narrow_usbc  DEFAULT. ESP32-WROOM-32 38-pin "narrow" DevKit, USB-C +

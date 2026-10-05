@@ -90,7 +90,7 @@ Whether you are growing oyster mushrooms in a closet or managing multiple fruiti
 - **Weather-predictive alerts** up to 72 hours in advance
 - **Unit preferences** -- Fahrenheit/Celsius, grams/ounces throughout the UI
 - **10 OpenSCAD 3D-printable enclosure models** -- parametric, fit-checked against sourced part drawings, joined with brass heat-set inserts
-- **5 SVG diagrams** -- a colour-coded wiring diagram per hardware tier, a whole-system overview and an architecture overview
+- **5 SVG diagrams** -- a colour-coded wiring diagram per hardware tier (inside vs outside the chamber, power strip, fused 12 V distribution, wire gauges, the common ground), a whole-system overview and an architecture overview
 
 ---
 
@@ -201,7 +201,11 @@ server refuses to start on a non-empty key it does not know, such as `TZ` or
 
 The dashboard source is not in this repo: it lives in the parent monorepo
 (`frontend/packages/pi-ui`), and this repo ships the pre-built bundle in
-`ui/dist`, which the `ui` container serves.
+`ui/dist`, which the `ui` container serves. Its Builder page carries a static
+copy of the hardware tiers, 3D-model list and wiring-diagram links;
+`scripts/sync_ui_builder_data.py` rewrites that copy from the server's BOM
+(`cd server && uv run python ../scripts/sync_ui_builder_data.py`), and
+`server/tests/test_ui_builder_sync.py` fails when it is stale.
 
 ### ESP32 Firmware
 
@@ -331,9 +335,9 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 
 ### Hardware Builder
 
-- **3 hardware tiers** -- Bare Bones (~$205), Recommended (~$485), All the Things (~$660)
-- **Shopping lists** -- complete parts lists with purchase links, re-checked live 2026-09-27
-- **Wiring diagrams** -- color-coded SVG diagrams for each tier
+- **3 hardware tiers** -- Bare Bones (~$290), Recommended (~$745), All the Things (~$960); of that, ~$72 / ~$226 / ~$254 is reusable kits and spools (wire, connectors, fuses, heat-shrink, ties, inserts, screws, solder) that cover more than one chamber
+- **Shopping lists** -- complete parts lists with purchase links, re-checked live 2026-09-27, including the cabling and consumables (surge strip, pigtail, WAGO connectors, inline fuses, 18 / 22 AWG wire, fan extensions, heat-shrink, grommets, inserts, screws)
+- **Wiring diagrams** -- color-coded SVG diagrams for each tier, served by the Pi at `/api/builder/diagrams/<file>.svg`
 - **Step-by-step assembly** -- guides for building sensor and actuator nodes
 - **Claude assistant** -- AI-powered answers to custom hardware questions
 
@@ -549,16 +553,17 @@ Species can also be imported as custom JSON profiles for varieties not in the bu
 | **Wired door contact (reed)** | Door-open telemetry (All the Things) |
 | **IRLZ44N MOSFET** | Low-side switch for 12 V fans, pump and LED strips (4 channels per node, 25 kHz PWM) |
 | **Shelly / Tasmota plugs** | WiFi smart plugs for humidifier, dehumidifier, heater and cooler |
+| **Power + cabling** | UL-listed surge strip outside the chamber; 12 V PSU → 14 AWG pigtail → WAGO 221 → inline fuse per branch (relay 3 A, lighting 5 A / 7.5 A) → switch boards on 18 AWG; each ESP32's GND tied to its board's GND bus; USB 5 V per board (6 ft cables into the chamber) |
 
 ### Hardware Tiers
 
 | Tier | Cost | What You Get |
 |------|------|--------------|
-| **Bare Bones** | ~$205 | Pi 5 + 1 climate node (SHT31-D + BH1750) + 1 Tasmota plug (humidifier) |
-| **Recommended** | ~$485 | + SCD41 CO₂, relay node (3 fans + aux), lighting node (white + 450 nm blue), 1 camera, 2 plugs |
-| **All the Things** | ~$660 | + 2nd climate node, all 4 light channels (660 nm red, 730 nm far-red), HX711 scale, door contact, peristaltic pump, 4 plugs, 2nd camera |
+| **Bare Bones** | ~$290 | Pi 5 + 1 climate node (SHT31-D + BH1750 on a STEMMA QT chain) + 1 Tasmota plug (humidifier), 6-outlet surge strip, 6 ft USB run through a grommet |
+| **Recommended** | ~$745 | + SCD41 CO₂, relay node (3 fans + aux), lighting node (white + 450 nm blue), 1 camera, 2 plugs, 12 V 5 A PSU with fused WAGO distribution (3 A relay / 5 A lighting), 12-outlet strip |
+| **All the Things** | ~$960 | + 2nd climate node, all 4 light channels (660 nm red, 730 nm far-red), HX711 scale, door contact, peristaltic pump, 4 plugs, 2nd camera, 12 V 10 A PSU (3 A / 7.5 A fuses), 12-outlet + 2 USB-A strip |
 
-Costs are the sum of the Builder's parts list (`server/app/builder/hardware_guides.py`), re-checked 2026-09-27. They leave out the tri-spectrum strip's shipping from China and import duty (~$10+), and the heat-set inserts and screws for the printed enclosures (listed per tier in the build guide).
+Costs are the sum of the Builder's parts list (`server/app/builder/hardware_guides.py`), re-checked 2026-09-27, and include the cabling, consumables, heat-set inserts and screws. Of that, ~$72 / ~$226 / ~$254 is reusable kits and spools (wire, WAGO connectors, fuses, heat-shrink, zip ties, VELCRO, grommets, inserts, screws, solder, the Dupont and breadboard kits) that cover more than one chamber — the Builder page's chamber count leaves those shared lines at one. They leave out the tri-spectrum strip's shipping from China and import duty (~$10+) and your tools (listed in the build guide).
 
 The built-in Hardware Builder provides complete shopping lists with purchase links, color-coded SVG wiring diagrams (one per tier + a system overview), step-by-step assembly instructions for each tier, and 10 parametric OpenSCAD 3D-printable enclosure models (Pi case, ESP32 case, sensor mount + bracket, camera mount, HX711 load-cell scale, peristaltic pump bracket, relay/lighting switch board, power supply mount, fan duct).
 
@@ -695,7 +700,8 @@ docker compose config --quiet
 ```
 
 The dashboard is built in the parent monorepo (`frontend/packages/pi-ui`) and
-committed here as `ui/dist`.
+committed here as `ui/dist`. After a BOM or model change, re-sync its Builder
+data with `scripts/sync_ui_builder_data.py` (see Quick Start).
 
 ### Dependencies
 

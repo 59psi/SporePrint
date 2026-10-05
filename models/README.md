@@ -558,8 +558,9 @@ clearance per side):
   C13 plugs and cord boots.
 
 **Hardware:**
-- 2 × 3/4" × 12" (19–20 × 300 mm) hook-and-loop straps. The render echoes
-  the length each preset needs.
+- 2 × 3/4" × 12" (19–20 × 300 mm) hook-and-loop straps — cut them from the
+  BOM's VELCRO ONE-WRAP 3/4" roll. The render echoes the length each preset
+  needs.
 - Wall mounting, pick one:
   - 4 × #8/M4 flat-head countersunk screws ≥ 25 mm (+ anchors)
   - 2 × #8/M4 pan-head screws (head ≤ Ø8.5 × 3.1) in the keyholes: set the
@@ -602,7 +603,8 @@ estimates. If your inlet sits low near a corner, set `lip_h=3`.
 - 4 × M4 × 35 screws, socket or button head, A2 stainless. M4 × 30 and
   M4 × 40 also fit.
 - Duct retention, pick one:
-  - 1 zip tie ≥ 360 mm (14") and ≤ 4.8 mm wide through the finger tunnels
+  - 1 zip tie, 16" (400 mm) or longer — the BOM buys 18" (457 mm) — and ≤ 4.8 mm wide, through
+    the finger tunnels (the BOM's 14" duct ties)
   - a 4" worm-drive hose clamp
 - Noctua's bundled self-tappers and anti-vibration mounts are **not** used.
 
@@ -626,7 +628,9 @@ frame clears M4). Real flex-duct OD varies with the wire helix; at exactly
 All insert geometry comes from [`lib/sp_inserts.scad`](lib/sp_inserts.scad).
 The inserts are standard knurled brass inserts as sold by **ruthex** and
 **CNC Kitchen** (and their clones); the M2.5 size is ruthex's RX-M2.5x5.7
-(CNC Kitchen's M2.5 is × 4). What to buy is under the
+(CNC Kitchen's M2.5 is × 4). Amazon US doesn't carry RX-M2.5x5.7, so the BOM
+pins uxcell's ~4.5 mm OD × 6 mm M2.5 inserts, which press flush in the same
+Ø3.6 × 6.7 pockets. What to buy is under the
 [shopping list](#shopping-list-inserts-and-screws). Each pocket is the
 vendor's pilot diameter plus 1.0 mm of extra depth, so displaced plastic has
 somewhere to go. Each pocket mouth has a 0.5 mm lead-in chamfer so the insert self-centres.
@@ -708,40 +712,54 @@ Quantities are **per printed part at its default preset**.
 | `power_supply_mount` | — | — (straps and wall screws only) |
 | `fan_duct` | 4 × M4×8.1 | 4 × M4×35 (A2 stainless) |
 
-**Totals.** The "All the Things" column uses the current BOM's counts:
-- 1 Pi case
-- 4 ESP32 cases (2 climate, relay and lighting nodes)
-- 2 sensor mounts + 2 brackets
-- 2 camera mounts
-- 1 scale and 1 pump bracket
-- 2 relay/lighting boards in screw mode
-- 1 PSU mount
-- 3 fan ducts
+**Totals per tier.** Each tier column counts the parts its BOM prints, at
+the default presets (the same counts as the Builder's setup steps):
+- **Bare Bones:** 1 Pi case, 1 ESP32 case, 1 sensor mount + 1 bracket.
+- **Recommended:** 1 Pi case, 3 ESP32 cases (climate, relay, lighting),
+  1 sensor mount + 1 bracket, 1 camera mount, 2 relay/lighting boards in
+  screw mode, 1 PSU mount, 3 fan ducts.
+- **All the Things:** 1 Pi case, 4 ESP32 cases (2 climate, relay, lighting),
+  2 sensor mounts + 2 brackets, 2 camera mounts, 1 scale, 1 pump bracket,
+  2 relay/lighting boards in screw mode, 1 PSU mount, 3 fan ducts.
 
-Adjust the counts if you print more or fewer.
+Adjust the counts if you print more or fewer (one fan duct per fan you duct).
 
-| Item | One of each model | "All the Things" build |
-|------|-------------------|------------------------|
-| M2.5 × 5.7 insert | 14 | 20 |
-| M3 × 5.7 insert | 18 | 40 |
-| M4 × 8.1 insert | 8 | 16 |
-| M5 × 9.5 insert | 1 | 2 |
-| M2.5 × 6 SHCS | 10 | 16 |
-| M2.5 × 8 SHCS (or pan head) | 2 | 2 |
-| M2.5 × 10 SHCS | 2 | 2 |
-| M3 × 6 SHCS | 14 | 36 |
-| M3 × 16 SHCS | 4 | 4 |
-| M4 × 8 set screw | 4 | 4 |
-| M4 × 16 SHCS | 2 | 2 |
-| M4 × 25 SHCS | 2 | 2 |
-| M4 × 35 SHCS / button head | 4 | 12 |
-| M5 × 16 SHCS | 1 | 2 |
-| M4 washer, DIN 125 | 4 | 4 |
+| Item | One of each model | Bare Bones | Recommended | All the Things |
+|------|-------------------|------------|-------------|----------------|
+| M2.5 × 5.7 insert | 14 | 10 | 10 | 20 |
+| M3 × 5.7 insert | 18 | 14 | 26 | 40 |
+| M4 × 8.1 insert | 8 | — | 12 | 16 |
+| M5 × 9.5 insert | 1 | — | 1 | 2 |
+| M2.5 × 6 SHCS | 10 | 10 | 10 | 16 |
+| M2.5 × 8 SHCS (or pan head) | 2 | — | — | 2 |
+| M2.5 × 10 SHCS | 2 | — | — | 2 |
+| M3 × 6 SHCS | 14 | 10 | 22 | 36 |
+| M3 × 16 SHCS | 4 | 4 | 4 | 4 |
+| M4 × 8 set screw | 4 | — | — | 4 |
+| M4 × 16 SHCS | 2 | — | — | 2 |
+| M4 × 25 SHCS | 2 | — | — | 2 |
+| M4 × 35 SHCS / button head | 4 | — | 12 | 12 |
+| M5 × 16 SHCS | 1 | — | 1 | 2 |
+| M4 washer, DIN 125 | 4 | — | — | 4 |
 
-**Where to buy:** the **ruthex M2/M3/M4/M5 assortment** (Amazon B08K1BVGN9,
-~$30) **+ a separate ruthex RX-M2.5x5.7 pack** — the assortment has no M2.5.
-CNC Kitchen's M3/M4/M5 inserts match the pockets too, but CNC Kitchen's M2.5
-is M2.5 × 4, too short for the M2.5 × 5.7 pockets.
+**Where to buy** (all of these are lines in each tier's BOM, in the tier
+price):
+- **Inserts:** the **ruthex M2/M3/M4/M5 assortment** (Amazon B08K1BVGN9, ~$30)
+  for Recommended and All the Things; Bare Bones, which needs only M3 and
+  M2.5, takes a ruthex RX-M3x5.7 100-pack (B08BCRZZS3) instead. Every tier
+  adds **a separate M2.5 × 5.7 pack** — the assortment has no M2.5. The exact
+  design part is ruthex RX-M2.5x5.7 (sold by 3DJake, not on Amazon US); the
+  BOM pins uxcell's ~4.5 mm OD × 6 mm M2.5 inserts (B0CT8V76RL), which press
+  flush in the same pockets. Avoid 3.5 mm OD × 4 mm M2.5 inserts (they spin).
+  CNC Kitchen's M3/M4/M5 inserts match the pockets too, but CNC Kitchen's
+  M2.5 is M2.5 × 4, too short for the M2.5 × 5.7 pockets.
+- **Screws** (304 stainless): an M2.5 socket-head kit (× 6 / 8 / 10 / 12),
+  100 × M3 × 6, an M2.5–M8 socket-head kit (the M3 × 16, M4 × 16 and
+  M5 × 16), an M4 kit (M4 × 25 / 35 and DIN 125 washers; Recommended up) and
+  M4 × 8 cup-point set screws (All the Things).
+- **Mounting extras:** UV zip ties in 2.5 / 3.6 / 4.8 mm widths, 18" (457 mm)
+  duct ties for the fan ducts and the VELCRO ONE-WRAP 3/4" roll for the PSU
+  mount (Recommended up).
 
 Preset swaps:
 
@@ -768,9 +786,10 @@ Preset swaps:
 - `pump_bracket`: 4 × M3×12 + nuts or #4 × ½" wood screws, plus 1–4 zip
   ties ≤ 3.6 mm.
 - `relay_board_mount`: 4 × M3×16 pan head or #4 × ¾" wood screws.
-- `power_supply_mount`: 2 × 3/4" × 12" hook-and-loop straps, plus
+- `power_supply_mount`: 2 × 3/4" × 12" hook-and-loop straps (cut from the
+  VELCRO roll), plus
   4 × #8/M4 flat-head ≥ 25 mm or 2 × #8/M4 pan-head.
-- `fan_duct`: 1 zip tie ≥ 360 mm or a 4" hose clamp.
+- `fan_duct`: 1 × 18" (457 mm) zip tie (≥ 16"; a 14" tie is too short) or a 4" hose clamp.
 
 ## Print settings
 

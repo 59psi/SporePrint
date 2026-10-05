@@ -442,17 +442,223 @@ def test_switch_board_heatsinks_and_diodes_match_the_bom():
             f"{name}: the lighting board takes no flyback diodes")
 
 
+_CNC_M25 = re.compile(r"CNC Kitchen's M2\.5 (insert )?is (M2\.5 )?[×x] ?4")
+
+
+def _line(tier, prefix):
+    return next((c for c in tier.components if c.name.startswith(prefix)), None)
+
+
 def test_insert_sourcing_is_one_recommendation():
     # ruthex's M2/M3/M4/M5 box has no M2.5; CNC Kitchen's M2.5 is x 4, not 5.7.
-    sources = {GUIDE.name: _read(GUIDE), MODELS_README.name: _read(MODELS_README)}
-    for tier in TIERS:
-        sources[tier.id] = "\n".join(tier.setup_steps)
-    for name, text in sources.items():
+    # The docs give the one recommendation...
+    for name, text in ((GUIDE.name, _read(GUIDE)), (MODELS_README.name, _read(MODELS_README))):
         flat = re.sub(r"\s+", " ", text)
-        assert "B08K1BVGN9" in flat and "RX-M2.5x5.7 pack" in flat, name
-        assert re.search(r"CNC Kitchen's M2\.5 (insert )?is (M2\.5 )?[×x] ?4", flat), name
+        assert "B08K1BVGN9" in flat, f"{name} no longer names the ruthex M2-M5 assortment"
+        assert re.search(r"separate M2\.5 [×x] 5\.7 pack", flat), f"{name}: the assortment has no M2.5"
+        assert "RX-M2.5x5.7" in flat and _CNC_M25.search(flat), name
         assert "CNC Kitchen standard (M2.5" not in flat, name
         assert "covers everything except the single M5" not in flat, name
+    # ...and each tier buys it as real BOM lines (no longer setup-step prose).
+    for tier in TIERS:
+        if tier is TIERS[0]:  # Bare Bones needs only M3 + M2.5 inserts
+            m3 = _line(tier, "ruthex Heat-Set Inserts M3 x 5.7")
+            assert m3 and "B08BCRZZS3" in m3.url, tier.id
+        else:
+            kit = _line(tier, "ruthex Heat-Set Insert Assortment M2 / M3 / M4 / M5")
+            assert kit and "B08K1BVGN9" in kit.url, tier.id
+        m25 = _line(tier, "Heat-Set Inserts M2.5")
+        assert m25, f"{tier.id} has no separate M2.5 insert line"
+        assert "RX-M2.5x5.7" in m25.notes and re.search(r"CNC Kitchen's M2\.5 x 4", m25.notes), tier.id
+        assert _CNC_M25.search(re.sub(r"\s+", " ", "\n".join(tier.setup_steps))), tier.id
+
+
+# ── Cabling standard (2026-10 cabling pass) ──────────────────────────
+
+_PI_SIDE = ("Raspberry Pi", "microSD")
+
+
+def _reusable_kits(tier) -> str:
+    """The spools / assortments / kits share of a tier's price: every
+    `shared` line except the Pi side (one per installation, not a kit)."""
+    total = sum(c.line_cost() for c in tier.components
+                if c.shared and not c.name.startswith(_PI_SIDE))
+    return f"~${round(total)}"
+
+
+@pytest.mark.parametrize("doc", [README, GUIDE], ids=lambda p: p.name)
+def test_reusable_kit_share_matches_the_bom(doc):
+    kits = [_reusable_kits(t) for t in TIERS]
+    flat = re.sub(r"\s+", " ", _read(doc))
+    if doc is GUIDE:
+        assert f"| Reusable kits in the price | {' | '.join(kits)} |" in flat, kits
+    else:
+        assert " / ".join(kits) in flat, f"README should state the reusable kits as {kits}"
+    assert "more than one chamber" in flat
+
+
+def _fuses(tier) -> tuple[str, str]:
+    """(relay, lighting) inline fuse ratings from the BOM's power rows."""
+    rows = [w.to_device for w in tier.wiring if w.to_device.startswith("Inline fuse")]
+    relay = next(re.search(r"Inline fuse ([\d.]+ A)", r).group(1) for r in rows if "relay" in r)
+    lighting = next(re.search(r"Inline fuse ([\d.]+ A)", r).group(1) for r in rows if "lighting" in r)
+    return relay, lighting
+
+
+def _has_fuse(labels: str, rating: str) -> bool:
+    return bool(re.search(rf"(?<![\d.]){re.escape(rating)} fuse", labels))
+
+
+@pytest.mark.parametrize("tier, svg_name", [
+    (TIER_RECOMMENDED, "wiring-tier2-recommended.svg"),
+    (TIER_ALL, "wiring-tier3-all-the-things.svg"),
+])
+def test_fuse_ratings_match_the_bom(tier, svg_name):
+    relay, lighting = _fuses(tier)
+    labels = " | ".join(_svg_labels(DOCS / svg_name))
+    assert _has_fuse(labels, relay) and _has_fuse(labels, lighting), (svg_name, relay, lighting)
+    other = {"5 A", "7.5 A"} - {lighting}
+    assert not any(_has_fuse(labels, o) for o in other), f"{svg_name} shows another tier's lighting fuse"
+    power = _section(_read(GUIDE), "Power and cabling")
+    row = next(line for line in power.splitlines() if line.startswith("| Lighting board |"))
+    col = 2 if tier is TIER_RECOMMENDED else 3
+    assert f"**{lighting}** fuse" in row.split("|")[col], row
+    relay_row = next(line for line in power.splitlines() if line.startswith("| Relay board |"))
+    assert f"**{relay}** fuse" in relay_row.split("|")[col], relay_row
+
+
+def test_wire_gauges_and_wago_parts_match_the_bom():
+    rows = " ".join(f"{w.from_device} {w.to_device} {w.note}" for w in TIER_ALL.wiring)
+    wagos = sorted(set(re.findall(r"WAGO 221-\d{3}", rows)))
+    assert wagos == ["WAGO 221-413", "WAGO 221-415"], wagos
+    assert "14 AWG" in rows and "18 AWG" in rows
+    power = re.sub(r"\s+", " ", _section(_read(GUIDE), "Power and cabling"))
+    for needle in (*wagos, "14 AWG", "18 AWG", "22 AWG 4-conductor"):
+        assert needle in power, f"build guide §7 misses {needle}"
+    names = " ".join(c.name for c in TIER_ALL.components)
+    assert "18 AWG 2-Conductor" in names and "22 AWG 4-Conductor" in names
+    for svg in TIER_SVGS[1:]:
+        labels = " | ".join(_svg_labels(svg))
+        for needle in ("221-413", "221-415", "14 AWG", "18 AWG"):
+            assert needle in labels, f"{svg.name} misses {needle}"
+    assert "22 AWG 4-conductor" in " | ".join(_svg_labels(DOCS / "wiring-tier3-all-the-things.svg"))
+
+
+def test_hx711_cable_colours_match_the_bom():
+    notes = {w.to_pin: w.note for w in TIER_ALL.wiring if w.to_device == "HX711"}
+    colours = {pin: re.search(r"22/4 cable: (\w+)", note).group(1) for pin, note in notes.items()}
+    extras = _section(_read(GUIDE), "All the Things extras")
+    for pin, colour in colours.items():
+        assert re.search(rf"\| {colour} \|", extras), f"build guide HX711 table misses {colour} ({pin})"
+
+
+def test_common_ground_is_documented_everywhere():
+    guide = _read(GUIDE)
+    for heading in ("Wire the relay node", "Power and cabling"):
+        assert "common ground" in _section(guide, heading).lower(), heading
+    for svg in TIER_SVGS[1:]:
+        labels = " | ".join(_svg_labels(svg))
+        assert labels.count("COMMON GROUND") >= 2, f"{svg.name}: show the common ground on both boards"
+        assert "J1 −" in labels
+
+
+def _strip_outlets(tier) -> str:
+    strip = _line(tier, "Surge Protector Power Strip")
+    assert strip, f"{tier.id} has no surge strip"
+    m = re.search(r"(\d+) outlets( \+ 2 USB-A)?", strip.name)
+    return m.group(1) + (" + 2 USB-A" if m.group(2) else "")
+
+
+def test_power_strip_sizes_match_the_bom():
+    power = _section(_read(GUIDE), "Power and cabling")
+    row = next(line for line in power.splitlines() if "the BOM's strip" in line)
+    for tier, svg, cell in zip(TIERS, TIER_SVGS, row.split("|")[2:5]):
+        outlets = _strip_outlets(tier)
+        assert re.search(rf"→ {re.escape(outlets.replace(' + ', ' outlets + ', 1))}"
+                         rf"|→ {re.escape(outlets)} outlets", cell), (tier.id, cell)
+        assert outlets in _svg_labels(svg), f"{svg.name}: the strip should read {outlets!r}"
+
+
+def test_in_chamber_boards_get_the_6_ft_usb_cables():
+    for tier, svg in zip(TIERS, TIER_SVGS):
+        names = [c.name for c in tier.components]
+        assert any("USB-C Data Cable, 6 ft" in n for n in names), tier.id
+        labels = " | ".join(_svg_labels(svg))
+        assert "6 ft (2 m)" in labels, svg.name
+    power = _section(_read(GUIDE), "Power and cabling")
+    assert "6 ft (2 m) USB-A → USB-C" in power and "6 ft (2 m) USB-A → micro-USB" in power
+
+
+# Every cabling / consumable BOM line must have a row in the build guide's
+# "Cables, connectors and consumables" table. A new line with no entry here
+# fails: add its row to the guide (§7) and its key to this map.
+_CABLING_ROWS = {
+    "Surge Protector Power Strip": "Surge-protector power strip",
+    "DC Barrel Pigtail": "DC barrel pigtail",
+    "USB-A to USB-C Data Cable": "USB-A → USB-C",
+    "USB-A to Micro-USB": "USB-A → micro-USB",
+    "USB Wall Charger": "USB wall chargers",
+    "18 AWG 2-Conductor": "18 AWG 2-conductor red/black wire",
+    "22 AWG Stranded Hookup": "22 AWG stranded hookup wire",
+    "22 AWG 4-Conductor": "22 AWG 4-conductor cable",
+    "WAGO 221": "WAGO 221 lever connectors",
+    "Inline ATC/ATO": "Inline ATC/ATO fuse holders",
+    "ATC Blade Fuse Assortment": "ATC fuse assortment",
+    "Noctua NA-SEC3": "Noctua NA-SEC3",
+    "Adhesive-Lined Heat Shrink": "Adhesive-lined 3:1 heat-shrink",
+    "UV-Resistant Zip Ties": "UV zip ties",
+    "Zip Ties, 18": "18\" (457 mm) UV zip ties",
+    "VELCRO ONE-WRAP": "VELCRO ONE-WRAP",
+    "Rubber Grommet Kit": "Rubber grommet kit",
+    "Food-Grade Silicone Tubing": "Food-grade silicone tubing",
+    "Lead-Free Rosin-Core Solder": "Lead-free solder",
+    "ruthex Heat-Set Insert": "Heat-set inserts + socket-head screw kits",
+    "Heat-Set Inserts M2.5": "Heat-set inserts + socket-head screw kits",
+    "M2.5 Socket Head Screw Kit": "Heat-set inserts + socket-head screw kits",
+    "M3 x 6 mm Socket Head Screws": "Heat-set inserts + socket-head screw kits",
+    "Socket Head Screw Kit M2.5-M8": "Heat-set inserts + socket-head screw kits",
+    "M4 Socket Head Screw Kit": "Heat-set inserts + socket-head screw kits",
+    "M4 x 8 mm Cup-Point Set Screws": "Heat-set inserts + socket-head screw kits",
+}
+_NOT_CABLING = ("Raspberry Pi 27W", "12V Power Supply")
+_TIER_CELL = {frozenset({"bare_bones", "recommended", "all_the_things"}): "all",
+              frozenset({"recommended", "all_the_things"}): "Recommended, All the Things",
+              frozenset({"all_the_things"}): "All the Things"}
+
+
+def test_every_cabling_bom_line_is_mapped_in_the_build_guide():
+    table = _section(_read(GUIDE), "Cables, connectors and consumables")
+    rows = [[cell.strip() for cell in line.split("|")[1:-1]] for line in table.splitlines()
+            if line.startswith("| ") and not line.startswith("| BOM line")]
+    tiers_by_row: dict[str, set[str]] = {}
+    for tier in TIERS:
+        for c in tier.components:
+            if c.category not in ("wiring", "hardware", "power") or c.name.startswith(_NOT_CABLING):
+                continue
+            key = next((k for k in _CABLING_ROWS if c.name.startswith(k)), None)
+            assert key, f"BOM line {c.name!r} has no row in the build guide's cabling table"
+            row = next((r for r in rows if r[0].startswith(_CABLING_ROWS[key])
+                        or _CABLING_ROWS[key] in r[0]), None)
+            assert row, f"build guide §7 table has no {_CABLING_ROWS[key]!r} row ({c.name})"
+            tiers_by_row.setdefault(row[0], set()).add(tier.id)
+    for row in rows:
+        want = _TIER_CELL.get(frozenset(tiers_by_row.get(row[0], ())))
+        if want and row[2] in _TIER_CELL.values():
+            assert row[2] == want, f"{row[0]!r}: the BOM carries it on {want!r}, the guide says {row[2]!r}"
+
+
+def test_build_guide_lists_the_tools():
+    tools = _section(_read(GUIDE), "Tools you need").lower()
+    for tool in ("soldering iron", "heat-set insert tip", "wire strippers", "crimper", "multimeter",
+                 "heat gun", "hex keys", "flush cutters", "3d printer"):
+        assert tool in tools, f"Tools you need misses {tool}"
+
+
+def test_tier1_climate_node_has_no_breadboard_or_jumpers():
+    labels = " | ".join(_svg_labels(DOCS / "wiring-tier1-bare-bones.svg"))
+    assert "Dupont" not in labels and "jumper" not in labels.lower()
+    assert "no breadboard" in labels
+    assert not any(c.name.startswith(("Breadboard", "Dupont")) for c in TIERS[0].components)
 
 
 def test_models_readme_matches_the_model_headers():

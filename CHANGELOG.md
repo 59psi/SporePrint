@@ -58,10 +58,27 @@ signing vectors are unchanged. Firmware details are in
   customize it.
 
 ### Hardware (Builder BOM, `GET /api/builder/tiers`)
-- **Tier totals are now ~$205 / ~$485 / ~$660** (were ~$180 / ~$390 / ~$555),
-  re-checked live on 2026-09-27. They exclude the tri-spectrum strip's shipping
-  and duty (~$10+) and the heat-set inserts and screws. README and the build
-  guide use the same numbers.
+- **Tier totals are now ~$290 / ~$745 / ~$960** (were ~$180 / ~$390 / ~$555),
+  re-checked live on 2026-09-27, and now include the cabling, consumables,
+  heat-set inserts and screws. Of that, ~$72 / ~$226 / ~$254 is reusable kits
+  and spools that cover more than one chamber. They exclude the tri-spectrum
+  strip's shipping and duty (~$10+) and tools. README and the build guide use
+  the same numbers.
+- **Cabling standard + consumables as BOM lines:** a UL-listed surge strip
+  outside the chamber (6 / 12 / 12 + 2 USB-A outlets); 12 V distribution as
+  14 AWG barrel pigtail → WAGO 221-413 (+12 V split) / 221-415 (GND join) →
+  one inline ATC fuse per branch (relay 3 A; lighting 5 A on Recommended,
+  7.5 A on All the Things) → the switch boards, every 12 V run in 18 AWG
+  red/black; Noctua NA-SEC3 fan extensions (far end cut, pin 2 → J2 "+",
+  pin 1 → J2 "−"); 22 AWG hookup wire for gate / GND jumpers; 22 AWG
+  4-conductor runs for the HX711 (red 3V3 / black GND / yellow DOUT / white
+  SCK) and the door contact; food-grade 2 × 4 mm pump tubing; adhesive-lined
+  heat-shrink, UV zip ties, 18" (457 mm) duct ties, a VELCRO ONE-WRAP roll, a
+  grommet kit, lead-free solder, and heat-set insert + stainless screw kits
+  (ruthex M3 or M2–M5 assortment, uxcell M2.5). In-chamber boards get 6 ft USB
+  cables (USB-C climate, micro-USB camera MBs). New optional field
+  `Component.shared` and categories `wiring` / `hardware`; the wiring rows
+  come from `_power_rows()`.
 - New optional API field `Component.pack_price`: when set, one pack covers the
   quantity; `price_approx` stays the per-unit price.
 - New lines: Raspberry Pi Active Cooler (all tiers); Adafruit 4397 + 4210
@@ -90,6 +107,29 @@ signing vectors are unchanged. Firmware details are in
 - Capability bullets that described unimplemented features were removed (kWh,
   PID, timelapse, quiet hours, EXIF, sensor fallback/divergence, correlation
   reports, local CNN).
+
+### Docs and wiring diagrams
+- **All three tier wiring diagrams redrawn** to the cabling standard: inside vs
+  outside the chamber with the wall grommet, the power strip and every AC
+  cord, USB power paths with cable lengths, the 12 V PSU → pigtail → WAGO →
+  fused branches with ratings, wire gauges on each run, the common ground
+  (ESP32 GND → J1 "−") on every switch board, the STEMMA QT chain, fan
+  extension leads, and on All the Things the HX711 / door-contact 22 AWG
+  4-conductor runs, the 10 kΩ reed pull-up and the pump channel. Each has a
+  one-channel end-to-end schematic. `wiring-overall-system.svg` marks what
+  lives in the chamber and adds a power + cabling band.
+- `docs/hardware-build-guide.md`: §7 is now *Power and cabling* (power strip,
+  12 V distribution with fuse table, 5 V USB table, the chamber wall, and a
+  table mapping every cabling / consumable BOM line to where it is used); the
+  §5 channel schematic shows the fuse, wire gauges, the fan extension and the
+  common ground; a *Tools you need* list; a 12 V pre-power check in the
+  bring-up list; new troubleshooting rows (dead board, swapped fan wires).
+- `models/README.md`: per-tier insert and screw totals; the BOM's insert and
+  screw kits, the 18" (457 mm) duct tie and the VELCRO straps.
+- `tests/test_docs_consistency.py` pins the new invariants: the reusable-kit
+  share, fuse ratings, WAGO parts and wire gauges in the build guide and SVGs,
+  the common ground in every guide and diagram, the strip sizes, and the
+  per-tier insert sourcing.
 
 ### Enclosures (`models/`)
 - **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,

@@ -145,12 +145,11 @@ def _print_step(parts: str) -> str:
 
 def _inserts_step(inserts: str, screws: str) -> str:
     return (
-        "HEAT-SET INSERTS AND SCREWS TO BUY (not in the tier price; counts from the "
-        f"models/README.md shopping list at default presets): inserts {inserts}; screws {screws}. "
-        "The pockets are sized for ruthex RX inserts (M2.5 x 5.7, M3 x 5.7, M4 x 8.1, M5 x 9.5; "
-        "CNC Kitchen's M3/M4/M5 match, but CNC Kitchen's M2.5 is M2.5 x 4, too short). Buy "
-        "the ruthex M2/M3/M4/M5 assortment (Amazon B08K1BVGN9, ~$30) + a separate ruthex "
-        "RX-M2.5x5.7 pack — the assortment has no M2.5"
+        "HEAT-SET INSERTS AND SCREWS (the insert and screw lines in this parts list; counts "
+        f"from the models/README.md shopping list at default presets): inserts {inserts}; "
+        f"screws {screws}. The pockets are sized for ruthex RX inserts (M2.5 x 5.7, M3 x 5.7, "
+        "M4 x 8.1, M5 x 9.5; CNC Kitchen's M3/M4/M5 match, but CNC Kitchen's M2.5 is M2.5 x 4, "
+        "too short). Press each insert flush with a soldering iron (insert tip, ~220-245 °C)"
     )
 
 
@@ -162,6 +161,7 @@ _RPI = Component(
     price_approx="$110",
     url="https://www.pishop.us/product/raspberry-pi-5-4gb/",
     category="controller",
+    shared=True,
     notes="Official list price $110 since the third memory-cost rise (Apr 2026; unchanged when "
           "re-checked 2026-09-27). PiShop, CanaKit and SparkFun sell the bare board at $110; "
           "Amazon board-only listings run ~$126 with thin stock. Needs the microSD card, the "
@@ -177,6 +177,7 @@ _RPI_COOLER = Component(
     price_approx="$11",
     url="https://www.pishop.us/product/raspberry-pi-active-cooler/",
     category="misc",
+    shared=True,
     notes="Clips into the Pi 5's two heatsink holes and plugs into its FAN header. "
           "pi_case.scad's default cooling=\"active\" preset is built around it (intake grille + "
           "shroud); render cooling=\"fan40\" only for a bare Pi with a 40 mm fan.",
@@ -188,6 +189,7 @@ _RPI_SD = Component(
     price_approx="$15",
     url="https://www.amazon.com/dp/B07FKJS15M",
     category="misc",
+    shared=True,
     notes="Patriot 64GB V30 A1 — room for vision frames. NAND pricing roughly doubled card "
           "prices, so the old ~$8 32GB figure is gone. Endurance option: SanDisk High Endurance "
           "64GB (B07P3D6Y5B, ~$27) is built for continuous writes but is not A1-rated, so it "
@@ -201,6 +203,7 @@ _RPI_PSU = Component(
     price_approx="$13",
     url="https://www.pishop.us/product/raspberry-pi-27w-usb-c-power-supply-white-us/",
     category="power",
+    shared=True,
     notes="5.1V / 5A. Use the official unit: generic USB-C PD chargers do NOT offer a 5V/5A "
           "profile, and on a 5V/3A supply the Pi 5 limits its USB ports to 600 mA. Also sold by "
           "Adafruit (5814) and on Amazon (B0D3MFLNC1, usually marked up).",
@@ -365,6 +368,7 @@ _DUPONT = Component(
     price_approx="$7",
     url="https://www.amazon.com/dp/B01EV70C78",
     category="misc",
+    shared=True,
     notes="ELEGOO 120-pc mix. Female end onto the ESP32's downward header pin, male end into "
           "the J1 screw terminal (IN = GPIO, − = GND). The M-M wires serve the breadboard.",
 )
@@ -375,6 +379,7 @@ _BREADBOARD = Component(
     price_approx="$10",
     url="https://www.amazon.com/dp/B08Y59P6D1",
     category="misc",
+    shared=True,
     notes="BOJACK: 4 solderless breadboards (830 + 400 tie points) + 126 flexible jumpers. The "
           "permanent build solders each switch stage into the printed relay_board_mount.scad "
           "chassis instead.",
@@ -462,19 +467,343 @@ _USB_C_CABLE = Component(
     category="power",
     notes="SUNGUY braided, data-capable (charge-only cables won't flash). USB-A pairs with the "
           "5V wall charger; many clone boards skip the USB-C CC resistors, so a C-to-C cable "
-          "from a USB-C charger may not power them. Node farther than ~25 cm from its charger? "
-          "The 3 ft 3-pack is B0B2DCV9T2 (~$10); the 6-inch 3-pack B0CQ82WBJR (~$7) suits the "
-          "bench. An official Espressif DevKitC V4 needs micro-USB instead.",
+          "from a USB-C charger may not power them. For the nodes OUTSIDE the chamber (relay, "
+          "lighting) next to the surge strip; in-chamber nodes use the 6 ft cable line. The 3 ft "
+          "3-pack is B0B2DCV9T2 (~$10); the 6-inch 3-pack B0CQ82WBJR (~$7) suits the bench. An "
+          "official Espressif DevKitC V4 needs micro-USB instead.",
+)
+
+_USB_C_CABLE_6FT = Component(
+    name="USB-A to USB-C Data Cable, 6 ft",
+    role="Power + programming for an ESP32 node INSIDE the chamber (climate node)",
+    price_approx="$8",
+    url="https://www.amazon.com/dp/B01GGKYO1I",
+    category="power",
+    notes="Amazon Basics, USB-IF certified, USB 2.0 data (charge-only cables won't flash). The "
+          "climate node sits at substrate level inside the chamber; 6 ft reaches its 5V cube on "
+          "the surge strip outside, through the pass-through grommet. Nodes outside the chamber "
+          "(relay, lighting) use the short cables. 2-pack: B0CH3WQ93P (~$16).",
 )
 
 _MICRO_USB_CABLE = Component(
-    name="USB-A to Micro-USB Data Cable, 3 ft (2-pack)",
-    role="Power + programming for each ESP32-CAM-MB (micro-USB)",
-    price_approx="$8",
-    url="https://www.amazon.com/dp/B0719H12WD",
+    name="USB-A to Micro-USB Data Cable, 6 ft (2-pack)",
+    role="Power + programming for each ESP32-CAM-MB (micro-USB) — the cameras sit inside the chamber",
+    price_approx="$10",
+    url="https://www.amazon.com/dp/B071S5NPG9",
     category="power",
-    notes="Amazon Basics, data-capable. The AITRIP / Aideepen ESP32-CAM-MB programmers are "
-          "micro-USB (USB-C MB boards need a USB-C cable instead).",
+    notes="Amazon Basics, data-capable, rated to 2.1 A. 6 ft reaches from a camera inside the "
+          "chamber to its 5V cube on the surge strip outside. The AITRIP / Aideepen "
+          "ESP32-CAM-MB programmers are micro-USB (USB-C MB boards need a USB-C cable instead). "
+          "Single: B07232M876 (~$9).",
+)
+
+# ── Mains, cabling, connectors and assembly consumables ─────────
+
+_SURGE_STRIP_6 = Component(
+    name="Surge Protector Power Strip, 6 outlets (Belkin, 1080 J)",
+    role="Mains outlets for the Pi PSU, the USB cube and the smart plug — outside the chamber",
+    price_approx="$14",
+    url="https://www.amazon.com/dp/B000JJI6XA",
+    category="power",
+    notes="Belkin 6-outlet, 6 ft cord, widely spaced outlets, tested to UL standards. This tier "
+          "uses 3 outlets — leave the outlet beside the ~51 mm Athom plug free. Keep it off the "
+          "floor and outside the humid chamber. Alternate: Belkin 8-outlet BP108000-06 "
+          "(B000JE9LCK, ~$28).",
+)
+
+_SURGE_STRIP_12 = Component(
+    name="Surge Protector Power Strip, 12 outlets (Belkin, UL 1449)",
+    role="Mains outlets for the Pi PSU, 12V PSU, USB cubes and smart plugs — outside the chamber",
+    price_approx="$30",
+    url="https://www.amazon.com/dp/B0C6S6TPRH",
+    category="power",
+    notes="Belkin SRA009p12tt8: 12 outlets (6 block-space for bricks), 8 ft flat plug, "
+          "UL 1449, 15 A. This tier uses 8 (Pi PSU, 12V brick, 4 USB cubes, 2 smart plugs). "
+          "The heater / humidifier loads go through the smart plugs — keep the strip's total "
+          "under its 15 A rating (a 1500 W heater alone is 12.5 A).",
+)
+
+_SURGE_STRIP_12_USB = Component(
+    name="Surge Protector Power Strip, 12 outlets + 2 USB-A (Belkin, 3,996 J)",
+    role="Mains outlets for the Pi PSU, 12V PSU, USB cubes and 4 smart plugs — outside the chamber",
+    price_approx="$33",
+    url="https://www.amazon.com/dp/B00966IFQ0",
+    category="power",
+    notes="Belkin 12 AC + 2 USB-A (2.1 A shared), block-space outlets, 8 ft cord. This tier "
+          "needs all 12 AC outlets (Pi PSU, 12V brick, 6 USB cubes, 4 plugs); its two USB-A "
+          "ports can power the relay and lighting nodes instead of two cubes, freeing 2 "
+          "outlets. Keep the total under 15 A — the heater, dehumidifier and humidifier share "
+          "it; if the heater runs alongside the dehumidifier, give the heater's smart plug its "
+          "own wall outlet.",
+)
+
+_WIRE_22AWG = Component(
+    name="22 AWG Stranded Hookup Wire, 6 colours x 10 ft (silicone)",
+    role="Gate / signal / GND jumpers on the switch boards, short splices, ESP32 GND to the GND bus",
+    price_approx="$13",
+    url="https://www.amazon.com/dp/B089CQHRDT",
+    category="wiring",
+    shared=True,
+    notes="Fermerry tinned-copper silicone wire (black, red, blue, white, green, yellow; 600 V). "
+          "Use it for everything that carries signal or < 1 A; the 12V feeds use the 18 AWG "
+          "pair. Comes with a few heat-shrink pieces. 25 ft/colour version: B089D29FHC (~$20).",
+)
+
+_WIRE_18AWG = Component(
+    name="18 AWG 2-Conductor Red/Black Wire, 100 ft",
+    role="12V feeds: PSU → WAGO split → fuses → switch-board buses → LED strips, fans' and pump's runs",
+    price_approx="$26",
+    url="https://www.amazon.com/dp/B07CWQ6JPB",
+    category="wiring",
+    shared=True,
+    notes="MILAPEAK bonded red/black pair, pure tinned copper (not CCA). 18 AWG is the "
+          "build's 12V standard: good for the ≤ 7.5 A fused branches over these short runs. "
+          "Recommended uses ~20 ft, All the Things ~35 ft. Shorter: BNTECHGO 18 AWG silicone "
+          "25 ft (B0779QRR58, ~$15).",
+)
+
+_CABLE_22_4 = Component(
+    name="22 AWG 4-Conductor Stranded Cable, 50 ft (UL 2464)",
+    role="HX711 run and door-contact run from the chamber back to the relay node",
+    price_approx="$20",
+    url="https://www.amazon.com/dp/B0CN76J8KR",
+    category="wiring",
+    shared=True,
+    notes="ENERJOUR UL 2464, tinned copper, black / red / yellow / white. HX711 run: red 3.3V, "
+          "black GND, yellow DOUT → GPIO 32, white SCK → GPIO 33. Door-contact run: two "
+          "conductors, COM → GPIO 35, NC → GND. Shielded alternate for long or noisy runs: "
+          "B0D9JTVS2P (~$28).",
+)
+
+_WAGO = Component(
+    name="WAGO 221 Lever Connectors, 12-pc assortment (221-412 / 413 / 415 / 2401)",
+    role="12V distribution: split the PSU's +12V to the two fused branches; join the GND bus",
+    price_approx="$12",
+    url="https://www.amazon.com/dp/B0CJ5QF4Z2",
+    category="wiring",
+    shared=True,
+    notes="Genuine WAGO, 24-12 AWG, 20 A. A 221-413 splits the pigtail's +12V into the two "
+          "fuse holders; a 221-415 joins the pigtail's GND to both switch boards' GND buses "
+          "and each ESP32's GND (the common ground the gate drive needs). Keep them outside "
+          "the chamber. 36-pc kit: B08W3QXN9B (~$26).",
+)
+
+_FUSE_HOLDERS = Component(
+    name="Inline ATC/ATO Blade Fuse Holders, 14 AWG (10-pack)",
+    role="One fuse per 12V branch, right after the WAGO split",
+    price_approx="$9",
+    url="https://www.amazon.com/dp/B07426WCLM",
+    category="wiring",
+    shared=True,
+    notes="Nilight NI-FH01, 14 AWG leads, covered holder (no IP rating — mount it outside the "
+          "chamber). Fuse ratings: relay board 3 A; lighting board 5 A on the 5 A PSU "
+          "(Recommended), 7.5 A on the 10 A PSU (All the Things). IP66 alternate: VANTRONIK "
+          "6-pack (B081YDV8PS, ~$6).",
+)
+
+_FUSES = Component(
+    name="ATC Blade Fuse Assortment, 150 pc (2-35 A)",
+    role="3 A / 5 A / 7.5 A fuses for the inline holders, plus spares",
+    price_approx="$10",
+    url="https://www.amazon.com/dp/B07VWRK2VD",
+    category="wiring",
+    shared=True,
+    notes="Riseuvo: 15 each of 2 / 3 / 5 / 7.5 / 10 / 15 / 20 / 25 / 30 / 35 A, with a puller. "
+          "Fit 3 A on the relay branch and 5 A (Recommended) or 7.5 A (All the Things) on the "
+          "lighting branch.",
+)
+
+_FAN_EXTENSIONS = Component(
+    name="Noctua NA-SEC3 4-pin Fan Extension Cables, 60 cm (3-pack)",
+    role="Carry each fan's 12V leads out of the chamber to the relay switch board",
+    price_approx="$10",
+    url="https://www.amazon.com/dp/B09RPLPBQH",
+    category="wiring",
+    notes="Fan + its bundled 30 cm extension + an NA-SEC3 reaches ~1.1 m. Cut the FAR (header) "
+          "end of the extension — never the fan's own lead — and land pin 1 (GND) on the "
+          "channel's J2 '−' (MOSFET drain) and pin 2 (+12V) on J2 '+'; the tach and PWM wires "
+          "stay unused (the MOSFET switches the fan's supply). Identify wires by pin position, "
+          "not colour. One pack per chamber's 3 fans. 30 cm set: NA-SEC1 (B00KG3K9AM).",
+)
+
+_HEAT_SHRINK = Component(
+    name="Adhesive-Lined Heat Shrink Tubing Kit, 3:1 (400 pc)",
+    role="Seal every splice and LED-strip joint against 85-95% RH",
+    price_approx="$12",
+    url="https://www.amazon.com/dp/B0BVVMCY86",
+    category="hardware",
+    shared=True,
+    notes="Eventronic dual-wall 3:1, 7 sizes 3/32\"-3/4\". Use 1/2\"-3/4\" over the IP65 / IP67 "
+          "strip-to-lead joints and the small sizes on splices; it also caps the tri-spectrum "
+          "strip's unused red and green wires on the Recommended tier.",
+)
+
+_ZIP_TIES = Component(
+    name="UV-Resistant Zip Ties, 4\" / 6\" / 8\" / 12\" (400 pc)",
+    role="Printed-mount tie slots, shelf clips and cable routing",
+    price_approx="$13",
+    url="https://www.amazon.com/dp/B09SSPXBPR",
+    category="hardware",
+    shared=True,
+    notes="Superun nylon 6/6: 2.5 mm (4\"), 3.6 mm (6\") and 4.8 mm (8\", 12\") widths — the "
+          "printed parts' slots take ≤ 2.5 mm (cam_mount, relay board), ≤ 3.6 mm (esp32_case, "
+          "hx711_scale, pump_bracket) and ≤ 4.8 mm (pi_case ears, sensor_bracket, PSU mount).",
+)
+
+_ZIP_TIES_DUCT = Component(
+    name="Zip Ties, 18\" (457 mm) UV-resistant, 60 lb (100 pc)",
+    role="Clamp 4-inch flex duct onto each fan_duct collar",
+    price_approx="$9",
+    url="https://www.amazon.com/dp/B0BR3FY296",
+    category="hardware",
+    shared=True,
+    notes="Tantti Supply, 0.19\" (4.8 mm) wide — the fan_duct finger tunnels take ≤ 4.8 mm x "
+          "1.4 mm ties. One per fan_duct: the tie loops ~340 mm around the collar through its "
+          "four fingers, so a 14\" (356 mm) tie is too short to lock; 16\"+ works, 18\" leaves "
+          "slack for imperial 4\" duct. Heavier 120 lb+ ties are 7.6 mm wide and won't fit. A 4\" "
+          "worm-drive hose clamp above the fingers also works.",
+)
+
+_HOOK_LOOP = Component(
+    name="VELCRO ONE-WRAP Strap Roll, 3/4\" x 12 ft",
+    role="The two 12\" straps that hold the 12V PSU in power_supply_mount, plus cable bundling",
+    price_approx="$7",
+    url="https://www.amazon.com/dp/B000078CUB",
+    category="hardware",
+    shared=True,
+    notes="Cut two 12\" (300 mm) straps for power_supply_mount.scad's 20 mm strap slots; the "
+          "rest bundles cable runs.",
+)
+
+_GROMMETS = Component(
+    name="Rubber Grommet Kit, 1/4\" - 1\" (188 pc)",
+    role="Cable pass-through into the grow chamber / tent wall",
+    price_approx="$13",
+    url="https://www.amazon.com/dp/B094XY2GVR",
+    category="hardware",
+    shared=True,
+    notes="Vrupin assortment incl. 7/8\" and 1\" grommets. Drill 7/8\" or 1\" for the main "
+          "pass-through: USB overmolds (~13 x 7 mm) and 4-pin fan plugs pass before the "
+          "grommet is seated. A tent's own cable port works too.",
+)
+
+_INSERTS_M3 = Component(
+    name="ruthex Heat-Set Inserts M3 x 5.7 (100 pc)",
+    role="M3 threads in the printed cases (pi_case, esp32_case, sensor_mount, sensor_bracket)",
+    price_approx="$10",
+    url="https://www.amazon.com/dp/B08BCRZZS3",
+    category="hardware",
+    shared=True,
+    notes="RX-M3x5.7 brass, the size the M3 pockets are designed around (Ø4.0 x 6.7 mm). This "
+          "tier needs 14. Install with a soldering iron at ~220-245 °C until flush.",
+)
+
+_INSERTS_ASSORTMENT = Component(
+    name="ruthex Heat-Set Insert Assortment M2 / M3 / M4 / M5 (270 pc)",
+    role="M3 / M4 / M5 threads in every printed case, duct and mount",
+    price_approx="$30",
+    url="https://www.amazon.com/dp/B08K1BVGN9",
+    category="hardware",
+    shared=True,
+    notes="70 x RX-M2x4, 100 x RX-M3x5.7, 50 x RX-M4x8.1, 50 x RX-M5x9.5 — covers this tier's "
+          "M3, M4 (fan ducts) and M5 (camera pivot) inserts. It has no M2.5: see the M2.5 "
+          "line. CNC Kitchen's M3 / M4 / M5 inserts match these pockets too.",
+)
+
+_INSERTS_M25 = Component(
+    name="Heat-Set Inserts M2.5 (70 pc, ~4.5 mm OD x 6 mm)",
+    role="M2.5 threads: Pi standoffs, sensor board posts, HX711 posts, pump flange",
+    price_approx="$9",
+    url="https://www.amazon.com/dp/B0CT8V76RL",
+    category="hardware",
+    shared=True,
+    notes="uxcell brass knurled inserts — fit the Ø3.6 x 6.7 mm M2.5 pockets (press flush). "
+          "Thin stock: the exact design part is ruthex RX-M2.5x5.7, which Amazon US doesn't "
+          "carry — 3DJake sells it (https://www.3djake.com/ruthex/threaded-insert-m25-70-pieces, "
+          "~$8 + EU shipping). Avoid 3.5 mm-OD x 4 mm M2.5 inserts (they spin in the pocket) "
+          "and CNC Kitchen's M2.5 x 4 (too short).",
+)
+
+_SCREWS_M25 = Component(
+    name="M2.5 Socket Head Screw Kit, 304 stainless (6 / 8 / 10 / 12 mm + nuts)",
+    role="Pi to its standoffs, sensor boards, HX711 board, pump flange",
+    price_approx="$9",
+    url="https://www.amazon.com/dp/B0C7ZRTH3Q",
+    category="hardware",
+    shared=True,
+    notes="mxuteuk: 40 x M2.5x6, 25 x M2.5x8, 20 x M2.5x10, 15 x M2.5x12. Stainless because "
+          "the in-chamber parts live at 85-95% RH. Use x6 for the Pi (x8 bottoms out in its "
+          "pocket).",
+)
+
+_SCREWS_M3X6 = Component(
+    name="M3 x 6 mm Socket Head Screws, 304 stainless (100 pc)",
+    role="Lid and board screws into the M3 inserts",
+    price_approx="$8",
+    url="https://www.amazon.com/dp/B089KR3XHR",
+    category="hardware",
+    shared=True,
+    notes="iexcell, 5.5 mm head. The most-used size: 10 (Bare Bones) to 36 (All the Things). "
+          "Budget alternative covering M3 x 6-20: mxuteuk M3 kit (B0C7ZPZ214, ~$8, black steel).",
+)
+
+_SCREWS_KIT = Component(
+    name="Socket Head Screw Kit M2.5-M8, 304 stainless (135 pc)",
+    role="M3 x 16 (Pi lid), M5 x 16 (camera pivot), M4 x 16 and longer M2.5",
+    price_approx="$10",
+    url="https://www.amazon.com/dp/B0711DX7LC",
+    category="hardware",
+    shared=True,
+    notes="DANA FRED: 10 each of M2.5x8/10/16/20, M3x10/16/20, M4x16/20, M5x16/20, M6x16/20 "
+          "+ 5 x M8x25. Single-size alternates: BNUOK M3x16 (B0DJQGNDC7), MewuDecor M5x16 "
+          "(B07PXL8DGH).",
+)
+
+_SCREWS_M4 = Component(
+    name="M4 Socket Head Screw Kit, 304 stainless (25-50 mm + washers)",
+    role="M4 x 35 fan screws through each fan into the fan_duct inserts; M4 x 25 for the scale",
+    price_approx="$9",
+    url="https://www.amazon.com/dp/B0DCVTWC5B",
+    category="hardware",
+    shared=True,
+    notes="VGBUY: 15 x M4x25, 15 x M4x30, 13 x M4x35, 10 each M4x40/45/50, nuts, lock + flat "
+          "washers. 4 x M4 x 35 per fan_duct (x30 / x40 also fit).",
+)
+
+_SET_SCREWS_M4 = Component(
+    name="M4 x 8 mm Cup-Point Set Screws, 304 stainless (50 pc)",
+    role="hx711_scale's adjustable overload stops",
+    price_approx="$8",
+    url="https://www.amazon.com/dp/B0D8TJ4DHB",
+    category="hardware",
+    shared=True,
+    notes="QWUEE. Four go into the platform's M4 inserts as overload stops (medium threadlocker "
+          "or nylon-patch screws). Flat-point alternate: B0B39272FF.",
+)
+
+_PUMP_TUBING = Component(
+    name="Food-Grade Silicone Tubing 2 mm ID x 4 mm OD, 5 m",
+    role="Pump outlet → substrate hydration line",
+    price_approx="$11",
+    url="https://www.amazon.com/dp/B0852HZSTR",
+    category="hardware",
+    notes="Quickun pure silicone, FDA / 3A sanitary compliant, 50A. Adafruit says the 1150's "
+          "tube size has changed between batches (~2 x 4 mm, its spare is 2.5 x 4.7 mm) — "
+          "measure the pump's barb before cutting. Alternate: Hooshing 2 x 4 mm, 10 ft "
+          "(B08PTXMNCN, ~$9).",
+)
+
+_SOLDER = Component(
+    name="Lead-Free Rosin-Core Solder, 0.8 mm (50 g)",
+    role="Switch-board joints and LED-strip leads",
+    price_approx="$10",
+    url="https://www.amazon.com/dp/B07QZX9LG2",
+    category="hardware",
+    shared=True,
+    notes="ZSHX Sn99 / Ag0.3 / Cu0.7 with rosin flux (melts 217 °C). The relay_board_mount "
+          "switch boards are soldered point-to-point underneath. Bigger reel: AUSTOR 100 g "
+          "(B01M071WEE, ~$18). A soldering iron with a heat-set insert tip installs the "
+          "inserts too (tools aren't BOM lines — see the build guide's tool list).",
 )
 
 _USB_CHARGER = Component(
@@ -581,13 +910,32 @@ def _lighting_rows(blue_note: str, extra: list[WiringConnection]) -> list[Wiring
     ]
 
 
-_PSU_ROWS = [
-    WiringConnection(from_device="12V PSU (DC pigtail)", from_pin="+12V", to_device="Switch boards",
-                     to_pin="+12V bus → every J2 '+'",
-                     note="Fans' / strips' / pump's + wire (and the tri-spectrum common wire)"),
-    WiringConnection(from_device="12V PSU (DC pigtail)", from_pin="GND", to_device="Switch boards",
-                     to_pin="GND bus → every IRLZ44N source", note="≥ 18 AWG bus wire"),
-]
+def _power_rows(lighting_fuse: str) -> list[WiringConnection]:
+    """12V distribution: PSU → barrel pigtail → WAGO split → one inline fuse
+    per branch → each switch board's +12V bus; GND joined on a WAGO. 18 AWG
+    for every 12V run, 22 AWG for signal / ESP32 GND."""
+    return [
+        WiringConnection(from_device="12V PSU", from_pin="5.5 x 2.5 mm barrel (centre +)",
+                         to_device="DC barrel pigtail", to_pin="female jack",
+                         note="14 AWG pigtail leads — red +12V, black GND"),
+        WiringConnection(from_device="DC pigtail", from_pin="+12V (red)", to_device="WAGO 221-413",
+                         to_pin="+12V split", note="One lead in, two 18 AWG red leads out (one per branch)"),
+        WiringConnection(from_device="WAGO 221-413 (+12V)", from_pin="branch 1",
+                         to_device="Inline fuse 3 A → relay switch board", to_pin="+12V bus → every J2 '+'",
+                         note="18 AWG red; fans + aux draw well under 1 A"),
+        WiringConnection(from_device="WAGO 221-413 (+12V)", from_pin="branch 2",
+                         to_device=f"Inline fuse {lighting_fuse} → lighting switch board",
+                         to_pin="+12V bus → every J2 '+'",
+                         note="18 AWG red; LED strips are the load — cut them to closet length"),
+        WiringConnection(from_device="DC pigtail", from_pin="GND (black)", to_device="WAGO 221-415",
+                         to_pin="GND join",
+                         note="18 AWG black on to both boards' GND buses (every IRLZ44N source); each "
+                              "ESP32's GND reaches the same bus through its board's J1 '−'"),
+        WiringConnection(from_device="Switch board J2 (per channel)", from_pin="'+' (+12V) / '−' (drain)",
+                         to_device="Load: fan / LED strip / pump", to_pin="+ / −",
+                         note="18 AWG to the strips and pump; fans through a Noctua 4-pin extension "
+                              "(pin 2 = +12V, pin 1 = GND); adhesive heat shrink on every joint"),
+    ]
 
 
 # ── Tier 1: Bare Bones ─────────────────────────────────────────
@@ -596,7 +944,7 @@ TIER_BARE_BONES = HardwareTier(
     id="bare_bones",
     name="Bare Bones",
     tagline="Monitor your grow. Smart plug for humidifier.",
-    estimated_cost="~$205",
+    estimated_cost="~$290",
     best_for=(
         "First-time mushroom cultivators who want reliable monitoring and basic humidity "
         "control without committing to full automation. Ideal for a single grow tent or "
@@ -666,9 +1014,17 @@ TIER_BARE_BONES = HardwareTier(
         _BH1750,
         _QT_TO_SOCKETS,
         _QT_TO_QT,
-        _USB_C_CABLE,
+        _USB_C_CABLE_6FT,
         _USB_CHARGER,
         _tasmota_plug(1, "humidifier on/off"),
+        _SURGE_STRIP_6,
+        _ZIP_TIES,
+        _GROMMETS,
+        _INSERTS_M3,
+        _for_tier(_INSERTS_M25, quantity=1, tier_note="This tier needs 10 (Pi standoffs, sensor posts)."),
+        _SCREWS_M25,
+        _SCREWS_M3X6,
+        _for_tier(_SCREWS_KIT, quantity=1, tier_note="This tier uses its M3 x 16 (Pi lid)."),
     ],
     wiring=_climate_chain("ESP32", ["SHT31-D", "BH1750"]),
     wiring_diagram="See docs/wiring-tier1-bare-bones.svg for full wiring diagram with color-coded signal, I2C, power, and ground lines.",
@@ -705,8 +1061,10 @@ TIER_BARE_BONES = HardwareTier(
         "suction cup on glass walls. AVOID placing near heat sources (heaters, lights), direct "
         "airflow (fan output), or dead air zones (corners). The BH1750 looks up through the lid's "
         "light window — face it toward the light source, not the floor",
-        "Power the node from its own 5V USB wall charger + USB-A to USB-C cable (the ESP32 draws "
-        "< 0.5 A); keep the charger outside the humid chamber",
+        "POWER + CABLING: plug the Pi PSU, the 5V USB cube and the smart plug into the surge "
+        "strip OUTSIDE the chamber (off the floor). Run the 6 ft USB-A to USB-C cable from the cube "
+        "through a grommeted 7/8\" hole (or the tent's cable port) to the climate node — the "
+        "ESP32 draws < 0.5 A — and tidy the run with zip ties",
         _tasmota_step(
             "Connect your humidifier (ultrasonic, inside the chamber or piped in via tubing).",
             "humidifier",
@@ -722,7 +1080,7 @@ TIER_RECOMMENDED = HardwareTier(
     id="recommended",
     name="Recommended",
     tagline="Full monitoring + automated fans, lights, and vision.",
-    estimated_cost="~$485",
+    estimated_cost="~$745",
     best_for=(
         "Serious hobbyists producing 2-10 flushes per year and experimenting with multiple "
         "species. This is the sweet spot for most home growers: full climate sensing, "
@@ -860,11 +1218,31 @@ TIER_RECOMMENDED = HardwareTier(
         ),
         _DC_PIGTAIL,
         _ESP32_CAM,
-        _USB_C_CABLE,
+        _for_tier(_USB_C_CABLE, quantity=1, tier_note="This tier: the relay + lighting nodes (outside the chamber)."),
+        _USB_C_CABLE_6FT,
         _MICRO_USB_CABLE,
         _for_tier(_USB_CHARGER, quantity=2,
                   tier_note="This tier: 2 packs = 4 cubes (3 nodes + 1 camera)."),
         _tasmota_plug(2, "humidifier; heater or cooler"),
+        _SURGE_STRIP_12,
+        _WIRE_18AWG,
+        _WIRE_22AWG,
+        _WAGO,
+        _FUSE_HOLDERS,
+        _FUSES,
+        _FAN_EXTENSIONS,
+        _HEAT_SHRINK,
+        _ZIP_TIES,
+        _ZIP_TIES_DUCT,
+        _HOOK_LOOP,
+        _GROMMETS,
+        _INSERTS_ASSORTMENT,
+        _for_tier(_INSERTS_M25, quantity=1, tier_note="This tier needs 10."),
+        _SCREWS_M25,
+        _SCREWS_M3X6,
+        _SCREWS_KIT,
+        _SCREWS_M4,
+        _SOLDER,
         _BREADBOARD,
     ],
     wiring=[
@@ -878,9 +1256,9 @@ TIER_RECOMMENDED = HardwareTier(
             "strip's common wire to +12V",
             [],
         ),
-        *_PSU_ROWS,
+        *_power_rows("5 A"),
     ],
-    wiring_diagram="See docs/wiring-tier2-recommended.svg for full wiring diagram with all 4 ESP32 nodes, MOSFET circuits, and I2C bus layout.",
+    wiring_diagram="See docs/wiring-tier2-recommended.svg: every node and the camera, inside vs outside the chamber, the STEMMA QT chain, both MOSFET switch boards, the fused 12V distribution (PSU → pigtail → WAGO → 3 A / 5 A fuses, 18 AWG) with the common ground, fan extensions, USB power and the surge strip.",
     firmware_targets=["node_esp32", "cam"],
     setup_steps=[
         "Set up the Raspberry Pi: flash Raspberry Pi OS (64-bit) with Raspberry Pi Imager — set "
@@ -945,10 +1323,19 @@ TIER_RECOMMENDED = HardwareTier(
         "Connect LED strips to the lighting node: the white strip to channel 0 (GPIO 25); the "
         "tri-spectrum strip's BLUE wire to channel 1 (GPIO 26) and its common wire to +12V — "
         "insulate its red and green wires",
-        "POWER: fans and strips run from the 12V 5A PSU through the DC pigtail into the switch "
-        "boards' +12V / GND buses (tie each ESP32's GND to that GND bus). Keep the load ≤ ~4 A: "
-        "cut the strips to closet length. Each ESP32 node and the camera get their own 5V USB "
-        "cube + cable (USB-C for the nodes, micro-USB into the camera's MB)",
+        "POWER (12V): 12V 5A PSU → DC barrel pigtail → WAGO 221-413 splits +12V into two "
+        "inline fuses — 3 A to the relay board's +12V bus, 5 A to the lighting board's — and a "
+        "WAGO 221-415 joins the pigtail GND to both boards' GND buses. Every 12V run is the 18 AWG "
+        "red/black pair; the ESP32s' GND reaches the same bus through each board's J1 '−' "
+        "(common ground). Keep the load ≤ ~4 A: cut the strips to closet length",
+        "CABLING: fans reach the relay board through their bundled 30 cm extension + a Noctua "
+        "NA-SEC3 (cut the extension's far end: pin 2 → J2 '+', pin 1 → J2 '−'); strips get 18 "
+        "AWG leads; adhesive heat shrink on every splice and strip joint. Everything 12V/mains "
+        "stays OUTSIDE the chamber — pass the fan, strip and USB runs through a grommeted 7/8\" "
+        "hole (or the tent's port) and tie them off. The surge strip feeds the Pi PSU, the 12V "
+        "brick, the 4 USB cubes and both smart plugs. The climate node and the camera get the "
+        "6 ft cables (USB-C / micro-USB into the camera's MB); the relay and lighting nodes the "
+        "short USB-C ones",
         "CAMERA PLACEMENT: Two recommended positions — (1) FRONT-FACING at substrate level, angled "
         "slightly upward to capture pin formation and fruiting body development, or (2) TOP-DOWN "
         "above the substrate looking straight down for overall colonization progress. Use "
@@ -973,7 +1360,7 @@ TIER_ALL = HardwareTier(
     id="all_the_things",
     name="All the Things",
     tagline="Full automation. Redundant sensors. Every bell and whistle.",
-    estimated_cost="~$660",
+    estimated_cost="~$960",
     best_for=(
         "Advanced growers running multiple shelves or chambers, commercial-adjacent "
         "operations, and researchers tuning parameters for yield optimization. Ideal "
@@ -1119,8 +1506,10 @@ TIER_ALL = HardwareTier(
         _for_tier(_ESP32_CAM, quantity=1,
                   tier_note="This tier: the 2-pack is exactly its two cameras (front + "
                             "top-down), each on its own MB."),
-        _for_tier(_USB_C_CABLE, quantity=2, tier_note="This tier: 2 packs = 6 cables (4 nodes + spares)."),
-        _MICRO_USB_CABLE,
+        _for_tier(_USB_C_CABLE, quantity=1,
+                  tier_note="This tier: the relay + lighting nodes (outside the chamber) + a spare."),
+        _for_tier(_USB_C_CABLE_6FT, quantity=2, tier_note="This tier: both climate nodes (inside the chamber)."),
+        _for_tier(_MICRO_USB_CABLE, quantity=1, tier_note="This tier: the 2-pack covers both cameras."),
         _for_tier(_USB_CHARGER, quantity=3,
                   tier_note="This tier: 3 packs = 6 cubes (4 nodes + 2 cameras)."),
         _tasmota_plug(4, "humidifier; dehumidifier; space heater; Peltier cooler"),
@@ -1135,8 +1524,8 @@ TIER_ALL = HardwareTier(
                   "rate switch at 10 SPS. hx711_scale.scad presets: cell=\"bar75\" (default — "
                   "Adafruit 4541 and most generic 75 mm kit bars) or cell=\"tal220\" (80 mm M5/M4 "
                   "bars, e.g. SparkFun SEN-13329, YZC-133 kits); SparkFun SEN-14729 (55 mm "
-                  "TAL220B) does NOT fit. Wire DOUT to GPIO 32 and SCK to GPIO 33 on the relay "
-                  "node, tick 'HX711 load-cell scale' under Optional peripherals in its setup "
+                  "TAL220B) does NOT fit. Run the 22 AWG 4-conductor cable to the relay node — red "
+                  "3.3V, black GND, yellow DOUT → GPIO 32, white SCK → GPIO 33 — tick 'HX711 load-cell scale' under Optional peripherals in its setup "
                   "portal (or send cmd/config {\"peripherals\": {\"hx711\": true}} to a node in "
                   "service), then tare + calibrate once; weight_g rides in telemetry in grams "
                   "after that.",
@@ -1148,7 +1537,8 @@ TIER_ALL = HardwareTier(
             url="https://www.amazon.com/dp/B0BX2ZRZ8T",
             category="sensor",
             notes="weideer MC-31B surface-mount contacts with COM / NO / NC screw terminals "
-                  "(supply your own hookup wire); one set per door, the second is a spare. Use "
+                  "(run two conductors of the 22 AWG 4-conductor cable back to the relay node); "
+                  "one set per door, the second is a spare. Use "
                   "COM + the alarm 'NC' terminal — closed while the magnet is present, i.e. "
                   "door shut; check continuity with a meter. COM to GPIO 35, NC to GND, and an "
                   "EXTERNAL 10K pull-up from GPIO 35 to 3V3 (input-only pins 34-39 have no "
@@ -1173,8 +1563,31 @@ TIER_ALL = HardwareTier(
                   "pump_bracket.scad (default pump=\"adafruit_1150\") bolts through the pump's "
                   "flange with M2.5 screws into heat-set inserts; the Kamoer NKP (B07GWJ78FN) "
                   "fits pump=\"kamoer_nkp\". Wire to the relay node's aux channel (GPIO 14) via "
-                  "IRLZ44N + flyback diode; aux has a 60 s max-on backstop by default.",
+                  "IRLZ44N + flyback diode with 18 AWG leads; aux has a 60 s max-on backstop "
+                  "by default.",
         ),
+        _SURGE_STRIP_12_USB,
+        _WIRE_18AWG,
+        _WIRE_22AWG,
+        _CABLE_22_4,
+        _WAGO,
+        _FUSE_HOLDERS,
+        _FUSES,
+        _FAN_EXTENSIONS,
+        _HEAT_SHRINK,
+        _ZIP_TIES,
+        _ZIP_TIES_DUCT,
+        _HOOK_LOOP,
+        _GROMMETS,
+        _PUMP_TUBING,
+        _INSERTS_ASSORTMENT,
+        _for_tier(_INSERTS_M25, quantity=1, tier_note="This tier needs 20."),
+        _SCREWS_M25,
+        _SCREWS_M3X6,
+        _SCREWS_KIT,
+        _SCREWS_M4,
+        _SET_SCREWS_M4,
+        _SOLDER,
         _BREADBOARD,
     ],
     wiring=[
@@ -1188,20 +1601,21 @@ TIER_ALL = HardwareTier(
                          to_pin="− lead to IRLZ44N #4 drain (J2 '−'); + lead to +12V",
                          note="UF4007 across the pump; FDA-grade tubing on the substrate line"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="3.3V", to_device="HX711",
-                         to_pin="VIN / VCC", note="Load cell amplifier — power"),
+                         to_pin="VIN / VCC", note="Load cell amplifier — power (22/4 cable: red)"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GND", to_device="HX711",
-                         to_pin="GND", note="Load cell amplifier — ground"),
+                         to_pin="GND", note="Load cell amplifier — ground (22/4 cable: black)"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 32", to_device="HX711",
-                         to_pin="DOUT (DATA)", note="Load cell amplifier — data"),
+                         to_pin="DOUT (DATA)", note="Load cell amplifier — data (22/4 cable: yellow)"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 33", to_device="HX711",
-                         to_pin="SCK (CLK)", note="Load cell amplifier — clock"),
+                         to_pin="SCK (CLK)", note="Load cell amplifier — clock (22/4 cable: white)"),
         WiringConnection(from_device="Load cell (4 wires)", from_pin="red / black / signal pair",
                          to_device="HX711 terminal block", to_pin="E+ / E− / A− / A+",
                          note="Red to E+, black to E−; swap A−/A+ if weight reads negative"),
         # GPIO 35 is input-only with NO internal pull-up: the pull-up is an
         # external 10K to 3V3, and the switch closes to GND with the door shut.
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GPIO 35", to_device="Door contact (reed)",
-                         to_pin="COM", note="EXTERNAL 10K pull-up GPIO 35 → 3V3 (input-only pin, no internal pull)"),
+                         to_pin="COM", note="EXTERNAL 10K pull-up GPIO 35 → 3V3 (input-only pin, no internal pull); "
+                         "two conductors of a second 22/4 run"),
         WiringConnection(from_device="ESP32 (Relay)", from_pin="GND", to_device="Door contact (reed)",
                          to_pin="NC (alarm 'normally closed')",
                          note="Closed with the magnet present (door shut) → GPIO 35 reads LOW"),
@@ -1215,7 +1629,7 @@ TIER_ALL = HardwareTier(
                                  note="Far-red 730nm — GREEN wire of the tri-spectrum strip (green = far-red)"),
             ],
         ),
-        *_PSU_ROWS,
+        *_power_rows("7.5 A"),
     ],
     wiring_diagram="See docs/wiring-tier3-all-the-things.svg for full wiring diagram with every ESP32 node, load cell, reed switch, pump, and 4-channel lighting.",
     firmware_targets=["node_esp32", "cam"],
@@ -1315,10 +1729,20 @@ TIER_ALL = HardwareTier(
         "the tubing and use FDA-grade silicone on the substrate line; the pump suits drip "
         "hydration better than atomizing nozzles. Aux stops itself after 60 s by default "
         "(raise with cmd/config {\"max_on_sec\": {\"aux\": N}} if you repurpose it)",
-        "POWER: fans, LED strips and the pump run from the 12V 10A PSU through the DC pigtail "
-        "into the switch boards' +12V / GND buses (tie each ESP32's GND to that GND bus). Keep "
-        "the load ≤ ~8 A: cut the strips to closet length. Each ESP32 node and each camera gets "
-        "its own 5V USB cube + cable (USB-C for the nodes, micro-USB into the cameras' MBs)",
+        "POWER (12V): 12V 10A PSU → DC barrel pigtail → WAGO 221-413 splits +12V into two "
+        "inline fuses — 3 A to the relay board's +12V bus (fans + pump), 7.5 A to the lighting "
+        "board's — and a WAGO 221-415 joins the pigtail GND to both boards' GND buses. Every 12V "
+        "run is the 18 AWG red/black pair; the ESP32s' GND reaches the same bus through each "
+        "board's J1 '−' (common ground). Keep the load ≤ ~8 A: cut the strips to closet length",
+        "CABLING: fans reach the relay board through their bundled 30 cm extension + a Noctua "
+        "NA-SEC3 (cut the extension's far end: pin 2 → J2 '+', pin 1 → J2 '−'); strips and the "
+        "pump get 18 AWG leads; the HX711 and the door contact come back to the relay node on "
+        "the 22/4 cable; adhesive heat shrink on every splice and strip joint. Everything "
+        "12V/mains stays OUTSIDE the chamber — pass the runs through a grommeted 7/8\" hole (or "
+        "the tent's port) and tie them off. The surge strip feeds the Pi PSU, the 12V brick, the "
+        "USB cubes and all four smart plugs (its USB-A ports can power the relay and lighting "
+        "nodes). Both climate nodes and both cameras get the 6 ft cables; the relay and lighting "
+        "nodes the short USB-C ones",
         _tasmota_step(
             "Humidifier plug: an ultrasonic humidifier (inside or piped in via tubing). "
             "Dehumidifier plug: a dehumidifier (outside the chamber, intake facing it). Heater "

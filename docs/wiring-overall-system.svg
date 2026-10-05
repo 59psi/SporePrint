@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 800" width="1000" height="800">
 
   <!-- Background -->
-  <rect width="1000" height="700" fill="#0a0a0f"/>
+  <rect width="1000" height="800" fill="#0a0a0f"/>
 
   <!-- ═══════════════════════ TITLE ═══════════════════════ -->
   <text x="500" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700">SporePrint System Overview</text>
@@ -60,7 +60,7 @@
   <rect x="40" y="86" width="172" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="126" y="110" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Climate Node(s)</text>
   <text x="126" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">SHT31 + SCD41 + BH1750</text>
-  <text x="126" y="148" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Temp, RH, CO2, Light</text>
+  <text x="126" y="148" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Temp, RH, CO2, Light · in chamber</text>
 
   <path d="M 180 166 Q 290 220 340 254" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
   <g><rect x="150" y="190" width="150" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
@@ -69,8 +69,8 @@
   <!-- Relay Node -->
   <rect x="266" y="74" width="172" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="352" y="98" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Relay Node</text>
-  <text x="352" y="118" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">4x MOSFET (IRLZ44N)</text>
-  <text x="352" y="136" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Fans, pump, aux</text>
+  <text x="352" y="118" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">4x IRLZ44N · outside chamber</text>
+  <text x="352" y="136" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Fans, aux pump (+ HX711, door)</text>
 
   <path d="M 380 154 L 420 210" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
   <g><rect x="332" y="168" width="148" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
@@ -79,7 +79,7 @@
   <!-- Lighting Node -->
   <rect x="510" y="74" width="172" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="596" y="98" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Lighting Node</text>
-  <text x="596" y="118" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">2-4x MOSFET, PWM</text>
+  <text x="596" y="118" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">2-4x IRLZ44N PWM · outside</text>
   <text x="596" y="136" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">White, Blue, Red, Far-Red</text>
 
   <path d="M 580 154 L 540 210" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
@@ -90,7 +90,7 @@
   <rect x="740" y="86" width="172" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="826" y="110" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Camera Node(s)</text>
   <text x="826" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">ESP32-CAM (OV2640 / OV3660)</text>
-  <text x="826" y="148" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Auto-capture every 15min</text>
+  <text x="826" y="148" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Still every 15 min · in chamber</text>
 
   <path d="M 775 166 Q 700 210 620 254" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
   <g><rect x="664" y="198" width="120" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
@@ -115,16 +115,16 @@
   <text x="490" y="472" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Dehumidifier</text>
   <text x="490" y="490" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">(optional, Tier 3)</text>
 
-  <rect x="584" y="428" width="148" height="70" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5" stroke-dasharray="4,2"/>
-  <text x="658" y="452" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Tasmota Plug</text>
-  <text x="658" y="472" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Peltier Cooler</text>
-  <text x="658" y="490" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">(optional, Tier 3)</text>
+  <rect x="574" y="428" width="148" height="70" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="648" y="452" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Tasmota Plug</text>
+  <text x="648" y="472" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Peltier Cooler</text>
+  <text x="648" y="490" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">(optional, Tier 3)</text>
 
   <!-- WiFi lines from plugs to Pi -->
   <path d="M 188 428 L 376 380" fill="none" stroke="#34d399" stroke-width="1.3" stroke-dasharray="5,3"/>
   <path d="M 350 428 L 430 380" fill="none" stroke="#34d399" stroke-width="1.3" stroke-dasharray="5,3"/>
   <path d="M 490 428 L 490 380" fill="none" stroke="#34d399" stroke-width="1.3" stroke-dasharray="5,3"/>
-  <path d="M 618 428 L 550 380" fill="none" stroke="#34d399" stroke-width="1.3" stroke-dasharray="5,3"/>
+  <path d="M 608 428 L 550 380" fill="none" stroke="#34d399" stroke-width="1.3" stroke-dasharray="5,3"/>
 
   <g><rect x="366" y="396" width="128" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="430" y="409" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">tasmota/&lt;topic&gt;/cmnd/POWER</text></g>
@@ -150,7 +150,7 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="730" y="228" width="256" height="150" rx="8" fill="#1e293b" stroke="#eab308" stroke-width="1.5" stroke-dasharray="6,3"/>
   <text x="858" y="256" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Cloud Relay (Optional)</text>
-  <text x="858" y="278" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">sporeprint.ai | Premium | HMAC-signed cmds (v3.3.1+)</text>
+  <text x="858" y="278" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">sporeprint.ai · Premium · HMAC-signed commands</text>
 
   <rect x="748" y="294" width="220" height="28" rx="4" fill="#0a0a0f" stroke="#eab308" stroke-width="0.5"/>
   <text x="858" y="312" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">WebSocket Relay Server</text>
@@ -198,7 +198,17 @@
   <text x="142" y="680" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">UI --> Pi --> MQTT, HMAC-signed --> ESP32 (fan speed, light level) | Pi --> plug on/off | Camera POSTs stills to the Pi REST API</text>
 
 
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!-- POWER + CABLING (all tiers) -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <rect x="40" y="698" width="920" height="80" rx="6" fill="#111827" stroke="#f97316" stroke-width="0.8"/>
+  <text x="62" y="716" fill="#fdba74" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Power + cabling (wiring diagrams + build guide for each tier):</text>
+  <text x="62" y="733" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Mains: one UL-listed surge-protector power strip OUTSIDE the chamber feeds the Pi's 27 W PSU, a 5 V USB charger per ESP32 / ESP32-CAM-MB,</text>
+  <text x="62" y="746" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">the Tasmota plugs and (Recommended up) the 12 V PSU → 14 AWG barrel pigtail → WAGO 221-413 / 221-415 → inline fuse per branch (relay 3 A,</text>
+  <text x="62" y="759" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">lighting 5 A / 7.5 A) → both switch boards on 18 AWG red/black. Each ESP32's GND ties to its board's GND bus (common ground). Climate nodes and</text>
+  <text x="62" y="772" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">cameras sit inside on 6 ft (2 m) USB cables through a grommet; the relay + lighting boards stay outside. Sensors daisy-chain over STEMMA QT.</text>
+
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="500" y="698" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  System Overview  |  github.com/59psi/SporePrint</text>
+  <text x="500" y="794" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  System Overview  |  github.com/59psi/SporePrint</text>
 
 </svg>

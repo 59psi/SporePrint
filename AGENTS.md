@@ -16,7 +16,7 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - PWM: 25 kHz, 10-bit LEDC on every channel (relay and lighting banks)
 - NVS for persistent config; the offline telemetry buffer is a 16 KB byte-capped RAM FIFO
 - Wire contract is additive only: new payload keys optional, `firmware/test/fixtures/signing_vectors.json` byte-identical to `server/tests/fixtures/signing_vectors.json`
-- Any GPIO change must update every wiring diagram, the BOM (`server/app/builder/hardware_guides.py`) and `docs/hardware-build-guide.md` in the same change
+- Any GPIO change must update every wiring diagram (tier SVGs via `scripts/wiring_svg/build.py`), the BOM (`server/app/builder/hardware_guides.py`) and `docs/hardware-build-guide.md` in the same change, then re-sync the dashboard's Builder data (`scripts/sync_ui_builder_data.py`)
 
 ## backend-agent
 
@@ -50,10 +50,11 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - Schema defined in `db.py` SCHEMA constant (33 tables) + migrations via `_add_column_if_missing`
 - v3.0+ modules (planner/, contamination/, cultures/, chambers/, experiments/, labels/) follow the same pattern: models.py, service.py, router.py
 - Dependencies are locked in `server/uv.lock` (the Docker image installs exactly those, hash-checked); after changing `pyproject.toml` run `uv lock`
+- Hardware BOM (`builder/hardware_guides.py`): cabling and consumables are real BOM lines (categories `wiring` / `hardware`); `shared=True` marks per-installation lines (Pi side, spools, kits) that the Builder's chamber count does not multiply. A BOM change updates the README tier table, `docs/hardware-build-guide.md` (§0 prices + reusable-kit row, §7 cabling) and the wiring SVGs in the same change (the three tier SVGs are generated: edit `scripts/wiring_svg/gen_t*.py` / `parts.py` and run `python3 scripts/wiring_svg/build.py` — `tests/test_wiring_svgs_generated.py` rejects hand edits), and re-syncs `ui/dist` with `scripts/sync_ui_builder_data.py` (`tests/test_docs_consistency.py` and `tests/test_ui_builder_sync.py` enforce both)
 
 ## frontend-agent
 
-**When**: Working on the React UI. The source lives in the parent monorepo (`frontend/packages/pi-ui`); this repo ships only the pre-built bundle in `ui/dist`, served by the `ui` nginx container (`ui/nginx.conf` proxies `/api` and `/socket.io`).
+**When**: Working on the React UI. The source lives in the parent monorepo (`frontend/packages/pi-ui`); this repo ships only the pre-built bundle in `ui/dist`, served by the `ui` nginx container (`ui/nginx.conf` proxies `/api` and `/socket.io`). The bundle's Builder page holds a static copy of the tiers, model list and diagram links (`/api/builder/diagrams/<svg>`); `scripts/sync_ui_builder_data.py` rewrites it from the server (`cd server && uv run python ../scripts/sync_ui_builder_data.py`, `--check` to verify).
 
 **Context**: React 18 + TypeScript + Vite + Tailwind CSS v4 + Zustand + Socket.IO client + Recharts + React Router v7 + Lucide icons. Dark theme primary.
 
@@ -75,7 +76,7 @@ Specialized agent patterns for working on SporePrint. Use these as context when 
 - Uses temp file SQLite (not `:memory:` — `get_db()` opens new connections). Conftest monkeypatches `settings.database_path`. FK constraints are live, so tests that insert child rows must first insert the parent (see `test_store_reading_with_session_id`).
 - Background tasks (MQTT, weather, retention, retrain, node-liveness sweeper) are mocked to no-ops in conftest `client` fixture.
 - `mock_mqtt` fixture returns a calls-list with a `.mock` attribute; set `mock_mqtt.mock.return_value = False` to simulate a broker-down state mid-publish.
-- `tests/test_docs_consistency.py` pins the docs (README, build guide, SVGs, AGENTS.md) to the code, firmware and BOM — update the docs with the code.
+- `tests/test_docs_consistency.py` pins the docs (README, build guide, SVGs, AGENTS.md) to the code, firmware and BOM — update the docs with the code. `tests/test_ui_builder_sync.py` fails when `ui/dist`'s Builder data is stale.
 
 ## species-agent
 
