@@ -173,8 +173,8 @@ _HARDWARE_CONTRACT = """## Firmware Images and Boards (PlatformIO envs)
   - climate: sensors only, no channels
   - relay: 4 switch channels fae, exhaust, circulation, aux (25 kHz PWM, pwm 0-255; aux drives the misting pump and cuts off after 60 s unless cmd/config max_on_sec raises it)
   - lighting: 4 dim channels white, blue, red, far_red (10-bit level 0-1023) plus scenes colonization_dark, pinning_daylight, fruiting_standard, cordyceps_blue, lions_mane_gentle
-- Sensors autodetected on the I2C bus at boot: SHT3x/SHT4x temp+RH (0x44/0x45), SCD4x CO2 (0x62) or SCD30 (0x61), BH1750 lux (0x23/0x5C). Optional peripherals, enabled in the setup portal or by cmd/config {{"peripherals": {{"mhz19": bool, "hx711": bool, "reed": bool, "reed_inv": bool}}}}: MH-Z19C CO2 (UART), HX711 load-cell scale, door reed switch (reed_inv inverts a door contact wired on its NO terminal and applies live; changing mhz19/hx711/reed reboots the node).
-- Camera node — env {cam_envs}: AI-Thinker ESP32-CAM ONLY. Its image sensor is OV2640 (the BOM AITRIP 2-pack) or OV3660 (current HiLetgo/Aideepen packs) or OV5640, auto-detected at boot. ESP32-S3 camera boards (ESP32-S3-CAM, Freenove, XIAO ESP32S3 Sense, Waveshare) are NOT supported by the shipped firmware — never recommend one; a second camera is another AI-Thinker ESP32-CAM.
+- Sensors autodetected on the I2C bus at boot: SHT3x/SHT4x temp+RH (0x44/0x45), AHT20/AHT21/AHT25 temp+RH (0x38, used when no SHT is fitted), SCD4x CO2 (0x62) or SCD30 (0x61), BH1750 lux (0x23/0x5C), BME280/BMP280 pressure (0x76/0x77, telemetry pressure_hpa). Optional peripherals, enabled in the setup portal or by cmd/config {{"peripherals": {{"mhz19": bool, "hx711": bool, "reed": bool, "reed_inv": bool}}}}: MH-Z19C CO2 (UART), HX711 load-cell scale, door reed switch (reed_inv inverts a door contact wired on its NO terminal and applies live; changing mhz19/hx711/reed reboots the node).
+- Camera node — envs {cam_envs}. `cam` is the AI-Thinker ESP32-CAM, the camera the BOM recommends: its image sensor is OV2640 (the BOM AITRIP 2-pack) or OV3660 (current HiLetgo/Aideepen packs) or OV5640, auto-detected at boot, and it has a flash LED. The other cam envs build the same image for the ESP32-S3 camera boards earlier BOMs listed: cam_esp32s3 = Freenove ESP32-S3-WROOM CAM, cam_xiao_esp32s3 = Seeed XIAO ESP32S3 Sense, cam_waveshare_s3 = Waveshare ESP32-S3-CAM-OVxxxx (no flash LED on any of them; bench verification pending). ESP32-S3 camera boards are supported for hardware an operator already owns — never recommend buying one (other ESP32-S3-CAM listings use other pin maps); a second camera is another AI-Thinker ESP32-CAM.
 
 ## Reserved GPIOs — never assign these to new hardware
 ESP32-WROOM-32 node (node_esp32):
@@ -188,6 +188,7 @@ ESP32-WROOM-32 node (node_esp32):
 - Usually free: 4, 13, 18, 19, 23 (and 34, 36, 39 as inputs)
 ESP32-S3-DevKitC-1 node (node_esp32s3 and variants): SDA 8, SCL 9; channels 4, 5, 6, 7; HX711 10/11; reed 12; MH-Z19C RX 16 / TX 17; BOOT 0. Avoid 0, 3, 45, 46 (strapping), 19, 20 (USB), 26-37 (flash/PSRAM), 38 (RGB LED). All 8 LEDC channels are taken by the two banks.
 AI-Thinker ESP32-CAM (cam): every camera pin is in use (0, 5, 18, 19, 21, 22, 23, 25, 26, 27, 32, 34, 35, 36, 39), the flash LED 4 and factory reset 13 — there are no spare GPIOs; put new sensors and actuators on a node.
+ESP32-S3 camera boards (cam_esp32s3, cam_xiao_esp32s3, cam_waveshare_s3): camera pins per firmware/boards/board_profile_esp32s3cam.h, BOOT 0 is the reset button — no GPIOs are offered for new hardware; put new sensors and actuators on a node.
 
 ## MQTT Contract (topics under sporeprint/{{node_id}}/)
 Node → Pi. The broker ACL (config/mosquitto/acl.conf) lets a node publish ONLY these, under its own id — anything else is silently dropped:
@@ -198,11 +199,13 @@ Node → Pi. The broker ACL (config/mosquitto/acl.conf) lets a node publish ONLY
 - `alert` — {{type, value, message, sensor}}
 - `ota` — OTA lifecycle events
 - `logs` — forwarded log batches (write-only)
-- `coredump/chunk` — panic-dump upload (write-only)
+- `coredump/chunk` — panic-dump upload (write-only); {{seq, total, size, b64_data, coredump_id}}, the node keeps the dump in flash until the Pi acks that id
 Pi → node (the node subscribes cmd/#, matches the suffix exactly, and verifies the HMAC signature once provisioned with a key):
 - `cmd/{{channel}}` — {{state: "on"|"off", pwm, level, duration_sec, ramp_sec}}; "off" always wins, and the Pi never sends pwm/level with "off"
 - `cmd/scene` — {{scene: <name>}} (lighting personality only)
 - `cmd/config` — {{read_interval_ms, publish_interval_ms, calibrate_co2, tare, calibrate_scale, max_on_sec: {{<channel>: seconds}}, peripherals: {{...}}}}
+- `cmd/coredump_ack` — {{coredump_id}}, sent by the Pi only after the dump is stored on disk; the node then erases it
+- `cmd/ota_manifest` — {{manifest_b64, sig_b64}}, a signed release manifest the Pi sends before an OTA push; an image built with the verify key then flashes only that exact image
 - Camera: {{capture: true, flash: bool}} takes a frame now; {{server_url: ...}} sets the upload URL. Frames are HTTP POSTed as raw JPEG to /api/vision/frame with X-Node-Id, X-Timestamp (only when NTP-synced) and X-Camera-Sensor.
 A new node topic needs BOTH a `pattern write sporeprint/%u/<topic>` line in config/mosquitto/acl.conf AND a handler branch in server/app/mqtt.py; prefer adding keys to the telemetry JSON (older servers ignore unknown keys). Shelly/Tasmota smart plugs stay on their own shellies/# and tasmota/# trees.
 """

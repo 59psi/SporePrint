@@ -42,7 +42,8 @@ inline float wire_round1(float v) { return roundf(v * 10.0f) / 10.0f; }
 // Every sensor field is optional: the firmware emits only the ones whose
 // sensor is present. `scale_raw` is the uncalibrated HX711 fallback — emitted
 // but NOT in SENSOR_FIELDS (the Pi tolerates-but-drops it), mutually exclusive
-// with `weight_g`.
+// with `weight_g`. `pressure_hpa` (additive) is barometric pressure from a
+// BME280 / BMP280, hPa (= mbar) to one decimal.
 //
 // Envelope keys (not sensor fields, never persisted as readings):
 //   ts      Unix-epoch seconds once NTP has synced; uptime seconds before
@@ -67,6 +68,9 @@ struct TelemetryInputs {
 
     bool have_lux = false;
     float lux = 0.0f;
+
+    bool have_pressure = false;  // BME280 / BMP280 present + fresh
+    float pressure_hpa = 0.0f;
 
     bool have_weight = false;  // HX711 present AND calibrated
     float weight_g = 0.0f;
@@ -97,6 +101,7 @@ inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
     }
     if (in.have_co2) doc["co2_ppm"] = in.co2_ppm;
     if (in.have_lux) doc["lux"] = wire_round1(in.lux);
+    if (in.have_pressure) doc["pressure_hpa"] = wire_round1(in.pressure_hpa);
     if (in.have_weight) {
         doc["weight_g"] = wire_round1(in.weight_g);
     } else if (in.have_scale_raw) {
@@ -216,7 +221,8 @@ inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
 
 // ── health (publish_health) ────────────────────────────────────
 // Nested: per-sensor {ok,reads,fails,last_error} keyed by driver name
-// (sht3x/sht4x/scd4x/scd30/bh1750/mhz19/hx711/reed), per-channel
+// (sht3x/sht4x/aht20/bme280/bmp280/scd4x/scd30/bh1750/mhz19/hx711/reed),
+// per-channel
 // {state,pwm,on_time_sec,cycle_count,safety_cutoffs} keyed by channel name,
 // plus an expected_missing[] array.
 struct SensorHealthView {

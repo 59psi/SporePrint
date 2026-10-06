@@ -6,8 +6,9 @@ name: firmware-ci
 #      golden file the server's Python suite asserts on), HMAC verify,
 #      buffer/channel/clamp/wrap suites, driver mock-bus suites, and the
 #      cam URL allowlist.
-#   2. A build matrix for all four shipped images (node_esp32,
-#      node_esp32s3, node_esp32s3_n32r16v, cam) — catches platform-pin
+#   2. A build matrix for every shipped image (node_esp32, node_esp32s3,
+#      node_esp32s3_n32r16v, cam, and the cam's ESP32-S3 builds
+#      cam_esp32s3, cam_xiao_esp32s3, cam_waveshare_s3) — catches platform-pin
 #      regressions, library API drift, and link breaks same-day. No hardware required; HIL testing
 #      remains a manual step per release.
 #
@@ -70,6 +71,9 @@ jobs:
           diff -q firmware/test/fixtures/signing_vectors.json \
                   server/tests/fixtures/signing_vectors.json
           echo "signing vectors byte-identical"
+          diff -q firmware/test/fixtures/ota_manifest_vectors.json \
+                  server/tests/fixtures/ota_manifest_vectors.json
+          echo "OTA manifest vectors byte-identical"
 
       - name: Arduino-free core check
         # lib/sp_core + lib/sp_drivers must stay host-compilable: no
@@ -88,7 +92,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam]
+        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam, cam_esp32s3,
+              cam_xiao_esp32s3, cam_waveshare_s3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

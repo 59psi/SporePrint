@@ -1,6 +1,6 @@
 #include "node_config.h"
 
-#include <WiFi.h>
+#include <esp_mac.h>
 
 #include <math.h>
 
@@ -8,9 +8,14 @@ namespace sp_device {
 
 namespace {
 
+// The factory (eFuse) station MAC — readable before WiFi starts. load() runs
+// before WiFi.mode(), and core 3.x's WiFi.macAddress() returns without
+// filling the buffer until the station interface exists (core 2.x read this
+// same eFuse MAC in that state), so it must not be used here: the default
+// node id would come from uninitialized bytes and change between boots.
 std::string default_node_id() {
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char buf[16];
     snprintf(buf, sizeof(buf), "node-%02x%02x", mac[4], mac[5]);
     return std::string(buf);

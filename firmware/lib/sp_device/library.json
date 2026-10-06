@@ -5,10 +5,5 @@
   "dependencies": {
     "sp_core": "*",
     "sp_drivers": "*"
-  },
-  "build": {
-    "flags": [
-      "-std=gnu++17"
-    ]
   }
 }

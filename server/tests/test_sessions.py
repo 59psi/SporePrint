@@ -1,3 +1,5 @@
+import json
+
 from app.sessions.models import SessionCreate, PhaseAdvance, NoteCreate, HarvestCreate
 from app.sessions.service import (
     create_session,
@@ -53,6 +55,17 @@ async def test_advance_phase():
     assert updated["phase_history"][0]["exited_at"] is not None
     # New phase should not
     assert updated["phase_history"][1]["exited_at"] is None
+
+
+async def test_phase_change_event_names_the_phase_readably():
+    # 2026-10 audit: the event read "Phase advanced to primordia_induction"
+    # (raw enum) in the timeline, the chamber feed and the transcript, while
+    # the reminder beside it said "Leaving browning".
+    s = await create_session(_make_session_data())
+    await advance_phase(s["id"], PhaseAdvance(phase="primordia_induction"))
+    [ev] = [e for e in await get_events(s["id"]) if e["type"] == "phase_change"]
+    assert ev["description"] == "Phase advanced to primordia induction"
+    assert json.loads(ev["data"]) == {"phase": "primordia_induction"}
 
 
 async def test_add_note():

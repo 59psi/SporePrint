@@ -4,8 +4,9 @@
 // esp32-camera headers so test/test_cam_url can assert them on the host.
 // main.cpp is the only device-side consumer.
 //
-//   * sensor identity + per-sensor tuning (OV2640 / OV3660 / OV5640 on the
-//     AI-Thinker pin map)
+//   * sensor identity + per-sensor tuning (OV2640 / OV3660 / OV5640)
+//   * per-board orientation and flash (AI-Thinker ESP32-CAM, and the
+//     ESP32-S3 camera boards of boards/board_profile_esp32s3cam.h)
 //   * JPEG-quality backoff after a dropped (overflowed) frame
 //   * the X-Timestamp rule: epoch seconds only when NTP-synced
 //   * the default upload URL (the portal's Pi address) and the hosts the
@@ -79,6 +80,38 @@ inline SensorProfile sensor_profile(uint16_t pid) {
             // defaults and say so in health.
             return {Model::Unknown, "unknown", 10, 12, false, 0, 0, 0};
     }
+}
+
+// ── board ───────────────────────────────────────────────────────
+//
+// Which board the image was built for (the board profile's
+// SP_CAM_BOARD_KIND; the AI-Thinker when it sets none).
+enum class Board : uint8_t { AiThinker, FreenoveS3, XiaoS3, WaveshareS3 };
+
+// The sensor sits on each board at its own angle. Only the Freenove
+// ESP32-S3-WROOM CAM's vendor example corrects for it (Freenove
+// Sketch_07.1_CameraWebServer camera_init: OV2640 mirrored + flipped, every
+// other sensor mirrored only), and those values override the sensor
+// profile's vflip there. The AI-Thinker, the XIAO and the Waveshare
+// examples run Espressif's CameraWebServer correction alone, which the
+// sensor profile already is.
+struct Orientation {
+    bool apply;  // false = keep the sensor profile's orientation
+    int8_t hmirror;
+    int8_t vflip;
+};
+
+inline Orientation board_orientation(Board board, uint16_t pid) {
+    if (board != Board::FreenoveS3) return {false, 0, 0};
+    if (pid == kPidOv2640) return {true, 1, 1};
+    return {true, 1, 0};
+}
+
+// A capture uses the flash only when it was asked for AND the board has
+// one (none of the S3 camera boards does). X-Flash-Used reports this
+// value, so the Pi never records a flash that did not fire.
+inline bool flash_for_capture(bool requested, bool board_has_flash) {
+    return requested && board_has_flash;
 }
 
 // A JPEG larger than the driver's fixed buffer is dropped (FB-OVF / NO-EOI)

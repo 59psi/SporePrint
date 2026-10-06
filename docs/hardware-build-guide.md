@@ -72,8 +72,12 @@ Traps that will cost you money or a rebuild:
    **ESP32-CAM-MB** programmer boards (micro-USB). The MB flashes the camera
    and is also its power input. Buy only the classic AI-Thinker "ESP32-CAM"
    (ESP32-S, 27 × 40.5 mm) with an **OV2640 or OV3660** sensor (OV5640 also
-   works — the firmware detects which is fitted). The "ESP32-S3-CAM" boards are
-   **not** supported.
+   works — the firmware detects which is fitted). Don't buy an ESP32-S3 camera
+   board for a new build: they have no flash LED, and `cam_mount` fits only the
+   AI-Thinker + MB. The three S3 camera boards earlier BOMs listed (Freenove
+   ESP32-S3-WROOM CAM, Seeed XIAO ESP32S3 Sense, Waveshare ESP32-S3-CAM) are
+   still supported — see §8b for their envs. Other "ESP32-S3-CAM" listings
+   use other pin maps and are not.
 3. **Buy the IRLZ44N, not the IRFZ44N.** The IRFZ44N is a standard-gate part
    that won't fully turn on from a 3.3 V GPIO, and it shows up in the same
    search.
@@ -505,7 +509,10 @@ live there. This is where each one goes:
 
 **One image covers every node.** There is no separate climate/relay/lighting
 build — you pick the personality per node when you provision it. Install
-PlatformIO (`pip install platformio`), then:
+PlatformIO Core 6.2.0 or newer (`pip install -U platformio`) and git. The
+firmware is pinned to Arduino-ESP32 core 3.3.12 (the pioarduino platform
+release in `firmware/platformio.ini`); the first build downloads it, about
+1 GB. Then:
 
 ```bash
 cd firmware
@@ -513,6 +520,10 @@ pio run -t upload -e node_esp32             # ESP32-WROOM-32 DevKit — every no
 pio run -t upload -e node_esp32s3           # ESP32-S3-DevKitC-1 N8 / N8R8 / N16R8 (see §8a)
 pio run -t upload -e node_esp32s3_n32r16v   # ESP32-S3-DevKitC-1-N32R16V — NOT node_esp32s3, it won't boot
 pio run -t upload -e cam                    # the ESP32-CAM, on its ESP32-CAM-MB
+# Only for an ESP32-S3 camera board bought from an earlier BOM (see §8b):
+pio run -t upload -e cam_esp32s3            # Freenove ESP32-S3-WROOM CAM
+pio run -t upload -e cam_xiao_esp32s3       # Seeed XIAO ESP32S3 Sense
+pio run -t upload -e cam_waveshare_s3       # Waveshare ESP32-S3-CAM-OV5640 / -OV3660
 ```
 
 **ESP32-CAM:** seat the camera on its **ESP32-CAM-MB**, plug the MB's
@@ -523,8 +534,9 @@ its power input, and `cam_mount.scad` holds the CAM + MB stack.
 
 Local builds report the `firmware/VERSION.txt` version in their heartbeat. The
 heartbeat's `board` field (`esp32-wroom-32`, `esp32-s3-devkitc-1`,
-`esp32-s3-devkitc-1-n32r16v`, `esp32-cam-ai-thinker`) tells you which image a
-later OTA push needs.
+`esp32-s3-devkitc-1-n32r16v`, `esp32-cam-ai-thinker`, and for the §8b boards
+`freenove-esp32-s3-wroom-cam`, `xiao-esp32s3-sense`, `waveshare-esp32-s3-cam`)
+tells you which image a later OTA push needs.
 
 (No PlatformIO clone? The app's Builder page → *ESP32 Firmware* serves a
 self-contained ZIP per image.)
@@ -550,6 +562,27 @@ N32R16V sold on Amazon. Both builds use the same pins:
 strapping pins 0, 3, 45 and 46, the native USB pins 19/20, GPIO 38 (RGB LED)
 and, on the N32R16V, GPIO 47/48 (1.8 V). The STEMMA QT cable colours are the
 same; only the header pins change.
+
+### 8b. ESP32-S3 camera boards (earlier BOMs)
+
+The BOM's camera is the AI-Thinker ESP32-CAM, and `cam_mount.scad` fits only
+its CAM + MB stack. From April to June 2026 the BOM listed ESP32-S3 camera
+boards instead; if you bought one, flash the env for that board. Each runs the
+same camera image (bench verification is still pending):
+
+| Board | Env | Plug into | Reset / portal button |
+|---|---|---|---|
+| Freenove ESP32-S3-WROOM CAM | `cam_esp32s3` | its USB-UART port | BOOT (GPIO 0) |
+| Seeed XIAO ESP32S3 Sense (stock camera or the OV5640 add-on) | `cam_xiao_esp32s3` | its USB-C | B / BOOT (GPIO 0) |
+| Waveshare ESP32-S3-CAM-OV5640 or -OV3660 | `cam_waveshare_s3` | its USB-C | BOOT (GPIO 0) |
+
+None of these boards has a flash LED, so the chamber light has to be on for
+photos (frames upload with `X-Flash-Used: 0`). Hold BOOT 3–10 s, then release,
+to open the setup portal; holding it more than 10 s is a factory reset, as on
+the nodes. Other "ESP32-S3-CAM" listings use other pin maps: only a board whose
+seller's example selects `CAMERA_MODEL_ESP32S3_EYE` (a Freenove clone) runs
+`cam_esp32s3`. Pin maps and sources: `firmware/boards/board_profile_esp32s3cam.h`
+and `firmware/docs/drivers.md`.
 
 ---
 
@@ -676,6 +709,16 @@ appears. Either way it looks fine in Tasmota.
 
 Shelly Gen1 plugs work with their default topics (`shellies/<id>/relay/0`);
 give them the `sp-3p` login too.
+
+**Shelly Gen2+ plugs** (Plus, Pro, Mini, Gen3, Gen4) need one more setting.
+In the Shelly web UI, **Settings → Connectivity → MQTT**: turn MQTT on with
+**Server** = your Pi's IP and port (`<pi-ip>:1883`), **Username** `sp-3p`,
+**Password** `SPOREPRINT_MQTT_3P_PASSWORD`, **MQTT prefix** =
+`shellies/<role>` (`shellies/humidifier` → `plug-humidifier`) — **required**:
+the factory prefix (the device id) is a topic tree the broker drops — and
+turn on "RPC status notifications over MQTT" and "Generic status update over
+MQTT". Saving reboots the plug; it registers itself when it comes back. More
+in [integrations/smart-plugs.md](integrations/smart-plugs.md).
 
 Humidifier inside the chamber (or piped in); dehumidifier outside with its
 intake facing the chamber; heater outside, aimed at the intake; Peltier cooler
@@ -818,6 +861,7 @@ Work down this list. Each step proves the one before it.
 | Node never appears | The node has the wrong Pi address, **or its broker login is missing/wrong** — run `./scripts/add-node-mqtt-user.sh <node_id>`, enter that username + password in the portal and leave Node ID blank (a Node ID that differs from the username is refused by the ACL). The broker refuses bad credentials *silently*. |
 | Plug configured but never appears | You entered Host + Port without the MQTT **User/Password** (`sp-3p` / `SPOREPRINT_MQTT_3P_PASSWORD` from `.env`). Tasmota shows no error; the broker just refuses it. |
 | Plug connected to the broker but never appears, or never switches | Tasmota's **Full Topic** is still the default `%prefix%/%topic%/`. Set Full Topic `tasmota/%topic%/%prefix%/` (console: `FullTopic tasmota/%topic%/%prefix%/`) and a unique Topic, then toggle the plug. |
+| Shelly Gen2+ plug never appears | Its **MQTT prefix** is still the device id (`shellyplusplugs-…`), or has more than one level under `shellies/`. Set `shellies/<role>`, turn on "RPC status notifications over MQTT", save (it reboots). |
 | Sensor missing from telemetry | I²C: check the STEMMA QT cable is seated in both ports and the 4397's four sockets are on 3V3 / GND / GPIO 21 / GPIO 22 (S3: GPIO 8 / 9). Scale/door/MH-Z19C: you didn't tick it under Optional peripherals — these are never autodetected. |
 | S3 node: no sensors, no channels | It was wired from the WROOM-32 diagrams, or flashed with the wrong env. Use the §8a pin map; `node_esp32s3_n32r16v` for the N32R16V board. |
 | CO₂ reads a flat 400 ppm | Still warming up (5 min), or it needs a forced recalibration in fresh outdoor air (`cmd/config {"calibrate_co2": 420}`, 400–2000 ppm). |
@@ -843,6 +887,14 @@ Work down this list. Each step proves the one before it.
 
 - **Update:** `cd ~/SporePrint && git pull && ./install.sh`. It keeps your
   settings and adds any new keys to `.env`.
+- **Update node firmware:** build the image (`pio run -e <env>` writes
+  `firmware/.pio/build/<env>/firmware.bin`; the Builder page's ZIP builds the
+  same) and push that `firmware.bin` from the dashboard's **Firmware** page
+  with the node's OTA password. Nodes still running a core 2.x image (any release
+  before the core-3 port) take the new image over the air, no USB cable
+  needed. Before updating several nodes, update one node of each board type
+  first and check its heartbeat
+  ([firmware/README.md](../firmware/README.md#updating-nodes-from-a-core-2x-image)).
 - **Apply `.env` changes:** `docker compose up -d server`
   (`docker compose restart` does not re-read `.env`).
 - **Rotate broker passwords:** `./scripts/rotate-mqtt-creds.sh` rotates the

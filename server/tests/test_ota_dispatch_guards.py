@@ -18,6 +18,7 @@ import pytest
 
 import app.cloud.service as service
 from app.cloud import ota
+from app.config import settings
 
 
 @pytest.fixture
@@ -73,8 +74,12 @@ async def test_downgrade_refused(bare_metal):
     assert "downgrade" in err
 
 
-def test_same_or_newer_version_allowed(bare_metal):
+def test_same_or_newer_version_allowed(bare_metal, monkeypatch):
     assert ota.validate_request("5.0.0", "stable") is None
+    # A beta request is refused on a stable Pi (channel binding) and
+    # allowed once the Pi follows beta.
+    assert "channel" in ota.validate_request("v5.1.0-beta.1", "beta")
+    monkeypatch.setattr(settings, "ota_channel", "beta")
     assert ota.validate_request("v5.1.0-beta.1", "beta") is None
 
 

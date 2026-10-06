@@ -338,6 +338,9 @@ _ALWAYS_SEALED_CONTAINERS = {"jar", "grain_jar", "agar_plate", "agar"}
 # to fruit — the session flow already treats it as a fruiting container.
 _SEALED_UNTIL_FRUITING = {"grow_bag", "bag", "bulk_bag"}
 _FRUITING_PHASES = {"primordia_induction", "fruiting"}
+# A shiitake block comes OUT of its bag to brown (light and air drive the
+# skin), so its chamber band is the block's from browning on.
+_BAG_OPEN_PHASES = _FRUITING_PHASES | {"browning"}
 
 
 def _container_is_sealed(container_type: str | None, phase: str) -> bool:
@@ -347,7 +350,7 @@ def _container_is_sealed(container_type: str | None, phase: str) -> bool:
     if ct in _ALWAYS_SEALED_CONTAINERS:
         return True
     if ct in _SEALED_UNTIL_FRUITING:
-        return phase not in _FRUITING_PHASES  # the bag is opened to fruit
+        return phase not in _BAG_OPEN_PHASES  # the bag is opened to brown / fruit
     return False  # monotub, tray, open, anything else → the substrate is in the sensed air
 
 

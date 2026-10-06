@@ -23,4 +23,24 @@ void hmac_sha256_host(const uint8_t* key, size_t key_len,
 
 void sha256_host(const uint8_t* msg, size_t msg_len, uint8_t out[32]);
 
+// Streaming SHA-256 over the same vendored implementation, for inputs that
+// never sit in RAM at once (the coredump partition, read 512 B at a time).
+// update() any number of times, then finish() once.
+class Sha256 {
+public:
+    Sha256();
+    void update(const uint8_t* data, size_t len);
+    void finish(uint8_t out[32]);
+
+    struct State {
+        uint32_t h[8];
+        uint8_t block[64];
+        size_t block_len;
+        uint64_t total_len;
+    };
+
+private:
+    State s_;
+};
+
 }  // namespace sp

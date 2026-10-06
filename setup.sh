@@ -141,9 +141,10 @@ if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
     rm -f .env.bak
 
     # sp-3p is the credential you configure INTO Shelly/Tasmota smart plugs
-    # (Tasmota: Configuration → MQTT → User/Password). The broker refuses
-    # anonymous clients, so a plug configured with only Host+Port never
-    # connects — and Mosquitto refuses silently.
+    # (Tasmota: Configuration → MQTT → User/Password; Shelly Gen2+: Settings →
+    # MQTT → Username/Password, with MQTT prefix shellies/<role>). The broker
+    # refuses anonymous clients, so a plug configured with only Host+Port
+    # never connects — and Mosquitto refuses silently.
     MQTT_3P_PASS=$(_gen_secret)
     if grep -q '^SPOREPRINT_MQTT_3P_PASSWORD=' .env 2>/dev/null; then
         sed -i.bak "s|^SPOREPRINT_MQTT_3P_PASSWORD=.*|SPOREPRINT_MQTT_3P_PASSWORD=$MQTT_3P_PASS|" .env

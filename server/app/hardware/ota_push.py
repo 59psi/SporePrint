@@ -1,17 +1,28 @@
 """ESP32 node firmware push — client side of the espota protocol (v4.2).
 
-The nodes run ArduinoOTA (firmware/lib/sp_device/ota_service.*), armed only
-when a per-device password >= 12 chars was provisioned via the captive
-portal. This module lets the Pi push a firmware ``.bin`` to a node over the
-LAN, exactly like Arduino's espota.py sender:
+The nodes run an espota listener (firmware/lib/sp_device/ota_service.*, the
+ArduinoOTA wire protocol), armed only when a per-device password >= 12 chars
+was provisioned via the captive portal. This module lets the Pi push a
+firmware ``.bin`` to a node over the LAN, exactly like Arduino's espota.py
+sender:
 
 1. UDP invitation to the node's OTA port (default 3232)::
 
        "<command> <host_port> <file_size> <file_md5>\\n"     (command 0 = FLASH)
 
-2. Node replies ``AUTH <nonce>``; we answer with MD5 digest auth::
+2. Node replies ``AUTH <nonce>``; we answer by the nonce's length, as
+   espota.py does. A 32-hex nonce is the MD5 digest every SporePrint image
+   offers (core 2.x ArduinoOTA, and ota_service.cpp on core 3.x)::
 
        "200 <cnonce> <md5(md5(password):nonce:cnonce)>\\n"
+
+   A 64-hex nonce is arduino-esp32 3.3.1+'s stock ArduinoOTA
+   (PBKDF2-HMAC-SHA256 over sha256(password), 10 000 rounds)::
+
+       "200 <cnonce> <sha256(pbkdf2(sha256(password), nonce:cnonce):nonce:cnonce)>\\n"
+
+   Answering both lets a later firmware move to the stock library without
+   locking itself out of Pi pushes (firmware/lib/sp_core/espota.h).
 
 3. Node replies ``OK``, then connects BACK to us over TCP on <host_port>
    and pulls the image. Each chunk is acked with the decimal byte count the
@@ -32,6 +43,15 @@ in the in-memory per-node status exposed via
 ``GET /api/hardware/nodes/{node_id}/ota``.
 
 The OTA password is supplied per push and never stored or logged.
+
+Signed manifests (``node_manifest.py``): a push that comes with one first
+sends it to the node on ``cmd/ota_manifest`` and waits up to
+``MANIFEST_CONFIRM_TIMEOUT_S`` for the node's ``manifest_armed`` /
+``manifest_rejected`` OTA event (fed in by app/mqtt.py through
+``note_node_event``). Armed → the node will flash only that exact image;
+rejected → the push is not attempted; no answer (firmware without manifest
+support) → the push goes ahead, verified by the Pi only. The status's
+``manifest`` field says which: ``node_verified`` | ``pi_verified`` | None.
 """
 
 from __future__ import annotations
@@ -43,12 +63,15 @@ import logging
 import os
 import socket
 import time
-from typing import Callable
+from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
 FLASH_CMD = 0        # U_FLASH — firmware image
 AUTH_CMD = 200       # U_AUTH — digest-auth answer
+# arduino-esp32 3.3.1+ ArduinoOTA: PBKDF2-HMAC-SHA256 rounds (ArduinoOTA.cpp
+# and espota.py both hard-code 10000).
+PBKDF2_ITERATIONS = 10_000
 DEFAULT_OTA_PORT = 3232
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024  # hard cap; a 4 MB-flash node is ~2 MB
 CHUNK_SIZE = 1024    # espota chunk size; the node buffers at most 1460
@@ -66,9 +89,32 @@ CALLBACK_PORT = 3233
 # One fixed callback port → one transfer at a time across all nodes.
 _callback_port_lock = asyncio.Lock()
 
+# How long a node gets to answer cmd/ota_manifest before the push goes ahead
+# unconfirmed (the node's own command handling is a loop pass away).
+MANIFEST_CONFIRM_TIMEOUT_S = 10.0
+# Rejections that only mean "this node cannot check manifests" — the push
+# then proceeds as Pi-verified, like a node that never answers.
+_NODE_CANNOT_VERIFY = frozenset({"manifest_no_key"})
+
+# (topic, payload) → published? — app.mqtt.mqtt_publish, injected by the
+# caller (this module must not import app.mqtt, which imports it).
+CommandSender = Callable[[str, dict], Awaitable[bool]]
+
 
 class OtaPushError(Exception):
     """Pi-side push failure. Messages never contain the password."""
+
+
+def _refusal(data: bytes) -> OtaPushError | None:
+    """The node's refusal text in an ack, if any. It prints "ERR <reason>"
+    when the image does not hash to its signed manifest (ota_service.cpp) and
+    Update's "ERROR[n]: ..." when Update.end() fails; acks are otherwise
+    decimal byte counts or "OK"."""
+    at = data.find(b"ERR")
+    if at < 0:
+        return None
+    detail = data[at:].decode(errors="replace").strip()[:80]
+    return OtaPushError(f"node refused the image: {detail}")
 
 
 def auth_response(password: str, nonce: str, cnonce: str) -> str:
@@ -86,20 +132,71 @@ def auth_response(password: str, nonce: str, cnonce: str) -> str:
     return hashlib.md5(f"{pwd_hash}:{nonce}:{cnonce}".encode()).hexdigest()
 
 
+def auth_response_pbkdf2(password: str, nonce: str, cnonce: str) -> str:
+    """espota 3.3.1+ digest, the answer to a 64-hex nonce.
+
+    Matches arduino-esp32 3.3's ArduinoOTA: setPassword() stores
+    sha256(password) as hex; the node derives
+    ``pbkdf2_hmac_sha256(that hex, nonce + ':' + cnonce, 10000)`` (32 bytes,
+    as hex) and compares ``sha256(derived + ':' + nonce + ':' + cnonce)``.
+    espota.py's default (SHA256 password) path — the MD5-password variant it
+    retries with serves sketches that call setPasswordHash() with an MD5,
+    which no SporePrint firmware does.
+    """
+    pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+    derived = hashlib.pbkdf2_hmac("sha256", pwd_hash.encode(),
+                                  f"{nonce}:{cnonce}".encode(),
+                                  PBKDF2_ITERATIONS).hex()
+    return hashlib.sha256(f"{derived}:{nonce}:{cnonce}".encode()).hexdigest()
+
+
+def auth_answer(password: str, nonce: str) -> str:
+    """The U_AUTH datagram answering ``AUTH <nonce>``, chosen by the nonce's
+    length as espota.py does: 32 hex = MD5 digest (cnonce 32 hex), 64 hex =
+    PBKDF2-HMAC-SHA256 (cnonce 64 hex — the 3.3 node refuses any other
+    length). Anything else is refused rather than answered wrongly."""
+    if len(nonce) == 32:
+        cnonce = hashlib.md5(os.urandom(32)).hexdigest()
+        return f"{AUTH_CMD} {cnonce} {auth_response(password, nonce, cnonce)}\n"
+    if len(nonce) == 64:
+        cnonce = hashlib.sha256(os.urandom(32)).hexdigest()
+        return f"{AUTH_CMD} {cnonce} {auth_response_pbkdf2(password, nonce, cnonce)}\n"
+    raise OtaPushError(
+        f"unsupported AUTH challenge: a {len(nonce)}-character nonce "
+        "(espota answers 32 = MD5 or 64 = PBKDF2-SHA256)")
+
+
 # ─── In-memory per-node push status ──────────────────────────────────────
 # The UI polls GET .../ota after POSTing a push. state is one of
 # idle | running | ok | error. Survives until the next push to that node.
 
 _status: dict[str, dict] = {}
 _tasks: dict[str, asyncio.Task] = {}
+# node_id → (expected sha256, future the node's manifest answer resolves)
+_manifest_waiters: dict[str, tuple[str, asyncio.Future]] = {}
 
 
 def get_status(node_id: str) -> dict:
     return _status.get(node_id) or {
         "node_id": node_id, "state": "idle", "message": None,
         "started_at": None, "finished_at": None,
-        "bytes_sent": 0, "total_bytes": 0,
+        "bytes_sent": 0, "total_bytes": 0, "manifest": None,
     }
+
+
+def note_node_event(node_id: str, payload: dict) -> None:
+    """A node's ``sporeprint/<id>/ota`` event (app/mqtt.py). Resolves a push
+    waiting for the node's answer to its signed manifest."""
+    waiter = _manifest_waiters.get(node_id)
+    if waiter is None or not isinstance(payload, dict):
+        return
+    expected_sha256, fut = waiter
+    event = payload.get("event")
+    if fut.done() or event not in ("manifest_armed", "manifest_rejected"):
+        return
+    if event == "manifest_armed" and payload.get("sha256") != expected_sha256:
+        return  # armed for some other image — not this push's answer
+    fut.set_result(payload)
 
 
 def is_running(node_id: str) -> bool:
@@ -107,27 +204,68 @@ def is_running(node_id: str) -> bool:
 
 
 def start_push(node_id: str, ip: str, port: int, password: str,
-               image: bytes) -> None:
+               image: bytes, *, manifest=None,
+               send_command: CommandSender | None = None) -> None:
     """Begin a background transfer. Caller must have checked is_running()
-    — there must be no await between that check and this call."""
+    — there must be no await between that check and this call.
+
+    ``manifest`` (a ``node_manifest.NodeManifest`` the caller verified
+    against ``image``) is sent with ``send_command`` before the push."""
+    if manifest is not None and send_command is None:
+        raise ValueError("a manifest push needs send_command")
     _status[node_id] = {
         "node_id": node_id, "state": "running",
         "message": f"pushing {len(image)} bytes to {ip}:{port}",
         "started_at": time.time(), "finished_at": None,
         "bytes_sent": 0, "total_bytes": len(image),
+        "manifest": "pi_verified" if manifest is not None else None,
     }
     _tasks[node_id] = asyncio.create_task(
-        _run_push(node_id, ip, port, password, image))
+        _run_push(node_id, ip, port, password, image, manifest, send_command))
+
+
+async def _arm_node(node_id: str, manifest, send_command: CommandSender,
+                    st: dict) -> None:
+    """Send the signed manifest and wait for the node's answer."""
+    sha256 = manifest.manifest["sha256"]
+    fut = asyncio.get_running_loop().create_future()
+    _manifest_waiters[node_id] = (sha256, fut)
+    try:
+        st["message"] = "sending the signed manifest to the node"
+        if not await send_command(f"sporeprint/{node_id}/cmd/ota_manifest",
+                                  manifest.command()):
+            raise OtaPushError("could not send the signed manifest to the node (MQTT)")
+        try:
+            answer = await asyncio.wait_for(fut, MANIFEST_CONFIRM_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.info("OTA push to %s: node did not confirm the manifest — "
+                     "pushing as verified by the Pi only", node_id)
+            return
+    finally:
+        _manifest_waiters.pop(node_id, None)
+    if answer.get("event") == "manifest_armed":
+        st["manifest"] = "node_verified"
+        return
+    reason = str(answer.get("reason") or "no reason given")[:64]
+    if reason in _NODE_CANNOT_VERIFY:
+        log.info("OTA push to %s: node cannot check manifests (%s) — pushing "
+                 "as verified by the Pi only", node_id, reason)
+        return
+    raise OtaPushError(f"node rejected the signed manifest: {reason}")
 
 
 async def _run_push(node_id: str, ip: str, port: int, password: str,
-                    image: bytes) -> None:
+                    image: bytes, manifest=None,
+                    send_command: CommandSender | None = None) -> None:
     st = _status[node_id]
 
     def _progress(sent: int) -> None:
         st["bytes_sent"] = sent
 
     try:
+        if manifest is not None:
+            await _arm_node(node_id, manifest, send_command, st)
+            st["message"] = f"pushing {len(image)} bytes to {ip}:{port}"
         await push_firmware(node_id, ip, port, password, image,
                             progress_cb=_progress)
     except OtaPushError as e:
@@ -339,10 +477,8 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
                 parts = reply.split()
                 if len(parts) != 2:
                     raise OtaPushError("malformed AUTH challenge from node")
-                nonce = parts[1]
-                cnonce = hashlib.md5(os.urandom(32)).hexdigest()
-                answer = (f"{AUTH_CMD} {cnonce} "
-                          f"{auth_response(password, nonce, cnonce)}\n")
+                # PBKDF2 (10 000 rounds) runs off the event loop.
+                answer = await asyncio.to_thread(auth_answer, password, parts[1])
                 transport.sendto(answer.encode())
                 reply = await _await_auth_result(proto, invite_timeout)
                 if reply != "OK":
@@ -380,6 +516,9 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
                 if not ack:
                     raise OtaPushError(
                         f"node closed the connection at {sent}/{size} bytes")
+                refused = _refusal(ack)
+                if refused is not None:
+                    raise refused
                 sent += len(chunk)
                 if progress_cb is not None:
                     progress_cb(sent)
@@ -402,6 +541,9 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
                 if not data:
                     raise OtaPushError(
                         "node closed the connection before confirming flash")
+                refused = _refusal(data)
+                if refused is not None:
+                    raise refused
                 if b"OK" in data:
                     saw_ok = True
         finally:

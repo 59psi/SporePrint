@@ -67,9 +67,11 @@ async def flush_status(session_id: int):
 @router.get("/{session_id}/next-phase")
 async def next_phase(session_id: int):
     """What phase does this session advance to next? Implements both forks:
-    the container fork (colonized bag → fruiting; jar/agar → cold storage) and
-    the flush loop (rest → fruiting while flushes remain, else complete), so the
-    UI can default the 'advance' action correctly."""
+    the container fork (colonized bag → fruiting, or → browning for shiitake;
+    jar/agar → cold storage) and the flush loop (rest → fruiting while flushes
+    remain, else complete), so the UI can default the 'advance' action
+    correctly. ``exit_reminder`` is the manual step due on leaving the current
+    phase (shiitake browning's cold-water soak), or null."""
     session = await service.get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
@@ -84,6 +86,7 @@ async def next_phase(session_id: int):
         "current_phase": session["current_phase"],
         "suggested_next_phase": suggested,
         "flushes": flushes,
+        "exit_reminder": profile.phase_exit_reminder(session["current_phase"]) if profile else None,
     }
 
 

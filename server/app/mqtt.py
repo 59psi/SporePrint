@@ -11,6 +11,9 @@ import aiomqtt
 
 from .cloud.service import forward_telemetry, forward_event, forward_component_health
 from .config import settings
+from .hardware.coredumps import ACK_SUFFIX as COREDUMP_ACK_SUFFIX
+from .hardware.coredumps import ingest_chunk as ingest_coredump_chunk
+from .hardware.ota_push import note_node_event as note_node_ota_event
 from .notifications.service import notify
 from .telemetry.service import (
     active_session_for_node,
@@ -110,7 +113,11 @@ async def purge_reserved_nodes() -> int:
                     "broker service account name", removed)
     return removed
 
-# Shelly / Tasmota publish on their own topic trees, often as bare text.
+# Shelly / Tasmota publish on their own topic trees, often as bare text. A
+# Shelly Gen2+ (Plus/Pro/Mini, Gen3, Gen4) is set up with its MQTT prefix
+# under shellies/ (shellies/<role>), so shellies/# carries both generations and
+# no subscription or ACL grant outside these two trees is needed — see
+# automation/smart_plugs.py and config/mosquitto/acl.conf.
 _VENDOR_PLUG_PREFIXES = ("shellies/", "tasmota/")
 
 # Telemetry frames also refresh a registered node's liveness (srv-hw#22): the
@@ -403,10 +410,11 @@ def _is_vendor_plug_topic(topic: str) -> bool:
 def _decode_payload(topic: str, raw: bytes):
     """Decode one MQTT payload for routing; None means drop the frame.
 
-    sporeprint/* frames are JSON objects, nothing else. Shelly and Tasmota
+    sporeprint/* frames are JSON objects, nothing else. Shelly Gen1 and Tasmota
     publish their relay state as bare text (`on`/`off`, `ON`/`OFF`), so for
     those topics a payload that isn't JSON is passed through as the stripped
-    string. Numeric power reports and Tasmota's JSON telemetry still parse.
+    string. Numeric power reports, the `true`/`false` online flag and the JSON
+    of Tasmota telemetry and Shelly Gen2 RPC frames still parse.
     """
     try:
         text = raw.decode()
@@ -757,16 +765,28 @@ async def _handle_message(sio, topic: str, payload):
                                         "count": len(entries)})
 
     elif msg_type == "coredump":
-        # v4.2 — {seq,total,size,b64_data} chunks; reassembled to
-        # data/coredumps/. A completed dump means the node panicked on its
-        # previous run — surface it as an alert event.
+        # {seq,total,size,b64_data,coredump_id} chunks, reassembled to the
+        # coredump directory (hardware/coredumps.py). A completed dump means
+        # the node panicked on an earlier run — surface it as an alert event.
         if len(parts) == 4 and parts[3] == "chunk":
-            from .hardware.coredumps import ingest_chunk
-            written = ingest_chunk(node_id, payload)
-            if written is not None:
+            stored = await ingest_coredump_chunk(node_id, payload)
+            if stored is None:
+                return
+            if stored.coredump_id is not None:
+                # Store-then-ack: ingest returned only once the dump is
+                # durably on disk, and only now may the node erase its flash
+                # copy. A re-upload (lost ack) is acknowledged again.
+                acked = await mqtt_publish(
+                    f"sporeprint/{node_id}/cmd/{COREDUMP_ACK_SUFFIX}",
+                    {"coredump_id": stored.coredump_id},
+                )
+                if not acked:
+                    log.warning("coredump ack to %s not sent — the node keeps "
+                                "its dump and uploads it again", node_id)
+            if stored.new:
                 evt = {"node_id": node_id, "type": "coredump",
                        "message": "Node panicked last boot — coredump saved",
-                       "filename": written.name}
+                       "filename": stored.path.name}
                 await sio.emit("alert", evt)
                 await forward_event("alert", evt)
 
@@ -776,6 +796,8 @@ async def _handle_message(sio, topic: str, payload):
         # operators can see node updates; this is visibility only — pushing
         # images stays a LAN operation.
         evt = {"node_id": node_id, **payload}
+        # A push waiting for the node's answer to its signed manifest.
+        note_node_ota_event(node_id, payload)
         await sio.emit("node_ota", evt)
         await forward_event("node_ota", evt)
 

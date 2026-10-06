@@ -20,6 +20,13 @@ from ..vision.service import (
 # overflow the model's context window. ~150 entries is roughly 15K tokens.
 _MAX_VISION_SUMMARIES = 150
 
+# Session events the markdown export lists under "Key Events". A phase-exit
+# reminder is the manual step owed on leaving a phase (shiitake browning's
+# cold-water soak) — the record of when it was due belongs in the narrative.
+_KEY_EVENT_TYPES = frozenset({
+    "phase_change", "phase_exit_reminder", "harvest", "session_created", "session_completed",
+})
+
 
 async def _session_node_ids(db, session: dict) -> list[str] | None:
     """Nodes whose telemetry describes this session's environment.
@@ -166,7 +173,8 @@ async def export_json(session_id: int) -> dict | None:
 
         # Events
         cursor = await db.execute(
-            "SELECT * FROM session_events WHERE session_id = ? ORDER BY timestamp", (session_id,)
+            # id breaks same-second ties (exit reminder before its phase change)
+            "SELECT * FROM session_events WHERE session_id = ? ORDER BY timestamp, id", (session_id,)
         )
         events = [dict(r) for r in await cursor.fetchall()]
 
@@ -325,7 +333,7 @@ async def export_markdown(session_id: int) -> str | None:
     if data["events"]:
         lines.extend(["## Key Events", ""])
         for e in data["events"]:
-            if e["type"] in ("phase_change", "harvest", "session_created", "session_completed"):
+            if e["type"] in _KEY_EVENT_TYPES:
                 ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(e["timestamp"]))
                 lines.append(f"- **{ts}**: {e['description']}")
         lines.append("")

@@ -494,7 +494,8 @@ ${BOLD}Next steps${NC}
     commands without the key; to make a node reject forged ones, paste the key
     into its portal's "Command signing key" — print it with ./scripts/provision-node.sh
   • Smart plugs (Shelly/Tasmota): MQTT user sp-3p, password SPOREPRINT_MQTT_3P_PASSWORD
-    in .env (Tasmota: FullTopic tasmota/%topic%/%prefix%/ and a unique Topic).
+    in .env (Tasmota: FullTopic tasmota/%topic%/%prefix%/ and a unique Topic;
+    Shelly Plus/Pro/Mini/Gen3/Gen4: MQTT prefix shellies/<role>, e.g. shellies/humidifier).
   • To pair with the cloud (premium remote access), generate a code in the app.
 
 ${BOLD}Manage the stack${NC}  (from ${REPO_DIR})

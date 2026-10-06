@@ -7,7 +7,9 @@ quantities scaled for the requested number of grows and container size.
 
 from __future__ import annotations
 
-from .models import SpeciesProfile
+import re
+
+from .models import SpeciesProfile, SubstrateRecipe
 from .substrate import BASE_DENSITY_KG_PER_LITER, _format_quantity, calculate_recipe
 
 
@@ -89,6 +91,51 @@ _SUPPLIER_LINKS: dict[str, list[str]] = {
 }
 
 
+# The vessel a recipe is grown in, from the recipe itself (the list used to
+# give every species a monotub + trash-bag liner — two sawdust-block species
+# came out as "Monotub ×2" instead of filter-patch bags):
+#   • outdoor beds and logs need no container;
+#   • grain, brown-rice, agar and bottle cultures go in jars / dishes;
+#   • any other pressure-sterilized bulk substrate (supplemented sawdust,
+#     masters mix, chips, hulls) is sterilized, inoculated and fruited in a
+#     filter-patch grow bag — no tub, no liner;
+#   • pasteurized bulk (CVG, manure, straw) goes in a lined monotub.
+_OUTDOOR_RECIPE = re.compile(r"\b(?:outdoor|log|bed)\b", re.I)
+_JAR_RECIPE = re.compile(r"\b(?:grain|brown rice|agar|bottle)\b", re.I)
+
+
+def container_kind(recipe: SubstrateRecipe) -> str:
+    """What a grow on this recipe sits in: "none", "jar", "bag" or "tub"."""
+    if _OUTDOOR_RECIPE.search(recipe.name):
+        return "none"
+    if _JAR_RECIPE.search(recipe.name):
+        return "jar"
+    if "pressure" in recipe.sterilization_method.lower():
+        return "bag"
+    return "tub"
+
+
+def _container_items(recipe: SubstrateRecipe, grows: int, container_liters: float) -> list[dict]:
+    kind = container_kind(recipe)
+    if kind == "none":
+        return []
+    if kind == "jar":
+        names = [f"Wide-mouth jars with filter lids ({container_liters}L per grow)"]
+    elif kind == "bag":
+        names = [f"Filter-patch grow bag ({container_liters}L)"]
+    else:
+        names = [f"Monotub / grow container ({container_liters}L)", "Liner (trash bag)"]
+    return [
+        {
+            "name": name,
+            "quantity": f"{grows}",
+            "category": "containers",
+            "supplier_links": _find_supplier_links(name),
+        }
+        for name in names
+    ]
+
+
 def _find_supplier_links(item_name: str) -> list[str]:
     """Match supplier links based on keywords in the item name."""
     name_lower = item_name.lower()
@@ -141,21 +188,8 @@ def generate_shopping_list(
         "supplier_links": _find_supplier_links(spawn_name),
     })
 
-    # Containers
-    monotub_name = f"Monotub / grow container ({container_liters}L)"
-    items.append({
-        "name": monotub_name,
-        "quantity": f"{grows}",
-        "category": "containers",
-        "supplier_links": _find_supplier_links(monotub_name),
-    })
-    liner_name = "Liner (trash bag)"
-    items.append({
-        "name": liner_name,
-        "quantity": f"{grows}",
-        "category": "containers",
-        "supplier_links": _find_supplier_links(liner_name),
-    })
+    # Containers — the recipe's own vessel (container_kind)
+    items.extend(_container_items(recipe, grows, container_liters))
 
     # Supplies — always needed
     alcohol_name = "Isopropyl alcohol (70%)"

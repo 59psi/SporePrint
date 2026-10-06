@@ -29,12 +29,7 @@ constexpr uint32_t kK[64] = {
 
 inline uint32_t rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
 
-struct Ctx {
-    uint32_t h[8];
-    uint8_t block[64];
-    size_t block_len = 0;
-    uint64_t total_len = 0;
-};
+using Ctx = Sha256::State;
 
 void ctx_init(Ctx& c) {
     static const uint32_t init[8] = {
@@ -109,6 +104,12 @@ void ctx_final(Ctx& c, uint8_t out[32]) {
 }
 
 }  // namespace
+
+Sha256::Sha256() { ctx_init(s_); }
+
+void Sha256::update(const uint8_t* data, size_t len) { ctx_update(s_, data, len); }
+
+void Sha256::finish(uint8_t out[32]) { ctx_final(s_, out); }
 
 void sha256_host(const uint8_t* msg, size_t msg_len, uint8_t out[32]) {
     Ctx c;

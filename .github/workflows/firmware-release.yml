@@ -40,7 +40,8 @@ jobs:
       contents: read
     strategy:
       matrix:
-        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam]
+        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam, cam_esp32s3,
+              cam_xiao_esp32s3, cam_waveshare_s3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -141,6 +142,12 @@ jobs:
               one, not `node_esp32s3.zip`, for the N32R16V board.
             - `cam.zip` — camera image, AI-Thinker ESP32-CAM (OV2640,
               OV3660 or OV5640, auto-detected).
+            - `cam_esp32s3.zip`, `cam_xiao_esp32s3.zip`,
+              `cam_waveshare_s3.zip` — the same camera image for the
+              ESP32-S3 camera boards earlier BOMs listed (Freenove
+              ESP32-S3-WROOM CAM, Seeed XIAO ESP32S3 Sense, Waveshare
+              ESP32-S3-CAM-OVxxxx). No flash LED on these boards.
+              (Bench verification pending.)
 
             Each archive contains the built `.bin` files. Flash with
             esptool, the PlatformIO `-t upload` flow, or the on-Pi OTA

@@ -19,7 +19,7 @@
 <p align="center">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" />
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue.svg" />
-  <img alt="React" src="https://img.shields.io/badge/react-18-61DAFB.svg" />
+  <img alt="React" src="https://img.shields.io/badge/react-19-61DAFB.svg" />
   <img alt="FastAPI" src="https://img.shields.io/badge/fastapi-0.110%2B-009688.svg" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Raspberry%20Pi-c51a4a.svg" />
 </p>
@@ -31,7 +31,11 @@
 The version history lives in [CHANGELOG.md](CHANGELOG.md) (Pi server, deploy,
 enclosures) and [firmware/CHANGELOG.md](firmware/CHANGELOG.md) (ESP32 images).
 The current release is **5.0.0**. The 2026-09 hardware + software audit (BOM,
-firmware, safety, enclosures, deploy) is listed under **[Unreleased]** in both.
+firmware, safety, enclosures, deploy) and the 2026-10 follow-ups (Arduino-ESP32
+core 3.x, a driver for every sensor the BOM ever listed, ESP32-S3 camera
+boards, Shelly Gen2+ plugs, the shiitake browning phase, coredump
+acknowledgements, signed OTA manifests) are listed under **[Unreleased]** in
+both.
 
 ### Upgrading an existing Pi
 
@@ -65,6 +69,11 @@ firmware, safety, enclosures, deploy) is listed under **[Unreleased]** in both.
   - The API answers only for LAN host names (DNS-rebinding guard). Reach the
     Pi by a public DNS name, such as a Tailscale `*.ts.net` name? Add it to
     `SPOREPRINT_ALLOWED_HOSTS` in `.env`, then `docker compose up -d server`.
+- **Node firmware:** push the new image to each node from the dashboard's
+  Firmware page as before. Nodes still on a core 2.x image (every release
+  before this one) take the first core 3.x image over OTA, no USB cable
+  needed; before updating a whole fleet, update one node per board type and
+  check its heartbeat ([firmware/README.md](firmware/README.md#updating-nodes-from-a-core-2x-image)).
 - **Pis older than v3.3.0:** the broker has refused anonymous clients since
   v3.3.0, so every node needs its own broker login
   (`./scripts/add-node-mqtt-user.sh <node_id>`) and an OTA password of at
@@ -83,12 +92,11 @@ Whether you are growing oyster mushrooms in a closet or managing multiple fruiti
 
 - **74 built-in species profiles** (30 gourmet, 25 active, 11 medicinal, 8 novelty) with per-phase environmental targets, TEK guides, substrate recipes, and photo references
 - **20 server modules** with 150 API operations (REST + a Prometheus `/metrics` exporter)
-- **Pre-built React dashboard** -- real-time dashboard, sessions, species library, vision, automation, hardware builder, grow planner, contamination guide, cultures, experiments, integrations and settings
+- **Pre-built React dashboard** -- chambers overview, sessions, species library, vision, automation, hardware builder, grow planner, contamination guide, cultures, experiments, integrations and settings
 - **33 SQLite tables** with tiered data retention (~120 MB/year)
 - **Claude Vision analysis** -- every camera frame is stored; a Claude pass runs every 6 h per session, on each phase change and on demand (bring your own Anthropic key). The local CNN layer is still a stub.
-- **Weather multi-provider failover** -- automatic fallback across Open-Meteo, OpenWeatherMap, and NWS; configurable from the Settings UI
+- **Weather multi-provider failover** -- automatic fallback across Open-Meteo, OpenWeatherMap, and NWS; configurable through `/api/settings` or `.env`
 - **Weather-predictive alerts** up to 72 hours in advance
-- **Unit preferences** -- Fahrenheit/Celsius, grams/ounces throughout the UI
 - **10 OpenSCAD 3D-printable enclosure models** -- parametric, fit-checked against sourced part drawings, joined with brass heat-set inserts
 - **5 SVG diagrams** -- a colour-coded wiring diagram per hardware tier (inside vs outside the chamber, power strip, fused 12 V distribution, wire gauges, the common ground), a whole-system overview and an architecture overview
 
@@ -125,7 +133,8 @@ script installs for you. `install.sh` is idempotent (safe to re-run) and:
 When it finishes, open the dashboard:
 
 - **http://<pi-ip>:3001**  (or `http://sporeprint.local:3001` if mDNS works)
-- Then generate a 6-digit pairing code in Settings → Cloud Pairing to pair the mobile app.
+- Then, to link the Pi to a sporeprint.ai account, generate a 6-digit pairing code in
+  **Setup → § III Cloud link → generate pairing code →** (see [Cloud Connector](#cloud-connector)).
 
 **Update** to the latest release: `cd ~/SporePrint && git pull && ./install.sh`.
 Cloud OTA self-update is refused on the Docker install.
@@ -194,10 +203,12 @@ cd server && uvicorn app.main:socket_app --reload    # API on :8000
 ```
 
 Run from `server/`, the API reads `server/.env`, not the repo-root `.env`.
-Copy only the `SPOREPRINT_*` settings you need there (for example
-`SPOREPRINT_MQTT_USERNAME=server` and its password from the root `.env`): the
-server refuses to start on a non-empty key it does not know, such as `TZ` or
-`SPOREPRINT_MQTT_3P_PASSWORD`. Set `TZ` in the process environment instead.
+Copy the `SPOREPRINT_*` settings you need there (for example
+`SPOREPRINT_MQTT_USERNAME=server` and its password from the root `.env`).
+Keys it does not know, such as `TZ` or `SPOREPRINT_MQTT_3P_PASSWORD`, are
+ignored, so a copied root `.env` works. But the schedule time zone is read from
+the process environment, not from `.env`: export `TZ` in the shell that runs
+uvicorn.
 
 The dashboard source is not in this repo: it lives in the parent monorepo
 (`frontend/packages/pi-ui`), and this repo ships the pre-built bundle in
@@ -226,6 +237,9 @@ pio run -t upload -e node_esp32             # ESP32-WROOM-32 DevKit (every wirin
 pio run -t upload -e node_esp32s3           # ESP32-S3-DevKitC-1 N8 / N8R8 / N16R8 — different pin map
 pio run -t upload -e node_esp32s3_n32r16v   # ESP32-S3-DevKitC-1-N32R16V (node_esp32s3 does not boot on it)
 pio run -t upload -e cam                    # AI-Thinker ESP32-CAM (OV2640 / OV3660 / OV5640), on its ESP32-CAM-MB
+pio run -t upload -e cam_esp32s3            # earlier BOMs' S3 cameras: Freenove ESP32-S3-WROOM CAM,
+pio run -t upload -e cam_xiao_esp32s3       #   Seeed XIAO ESP32S3 Sense,
+pio run -t upload -e cam_waveshare_s3       #   Waveshare ESP32-S3-CAM-OV5640 (no flash LED; build guide §8b)
 ```
 
 Before provisioning a node, create its broker login on the Pi:
@@ -237,8 +251,11 @@ peripherals). Or clone the repo and flash from `firmware/` directly — the ZIP
 bundle is equivalent to `firmware/src/<image>/ + firmware/lib/ +
 firmware/boards/ + firmware/platformio.ini`, plus `VERSION.txt`, every
 `partitions*.csv` and the files `platformio.ini` references (the
-`scripts/fw_version.ini` extra config and its version script). The S3 builds
-use their own GPIOs: see the [build guide](docs/hardware-build-guide.md).
+`scripts/fw_version.ini` extra config, its version script and the
+`image_guard.py` post-build check). The first build downloads the pinned
+platform (Arduino-ESP32 core 3.3.12, about 1 GB) and needs PlatformIO Core
+6.2.0 or newer plus git. The S3 builds use their own GPIOs: see the
+[build guide](docs/hardware-build-guide.md).
 
 ### Prerequisites
 
@@ -248,7 +265,7 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - Python 3.11+
 - openssl
 - Docker and Docker Compose (for the broker, and for production deployment)
-- PlatformIO Core (for ESP32 firmware — `pip install platformio`)
+- PlatformIO Core 6.2.0 or newer, plus git (for ESP32 firmware — `pip install -U platformio`; the pinned pioarduino platform downloads about 1 GB on the first build)
 
 ---
 
@@ -260,15 +277,15 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Declarative rules engine** -- threshold, schedule, and compound conditions with species-aware targets and per-chamber scoping; the highest-priority rule whose condition holds owns an actuator
 - **Safety ceilings** -- `safety_max_on_seconds` counts from the first ON; a tripped held-ON ceiling switches the device off and locks automation out of it for 15 min
 - **Weather-aware virtual sensors** -- the system learns the correlation between outdoor weather and indoor conditions over time
-- **Multi-provider weather failover** -- automatic fallback chain (Open-Meteo, OpenWeatherMap, NWS) when primary provider fails; configurable from the Settings UI
+- **Multi-provider weather failover** -- automatic fallback chain (Open-Meteo, OpenWeatherMap, NWS) when primary provider fails; configurable through `/api/settings` or `.env`
 - **Predictive alerts** -- warns up to 72 hours ahead when species targets will be violated based on weather forecasts
-- **Smart plug integration** -- Shelly and Tasmota device control via MQTT (Tasmota needs Full Topic `tasmota/%topic%/%prefix%/`)
+- **Smart plug integration** -- Tasmota, Shelly Gen1 and Shelly Gen2+ (Plus, Pro, Mini, Gen3, Gen4) control via MQTT (Tasmota needs Full Topic `tasmota/%topic%/%prefix%/`; a Gen2+ Shelly needs MQTT prefix `shellies/<role>`)
 - **Third-party integrations** -- Aranet, Pulse, Kasa, Tapo, Wemo, Grafana/Prometheus and more under [docs/integrations/](docs/integrations/)
 - **Tiered data retention** -- raw (7 days), 5-min averages (30 days), hourly (1 year), daily (forever); ~120 MB/year on Pi
 
 ### Grow Session Management
 
-- **Full lifecycle tracking** -- inoculation through harvest with validated phase transitions and location tracking (tub, shelf, side)
+- **Full lifecycle tracking** -- inoculation through harvest with validated phase transitions and location tracking (tub, shelf, side). Colonized jars and agar park in cold storage; shiitake gets its own browning phase, with the cold-water soak reminder before pinning
 - **Yield statistics** -- per-session biological efficiency and yield-per-gram calculations
 - **Drying tracker** -- per-harvest drying log with weight tracking over time and cracker-dry notification
 - **Session reports** -- Markdown (`report.md`) and CSV (`report.csv`) downloads per session
@@ -284,7 +301,7 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Photo references** -- visual guides for identifying healthy growth stages
 - **Contamination risk data** -- species-specific susceptibilities and prevention strategies
 - **Regional growing notes** -- climate-specific tips
-- **Species Selector Wizard** -- guided 6-step questionnaire with weighted scoring to recommend species for your setup and experience level
+- **Species Selector Wizard** -- guided five-question questionnaire on the dashboard (the API scores six inputs) with weighted scoring to recommend species for your setup and experience level
 - **Substrate Calculator** -- volume-based recipe scaling for custom container dimensions
 - **Shopping List Generator** -- itemized supply lists with quantities and supplier links
 
@@ -315,24 +332,23 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Named chamber profiles** -- independent environment targets per chamber
 - **Node assignment** -- assign ESP32 nodes to specific chambers. With grows in more than one chamber, list every node (climate, relay, light, camera) in its chamber: an unlisted node then belongs to neither grow
 - **Per-chamber automation** -- rules scoped to individual chambers
-- **Comparison view** -- side-by-side chamber metrics for optimization
+- **Chamber comparison API** -- `GET /api/chambers/compare?ids=…` returns side-by-side chamber metrics (API only; the dashboard has no comparison view)
 
 ### A/B Experiment Mode
 
 - **Controlled experiments** -- compare conditions, substrates, or species across paired sessions
-- **Side-by-side telemetry** -- real-time charts for control vs. variant
-- **Automated comparison reports** -- percent difference per metric at experiment completion
+- **Per-metric comparison** -- control vs. variant value, percent difference and winner for each dependent variable (`GET /api/experiments/{id}/comparison`)
 - **Optional AI analysis** -- Claude-powered interpretation of experiment results
 
 ### QR Code Labels
 
 - **Session labels** -- QR codes that open the session in the Pi dashboard, for jars, bags, and tubs
 - **Culture labels** -- track genetics containers with scannable codes
-- **Thermal printer support** -- sized for Phomemo, NIIMBOT, Brother, and Dymo label printers
+- **PNG QR codes** -- `GET /api/labels/qr?type=session|culture&id=…&size=50–500` (pixels); print them from your label printer's own app
 
 ### Vision Pipeline
 
-- **Camera node** -- AI-Thinker ESP32-CAM (OV2640 or OV3660, OV5640 also supported, auto-detected) takes a flash-lit still every 15 minutes and POSTs it to the Pi
+- **Camera node** -- AI-Thinker ESP32-CAM (OV2640 or OV3660, OV5640 also supported, auto-detected) takes a flash-lit UXGA still every 15 minutes (and on demand) and POSTs it to the Pi. The same image builds for the ESP32-S3 camera boards earlier BOMs listed (no flash LED). There is no live MJPEG stream
 - **Claude Vision API** -- deep morphology analysis with species-specific context: every 6 h per session (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`), on the first frame after a phase change, and on demand. BYOK — it uses your own Anthropic key
 - **Contamination alerts** -- a confident contamination read (≥ 0.6) pages CRITICAL and is recorded as a contamination event; 0.3–0.6 sends one "Possible contamination" WARNING
 - **Local CNN** -- the fast first-pass layer is a stub today, so Claude auto-analysis is the only automatic contamination detector (worst-case latency = the auto-analysis interval)
@@ -344,14 +360,14 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Shopping lists** -- complete parts lists with purchase links, re-checked live 2026-09-27, including the cabling and consumables (surge strip, pigtail, WAGO connectors, inline fuses, 18 / 22 AWG wire, fan extensions, heat-shrink, grommets, inserts, screws)
 - **Wiring diagrams** -- color-coded SVG diagrams for each tier, served by the Pi at `/api/builder/diagrams/<file>.svg`
 - **Step-by-step assembly** -- guides for building sensor and actuator nodes
-- **Claude assistant** -- AI-powered answers to custom hardware questions
+- **Claude guide generator** -- `POST /api/builder/guide` writes a parts / wiring / firmware / MQTT / OpenSCAD / safety / test guide for new hardware, with your registered nodes and the reserved GPIOs as context, and saves it (`/api/builder/guides`). API only: the dashboard has no chat for it yet
 
 ### Notifications
 
-- **3-tier ntfy alerts** -- critical (immediate; identical pages collapse for 15 min), warning (5-min dedup), info (hourly batch)
+- **3-tier ntfy alerts** -- critical (immediate; identical pages collapse for 15 min), warning (5-min dedup), info (each message at most once an hour)
 - **Weather-predictive notifications** -- alerts up to 72 hours before conditions deteriorate
-- **Phase reminders** -- a daily 09:00 (local `TZ`) INFO notice for every grow past its phase's expected duration
-- **Configurable topics** -- route alerts by category
+- **Phase reminders** -- a daily 09:00 (local `TZ`) INFO notice for every grow past its phase's expected duration, and the shiitake cold-water soak once browning has run its minimum time
+- **Configurable topic** -- one ntfy topic (`SPOREPRINT_NTFY_TOPIC`, or Settings → Notifications) for every tier; the tiers map to ntfy priorities
 
 ### System Health
 
@@ -362,8 +378,9 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 
 ### Unit Preferences
 
-- **Temperature** -- switch between Fahrenheit and Celsius throughout the UI
-- **Weight** -- switch between grams and ounces for harvest tracking and yield display
+The dashboard shows °F and grams. A °C / ounces switch is not implemented in
+the current dashboard (Settings lists it as unsupported) and the server stores
+no unit preference.
 
 ---
 
@@ -383,11 +400,11 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - [Auth](docs/auth.md) — LAN-trust vs API-key mode, and the public paths
 
 ```
-ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST/WS──> React UI
-  (sensors,            (FastAPI, SQLite,                  (dashboard,
-   relays,              20 modules, 150 endpoints,         pre-built in ui/dist,
-   lighting,            33 tables, automation engine,       real-time
-   camera)              weather failover,                   WebSocket)
+ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST──> React UI
+  (sensors,            (FastAPI, SQLite,               (dashboard,
+   relays,              20 modules, 150 endpoints,      pre-built in ui/dist,
+   lighting,            33 tables, automation engine,    served by nginx)
+   camera)              weather failover,
                         ntfy notifications)
 ```
 
@@ -395,17 +412,19 @@ ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST/WS──> React U
 
 **Backend**: FastAPI on Raspberry Pi 5. SQLite with tiered retention. Mosquitto MQTT broker. Declarative automation rules engine with weather-aware virtual sensors. Claude Vision analysis (the local CNN layer is a stub). Predictive model learns weather-to-closet correlation. ntfy push notifications with predictive alerts.
 
-**Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4. Real-time WebSocket updates. 7-day forecast with grow impact analysis. PWA-capable. Dark theme with species category accent colors.
+**Frontend**: React 19 + TypeScript + Vite 6 + Tailwind CSS v4, built in the parent monorepo and shipped here as `ui/dist`. Pages load their data over REST; the Chambers page polls the Pi's system metrics every 15 s. The bundled dashboard does not use the Socket.IO server (other clients can), and it is not a PWA. Dark theme with species category accent colors. The weather forecast, grow-impact and planner-recommendation endpoints have no page yet.
 
 ### Project Structure
 
 ```
 SporePrint/
-├── firmware/                  # ESP32 PlatformIO monorepo (v2)
-│   ├── lib/sp_core/           # Native-safe core: HMAC canonicalizer + replay guard, channel state machine, buffers, boot/TLS policy
-│   ├── lib/sp_drivers/        # Native-safe sensor drivers over injected HAL (SHT3x/4x, SCD4x/30, BH1750, MH-Z19, HX711, reed)
-│   ├── lib/sp_device/         # Arduino layer: provisioning portal, MQTT link, OTA + rollback, TLS, NVS
-│   ├── boards/                # Pin profiles: esp32dev, esp32-s3-devkitc-1 (also N32R16V), esp32cam
+├── firmware/                  # ESP32 PlatformIO monorepo (v2; Arduino-ESP32 core 3.3.12 via pioarduino)
+│   ├── lib/sp_core/           # Native-safe core: HMAC canonicalizer + replay guard, channel state machine, buffers, boot/TLS policy, espota handshake, OTA manifest + gate, coredump drain
+│   ├── lib/sp_drivers/        # Native-safe sensor drivers over injected HAL (SHT3x/4x, AHT20, BME280/BMP280, SCD4x/30, BH1750, MH-Z19, HX711, reed; inventory: firmware/docs/drivers.md)
+│   ├── lib/sp_device/         # Arduino layer: provisioning portal, MQTT link, OTA service + rollback, TLS, bounded DNS, NVS
+│   ├── boards/                # Pin profiles: esp32dev, esp32-s3-devkitc-1 (also N32R16V), esp32cam, ESP32-S3 camera boards
+│   ├── scripts/               # Version define + image guard (partition layout, slot headroom), run by every build
+│   ├── docs/drivers.md        # Driver inventory: every sensor, actuator and board the BOM ever listed
 │   └── src/
 │       ├── node/              # Unified node image (personality: climate / relay / lighting)
 │       └── cam/               # ESP32-CAM image (OV2640 / OV3660 / OV5640 captures → frame POST)
@@ -427,18 +446,18 @@ SporePrint/
 │       ├── retention/         # Tiered data compression (raw > 5min > hourly > daily)
 │       ├── notifications/     # ntfy push notifications (3-tier + predictive)
 │       ├── transcript/        # JSON/markdown export, Claude analysis
-│       ├── builder/           # 3-tier hardware guide, firmware + model downloads, Claude assistant
-│       ├── cloud/             # Cloud connector (opt-in relay for mobile app), Pi OTA
+│       ├── builder/           # 3-tier hardware guide, firmware + model downloads, Claude guide generator
+│       ├── cloud/             # Cloud connector (opt-in relay for mobile app), Pi OTA + signed release manifest
 │       ├── health/            # System metrics (CPU, memory, disk, MQTT, clients)
-│       ├── hardware/          # Node registry, commands, peripherals, OTA push, logs, coredumps
+│       ├── hardware/          # Node registry, commands, peripherals, OTA push (+ signed manifest), logs, coredumps (store-then-ack)
 │       ├── integrations/      # Third-party drivers (Aranet, Pulse, Kasa, Tapo, Wemo, Grafana, …)
 │       ├── planner/           # Seasonal grow planner (recommend, calendar, warnings)
 │       ├── contamination/     # Contaminant library + Claude Vision ID
 │       ├── cultures/          # Genetics pipeline with lineage trees
 │       ├── chambers/          # Multi-chamber management + comparison
 │       ├── experiments/       # A/B experiment mode
-│       ├── labels/            # QR code generation for thermal printers
-│       ├── settings_router.py # User settings API (weather provider, display prefs)
+│       ├── labels/            # QR code PNGs for sessions and cultures
+│       ├── settings_router.py # User settings API (weather, Claude key, ntfy topic, OTA verify key, setup status)
 │       └── settings_service.py # Settings persistence service
 ├── models/                    # OpenSCAD 3D-printable enclosure models (10 files + lib/, see models/README.md)
 ├── ui/                        # Pre-built React dashboard (dist/) + nginx config + Dockerfile
@@ -455,28 +474,31 @@ SporePrint/
 
 | Page | Description |
 |------|-------------|
-| Chambers (dashboard, `/`) | Real-time telemetry gauges, per-chamber condition cards, weather forecast |
-| Chamber detail + history | One chamber's live conditions and long-range charts |
+| Chambers (dashboard, `/`) | Per-chamber live readings against the grow's targets, Pi system + broker health (polled every 15 s), cloud status, live event feed, quick overrides |
+| Chamber detail + history | One chamber's conditions, nodes, overrides and long-range charts |
 | Chambers (`/inventory`) | Chamber management and node assignment |
-| Sessions | Grow session list with detail view, yield stats, drying tracker, report downloads |
+| Sessions | Grow session list with detail view, phase timeline, next-phase action (with the exit reminder), yield stats, a finished session's report.md (the drying log and report.csv are API-only) |
 | Species | Species library with TEK guides, substrate recipes, photo references |
 | Species Wizard | Guided species selector questionnaire with compatibility scoring |
-| Shopping List | Supply list generator with quantities and supplier links |
-| Automation | Rule builder with per-chamber scoping and smart plug integration |
-| Vision | Camera frames, Claude contamination detection, growth analysis gallery |
-| Planner | Seasonal grow planner with weather-based recommendations and grow calendar |
-| Contamination | Contaminant photo gallery with symptoms, treatments, and Claude Vision ID |
+| Shopping List | Supply list generator with quantities and supplier links, and the Builder BOM hand-off |
+| Automation | Rule list with enable toggles, manual overrides, firing log (rules are created and edited through the API) |
+| Vision | Camera frames per node, on-demand Claude analysis |
+| Planner | Grow calendar (planned events) and dated cycle proposals |
+| Contamination | Contaminant library with symptoms and treatments, contamination events and root cause, Claude Vision ID |
 | Cultures | Genetics lineage tree, spore print/clone tracking, generation counts |
-| Experiments | A/B experiment wizard, side-by-side telemetry, comparison reports |
-| Transcripts | Session transcripts viewer |
-| Builder | Hardware tiers, wiring diagrams, 3D models, Claude assistant |
-| Firmware | ESP32 firmware bundles and flashing instructions |
-| Hardware | Node registry, health, OTA push, logs |
+| Experiments | A/B experiments, side-by-side comparison, on-demand Claude analysis |
+| Transcripts | Session transcripts (JSON / markdown) and Claude analysis |
+| Builder | Hardware tiers with a chamber count, BOM, wiring diagrams, 3D models, firmware flash commands, setup progress |
+| Firmware | Node firmware status and OTA push |
+| Hardware | Node registry and health |
 | Integrations | Third-party integration settings (Grafana, Aranet, Pulse, plugs, lighting, HVAC) |
-| Settings | Unit preferences (F/C, g/oz), display settings, cloud pairing |
-| Setup | First-run wizard |
+| Settings | Claude key, OTA verify key, ntfy topic, system info, cloud link (weather settings are API-only: `PUT /api/settings/{key}`) |
+| Setup | First-run wizard: node discovery and claim, cloud pairing code |
 
 ### Server Modules
+
+The 20 packages under `server/app/`. Endpoints counts the API operations under
+each module's `/api/<module>` prefix.
 
 | Module | Endpoints | Description |
 |--------|-----------|-------------|
@@ -486,7 +508,7 @@ SporePrint/
 | `automation` | 13 | Declarative rules engine, smart plug control, overrides (24h TTL, auto-resume), firing history |
 | `weather` | 5 | Multi-provider weather API with failover (Open-Meteo, OpenWeatherMap, NWS), 7-day forecast, prediction model, history aggregation |
 | `vision` | 5 | Camera frame ingest, Claude Vision analysis, active-learning labels |
-| `builder` | 13 | 3-tier hardware guide, wiring diagrams, firmware bundles, 3D models, Claude assistant |
+| `builder` | 13 | 3-tier hardware guide, wiring diagrams, firmware bundles, 3D models, Claude guide generator |
 | `hardware` | 11 | Node registry, command dispatch, peripherals, OTA push, logs, coredumps, LAN discovery + claim |
 | `cloud` | 7 | Opt-in WebSocket relay for mobile app access, pairing |
 | `health` | 6 | System metrics (CPU, memory, disk, MQTT, clients, tasks, clock) |
@@ -496,10 +518,17 @@ SporePrint/
 | `cultures` | 6 | Genetics pipeline, lineage trees, transfer logs, generation tracking |
 | `chambers` | 12 | Multi-chamber CRUD, node assignment, maintenance, comparison, automation-coverage verdict |
 | `experiments` | 7 | A/B experiments, session pairing, comparison reports |
-| `labels` | 1 | QR code generation (PNG) for sessions, cultures, containers |
+| `labels` | 1 | QR code generation (PNG) for sessions and cultures |
 | `transcript` | 2 | Session transcript export and Claude analysis |
-| `settings` | 5 | User settings persistence (weather provider, display preferences, unit preferences, setup status) |
-| `provision` | 1 | Broker CA for Secure-MQTT nodes |
+| `notifications` | 0 | ntfy push in three tiers (critical / warning / info) with dedup, called by the other modules |
+| `retention` | 0 | Nightly tiered telemetry compression, old firing cleanup and vision-frame thinning (a background task) |
+
+Two more routers are single files, not packages:
+
+| Router | Endpoints | Description |
+|--------|-----------|-------------|
+| `settings_router.py` (`/api/settings`) | 5 | User settings persistence (weather provider and location, Claude key, ntfy topic, OTA verify key, setup status) |
+| `provision.py` (`/api/provision`) | 1 | Broker CA for Secure-MQTT nodes |
 
 ### Database Schema (33 SQLite tables)
 
@@ -551,13 +580,15 @@ Species can also be imported as custom JSON profiles for varieties not in the bu
 | **ESP32-WROOM-32 DevKit (38-pin, USB-C)** | Sensor/actuator nodes (climate, relay, lighting) — the pin map in every wiring diagram |
 | **ESP32-S3-DevKitC-1** | Alternative node board (`node_esp32s3`, or `node_esp32s3_n32r16v` for the N32R16V) with its own pin map; bench verification pending |
 | **ESP32-CAM (AI-Thinker)** | Camera node, OV2640 or OV3660 (OV5640 also supported), flashed and powered through an ESP32-CAM-MB |
+| **ESP32-S3 camera boards** | Freenove ESP32-S3-WROOM CAM, Seeed XIAO ESP32S3 Sense, Waveshare ESP32-S3-CAM (earlier BOMs' cameras; still supported, not recommended for new builds; no flash LED; bench verification pending) |
 | **SHT31-D / SHT4x** | Temperature + humidity sensor (STEMMA QT) |
-| **SCD41 / SCD40 / SCD30 / MH-Z19C** | CO2 sensor (the SCD4x also reports temp/humidity) |
+| **SCD41 / SCD40 / SCD30 / MH-Z19C** | CO2 sensor (the SCD4x also reports temp/humidity; the SCD30 on a WROOM-32 is partial, bench-pending) |
+| **AHT20 / BME280 / BMP280 / MH-Z19B** | Also driven, for parts earlier BOMs and combo boards listed: AHT20 temp/RH (used when no SHT is fitted), BME280/BMP280 barometric pressure (`pressure_hpa`), MH-Z19B CO2. See [firmware/docs/drivers.md](firmware/docs/drivers.md) |
 | **BH1750** | Light level sensor (lux) |
 | **HX711 + 5 kg load cell** | Harvest scale (All the Things) |
 | **Wired door contact (reed)** | Door-open telemetry (All the Things) |
-| **IRLZ44N MOSFET** | Low-side switch for 12 V fans, pump and LED strips (4 channels per node, 25 kHz PWM) |
-| **Shelly / Tasmota plugs** | WiFi smart plugs for humidifier, dehumidifier, heater and cooler |
+| **IRLZ44N MOSFET** | Low-side switch for 12 V fans, pump and LED strips (4 channels per node, 25 kHz 10-bit PWM; no SSRs) |
+| **Tasmota / Shelly plugs** | WiFi smart plugs for humidifier, dehumidifier, heater and cooler: Tasmota (the BOM's Athom plugs), Shelly Gen1, Shelly Gen2+ (Plus, Pro, Mini, Gen3, Gen4) |
 | **Power + cabling** | UL-listed surge strip outside the chamber; 12 V PSU → 14 AWG pigtail → WAGO 221 → inline fuse per branch (relay 3 A, lighting 5 A / 7.5 A) → switch boards on 18 AWG; each ESP32's GND tied to its board's GND bus; USB 5 V per board (6 ft cables into the chamber) |
 
 ### Hardware Tiers
@@ -574,7 +605,7 @@ The built-in Hardware Builder provides complete shopping lists with purchase lin
 
 ### Firmware
 
-ESP32 firmware is a PlatformIO monorepo under `firmware/` (v2). The host-testable libraries `lib/sp_core` (HMAC command verification with topic binding and a replay guard, channel safety state machine, byte-capped offline buffer, boot and TLS policy) and `lib/sp_drivers` (autodetecting sensor drivers) sit under the Arduino layer `lib/sp_device` (provisioning portal, MQTT link, OTA with rollback, opt-in TLS). One unified node image covers climate/relay/lighting via a provisioning-time personality; the camera is its own image. `pio test -e native` runs the full host suite, including byte-for-byte signing parity with the server. See [firmware/test/README.md](firmware/test/README.md).
+ESP32 firmware is a PlatformIO monorepo under `firmware/` (v2) on **Arduino-ESP32 core 3.3.12 / ESP-IDF 5.5.5**, pinned as the pioarduino release `55.03.312-1` (PlatformIO Core 6.2.0+ and git required). The host-testable libraries `lib/sp_core` (HMAC command verification with topic binding and a replay guard, channel safety state machine, byte-capped offline buffer, boot and TLS policy, the espota OTA handshake, signed OTA manifests, the coredump drain) and `lib/sp_drivers` (autodetecting sensor drivers) sit under the Arduino layer `lib/sp_device` (provisioning portal, MQTT link, OTA with rollback, opt-in TLS). One unified node image covers climate/relay/lighting via a provisioning-time personality; the camera is its own image. Every relay and lighting channel is 25 kHz, 10-bit LEDC PWM. Panic coredumps stay in flash until the Pi acknowledges it has stored them. `pio test -e native` runs the full host suite, including byte-for-byte signing parity with the server. See [firmware/README.md](firmware/README.md) (builds, OTA from core 2.x images), [firmware/docs/drivers.md](firmware/docs/drivers.md) (driver inventory) and [firmware/test/README.md](firmware/test/README.md).
 
 ---
 
@@ -605,20 +636,29 @@ The backend exposes a REST API and Socket.IO WebSocket for real-time updates.
 | Chambers | `/api/chambers` | Chamber CRUD, node assignment, comparison, automation-coverage verdict |
 | Experiments | `/api/experiments` | Experiment CRUD, comparison reports, analysis |
 | Labels | `/api/labels` | QR code generation (PNG) |
-| Settings | `/api/settings` | User settings (weather provider, display preferences) |
+| Settings | `/api/settings` | User settings (weather, Claude key, ntfy topic, OTA verify key, setup status) |
 | Integrations | `/api/integrations` | Third-party driver config, vendor actions |
 | Provision | `/api/provision` | Broker CA download (`GET /api/provision/ca`) |
 
 ### WebSocket Events (Socket.IO)
 
+The server runs a Socket.IO endpoint (`/socket.io`, behind the same bearer gate
+as `/api` when `SPOREPRINT_API_KEY` is set). The bundled dashboard does not
+connect to it; it is there for other local clients.
+
 | Event | Direction | Description |
 |-------|-----------|-------------|
-| `telemetry` | Server -> Client | Real-time sensor readings |
-| `weather` | Server -> Client | Weather updates and forecasts |
-| `alert` | Server -> Client | Threshold breach and weather alerts |
-| `rule_firing` | Server -> Client | Automation rule execution events |
-| `plug_state` | Server -> Client | Smart plug state changes |
+| `telemetry` | Server -> Client | Live sensor readings (replayed and out-of-order frames are not pushed) |
+| `actuator_state` | Server -> Client | A node channel's switch / level report |
+| `node_status` | Server -> Client | Node online / offline |
 | `component_health` | Server -> Client | ESP32 node health updates |
+| `alert` | Server -> Client | Node-side alerts and "coredump saved" |
+| `node_log` | Server -> Client | Forwarded firmware log batches |
+| `node_ota` | Server -> Client | Node OTA lifecycle (start, success, error, manifest armed / rejected) |
+| `rule_fired` | Server -> Client | Automation rule execution (rule, target, channel, action, publish status) |
+| `plug_state` | Server -> Client | Smart plug state changes |
+| `plug_online` | Server -> Client | Smart plug online / offline (Shelly `online`, Tasmota `LWT`) |
+| `weather` | Server -> Client | Current weather after each poll |
 
 ### MQTT Topics
 
@@ -630,8 +670,15 @@ sporeprint/{node_id}/status/heartbeat    # Heartbeat every min(publish interval,
 sporeprint/{node_id}/health              # Per-sensor driver health
 sporeprint/{node_id}/alert               # Node-side alerts (sensor_failure, tls_downgrade, …)
 sporeprint/{node_id}/logs                # Forwarded firmware log batches
+sporeprint/{node_id}/ota                 # Node OTA lifecycle events
+sporeprint/{node_id}/coredump/chunk      # Panic-dump upload; each chunk carries coredump_id (SHA-256 of the dump)
 sporeprint/{node_id}/cmd/{channel}       # Actuator commands (HMAC-signed; channel | scene | config)
-shellies/{device_id}/relay/0             # Shelly plug state
+sporeprint/{node_id}/cmd/coredump_ack    # {coredump_id} once the Pi has stored the dump — only then does the node erase it
+sporeprint/{node_id}/cmd/ota_manifest    # Signed release manifest sent before an OTA push (nodes built with the key)
+shellies/{device_id}/relay/0             # Shelly Gen1 plug state (…/relay/0/command to switch)
+shellies/{role}/rpc                      # Shelly Gen2+ JSON-RPC command (Switch.Set); replies on shellies/{role}/sporeprint/rpc
+shellies/{role}/events/rpc               # Shelly Gen2+ NotifyStatus (switch output, power)
+shellies/{role}/online                   # Shelly online flag (retained; Gen1 and Gen2+)
 tasmota/{topic}/stat/POWER               # Tasmota plug state (requires FullTopic tasmota/%topic%/%prefix%/)
 tasmota/{topic}/cmnd/POWER               # Tasmota plug command
 ```
@@ -641,6 +688,15 @@ which the broker ACL silently drops: set **Full Topic**
 `tasmota/%topic%/%prefix%/`, a unique **Topic** (the plug's role, e.g.
 `humidifier`), and the broker login **User** `sp-3p` / **Password**
 `SPOREPRINT_MQTT_3P_PASSWORD` from `.env`.
+
+A Shelly Gen2+ plug (Plus, Pro, Mini, Gen3, Gen4) speaks JSON-RPC under a
+configurable MQTT prefix whose factory value is its device id, a topic tree
+the broker drops. In its web UI, **Settings → Connectivity → MQTT**: enable
+MQTT, server `<pi-ip>:1883`, user `sp-3p` with the same password, **MQTT
+prefix** `shellies/<role>` (e.g. `shellies/humidifier` → plug id
+`plug-humidifier`), and turn on "RPC status notifications over MQTT" and
+"Generic status update over MQTT". Saving reboots the plug. Details:
+[docs/integrations/smart-plugs.md](docs/integrations/smart-plugs.md).
 
 ---
 
@@ -682,6 +738,9 @@ server only if `docker-compose.yml` forwards it, and changes apply with
 | `SPOREPRINT_PUBLIC_UI_URL` | `http://sporeprint.local:3001` | Where browsers reach the dashboard (set `http://<pi-ip>:3001` without mDNS). Its host is also an allowed Host name |
 | `SPOREPRINT_ALLOWED_HOSTS` | *(empty)* | DNS-rebinding guard: extra Host names the API answers to (comma list of names, `*.suffix`, IPs or CIDRs; `*` = off). Private IPs, `localhost`, `*.local` / `*.lan` / `*.home.arpa` / `*.internal` and dotless names are always allowed; any other Host gets 421 |
 | `SPOREPRINT_OTA_PUBKEY_B64` | *(empty)* | Pi self-update verify key (bare-metal installs only; also Settings → OTA verify key) |
+| `SPOREPRINT_OTA_CHANNEL` | `stable` | Pi self-update: the release channel this Pi follows (`stable` / `beta` / `dev`). The signed release manifest must name it; an OTA for another channel is refused |
+| `SPOREPRINT_OTA_ALLOW_DOWNGRADE` | `false` | Pi self-update: accept a signed release older than the installed one (anti-rollback off). Set only on the Pi; the OTA command cannot |
+| `SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE` | `false` | Pi self-update, transitional: accept a release that has only the bundle `.sig` and no signed manifest (version and channel unsigned) |
 | `FORWARDED_ALLOW_IPS` | `172.31.253.2` | Docker: the one address uvicorn trusts `X-Forwarded-For` from — the ui container's fixed address on the `edge` network. Keep it equal to `SPOREPRINT_EDGE_UI_IP` |
 | `SPOREPRINT_EDGE_SUBNET` / `_EDGE_UI_IP` / `_EDGE_SERVER_IP` | `172.31.253.0/28` / `.2` / `.3` | Docker: the ui → server `edge` network. Compose reads them, not the server. Move all three (and `FORWARDED_ALLOW_IPS`) together if `docker compose up` reports "Pool overlaps" |
 
@@ -698,7 +757,7 @@ cd server && ruff check app/ && pytest
 
 # Firmware host tests + builds
 cd firmware && pio test -e native
-cd firmware && pio run -e node_esp32 -e node_esp32s3 -e node_esp32s3_n32r16v -e cam
+cd firmware && pio run -e node_esp32 -e node_esp32s3 -e node_esp32s3_n32r16v -e cam -e cam_esp32s3 -e cam_xiao_esp32s3 -e cam_waveshare_s3
 
 # Validate Docker Compose
 docker compose config --quiet
@@ -743,13 +802,12 @@ Exact versions are pinned in `server/uv.lock`; the Docker image installs exactly
 those (hash-checked). After changing `pyproject.toml`, run `cd server && uv lock`.
 
 **Frontend (Node.js, parent monorepo)**:
-- React 18, TypeScript, Vite
+- React 19, TypeScript, Vite 6
 - Tailwind CSS v4
-- Zustand (state management)
-- Recharts (charting)
 - React Router v7
 - Lucide React (icons)
-- Socket.IO client
+- `@sporeprint/design` (shared tokens and components: Radix UI, Recharts, TanStack Table)
+- Vitest + Testing Library
 
 ---
 
@@ -760,9 +818,9 @@ SporePrint includes an optional cloud connector module for mobile app access. Wh
 The cloud connector is entirely opt-in. When unconfigured, it is dormant and has no effect on the system. Local access always works regardless of cloud connectivity.
 
 Pairing is a two-step handshake (v3.3.0+):
-1. The Pi's web UI generates a 6-digit pairing code (rate-limited, 10 min TTL, 8-attempt lockout).
-2. The mobile app calls `POST /api/cloud/pair` with the code and receives a short-lived `configure_token`.
-3. The mobile app calls `POST /api/cloud/configure` with the `configure_token` + cloud credentials. Values containing `\n`/`\r`/`=` are rejected (newline-injection defense). The credentials are written atomically to `cloud.env` beside the database (Docker: `/data/db/cloud.env`, mode 0600) and survive container rebuilds; restart the server afterwards. Delete that file to unpair.
+1. The Pi's web UI generates a 6-digit pairing code (Setup → § III Cloud link; 10 min TTL, single use, 8-attempt lockout).
+2. A client on the LAN calls `POST /api/cloud/pair` with the code and receives a short-lived `configure_token` (10 min) and the Pi's `cloud_device_id`.
+3. The client hands those, with an address the cloud can reach the Pi on, to the cloud's `POST /devices/pair`. The cloud checks the session with the Pi (`GET /api/cloud/pair-verify`), mints a device token and calls `POST /api/cloud/configure` with the `configure_token` + cloud credentials. The cloud refuses private and LAN addresses, so the Pi needs a public HTTPS name (add it to `SPOREPRINT_ALLOWED_HOSTS`). Values containing `\n`/`\r`/`=` are rejected (newline-injection defense). The credentials are written atomically to `cloud.env` beside the database (Docker: `/data/db/cloud.env`, mode 0600) and survive container rebuilds; restart the server afterwards. Delete that file to unpair.
 
 Inbound commands from the cloud are rejected unless they present a unique `id` (no replay), a `tier == "premium"`, and a `target` that matches a registered hardware node or smart plug. Target/channel fields are constrained to `^[a-zA-Z0-9_-]{1,32}$`.
 
@@ -778,7 +836,7 @@ SporePrint is designed for a single operator on a trusted home LAN. Defense-in-d
 - **Command signing**: every `sporeprint/<node>/cmd/*` frame the Pi publishes is HMAC-SHA256 signed and carries the topic it was sent on plus a random nonce. Nodes holding the key reject unsigned, forged, replayed or redirected frames. See [docs/firmware-security.md](docs/firmware-security.md).
 - **DNS rebinding**: the API and Socket.IO answer only for Host names an outside web page cannot point at the Pi — private and loopback IP literals, `localhost`, `*.local` and other private-use suffixes, dotless names, the host of `SPOREPRINT_PUBLIC_UI_URL` and anything listed in `SPOREPRINT_ALLOWED_HOSTS`. Any other Host gets 421 (`GET /api/health` and `GET /api/provision/ca` excepted), so a rebinding page cannot drive the API in LAN-trust mode.
 - **Backend API**: set `SPOREPRINT_API_KEY` to require `Authorization: Bearer <key>` on all `/api/*` routes plus the Socket.IO `connect` handshake. Public in that mode: `/api/health`, `POST /api/cloud/pair` and `GET /api/provision/ca` (the broker's public CA). `POST /api/vision/frame` is accepted without a bearer only from a camera registered in `hardware_nodes`, with a declared Content-Length of at most 20 MB. `/metrics` sits outside `/api` and has its own optional bearer (Grafana integration). See [docs/auth.md](docs/auth.md).
-- **OTA**: `ArduinoOTA` stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s. A Pi-pushed image goes only to the node being flashed: the connect-back listener on TCP 3233 serves that node's address and closes any other peer.
+- **OTA**: a node's OTA listener (port 3232, `firmware/lib/sp_device/ota_service.cpp`, the espota handshake the Pi's push speaks) stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s. A Pi-pushed image goes only to the node being flashed: the connect-back listener on TCP 3233 serves that node's address and closes any other peer. Optionally, a push can carry a signed release manifest (`POST /api/hardware/nodes/{id}/ota` with `manifest` + `manifest_sig`): the Pi checks it against its pinned key and the uploaded `.bin`, and a node image built with that key flashes only the exact image the manifest names. The firmware releases cut by the private release pipeline (2026-10 on) are built with the key and ship each image's `<env>.manifest.json` + `.sig`; this repo's own release workflow and local builds carry no key, so their images ignore manifests.
 - **Secure MQTT**: a node pins the Pi's CA only after a TLS connection with it succeeds, and reports the pinned CA's SHA-256 as `ca_fp` in its heartbeat. See [docs/firmware-security.md](docs/firmware-security.md#secure-mqtt-tls).
 
 CORS on the backend is LAN-scoped via `allow_origin_regex` (localhost, `*.local`, RFC1918 ranges, `capacitor://localhost`). Settings-mutation routes (`PUT /api/settings/*`) sit behind the same bearer-token gate as every other write path. Vision uploads validate `X-Node-Id` against `^[a-zA-Z0-9_-]{1,32}$` and assert the resolved write path stays inside `vision_storage`.
@@ -801,7 +859,7 @@ Contributions are welcome. Please:
 ### Code Conventions
 
 - **Backend**: FastAPI routers are thin wrappers; business logic lives in service modules. DB access via `async with get_db() as db:` with batch writes and single commit. Pydantic v2 models. Config via `SPOREPRINT_` env prefix; every new setting must also be forwarded in `docker-compose.yml`.
-- **Frontend**: Tailwind CSS with `var(--color-*)` CSS custom properties. Zustand for global state. Lucide icons only. Dark theme is primary.
+- **Frontend** (parent monorepo): Tailwind CSS v4 with the design package's CSS custom properties (`--bg-*`, `--text-*`, `--cat-*`). REST through `lib/api.ts`; page state is React state (no global store). Lucide icons only. Dark theme is primary.
 - **MQTT**: Topic convention is `sporeprint/{node_id}/telemetry|status|health|alert|logs|cmd/{channel}`.
 - **Firmware**: Non-blocking (use `yield()` not `delay()`). ArduinoJson v7. 25 kHz, 10-bit LEDC PWM on every channel. New payload keys are optional; the signing vectors never change.
 

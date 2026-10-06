@@ -1,7 +1,8 @@
 # Firmware security — command signing, TLS, provisioning, OTA
 
 The v2 security model for the unified node image (`node_esp32` /
-`node_esp32s3` / `node_esp32s3_n32r16v`) and the camera image (`cam`).
+`node_esp32s3` / `node_esp32s3_n32r16v`) and the camera image (`cam`, and
+its ESP32-S3 builds `cam_esp32s3` / `cam_xiao_esp32s3` / `cam_waveshare_s3`).
 
 ## Threat model
 
@@ -77,7 +78,8 @@ broker host name:
 
 - Use `sporeprint.local` (recommended) or an IP the Pi's certificate lists.
   `install.sh` puts every Pi IPv4 into the certificate as both an `IP:` and a
-  `DNS:` SAN, because mbedTLS 2.28 on the ESP32 only matches DNS-type entries.
+  `DNS:` SAN: mbedTLS 2.28 in core-2.x images only matches DNS-type entries,
+  while mbedTLS 3.6 in current (core 3.x) images also checks the IP entries.
   When the Pi's IP changes, re-running `install.sh` re-issues the server
   certificate from the **same** CA, so pinned nodes are unaffected.
 
@@ -108,8 +110,9 @@ uses, to compare with the Pi's own `ca.crt`
   must equal the MQTT username (the broker ACL scopes each node by it).
 - A provisioned node whose settings have connected before no longer reopens
   the open setup AP when WiFi fails: it boots offline and retries every 60 s.
-- Opening the portal on purpose is physical: hold BOOT (node) or short GPIO 13
-  to GND (camera — there is no button on that pin) for 3–10 s, then release.
+- Opening the portal on purpose is physical: hold BOOT (node, and the
+  ESP32-S3 camera boards) or short GPIO 13 to GND (AI-Thinker camera — there
+  is no button on that pin) for 3–10 s, then release.
   More than 10 s factory-resets. While the button is held, the device starts
   no MQTT connect, CA fetch or capture.
 
@@ -130,21 +133,56 @@ uses, to compare with the Pi's own `ca.crt`
 - 10 minutes without MQTT → every channel off (safe mode); the node never
   reboots itself for link loss.
 - Empty command payloads are rejected, never defaulted to ON.
-- Panic coredumps persist in flash and upload to the Pi on the next boot.
+- Panic coredumps persist in flash and upload to the Pi once MQTT is up. The
+  node erases a dump only when the Pi acknowledges it on `cmd/coredump_ack`
+  (a signed command naming the dump's SHA-256), which the Pi sends only once
+  the dump hashes to that id and is durably on disk. Without an ack it
+  retries with backoff (3 uploads per boot, 6 per dump) and then keeps the
+  dump in flash — a Pi too old to acknowledge never makes a node lose one.
 
 ## OTA
 
-- **Password:** `lib/sp_device/ota_service.cpp` refuses to start ArduinoOTA
-  when the NVS password is empty or shorter than 12 characters.
+- **Listener:** `lib/sp_device/ota_service.cpp` serves network OTA on UDP/TCP
+  3232 with the espota handshake the Pi's push speaks: an MD5
+  challenge-response over the OTA password (`lib/sp_core/espota.h`). It
+  keeps core 2.x's exchange byte for byte because Arduino-ESP32 3.x's own
+  `ArduinoOTA` answers only a PBKDF2-SHA256 challenge, which Pis before
+  2026-10 cannot answer. The strength is the same as on core 2.x. The Pi's
+  push (`server/app/hardware/ota_push.py`) now answers both, as espota.py
+  decides: a 32-hex nonce gets the MD5 digest, a 64-hex nonce the
+  PBKDF2-HMAC-SHA256 one (10 000 rounds over sha256(password)). A firmware
+  that uses the stock library can follow once the Pis it must accept pushes
+  from run this release or later.
+- **Password:** the listener does not start when the NVS password is empty
+  or shorter than 12 characters.
 - **Events:** start / success / error land on `sporeprint/<node>/ota`, so a
   half-applied OTA is visible even without secure boot.
 - **Rollback:** a freshly flashed OTA image is on probation until MQTT has been
   connected continuously for 60 s. A crash, watchdog reset or power loss
   before then boots the previous image. An operator restart confirms the new
   image only if it reached MQTT during that boot. Rollback needs a bootloader
-  built with rollback support, which is this framework's default.
-- **Integrity:** ArduinoOTA and the Pi's OTA push check the image MD5. There is
-  no signature check on node images (see below).
+  built with rollback support, which is this framework's default, and which
+  the core-2.x bootloader in every older node also has: a node updated from
+  a 2.x image keeps that bootloader, so a failed first 3.x image still rolls
+  back ([`firmware/README.md`](../firmware/README.md#updating-nodes-from-a-core-2x-image)).
+- **Integrity:** the OTA service and the Pi's push check the image MD5 (a
+  transport check, not a signature).
+- **Signed manifests (optional):** an image built with
+  `SPOREPRINT_OTA_PUBKEY_B64` in its build environment (the Ed25519 release
+  key the Pi pins; `firmware/scripts/fw_version.py` compiles it in) accepts
+  `cmd/ota_manifest {manifest_b64, sig_b64}`: the release manifest of
+  `server/app/cloud/ota_manifest.py`, with `artifact` = the PlatformIO env
+  and `sha256`/`size` of `firmware.bin`. The node checks the signature
+  (vendored Monocypher, `lib/sp_core/vendor/monocypher`), the canonical
+  form, its own env, and a version not older than the running image or the
+  last manifest-verified update (NVS `ota_floor`). The next push must then
+  be exactly that image: every flashed byte is hashed, and a mismatch is
+  aborted before `Update.end()`. The Pi verifies the same manifest against
+  the uploaded `.bin` first (`POST /api/hardware/nodes/{id}/ota` with
+  `manifest` + `manifest_sig`). Unsigned pushes still flash unless the image
+  was built with `SPOREPRINT_OTA_REQUIRE_MANIFEST=1`; images built without
+  the key (local builds, Builder ZIPs) ignore manifests. The key is a build
+  input, never a setting the command channel could change.
 
 ## Secure boot v2 + flash encryption — not supported
 
@@ -173,15 +211,19 @@ implemented or tested in this repo; don't improvise it on a production node.
 
 ## v4 cloud-side OTA pubkey landing zone
 
-The cloud added a `PUT /settings/ota-pubkey` endpoint in v4. It lets an
-operator register the public half of an image-signing key with the cloud, so
-the cloud-web admin surface can verify OTA payloads end-to-end before
-publishing them. The private key never leaves the operator's machine — only
-the public verifier ships. The endpoint persists into the operator's
-`profiles` row and is read by the cloud's `ota_push` before signing the delta.
-If no pubkey is registered, the cloud falls back to the per-device HMAC-only
-flow. Because the node firmware itself cannot verify image signatures (see
-above), this protects the cloud → Pi hop, not the Pi → node flash.
+The cloud added a `PUT /settings/ota-pubkey` endpoint in v4. It stores the
+public half of the OTA signing key in the operator's `profiles` row, and the
+cloud's `ota-push` copies it into the OTA command. **The Pi ignores that
+copy.** It verifies the signed release manifest (`{version}.manifest.json` +
+`.sig`, see `server/app/cloud/ota_manifest.py`) only with its locally pinned
+key (`SPOREPRINT_OTA_PUBKEY_B64` / Settings → OTA verify key). A key taken
+from the command channel would let whoever controls that channel sign their
+own bundle. The manifest binds version, channel, sha256 and size: the Pi
+refuses a channel other than its `SPOREPRINT_OTA_CHANNEL` and any version
+older than its own unless `SPOREPRINT_OTA_ALLOW_DOWNGRADE` is set on the Pi.
+This protects the cloud → Pi hop (Pi self-update), not the Pi → node flash:
+node images are checked against the same kind of signed manifest only when
+the image was built with the key (see above).
 
 This is independent of web-push (browser) VAPID keys, which sign
 cloud-→-browser notifications and have nothing to do with firmware. The
@@ -190,9 +232,13 @@ per-user `ota_pubkey`).
 
 ## What's still open
 
-- A secure-boot / flash-encryption build (the ESP-IDF component route above)
-  and signed node OTA images.
+- A secure-boot / flash-encryption build (the ESP-IDF component route above).
+- Signed node images from this repo's own release workflow: the signing
+  key never enters this repo, so `.github/workflows/firmware-release.yml`
+  here builds without `SPOREPRINT_OTA_PUBKEY_B64` and its zips carry no
+  manifest. The private release pipeline, which holds the key, builds every
+  image with the public half and ships `<env>.manifest.json` + `.sig` in
+  each zip (2026-10 on); the key reaches only its signing job, never the
+  PlatformIO builds.
 - Per-node HMAC keys (currently a single shared key across all nodes
   paired to one Pi).
-- Erasing a node's coredump only after the Pi acknowledges it (the Pi-side ack
-  is not implemented yet).

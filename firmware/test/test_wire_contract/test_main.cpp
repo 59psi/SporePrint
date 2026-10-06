@@ -34,14 +34,19 @@ void tearDown() {}
 
 // design TELEMETRY_KEYS — sensor fields on a telemetry frame (envelope `ts`
 // excluded; `scale_raw` excluded — emitted but not persisted).
+// `pressure_hpa` (BME280 / BMP280, additive) is the newest key: the Pi
+// persists it (SENSOR_FIELDS); the cloud design list adopts it in the same
+// change (cross-repo — its wire-contract test parses build_telemetry too).
 static const char* const kTelemetryKeys[] = {
     "temp_f", "temp_c", "humidity", "dew_point_f",
-    "co2_ppm", "lux", "weight_g", "door_open"};
+    "co2_ppm", "lux", "weight_g", "door_open", "pressure_hpa"};
+static constexpr int kNTelemetryKeys = 9;
 // Pi SENSOR_FIELDS — the fields store_bulk_readings actually persists. Must be
 // the SAME set as TELEMETRY_KEYS (different declaration order in the Python).
 static const char* const kSensorFields[] = {
     "temp_f", "temp_c", "humidity", "co2_ppm",
-    "lux", "dew_point_f", "weight_g", "door_open"};
+    "lux", "dew_point_f", "weight_g", "door_open", "pressure_hpa"};
+static constexpr int kNSensorFields = 9;
 // design ALERT_TYPES — the `type` values emit_alert() may publish.
 static const char* const kAlertTypes[] = {
     "temperature", "humidity", "co2", "door", "sensor_failure"};
@@ -85,6 +90,8 @@ void test_telemetry_all_present_matches_contract() {
     in.co2_ppm = 812;
     in.have_lux = true;
     in.lux = 340.44f;
+    in.have_pressure = true;
+    in.pressure_hpa = 1006.53f;
     in.have_weight = true;
     in.weight_g = 128.44f;
     in.have_door = true;
@@ -95,7 +102,7 @@ void test_telemetry_all_present_matches_contract() {
     std::set<std::string> k = keys_of(doc.as<JsonObject>());
 
     // ts (envelope) + every TELEMETRY_KEY, nothing else.
-    TEST_ASSERT_EQUAL_INT(9, (int)k.size());
+    TEST_ASSERT_EQUAL_INT(1 + kNTelemetryKeys, (int)k.size());
     TEST_ASSERT_TRUE(k.count("ts") == 1);
     for (const char* key : kTelemetryKeys)
         TEST_ASSERT_TRUE_MESSAGE(k.count(key) == 1, key);
@@ -103,7 +110,7 @@ void test_telemetry_all_present_matches_contract() {
     for (const std::string& key : k) {
         if (key == "ts") continue;
         TEST_ASSERT_TRUE_MESSAGE(
-            in_list(kSensorFields, 8, key),
+            in_list(kSensorFields, kNSensorFields, key),
             "telemetry key not in Pi SENSOR_FIELDS (would be dropped)");
     }
 
@@ -117,6 +124,7 @@ void test_telemetry_all_present_matches_contract() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 55.5f, doc["humidity"].as<float>());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 51.9f, doc["dew_point_f"].as<float>());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 340.4f, doc["lux"].as<float>());
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1006.5f, doc["pressure_hpa"].as<float>());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 128.4f, doc["weight_g"].as<float>());
     TEST_ASSERT_TRUE(doc["door_open"].as<bool>());
 }
@@ -136,6 +144,7 @@ void test_telemetry_partial_presence_omits_absent_keys() {
     TEST_ASSERT_TRUE(k.count("co2_ppm") == 1);
     TEST_ASSERT_FALSE(k.count("temp_f") == 1);
     TEST_ASSERT_FALSE(k.count("door_open") == 1);
+    TEST_ASSERT_FALSE(k.count("pressure_hpa") == 1);  // no BMx280
 }
 
 void test_telemetry_uncalibrated_emits_scale_raw_not_weight() {
@@ -151,7 +160,7 @@ void test_telemetry_uncalibrated_emits_scale_raw_not_weight() {
     TEST_ASSERT_FALSE(k.count("weight_g") == 1);
     TEST_ASSERT_EQUAL_INT32(-80123, doc["scale_raw"].as<int32_t>());
     // scale_raw is deliberately NOT a persisted sensor field.
-    TEST_ASSERT_FALSE(in_list(kSensorFields, 8, "scale_raw"));
+    TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, "scale_raw"));
 }
 
 void test_telemetry_replay_flag_is_optional_envelope_key() {
@@ -176,8 +185,8 @@ void test_telemetry_replay_flag_is_optional_envelope_key() {
     TEST_ASSERT_TRUE(replayed["replay"].is<bool>());
     TEST_ASSERT_TRUE(replayed["replay"].as<bool>());
     // Envelope, not a sensor field: never persisted as a reading.
-    TEST_ASSERT_FALSE(in_list(kSensorFields, 8, "replay"));
-    TEST_ASSERT_FALSE(in_list(kTelemetryKeys, 8, "replay"));
+    TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, "replay"));
+    TEST_ASSERT_FALSE(in_list(kTelemetryKeys, kNTelemetryKeys, "replay"));
 }
 
 void test_telemetry_ts_epoch_when_synced_else_uptime() {
@@ -282,7 +291,7 @@ void test_dim_levels_keyed_by_channel_name_and_not_persisted() {
         TEST_ASSERT_TRUE_MESSAGE(k.count(nm) == 1, nm);
         // Documented drop: dim channel names are NOT SENSOR_FIELDS, so the Pi
         // forwards them live but never persists them to telemetry history.
-        TEST_ASSERT_FALSE(in_list(kSensorFields, 8, nm));
+        TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, nm));
     }
     TEST_ASSERT_EQUAL_UINT16(100, doc["white"].as<uint16_t>());
     TEST_ASSERT_EQUAL_UINT16(400, doc["far_red"].as<uint16_t>());

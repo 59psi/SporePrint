@@ -21,7 +21,13 @@ import pytest
 
 from app.db import get_db
 from app.hardware import ota_push
-from app.hardware.ota_push import OtaPushError, auth_response, push_firmware
+from app.hardware.ota_push import (
+    OtaPushError,
+    auth_answer,
+    auth_response,
+    auth_response_pbkdf2,
+    push_firmware,
+)
 
 PASSWORD = "correct-horse-battery-1"
 
@@ -50,7 +56,9 @@ def _free_tcp_port() -> int:
 
 
 class _FakeDeviceProtocol(asyncio.DatagramProtocol):
-    """Mirrors ArduinoOTAClass::_onRx() (arduino-esp32 2.x): ONE datagram
+    """Mirrors the node's espota receiver — ArduinoOTAClass::_onRx() on
+    arduino-esp32 2.x images, firmware/lib/sp_device/ota_service.cpp (the same
+    exchange, kept byte-for-byte) on core 3.x images: ONE datagram
     per handle() tick, IDLE → (invitation) → WAITAUTH → (answer) → IDLE.
     Anything but a U_AUTH (200) datagram in WAITAUTH silently drops the
     state back to IDLE; a non-FLASH datagram in IDLE is ignored."""
@@ -81,7 +89,12 @@ class _FakeDeviceProtocol(asyncio.DatagramProtocol):
             dev.invitations_seen += 1
             dev.invitation = {"cmd": cmd, "host_port": int(tokens[1]),
                               "size": int(tokens[2]), "md5": tokens[3]}
-            self.nonce = hashlib.md5(os.urandom(8)).hexdigest()
+            if dev.auth == "pbkdf2":  # arduino-esp32 3.3.1+ stock ArduinoOTA
+                self.nonce = hashlib.sha256(os.urandom(8)).hexdigest()
+            elif dev.auth == "odd":   # neither espota variant
+                self.nonce = os.urandom(20).hex()
+            else:
+                self.nonce = hashlib.md5(os.urandom(8)).hexdigest()
             for _ in range(2 if dev.duplicate_auth else 1):
                 self.transport.sendto(f"AUTH {self.nonce}".encode(), addr)
             self.state = "wait_auth"
@@ -89,11 +102,26 @@ class _FakeDeviceProtocol(asyncio.DatagramProtocol):
             if cmd != ota_push.AUTH_CMD or len(tokens) != 3:
                 self.state = "idle"  # e.g. a duplicate invitation
                 return
-            # Auth answer: "200 <cnonce> <md5(md5(pass):nonce:cnonce)>"
             _, cnonce, response = tokens
-            pwd_hash = hashlib.md5(dev.password.encode()).hexdigest()
-            expected = hashlib.md5(
-                f"{pwd_hash}:{self.nonce}:{cnonce}".encode()).hexdigest()
+            dev.cnonce = cnonce
+            if dev.auth == "pbkdf2":
+                # ArduinoOTA.cpp (3.3.12) OTA_WAITAUTH: 64-hex cnonce and
+                # response or "auth param fail" back to IDLE, silently; then
+                # sha256(pbkdf2(sha256hex(pass), nonce:cnonce, 10000):nonce:cnonce)
+                if len(cnonce) != 64 or len(response) != 64:
+                    self.state = "idle"
+                    return
+                stored = hashlib.sha256(dev.password.encode()).hexdigest()
+                derived = hashlib.pbkdf2_hmac(
+                    "sha256", stored.encode(), f"{self.nonce}:{cnonce}".encode(),
+                    10000).hex()
+                expected = hashlib.sha256(
+                    f"{derived}:{self.nonce}:{cnonce}".encode()).hexdigest()
+            else:
+                # Auth answer: "200 <cnonce> <md5(md5(pass):nonce:cnonce)>"
+                pwd_hash = hashlib.md5(dev.password.encode()).hexdigest()
+                expected = hashlib.md5(
+                    f"{pwd_hash}:{self.nonce}:{cnonce}".encode()).hexdigest()
             self.state = "idle"
             if response == expected:
                 dev.auth_ok = True
@@ -115,16 +143,22 @@ class FakeOtaDevice:
                        for this long after start(): datagrams queue in the
                        socket and are then handled one per tick, in order.
     duplicate_auth  — every AUTH challenge datagram arrives twice.
+    auth            — "md5" (32-hex nonce: core 2.x ArduinoOTA and
+                       ota_service.cpp), "pbkdf2" (64-hex nonce:
+                       arduino-esp32 3.3.1+ stock ArduinoOTA) or "odd"
+                       (a 40-hex nonce neither variant uses).
     """
 
     def __init__(self, password: str = PASSWORD, *, respond: bool = True,
                  ack_chunks: bool = True, busy_s: float = 0.0,
-                 duplicate_auth: bool = False):
+                 duplicate_auth: bool = False, auth: str = "md5"):
         self.password = password
         self.respond = respond
         self.ack_chunks = ack_chunks
         self.busy_s = busy_s
         self.duplicate_auth = duplicate_auth
+        self.auth = auth
+        self.cnonce: str | None = None
         self.invitation: dict | None = None
         self.invitations_seen = 0
         self.auth_ok: bool | None = None
@@ -204,6 +238,37 @@ def test_auth_response_matches_hand_computed_vector():
     assert digest == "97df929dcacb74585cad22727a4e29e7"
 
 
+def test_auth_response_pbkdf2_matches_an_independent_vector():
+    """arduino-esp32 3.3.1+ (stock ArduinoOTA, 64-hex nonce). Vector computed
+    with Node's crypto (createHash / pbkdf2Sync), not hashlib:
+    sha256(password) = 8468397d…4c4, pbkdf2_sha256(that hex,
+    "<nonce>:<cnonce>", 10000, 32 B) = 1a82b4f4…d4e5, then
+    sha256("<derived>:<nonce>:<cnonce>")."""
+    nonce = "0f1e2d3c4b5a69788796a5b4c3d2e1f0" * 2
+    cnonce = "00112233445566778899aabbccddeeff" * 2
+    assert auth_response_pbkdf2(PASSWORD, nonce, cnonce) == (
+        "75a6c7c4a84e7f00f21316c674038ec8474a63a592b0b7656166d73fa9aa8072")
+
+
+def test_auth_answer_picks_the_variant_by_nonce_length():
+    """espota.py's rule: 32 hex → MD5 with a 32-hex cnonce, 64 hex → PBKDF2
+    with a 64-hex cnonce (the 3.3 node drops any other cnonce length)."""
+    md5_nonce = "9f2b7c1e4a5d3f60819e2c4b6a8d0e1f"
+    cmd, cnonce, response = auth_answer(PASSWORD, md5_nonce).split()
+    assert cmd == str(ota_push.AUTH_CMD) and len(cnonce) == 32
+    assert response == auth_response(PASSWORD, md5_nonce, cnonce)
+
+    sha_nonce = "0f1e2d3c4b5a69788796a5b4c3d2e1f0" * 2
+    cmd, cnonce, response = auth_answer(PASSWORD, sha_nonce).split()
+    assert cmd == str(ota_push.AUTH_CMD) and len(cnonce) == 64
+    assert response == auth_response_pbkdf2(PASSWORD, sha_nonce, cnonce)
+    assert auth_answer(PASSWORD, sha_nonce).endswith("\n")
+
+    for bad in ("", "abc", "0" * 40, "0" * 128):
+        with pytest.raises(OtaPushError, match="unsupported AUTH challenge"):
+            auth_answer(PASSWORD, bad)
+
+
 # ─── Protocol against the loopback fake device ───────────────────────────
 
 
@@ -219,6 +284,51 @@ async def test_push_happy_path_transfers_full_image():
         assert device.invitation["cmd"] == ota_push.FLASH_CMD
         assert device.invitation["size"] == len(image)
         assert device.invitation["md5"] == hashlib.md5(image).hexdigest()
+    finally:
+        await device.stop()
+
+
+async def test_push_to_a_stock_core3_arduinoota_node_answers_pbkdf2():
+    """A node on arduino-esp32 3.3's own ArduinoOTA offers a 64-hex nonce and
+    accepts only the PBKDF2 answer; the push answers it and transfers."""
+    device = await FakeOtaDevice(auth="pbkdf2").start()
+    try:
+        image = os.urandom(2500)
+        await push_firmware(
+            "climate-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1")
+        assert device.auth_ok is True
+        assert len(device.cnonce) == 64
+        assert device.received == image
+    finally:
+        await device.stop()
+
+
+async def test_push_pbkdf2_wrong_password_is_rejected_without_leaking_it():
+    device = await FakeOtaDevice(password="the-real-password-42", auth="pbkdf2").start()
+    try:
+        with pytest.raises(OtaPushError) as exc:
+            await push_firmware(
+                "climate-01", "127.0.0.1", device.udp_port, "wrong-password-xx",
+                os.urandom(100), invite_timeout=2.0, stall_timeout=2.0,
+                bind_host="127.0.0.1")
+        assert "authentication rejected" in str(exc.value)
+        assert "wrong-password-xx" not in str(exc.value)
+        assert device.auth_ok is False
+        assert device.received == b""
+    finally:
+        await device.stop()
+
+
+async def test_push_refuses_a_nonce_neither_espota_variant_uses():
+    device = await FakeOtaDevice(auth="odd").start()
+    try:
+        with pytest.raises(OtaPushError, match="unsupported AUTH challenge"):
+            await push_firmware(
+                "climate-01", "127.0.0.1", device.udp_port, PASSWORD,
+                os.urandom(100), invite_timeout=1.0, stall_timeout=1.0,
+                bind_host="127.0.0.1")
+        assert device.auth_ok is None and device.received == b""
     finally:
         await device.stop()
 

@@ -37,6 +37,10 @@
 // Factory reset — BOOT button (hold 10 s).
 #define SP_PIN_FACTORY_RESET 0
 
-// LEDC: classic ESP32 has 16 channels; both banks fit with headroom.
+// LEDC: classic ESP32 has 16 channels; the bank takes channels 0-3
+// (ledcAttachChannel in src/node/main.cpp), all on ONE timer since they share
+// frequency + resolution. Clock: the core leaves the source on auto, which is
+// the 80 MHz APB here — 80 MHz / 2^10 = 78.1 kHz is the 10-bit ceiling, and
+// 25 kHz is the exact divider 3.125 (the LEDC divider has 8 fractional bits).
 #define SP_LEDC_FREQ_HZ 25000
 #define SP_LEDC_RES_BITS 10

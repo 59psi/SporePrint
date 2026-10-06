@@ -91,6 +91,17 @@ class Settings(BaseSettings):
     # Generate via scripts/generate-ota-keypair.py; private key never
     # leaves the release-signing host.
     ota_pubkey_b64: str = ""
+    # OTA release channel this Pi follows. The signed release manifest must
+    # name it, and an OTA command for another channel is refused, so the
+    # cloud cannot move a Pi onto a less stable channel.
+    ota_channel: Literal["stable", "beta", "dev"] = "stable"
+    # Operator escape hatch, Pi-side only: accept a release OLDER than the
+    # installed one (anti-rollback off). The OTA command cannot set it.
+    ota_allow_downgrade: bool = False
+    # Transitional: accept a release that has only the legacy bundle .sig and
+    # no signed manifest (version and channel then unsigned). Off by default;
+    # a manifest that exists but fails verification is never bypassed.
+    ota_allow_legacy_signature: bool = False
     # First-run wizard flag. "0" = auto-launch on UI boot; "1" = done.
     setup_complete: str = "0"
     # v4.1 third-party integrations — Fernet key used to encrypt secret

@@ -9,6 +9,8 @@ namespace {
 const char* const kReservedNames[] = {
     "config", "scene",  "status", "health",   "telemetry",
     "logs",   "ota",    "alert",  "coredump", "heartbeat",
+    "coredump_ack",  // cmd/coredump_ack (coredump_drain.h)
+    "ota_manifest",  // cmd/ota_manifest (ota_gate.h)
 };
 
 }  // namespace

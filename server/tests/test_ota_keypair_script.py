@@ -107,14 +107,76 @@ def test_signed_bundle_verifies_with_the_pi_verifier(keypair_mod, tmp_path, monk
         ota._verify_signature(bundle, sig)
 
 
+def _load_signer():
+    spec = importlib.util.spec_from_file_location("sign_ota_bundle", SIGN_SCRIPT)
+    signer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signer)
+    return signer
+
+
+def test_signed_manifest_passes_the_pi_pipeline_checks(keypair_mod, tmp_path, monkeypatch):
+    """--manifest-out writes the manifest + .sig the Pi verifies: same
+    canonical bytes, same key, same policy (version, channel, digest)."""
+    priv_raw, pub_raw = keypair_mod._gen_keypair()
+    key_file = tmp_path / "ota-signing.key"
+    key_file.write_text(base64.b64encode(priv_raw).decode() + "\n")
+    bundle = tmp_path / "5.1.0.tar.gz"
+    bundle.write_bytes(b"bundle bytes for 5.1.0")
+    manifest_path = tmp_path / "5.1.0.manifest.json"
+
+    assert _load_signer().main([
+        "--bundle", str(bundle), "--private-key", str(key_file),
+        "--manifest-out", str(manifest_path),
+        "--version", "5.1.0", "--channel", "stable",
+        "--published-at", "2026-10-05T12:00:00Z",
+    ]) == 0
+
+    monkeypatch.setattr(settings, "ota_pubkey_b64", base64.b64encode(pub_raw).decode())
+    monkeypatch.setattr(settings, "ota_channel", "stable")
+    monkeypatch.setattr(settings, "ota_allow_downgrade", False)
+    monkeypatch.setattr(ota, "server_version", lambda: "5.0.0")
+    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", tmp_path / "state")
+
+    # Legacy .sig still written for Pis without manifest support.
+    ota._verify_signature(bundle, Path(str(bundle) + ".sig"))
+    manifest = ota._verify_manifest(
+        manifest_path, Path(str(manifest_path) + ".sig"), ota._load_pinned_pubkey())
+    assert manifest["version"] == "5.1.0" and manifest["channel"] == "stable"
+    assert manifest["artifact"] == "sporeprint-server"
+    assert manifest["published_at"] == "2026-10-05T12:00:00Z"
+    ota._check_manifest_policy(manifest, "5.1.0", "stable")
+    ota._verify_bundle_digest(bundle, manifest)
+    assert not manifest_path.read_bytes().endswith(b"\n")
+
+
+def test_manifest_flags_are_checked(keypair_mod, tmp_path):
+    priv_raw, _ = keypair_mod._gen_keypair()
+    key_file = tmp_path / "k"
+    key_file.write_text(base64.b64encode(priv_raw).decode())
+    bundle = tmp_path / "b.tar.gz"
+    bundle.write_bytes(b"x")
+    signer = _load_signer()
+    with pytest.raises(SystemExit):  # --manifest-out without --version/--channel
+        signer.main(["--bundle", str(bundle), "--private-key", str(key_file),
+                     "--manifest-out", str(tmp_path / "m.json")])
+    assert signer.main(["--bundle", str(bundle), "--private-key", str(key_file),
+                        "--manifest-out", str(tmp_path / "m.json"),
+                        "--version", "5.1.0", "--channel", "nightly"]) == 2
+    assert not (tmp_path / "m.json").exists()
+
+
 def test_sign_script_names_the_real_verifier_and_its_limits():
     doc = SIGN_SCRIPT.read_text()
     assert "/opt/" not in doc
     assert "server/app/cloud/ota.py" in doc
+    assert "server/app/cloud/ota_manifest.py" in doc
     assert (REPO_ROOT / "server" / "app" / "cloud" / "ota.py").exists()
-    # The signature covers the bundle bytes only (srv-cloud-int#21): say so,
-    # and that Docker Pis never self-update.
+    assert (REPO_ROOT / "server" / "app" / "cloud" / "ota_manifest.py").exists()
+    # The legacy .sig covers the bundle bytes only (srv-cloud-int#21); the
+    # manifest binds version + channel. Say both, and that Docker Pis never
+    # self-update.
     assert "downgrade" in doc and "Docker" in doc
+    assert "covers only the bundle bytes" in doc
 
 
 def test_refuses_a_non_empty_out_dir(keypair_mod, tmp_path):

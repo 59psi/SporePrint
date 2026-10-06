@@ -1,7 +1,10 @@
 // SporePrint camera firmware (v2) — AI-Thinker ESP32-CAM with an OV2640,
 // OV3660 or OV5640 sensor (same 24-pin module connector and pin map; the
 // sensor is detected at init by PID — see cam_policy.h for per-sensor
-// tuning).
+// tuning). The same image also builds for the ESP32-S3 camera boards earlier
+// BOMs listed (boards/board_profile_esp32s3cam.h: Freenove ESP32-S3-WROOM
+// CAM, Seeed XIAO ESP32S3 Sense, Waveshare ESP32-S3-CAM-OVxxxx), which have
+// no flash LED and use their BOOT button (GPIO 0) as the reset button.
 //
 // Captures every 15 minutes (plus on-demand via cmd/capture) and POSTs the
 // JPEG to the Pi's /api/vision/frame. Same boot-order safety design as the
@@ -21,7 +24,8 @@
 //
 // Boot / link policy — the same host-tested sp_core policy as the node:
 //   * setup portal (an OPEN AP) only when unprovisioned, on request (reset
-//     button GPIO 13 held 3-10 s, then released), or when freshly-typed
+//     button — GPIO 13 on the AI-Thinker, BOOT / GPIO 0 on the S3 boards —
+//     held 3-10 s, then released), or when freshly-typed
 //     credentials never connected; a cam whose WiFi has worked before boots
 //     offline and re-begins the STA link every 60 s (boot_policy.h,
 //     link_watchdog.h) — fw-node#9
@@ -50,27 +54,39 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <esp_camera.h>
-#include <esp_task_wdt.h>
 
 #include <time.h>
 
+#if defined(SP_BOARD_ESP32S3_CAM)
+#include "board_profile_esp32s3cam.h"
+#else
 #include "board_profile_esp32cam.h"
+#endif
 #include "cam_policy.h"
+
+#if defined(SP_CAM_HAS_WS_EXIO)
+#include "idf_i2c_bus.h"
+#include "ws_cam_exio.h"
+#endif
 
 #include "alert_latch.h"
 #include "boot_policy.h"
+#include "coredump_drain.h"
 #include "coredump_uploader.h"
 #include "image_rollback.h"
 #include "link_watchdog.h"
 #include "log_forward.h"
 #include "mqtt_link.h"
 #include "node_config.h"
+#include "ota_build.h"
+#include "ota_gate.h"
 #include "tls_transport.h"
 #include "ota_service.h"
 #include "publish_cadence.h"
 #include "server_url_allow.h"
 #include "sha256.h"
 #include "hmac_verify.h"
+#include "task_wdt.h"
 #include "tls_policy.h"
 #include "wifi_provisioner.h"
 #include "wire_contract.h"
@@ -86,6 +102,7 @@ static constexpr uint32_t kCaptureIntervalMs = 15UL * 60UL * 1000UL;
 static constexpr uint32_t kStatusIntervalMs =
     sp::PublishCadence::kMaxHeartbeatIntervalMs;
 static constexpr uint32_t kRestartDelayMs = 1500;  // let logs/MQTT flush
+static constexpr uint32_t kLoopWdtTimeoutS = 90;   // see the end of setup()
 
 // Flash-on settle before the kept exposure: the sensor free-runs while the
 // driver holds its one buffer, so AE/AWB converge on the flash-lit scene
@@ -95,6 +112,17 @@ static constexpr uint32_t kRestartDelayMs = 1500;  // let logs/MQTT flush
 // for exposure still converging.
 static constexpr uint32_t kFlashSettleMs = 500;
 static constexpr int kDiscardFrames = 2;
+
+// Board facts from the profile (the AI-Thinker profile predates the S3
+// boards and sets none of these: its defaults).
+#ifndef SP_CAM_BOARD_KIND
+#define SP_CAM_BOARD_KIND AiThinker
+#endif
+#ifndef SP_CAM_XCLK_HZ
+#define SP_CAM_XCLK_HZ 20000000  // valid for OV2640, OV3660 and OV5640
+#endif
+static constexpr sp_cam::Board kBoard = sp_cam::Board::SP_CAM_BOARD_KIND;
+static constexpr bool kHasFlash = SP_PIN_FLASH >= 0;
 
 static_assert(sp_cam::kPidOv2640 == OV2640_PID, "cam_policy PID drift");
 static_assert(sp_cam::kPidOv3660 == OV3660_PID, "cam_policy PID drift");
@@ -106,8 +134,10 @@ static sp_device::NodeConfig cfg;
 // neither the Tier-3 drivers nor a channel bank.
 static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/false,
                                                /*personality_opt=*/false);
-static WiFiClient wifi_client;
-static WiFiClientSecure wifi_client_secure;
+// Bounded DNS (sp_device/bounded_dns.h): a broker lookup can't outlast its
+// slot in the loop-WDT budget (sp_core/link_budget.h).
+static sp_device::BoundedDnsClient wifi_client;
+static sp_device::BoundedDnsSecureClient wifi_client_secure;
 static sp_device::TlsSupervisor tls_link(cfg, kv, wifi_client,
                                          wifi_client_secure);
 static sp_device::MqttLink* mqtt = nullptr;
@@ -119,7 +149,8 @@ static uint32_t capture_success = 0, capture_fail = 0;
 static float avg_latency_ms = 0;
 static sp::PublishCadence status_cadence(kStatusIntervalMs);
 
-// Reset button (GPIO 13): 3-10 s hold + release → setup portal, >10 s →
+// Reset button (SP_PIN_FACTORY_RESET: GPIO 13 on the AI-Thinker, BOOT /
+// GPIO 0 on the S3 boards): 3-10 s hold + release → setup portal, >10 s →
 // factory reset — densely-sampled holds only (boot_policy.h).
 static sp::ButtonHold reset_button;
 // Signed commands: each accepted (topic, MAC) once per replay window.
@@ -140,7 +171,26 @@ static uint16_t sensor_pid = 0;
 static uint8_t jpeg_quality = 0;  // current quality number (0-63, lower = better)
 
 static bool init_camera() {
+#if defined(SP_CAM_HAS_WS_EXIO)
+    // Waveshare ESP32-S3-CAM: the sensor's SCCB shares the board I²C bus
+    // with the I/O expander that holds its PWDN. This opens the bus (I²C
+    // port SP_CAM_SCCB_I2C_PORT), the expander powers the sensor, and the
+    // camera driver reuses the same bus below instead of opening its own on
+    // the same pins. The bus outlives this function (the driver keeps it).
+    static sp_cam::IdfI2cBus board_i2c;
+    if (!board_i2c.begin(SP_CAM_SCCB_I2C_PORT, SP_CAM_SIOD, SP_CAM_SIOC)) {
+        Serial.println("[CAM] board I2C bus unavailable");
+        return false;
+    }
+    if (!sp::WsCamExio(board_i2c).camera_power_on())
+        Serial.println("[CAM] I/O expander @0x24 not answering - relying on "
+                       "the PWDN pull-down");
+    delay(10);  // hardware timing: sensor power-up before the first SCCB access
+#endif
     camera_config_t c = {};
+    // XCLK on LEDC timer 0 / channel 0, set up by the driver through ESP-IDF
+    // — invisible to the Arduino LEDC allocator, so this image never calls
+    // ledcAttach / analogWrite (board_profile_esp32cam.h, image_guard.py).
     c.ledc_channel = LEDC_CHANNEL_0;
     c.ledc_timer = LEDC_TIMER_0;
     c.pin_d0 = SP_CAM_Y2;
@@ -155,11 +205,17 @@ static bool init_camera() {
     c.pin_pclk = SP_CAM_PCLK;
     c.pin_vsync = SP_CAM_VSYNC;
     c.pin_href = SP_CAM_HREF;
+#if defined(SP_CAM_SCCB_I2C_PORT)
+    c.pin_sccb_sda = -1;  // reuse the bus opened above
+    c.pin_sccb_scl = -1;
+    c.sccb_i2c_port = SP_CAM_SCCB_I2C_PORT;
+#else
     c.pin_sccb_sda = SP_CAM_SIOD;
     c.pin_sccb_scl = SP_CAM_SIOC;
+#endif
     c.pin_pwdn = SP_CAM_PWDN;
     c.pin_reset = SP_CAM_RESET;
-    c.xclk_freq_hz = 20000000;  // valid for OV2640, OV3660 and OV5640
+    c.xclk_freq_hz = SP_CAM_XCLK_HZ;
     c.pixel_format = PIXFORMAT_JPEG;
     // UXGA on every supported sensor (why: cam_policy.h SensorProfile).
     c.frame_size = FRAMESIZE_UXGA;  // 1600x1200
@@ -197,6 +253,12 @@ static bool init_camera() {
             s->set_brightness(s, sensor.brightness);
             s->set_saturation(s, sensor.saturation);
         }
+        // How the sensor sits on this board (Freenove S3 only; cam_policy.h).
+        const sp_cam::Orientation o = sp_cam::board_orientation(kBoard, sensor_pid);
+        if (o.apply) {
+            s->set_hmirror(s, o.hmirror);
+            s->set_vflip(s, o.vflip);
+        }
         const uint8_t q =
             psram ? sensor.jpeg_quality_psram : sensor.jpeg_quality_dram;
         if (q != jpeg_quality && s->set_quality(s, q) == 0) jpeg_quality = q;
@@ -210,22 +272,28 @@ static bool init_camera() {
 }
 
 // Returns a frame exposed NOW (flash on, when requested) — never the one
-// the driver has been holding since the previous capture.
+// the driver has been holding since the previous capture. `use_flash` is
+// already false on a board without a flash LED (flash_for_capture).
 static camera_fb_t* grab_fresh_frame(bool use_flash) {
+#if SP_PIN_FLASH >= 0
     if (use_flash) {
         digitalWrite(SP_PIN_FLASH, HIGH);
         delay(kFlashSettleMs);  // hardware timing: AE/AWB settle under the LED
     }
+#endif
     for (int i = 0; i < kDiscardFrames; ++i) {
         camera_fb_t* stale = esp_camera_fb_get();
         if (stale != nullptr) esp_camera_fb_return(stale);
     }
     camera_fb_t* fb = esp_camera_fb_get();
+#if SP_PIN_FLASH >= 0
     if (use_flash) digitalWrite(SP_PIN_FLASH, LOW);  // after the exposure
+#endif
     return fb;
 }
 
-static bool capture_and_post(bool use_flash) {
+static bool capture_and_post(bool want_flash) {
+    const bool use_flash = sp_cam::flash_for_capture(want_flash, kHasFlash);
     if (!camera_ok) {
         // No sensor: don't pulse the flash for nothing. Counted as before.
         SP_LOG(LOG_ERROR, "[CAM] Capture skipped — camera not initialized");
@@ -426,9 +494,26 @@ static bool verify_command(const char* raw, size_t raw_len,
     return false;
 }
 
+// An ack the cam would accept right now: none is needed without a signing
+// key, and with one the frame only verifies once NTP has synced.
+static bool coredump_ack_verifiable() {
+    return cfg.hmac_key.empty() || (uint64_t)time(nullptr) >= sp::kMinValidEpoch;
+}
+
 static void on_command(const char* suffix, const char* raw, size_t raw_len,
                        JsonDocument& doc, void*) {
     if (!verify_command(raw, raw_len, suffix)) return;
+    // The Pi stored the panic dump this cam uploaded (coredump_uploader.h) —
+    // never a capture / server_url frame.
+    if (strcmp(suffix, sp::kCoredumpAckSuffix) == 0) {
+        sp_device::coredump::on_ack(doc);
+        return;
+    }
+    // A signed release manifest for the push that follows (ota_service.h).
+    if (strcmp(suffix, sp::kOtaManifestSuffix) == 0) {
+        if (ota != nullptr) ota->on_manifest(doc);
+        return;
+    }
 
     if (doc["capture"].is<bool>() && doc["capture"].as<bool>()) {
         bool flash = doc["flash"].is<bool>() ? doc["flash"].as<bool>() : true;
@@ -464,8 +549,10 @@ void setup() {
     delay(500);
     Serial.printf("\n=== SporePrint Cam v2 (%s) ===\n", SP_BOARD_NAME);
 
+#if SP_PIN_FLASH >= 0
     pinMode(SP_PIN_FLASH, OUTPUT);
     digitalWrite(SP_PIN_FLASH, LOW);
+#endif
     pinMode(SP_PIN_FACTORY_RESET, INPUT_PULLUP);
 
     std::string migrated = sp_device::migrate_legacy(kv);
@@ -502,9 +589,10 @@ void setup() {
     } else {
         // These credentials have worked before: boot offline. The link
         // watchdog re-begins the STA connection every 60 s.
-        Serial.println("[WIFI] Network unreachable - booting offline and "
-                       "retrying. Hold the reset button (GPIO 13) 3-10 s, "
-                       "then release, to open the setup portal.");
+        Serial.printf("[WIFI] Network unreachable - booting offline and "
+                      "retrying. Hold the reset button (GPIO %d) 3-10 s, "
+                      "then release, to open the setup portal.\n",
+                      SP_PIN_FACTORY_RESET);
     }
     provisioner.start_ntp(cfg);
 
@@ -524,11 +612,14 @@ void setup() {
                 /*connect_now=*/sp::tls_mode_allows_mqtt(xport.mode));
 
     sp_device::logfwd::attach(mqtt);
-    sp_device::coredump::upload_if_present(*mqtt);
+    // Find + hash a panic dump; loop() uploads it and the Pi's ack erases it.
+    sp_device::coredump::begin(*mqtt, kv);
 
     std::string hostname = "sporeprint-" + cfg.node_id;
     ota = new sp_device::OtaService(*mqtt, hostname.c_str(),
                                     cfg.ota_pass.c_str());
+    ota->configure_manifests(
+        sp_device::ota_manifest_build_config(&kv, SPOREPRINT_FW_VERSION));
     ota->begin();
 
     if (!camera_ok) {
@@ -544,8 +635,10 @@ void setup() {
 
     // Arm last: 90 s — an on-demand capture's POST can hold 10-15 s and
     // retries are legitimate.
-    esp_task_wdt_init(90, true);
-    esp_task_wdt_add(NULL);
+    const esp_err_t wdt = sp_device::arm_loop_task_wdt(kLoopWdtTimeoutS);
+    if (wdt != ESP_OK)
+        SP_LOG(LOG_ERROR, "[BOOT] task WDT arm FAILED (%s) - loop unguarded",
+               esp_err_to_name(wdt));
 }
 
 void loop() {
@@ -583,6 +676,7 @@ void loop() {
     mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, reset_down));
     ota->loop();
     sp_device::logfwd::loop(now);
+    sp_device::coredump::loop(now, coredump_ack_verifiable());
 
     // OTA probation: a new image proves itself with 60 s of continuous MQTT.
     if (image_confirm.update(now, mqtt->connected()))

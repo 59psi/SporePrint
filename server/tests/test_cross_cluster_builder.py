@@ -39,8 +39,12 @@ async def test_context_names_only_the_supported_camera():
     assert "AI-Thinker ESP32-CAM" in ctx
     for sensor in ("OV2640", "OV3660", "OV5640"):
         assert sensor in ctx
-    assert re.search(r"ESP32-S3 camera boards[^\n]*NOT supported", ctx)
+    # The S3 camera boards earlier BOMs listed have envs of their own, but
+    # the assistant must never send anyone out to buy one.
+    assert re.search(r"ESP32-S3 camera boards[^\n]*never recommend buying one", ctx)
     assert "`cam`" in ctx
+    for env in ("cam_esp32s3", "cam_xiao_esp32s3", "cam_waveshare_s3"):
+        assert f"`{env}`" in ctx, env
 
 
 async def test_context_lists_every_reserved_gpio():
@@ -73,6 +77,9 @@ async def test_context_matches_the_board_profiles():
     cam = _board_pins("board_profile_esp32cam.h")
     assert f"factory reset {cam['SP_PIN_FACTORY_RESET']}" in ctx
     assert f"flash LED {cam['SP_PIN_FLASH']}" in ctx
+    s3cam = _board_pins("board_profile_esp32s3cam.h")
+    assert s3cam["SP_PIN_FLASH"] == "-1", "the context says the S3 camera boards have no flash LED"
+    assert f"BOOT {s3cam['SP_PIN_FACTORY_RESET']} is the reset button" in ctx
 
 
 def _acl_node_publish_topics() -> set[str]:

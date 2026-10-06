@@ -166,11 +166,11 @@ EXPECTED_PACKS = {
         "Inline ATC/ATO Blade Fuse Holders": (2, 0, 10, (1, 1, 3)),
         "ATC Blade Fuse Assortment": (1, 0, 15, (1, 1, 1)),
         "Noctua NA-SEC3": (3, 0, 3, (1, 4, 12)),
-        "Adhesive-Lined Heat Shrink": (15, 0, 400, (1, 1, 1)),
-        "UV-Resistant Zip Ties": (25, 0, 400, (1, 1, 1)),
+        "Adhesive-Lined Heat Shrink": (1, 0, 12, (1, 1, 1)),
+        "UV-Resistant Zip Ties": (9, 0, 100, (1, 1, 2)),
         "Zip Ties, 18": (3, 0, 100, (1, 1, 1)),
         "VELCRO ONE-WRAP": (2, 0, 12, (1, 1, 2)),
-        "Rubber Grommet Kit": (1, 0, 20, (1, 1, 1)),
+        "Rubber Grommet Kit": (1, 0, 10, (1, 1, 2)),
         "ruthex Heat-Set Insert Assortment": (12, 0, 50, (1, 1, 3)),
         "Heat-Set Inserts M2.5": (6, 4, 70, (1, 1, 2)),
         "M2.5 Socket Head Screw Kit": (6, 4, 40, (1, 1, 2)),
@@ -200,11 +200,11 @@ EXPECTED_PACKS = {
         "Inline ATC/ATO Blade Fuse Holders": (2, 0, 10, (1, 1, 3)),
         "ATC Blade Fuse Assortment": (1, 0, 15, (1, 1, 1)),
         "Noctua NA-SEC3": (3, 0, 3, (1, 4, 12)),
-        "Adhesive-Lined Heat Shrink": (25, 0, 400, (1, 1, 1)),
-        "UV-Resistant Zip Ties": (25, 0, 400, (1, 1, 1)),
+        "Adhesive-Lined Heat Shrink": (1, 0, 12, (1, 1, 1)),
+        "UV-Resistant Zip Ties": (14, 0, 100, (1, 1, 2)),
         "Zip Ties, 18": (3, 0, 100, (1, 1, 1)),
         "VELCRO ONE-WRAP": (2, 0, 12, (1, 1, 2)),
-        "Rubber Grommet Kit": (1, 0, 20, (1, 1, 1)),
+        "Rubber Grommet Kit": (1, 0, 10, (1, 1, 2)),
         "ruthex Heat-Set Insert Assortment": (36, 4, 100, (1, 2, 5)),
         "Heat-Set Inserts M2.5": (16, 4, 70, (1, 1, 3)),
         "M2.5 Socket Head Screw Kit": (12, 4, 40, (1, 2, 4)),
@@ -216,8 +216,8 @@ EXPECTED_PACKS = {
     },
     "bare_bones": {
         "USB Wall Charger": (1, 0, 2, (1, 2, 6)),
-        "UV-Resistant Zip Ties": (25, 0, 400, (1, 1, 1)),
-        "Rubber Grommet Kit": (1, 0, 20, (1, 1, 1)),
+        "UV-Resistant Zip Ties": (6, 2, 200, (1, 1, 1)),
+        "Rubber Grommet Kit": (1, 0, 10, (1, 1, 2)),
         "ruthex Heat-Set Inserts M3 x 5.7": (10, 4, 100, (1, 1, 2)),
         "Heat-Set Inserts M2.5": (6, 4, 70, (1, 1, 2)),
         "M2.5 Socket Head Screw Kit": (6, 4, 40, (1, 1, 2)),
@@ -228,9 +228,9 @@ EXPECTED_PACKS = {
 # parts_cost() at x1 / x4 / x12 chambers. x1 is what estimated_cost rounds;
 # pi-ui's bomTotals() must return the same three figures for each tier.
 EXPECTED_TOTALS = {
-    "bare_bones": (290.90, 484.60, 1047.80),
-    "recommended": (747.83, 1733.38, 4618.18),
-    "all_the_things": (964.68, 2613.78, 7154.87),
+    "bare_bones": (290.90, 484.60, 1060.80),
+    "recommended": (747.83, 1733.38, 4644.18),
+    "all_the_things": (964.68, 2613.78, 7180.87),
 }
 
 
@@ -337,12 +337,15 @@ EXPECTED_UNITS = {
     "ATC Blade Fuse Assortment": "chamber set",
     "Dupont Jumper Wires": "M-F jumper",
     "Rubber Grommet Kit": "large grommet",
+    "Adhesive-Lined Heat Shrink": "3/4\" piece",
     "M2.5 Socket Head Screw Kit": "M2.5 x 6 screw",
     "M4 Socket Head Screw Kit": "fan-duct screw",
     # mixed kits counted in a different size per tier (their notes say which)
     "ruthex Heat-Set Insert Assortment": {"recommended": "M4 insert", "all_the_things": "M3 insert"},
     "Socket Head Screw Kit M2.5-M8": {"bare_bones": "", "recommended": "M5 x 16 screw",
                                       "all_the_things": "M5 x 16 screw"},
+    "UV-Resistant Zip Ties": {"bare_bones": "8\" or 12\" tie", "recommended": "4\" tie",
+                              "all_the_things": "6\" tie"},
 }
 
 
@@ -730,9 +733,10 @@ def test_shared_lines_are_kits_or_pi_side_only():
 # chambers that press 436. Now such a line counts what ONE chamber takes, in
 # whole packs, with the Pi case's share of the same pack as `shared_units`.
 
-# Up to the Builder's chamber input's maximum (99), past each bulk pack's
-# coverage (16 zip ties / heat-shrink, 20 grommets, 33 duct ties).
-UNDER_BUY_CHAMBERS = (1, 2, 4, 6, 12, 16, 17, 21, 34, 99)
+# Every count the Builder's chamber input takes (1-99), so each pack's
+# coverage edge (7 / 11 / 33 zip ties, 10 grommets, 12 heat-shrink, 33 duct
+# ties, ...) and the one past it are both checked.
+UNDER_BUY_CHAMBERS = tuple(range(1, 100))
 MODELS_README = REPO_ROOT / "models" / "README.md"
 _PI_SIDE = ("Raspberry Pi", "microSD")
 
@@ -748,13 +752,13 @@ KIT_CONTENTS = {
         "M2.5 × 6 SHCS": 40, "M2.5 × 8 SHCS (or pan head)": 25, "M2.5 × 10 SHCS": 20},
     "M3 x 6 mm Socket Head Screws": {"M3 × 6 SHCS": 100},
     "Socket Head Screw Kit M2.5-M8": {"M3 × 16 SHCS": 10, "M4 × 16 SHCS": 10, "M5 × 16 SHCS": 10},
-    # fan_duct takes M4 x 30, x35 or x40 (models/README.md): 15 + 13 + 10.
-    "M4 Socket Head Screw Kit": {"M4 × 25 SHCS": 15, "M4 × 35 SHCS / button head": 38},
+    # fan_duct takes M4 x 30, x35 or x40 (models/README.md): 15 + 13 + 10. The
+    # listing's "Size & Quantity" image (2026-10-05): 75 nuts, 75 lock and 75
+    # flat washers — the flat ones are the scale's DIN 125 washers.
+    "M4 Socket Head Screw Kit": {"M4 × 25 SHCS": 15, "M4 × 35 SHCS / button head": 38,
+                                 "M4 washer, DIN 125": 75},
     "M4 x 8 mm Cup-Point Set Screws": {"M4 × 8 set screw": 50},
 }
-# The scale's 4 DIN 125 washers come from the M4 kit's washer bag, whose count
-# the listing does not pin.
-_UNCOUNTED_ROWS = {"M4 washer, DIN 125"}
 
 _BENCH_TOOLS = ("Breadboard",)
 _COVERS_RE = re.compile(r"covers (\d+) chambers")
@@ -824,7 +828,7 @@ def test_fastener_kits_count_what_the_models_use(tier_id):
                    if (c.quantity, c.shared_units, c.pack_size) == (chamber[row], pi[row], per_kit)]
         assert counted, (f"{c.name}: quantity {c.quantity} / shared_units {c.shared_units} / "
                          f"pack_size {c.pack_size} match no size of models/README.md")
-    needed = {row for row, n in chamber.items() if n + pi[row] > 0} - _UNCOUNTED_ROWS
+    needed = {row for row, n in chamber.items() if n + pi[row] > 0}
     assert needed <= covered, f"{tier_id}: no BOM kit carries {sorted(needed - covered)}"
 
 
@@ -912,11 +916,15 @@ def test_bulk_consumables_count_what_one_chamber_takes(tier_id):
     fans = _qty(tier, r"^Noctua NF-A8")
     for c in tier.components:
         if c.name.startswith(("UV-Resistant Zip Ties", "Adhesive-Lined Heat Shrink", "Rubber Grommet Kit")):
-            assert not c.shared and c.pack_size >= 20, c.name
+            assert not c.shared and c.pack_size >= 10, c.name
         if c.name.startswith("Zip Ties, 18"):  # one per fan_duct
             assert (c.quantity, c.pack_size, c.shared) == (fans, 100, False), c.name
-        if c.name.startswith("Rubber Grommet Kit"):  # one large grommet a chamber
-            assert c.quantity == 1, c.name
+        if c.name.startswith("Rubber Grommet Kit"):
+            # One open 7/8" or 1" grommet a chamber. The listing (2026-10-05):
+            # 7/8" x 10 = 5 eyelet + 5 closed, 1" x 8 = 5 eyelet + 3 closed — a
+            # closed one is a blanking plug, nothing passes through it.
+            assert c.quantity == 1 and c.pack_size == 5 + 5, c.name
+            assert "10 x 7/8\" (5 open eyelet + 5 closed) and 8 x 1\" (5 open eyelet + 3 closed)" in c.notes
 
 
 @pytest.mark.parametrize("tier_id", ["recommended", "all_the_things"])
@@ -944,6 +952,127 @@ def test_wiring_consumables_follow_the_wiring_rows(tier_id):
     assert line("ATC Blade Fuse Assortment").quantity == 1
     # Two 12" straps per power_supply_mount, one PSU brick per chamber.
     assert line("VELCRO").quantity == 2 * _qty(tier, r"^12V Power Supply")
+
+
+# ── Mixed consumable kits, counted per size ─────────────────────
+# The heat-shrink and zip-tie kits hold each size in a different count, and
+# the joints and printed tie slots each take one size. Counted as "pieces of
+# any size" (25 a chamber of 400) the lists looked good for 16 chambers while
+# a chamber's two strip joints use 2 of the kit's 24 big pieces (12 x 1/2" +
+# 12 x 3/4"), and the 4.8 mm zip ties ran out first. Each size's use per
+# chamber follows from the BOM's own part counts below; the line counts the
+# size the chambers use up first, and every size is checked at N = 1..99.
+
+# Per size, from the pinned listings (re-read 2026-10-05): Eventronic HST-400's
+# "7 SPECIFICATIONS" image; Superun EST-400MIX-B "each size 100 pcs/bag", 8"
+# and 12" both 0.19" (4.8 mm) wide, so either fills a 4.8 mm slot or run.
+HEAT_SHRINK_KIT = {'3/32"': 150, '1/8"': 110, '3/16"': 60, '1/4"': 32, '3/8"': 24, '1/2"': 12,
+                   '3/4"': 12}
+ZIP_TIE_KIT = {'4"': 100, '6"': 100, '8" or 12"': 200}
+
+
+def _counts(tier: HardwareTier) -> SimpleNamespace:
+    return SimpleNamespace(
+        cases=_qty(tier, r"^ESP32-WROOM-32 DevKit"),       # one esp32_case per node board
+        cams=_qty(tier, r"^ESP32-CAM"),                    # one cam_mount each
+        boards=2 if _has(tier, r"^IRLZ44N") else 0,        # relay + lighting relay_board_mounts
+        climate=_qty(tier, r"^SHT31-D"),                   # one sensor_mount + sensor_bracket each
+        psu=_qty(tier, r"^12V Power Supply"),              # one power_supply_mount
+        scale=_qty(tier, r"^HX711"),
+        pump=_qty(tier, r"^12V Peristaltic Pump"),
+        door=_qty(tier, r"^Magnetic Door Contact"),
+        fans=_qty(tier, r"^Noctua NF-A8"),
+        fuses=_qty(tier, r"^Inline ATC/ATO"),
+        white=_qty(tier, r"^12V LED Strip - Cool White"),
+        tri=_qty(tier, r"^12V LED Strip - Tri-spectrum"),
+    )
+
+
+def _zip_tie_use(tier: HardwareTier) -> tuple[dict[str, int], dict[str, int]]:
+    """({size: ties a chamber}, {size: ties the Pi side takes once}). Slots
+    from models/*.scad: relay_board_mount 2 pairs <= 2.5 mm, cam_mount 2
+    tunnels <= 2.5 mm, esp32_case 2 flange pairs <= 3.6 mm + a 4 x 2.5 mm
+    strain-relief bar, hx711_scale 1 anchor <= 3.6 mm, pump_bracket 2-4 base
+    ties + 1 cradle tie <= 3.6 mm (150 mm long), sensor_bracket 1 per clip web
+    (2 clips), power_supply_mount 2 flange pairs and pi_case 2 ears <= 4.8 mm.
+    Cable runs: 2 at the wall grommet, one per run into the chamber, and the
+    outside runs (the USB cord; the 12 V bundles on a 12 V tier)."""
+    n = _counts(tier)
+    runs = n.climate + n.cams + n.fans + n.white + n.tri + n.pump + n.scale + n.door
+    cable = 2 + runs + (2 if n.psu else 1)
+    chamber = {
+        '4"': 2 * n.boards + 2 * n.cams + n.cases,
+        '6"': 2 * n.cases + n.scale + 5 * n.pump,
+        '8" or 12"': 2 * n.climate + 2 * n.psu + cable,
+    }
+    return chamber, {'8" or 12"': 2}
+
+
+def _heat_shrink_use(tier: HardwareTier) -> tuple[dict[str, int], dict[str, int]]:
+    """{size: pieces a chamber} by joint: 3/32" caps each fan's unused tach +
+    PWM wires; 1/8" two 22 AWG joints, the tri-spectrum strip's red + green
+    wires while they stay unwired, and each 22/4 conductor joint at the relay
+    node (HX711 4, door contact 2); 3/16" the pump's two leads and the reed's
+    pull-up; 1/4" each fuse holder's 14-to-18 AWG splice; 3/8" each 22/4 run's
+    in-chamber jacket end; 1/2" the white strip's joint (10 x 3 mm); 3/4" the
+    tri-spectrum strip's (12 x 6 mm IP67 tube)."""
+    n = _counts(tier)
+    tri = next(c for c in tier.components if c.name.startswith("12V LED Strip - Tri-spectrum"))
+    capped = 2 if "insulate the red and green wires" in tri.notes else 0
+    chamber = {
+        '3/32"': 2 * n.fans,
+        '1/8"': 2 + capped + 4 * n.scale + 2 * n.door,
+        '3/16"': 2 * n.pump + n.door,
+        '1/4"': n.fuses,
+        '3/8"': n.scale + n.door,
+        '1/2"': n.white,
+        '3/4"': n.tri,
+    }
+    return {size: k for size, k in chamber.items() if k}, {}
+
+
+MIXED_KITS = {
+    "Adhesive-Lined Heat Shrink": (HEAT_SHRINK_KIT, _heat_shrink_use, " piece"),
+    "UV-Resistant Zip Ties": (ZIP_TIE_KIT, _zip_tie_use, " tie"),
+}
+
+
+def _mixed_lines(tier: HardwareTier):
+    for c in tier.components:
+        key = next((k for k in MIXED_KITS if c.name.startswith(k)), None)
+        if key:
+            kit, use, noun = MIXED_KITS[key]
+            yield (c, kit, *use(tier), noun)
+
+
+def test_every_tier_has_its_mixed_kits():
+    assert [sum(1 for _ in _mixed_lines(t)) for t in TIERS] == [1, 2, 2]
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_mixed_kits_count_the_size_used_up_first(tier_id):
+    """The line counts one size exactly as a chamber uses it, and it is the
+    size that runs out first: at every N the packs it buys are the packs the
+    hungriest size needs — enough of every size, no more."""
+    for c, kit, chamber, pi, noun in _mixed_lines(_tier(tier_id)):
+        size = c.unit.removesuffix(noun)
+        assert size in kit, (c.name, c.unit)
+        assert (c.quantity, c.shared_units, c.pack_size) == (chamber[size], pi.get(size, 0), kit[size]), c.name
+        for n in UNDER_BUY_CHAMBERS:
+            need = {s: chamber.get(s, 0) * n + pi.get(s, 0) for s in kit}
+            assert c.packs(n) == max(math.ceil(need[s] / kit[s]) for s in kit), (c.name, n, need)
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_mixed_kit_notes_state_each_size(tier_id):
+    for c, kit, chamber, pi, _ in _mixed_lines(_tier(tier_id)):
+        for size, k in chamber.items():
+            assert f"{k} x {size}" in c.notes, (c.name, f"{k} x {size}")
+        for size, k in pi.items():
+            assert f"+ {k} once for pi_case" in c.notes, c.name
+    shrink = next((c for c in _tier(tier_id).components if c.name.startswith("Adhesive-Lined")), None)
+    if shrink:
+        assert ", ".join(f"{k} x {s}" for s, k in list(HEAT_SHRINK_KIT.items())[:-1]) in shrink.notes
 
 
 # ── setup-step code spans ───────────────────────────────────────────────────
@@ -1132,6 +1261,28 @@ def _check_tasmota_topic(topic: str, before: str, f: SimpleNamespace) -> str | N
     return None if heard else f"the server does not subscribe to {state}"
 
 
+def _check_shelly_prefix(prefix: str, f: SimpleNamespace) -> str | None:
+    """A Shelly Gen2+ MQTT prefix: the plug login may publish its status and
+    read its RPC requests there, the server hears it and may send it RPC
+    commands, and the role is a plug a built-in rule drives."""
+    prefix = prefix.replace("<role>", "humidifier")
+    role = prefix.removeprefix("shellies/")
+    if not role or not re.fullmatch(r"[\w-]+", role):
+        return "a Gen2 prefix is shellies/<role>, one level"
+    heard = re.findall(r'subscribe\("([^"]+)"\)', f.mqtt_py)
+    for topic in (f"{prefix}/events/rpc", f"{prefix}/status/switch:0", f"{prefix}/online"):
+        if not any(_mqtt_match(t, topic) for a, t in f.acl.get("sp-3p", ()) if "write" in a):
+            return f"the sp-3p plug login may not publish {topic}"
+        if not any(_mqtt_match(t, topic) for t in heard):
+            return f"the server does not subscribe to {topic}"
+    rpc = f"{prefix}/rpc"
+    if not any(_mqtt_match(t, rpc) for a, t in f.acl.get("sp-3p", ()) if "read" in a):
+        return f"the sp-3p plug login may not read {rpc}"
+    if not any(_mqtt_match(t, rpc) for a, t in f.acl.get("server", ()) if "write" in a):
+        return f"the server may not publish {rpc}"
+    return None if f"plug-{role}" in f.rule_targets else f"no built-in rule drives plug-{role}"
+
+
 def _check_backlog(cmd: str, before: str, f: SimpleNamespace) -> str | None:
     settings = dict(part.strip().split(" ", 1) for part in cmd.removeprefix("Backlog ").split(";"))
     unknown = set(settings) - {"MqttHost", "MqttPort", "MqttUser", "MqttPassword", "Topic", "FullTopic"}
@@ -1181,7 +1332,8 @@ def _check_shell(chain: str, f: SimpleNamespace) -> str | None:
             if env not in f.envs:
                 return f"pio env {env!r} is not in platformio.ini"
         elif prog == "pip":
-            if args != ["install", "platformio"]:
+            # -U: an older PlatformIO Core cannot fetch the pinned platform
+            if args not in (["install", "platformio"], ["install", "-U", "platformio"]):
                 return f"unexpected pip command {cmd!r}"
         elif prog == "docker":
             if args[:1] != ["compose"] or not (cwd / "docker-compose.yml").is_file():
@@ -1217,6 +1369,8 @@ def _check_span(span: str, before: str, f: SimpleNamespace) -> str | None:
         return _check_scad_param(shlex.split(span)[1], f)
     if re.fullmatch(r'\w+=("[^"]*"|\w+)', span):
         return _check_scad_param(span, f)
+    if span.startswith("shellies/"):
+        return _check_shelly_prefix(span, f)
     if "%" in span or re.match(r"(stat|tele|cmnd)/", span):
         return _check_tasmota_topic(span, before, f)
     if m := re.fullmatch(r"cmd/(\w+)", span):
@@ -1284,6 +1438,31 @@ def test_every_code_span_names_something_the_repo_has(tier_id):
 ])
 def test_code_span_check_rejects_name_fragments(span, ok):
     assert (_check_span(span, "", _facts()) is None) is ok
+
+
+@pytest.mark.parametrize("span,ok", [
+    ("shellies/<role>", True),
+    ("shellies/humidifier", True),
+    ("shellies/dehumidifier", True),
+    ("shellies/humidifier/plug", False),   # two levels: the server's shellies/+/rpc misses it
+    ("shellies/mister", False),            # no built-in rule drives plug-mister
+    ("shellies/", False),
+])
+def test_shelly_prefix_check(span, ok):
+    assert (_check_span(span, "", _facts()) is None) is ok
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_shelly_gen2_plug_setup_is_exact(tier_id):
+    """Shelly's Gen2 MQTT settings (web UI labels from Shelly's own guide;
+    keys server / user / topic_prefix / rpc_ntf / status_ntf in the Gen2 API):
+    the prefix under shellies/ is what the broker and server accept."""
+    step = next(s for s in _tier(tier_id).setup_steps if "Shelly Gen2+" in s)
+    for text in ("Settings → Connectivity → MQTT", "port `1883`", "Username = `sp-3p`",
+                 "Password = `SPOREPRINT_MQTT_3P_PASSWORD`", "MQTT prefix = `shellies/<role>`",
+                 "'RPC status notifications over MQTT'", "'Generic status update over MQTT'"):
+        assert text in step, text
+    assert step.index("Shelly Gen2+") > step.index("FullTopic"), "keep the Tasmota text first"
 
 
 def test_weather_unavailable_message_names_both_env_names(client):

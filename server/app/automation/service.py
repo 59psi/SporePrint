@@ -4,7 +4,7 @@ import logging
 from ..db import get_db
 from ..species.profiles import canonical_species_id
 from .models import AutomationRule, RuleAction
-from .templates import BUILTIN_RULES, LEGACY_BUILTIN_RULES
+from .templates import BUILTIN_RULES, SUPERSEDED_BUILTIN_RULES
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,8 @@ async def seed_builtin_rules():
     """Seed built-in automation rule templates into the database if empty.
 
     On an already-seeded database, upgrade any built-in whose shipped form was
-    unsafe (LEGACY_BUILTIN_RULES) — but only a copy the operator never edited.
+    superseded (SUPERSEDED_BUILTIN_RULES: the unsafe LEGACY_BUILTIN_RULES and the
+    pre-browning phase gates) — but only a copy the operator never edited.
     """
     async with get_db() as db:
         cursor = await db.execute("SELECT COUNT(*) as cnt FROM automation_rules")
@@ -133,13 +134,14 @@ def _same_rule(a: AutomationRule, b: AutomationRule) -> bool:
 
 
 async def _upgrade_legacy_builtin_rules(db) -> None:
-    """Rewrite unedited copies of unsafe legacy built-ins to the current template.
+    """Rewrite unedited copies of superseded built-ins to the current template.
 
+    A stored copy matching ANY superseded shipped form of its name is upgraded.
     Runs inside seed_builtin_rules' connection; commits once if anything changed.
     """
     current = {r.name: r for r in BUILTIN_RULES}
     changed = False
-    for name, legacy in LEGACY_BUILTIN_RULES.items():
+    for name, forms in SUPERSEDED_BUILTIN_RULES.items():
         replacement = current.get(name)
         if replacement is None:
             continue
@@ -153,7 +155,7 @@ async def _upgrade_legacy_builtin_rules(db) -> None:
                 stored = AutomationRule.model_validate(deserialize_rule_row(row))
             except Exception:
                 continue
-            if not _same_rule(stored, legacy):
+            if not any(_same_rule(stored, form) for form in forms):
                 # Operator-edited (or already upgraded) — leave it. An edited
                 # copy keeps the old logic, which rule arbitration can make
                 # matter (a forecast-only Pre-cool now holds the cooler ON

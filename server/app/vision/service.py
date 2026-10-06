@@ -13,7 +13,8 @@ import anthropic
 from ..config import settings
 from ..contamination.service import record_event
 from ..db import get_db
-from ..notifications.service import contamination_alert, harvest_ready, notify_warning
+from ..notifications.service import contamination_alert, harvest_ready, notify_info, notify_warning
+from ..species.models import GrowPhase
 from ..species.service import get_profile
 
 log = logging.getLogger(__name__)
@@ -259,7 +260,7 @@ Species: {species_name}
 Current Phase: {session.get('current_phase', 'Unknown')}
 Colonization Visual: {colonization_visual}
 Contamination Notes: {contamination_notes}
-"""
+{browning_guidance(profile, session.get('current_phase'))}"""
 
         camera_context = ""
         if frame.get("camera_sensor"):
@@ -336,6 +337,7 @@ Provide a structured analysis in JSON format with these fields:
 
         await _maybe_harvest_alert(frame, result, species_name)
         await _maybe_colonization_alert(frame, result, species_name)
+        await _maybe_browning_alert(frame, result, species_name)
 
         return result
 
@@ -476,6 +478,51 @@ _FRUITING_PHASES = {"primordia_induction", "fruiting"}
 _HARVEST_READY = {"ready", "overdue"}
 _GROWTH_SLOWED = {"slowing", "stalled"}
 
+# Shiitake browning (CLAUDE.md §4b: "vision should track browning"). The block's
+# brown, popcorned skin is the stage maturing — the generic prompt would read a
+# brown-blistered block as contamination. The model reports browning_percent;
+# at this share of the visible surface the block is browned and owes its
+# cold-water soak.
+_BROWNING_COMPLETE_PERCENT = 90.0
+
+
+def browning_guidance(profile, current_phase: str | None) -> str:
+    """Extra prompt lines while a session is browning ("" otherwise), so every
+    other species/phase prompt is unchanged. Pure + testable."""
+    if current_phase != GrowPhase.BROWNING.value or profile is None:
+        return ""
+    params = profile.phases.get(GrowPhase.BROWNING)
+    if params is None:
+        return ""
+    return (
+        f"Phase Expectations (browning): {params.notes}\n"
+        "Browning is NORMAL for this species: a brown, leathery outer skin with popcorn-like "
+        "blisters (and brown liquid beading on it) is the block maturing — do NOT report it as "
+        "contamination. Contamination in this phase looks different: green (Trichoderma) or "
+        "other off-colour mold, most often where the surface stays wet.\n"
+        "Also include browning_percent: 0-100 — the share of the visible block surface that "
+        f"has formed the brown skin ({_BROWNING_COMPLETE_PERCENT:.0f}+ = evenly brown, ready "
+        "for the cold-water soak).\n"
+    )
+
+
+def browning_signal(current_phase: str, browning_percent) -> tuple[bool, str | None]:
+    """Is the browning block done? Pure + testable; mirrors colonization_signal.
+
+    Only judged in the browning phase, on the model's per-frame
+    ``browning_percent`` read. Advancing (after the cold-water soak) is the
+    operator's call — this only tells them.
+    """
+    if current_phase != GrowPhase.BROWNING.value:
+        return False, None
+    try:
+        pct = float(browning_percent)
+    except (TypeError, ValueError):
+        return False, None
+    if pct >= _BROWNING_COMPLETE_PERCENT:
+        return True, f"block is {pct:.0f}% browned — browning looks complete"
+    return False, None
+
 # Phases where the culture is still running (mirrors sessions.service). Full
 # colonization is the "ready to fruit" milestone; only meaningful before the
 # bag/jar/plate is opened to fruit.
@@ -484,7 +531,8 @@ _COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substra
 _COLONIZATION_COMPLETE_PERCENT = 95.0
 
 
-def colonization_signal(current_phase: str, colonization_percent) -> tuple[bool, str | None]:
+def colonization_signal(current_phase: str, colonization_percent, *,
+                        ready_to: str = "fruit") -> tuple[bool, str | None]:
     """Should we tell the operator the culture is fully colonized? Pure + testable.
 
     The spec's ask: surface the "ready to fruit" milestone the vision path never
@@ -494,6 +542,8 @@ def colonization_signal(current_phase: str, colonization_percent) -> tuple[bool,
     model's per-frame ``colonization_percent`` read: at or above the completion
     threshold, the medium is fully run and ready to move to fruiting conditions.
     Advancing the phase is a separate product decision — this only alerts.
+    ``ready_to`` names the next stage: "brown" for a species that browns
+    before it can fruit (shiitake).
     """
     if current_phase not in _COLONIZATION_PHASES:
         return False, None
@@ -502,7 +552,7 @@ def colonization_signal(current_phase: str, colonization_percent) -> tuple[bool,
     except (TypeError, ValueError):
         return False, None
     if pct >= _COLONIZATION_COMPLETE_PERCENT:
-        return True, f"substrate is {pct:.0f}% colonized — ready to fruit"
+        return True, f"substrate is {pct:.0f}% colonized — ready to {ready_to}"
     return False, None
 
 
@@ -625,15 +675,19 @@ async def _maybe_colonization_alert(frame: dict, result: dict, species_name: str
 
     async with get_db() as db:
         srow = await (await db.execute(
-            "SELECT current_phase FROM sessions WHERE id = ?", (session_id,)
+            "SELECT current_phase, species_profile_id FROM sessions WHERE id = ?", (session_id,)
         )).fetchone()
         if not srow:
             return
         phase = srow["current_phase"]
 
-    should, reason = colonization_signal(phase, result.get("colonization_percent"))
-    if not should:
+    if not colonization_signal(phase, result.get("colonization_percent"))[0]:
         return
+    # A species that browns before it can fruit (shiitake) moves to browning next.
+    profile = await get_profile(srow["species_profile_id"]) if srow["species_profile_id"] else None
+    browns_next = profile is not None and GrowPhase.BROWNING in profile.phases
+    _, reason = colonization_signal(phase, result.get("colonization_percent"),
+                                    ready_to="brown" if browns_next else "fruit")
 
     async with get_db() as db:
         # Dedup: at most one colonization-complete alert per session per 12h.
@@ -657,7 +711,7 @@ async def _maybe_colonization_alert(frame: dict, result: dict, species_name: str
     try:
         await notify_warning(
             f"Colonization complete — {species_name}",
-            f"Vision: {reason}. Ready to move to fruiting.",
+            f"Vision: {reason}. Ready to move to {'browning' if browns_next else 'fruiting'}.",
             dedup_key=f"colonization:{session_id}",
         )
     except Exception as e:
@@ -675,6 +729,75 @@ async def _maybe_colonization_alert(frame: dict, result: dict, species_name: str
         })
     except Exception as e:
         log.warning("forward_event(colonization_complete) failed: %s", e)
+
+
+async def _maybe_browning_alert(frame: dict, result: dict, species_name: str) -> None:
+    """Fire a deduped browning-complete alert when a browning block is done.
+
+    Mirrors _maybe_colonization_alert (phase gate, one alert per session per
+    12h via session_events). The INFO notification carries the phase's exit
+    step — shiitake's cold-water soak — since that is what the operator does
+    next; the cloud gets it as a phase_reminder (a type it already pushes).
+    """
+    if not isinstance(result, dict):
+        return
+    session_id = frame.get("session_id")
+    if not session_id:
+        return
+
+    async with get_db() as db:
+        srow = await (await db.execute(
+            "SELECT current_phase, species_profile_id FROM sessions WHERE id = ?", (session_id,)
+        )).fetchone()
+        if not srow:
+            return
+        phase = srow["current_phase"]
+
+    should, reason = browning_signal(phase, result.get("browning_percent"))
+    if not should:
+        return
+    profile = await get_profile(srow["species_profile_id"]) if srow["species_profile_id"] else None
+    step = profile.phase_exit_reminder(phase) if profile is not None else None
+
+    async with get_db() as db:
+        existing = await (await db.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'browning_complete' "
+            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
+            (session_id,),
+        )).fetchone()
+        if existing:
+            return
+        await db.execute(
+            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "browning_complete", "vision", f"Browning complete: {reason}",
+             json.dumps({"reason": reason,
+                         "browning_percent": result.get("browning_percent"),
+                         "frame_id": frame.get("id")})),
+        )
+        await db.commit()
+
+    try:
+        await notify_info(
+            f"Browning complete — {species_name}",
+            f"Vision: {reason}. " + (f"Next: {step}" if step else "Ready to move on to pinning."),
+            dedup_key=f"browning:{session_id}",
+        )
+    except Exception as e:
+        log.warning("browning notify failed: %s", e)
+    try:
+        from ..cloud.service import forward_event  # inline: cloud.service imports this module
+        await forward_event("phase_reminder", {
+            "node_id": frame.get("node_id"),
+            "session_id": session_id,
+            "species": species_name,
+            "phase": phase,
+            "reason": reason,
+            "reminder": step,
+            "browning_percent": result.get("browning_percent"),
+            "frame_id": frame.get("id"),
+        })
+    except Exception as e:
+        log.warning("forward_event(phase_reminder) failed: %s", e)
 
 
 async def get_frames(

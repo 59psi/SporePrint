@@ -1,12 +1,27 @@
 """Pi server OTA self-update pipeline.
 
-Pipeline: download bundle + signature → verify Ed25519 → extract to
-staging → atomic-swap /opt/sporeprint/current → systemctl restart.
-Failures never touch the running install; they bail in staging.
+Pipeline: fetch + verify the signed release manifest → download the bundle
+→ check its sha256/size against the manifest → extract to staging →
+atomic-swap /opt/sporeprint/current → systemctl restart. Failures never
+touch the running install; they bail before promote.
+
+What is trusted (see ``ota_manifest.py`` for the format):
+  - The manifest ``{version}.manifest.json`` + ``.sig`` is verified against
+    the locally pinned Ed25519 key (``SPOREPRINT_OTA_PUBKEY_B64`` / Settings).
+    A key the cloud sends in the OTA command (``ota_pubkey``) is ignored, so
+    a compromised cloud or relay can only ask for a genuine signed release.
+  - The manifest binds artifact, version, channel, sha256 and size. The Pi
+    requires version == the requested version, channel == its configured
+    ``SPOREPRINT_OTA_CHANNEL`` (default stable), and version >= the installed
+    version / recorded floor (anti-rollback) unless the operator sets
+    ``SPOREPRINT_OTA_ALLOW_DOWNGRADE=true`` on the Pi.
+  - Legacy releases (bundle ``.sig`` only, no manifest) are refused unless
+    ``SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=true``. A manifest that exists
+    but fails verification is never a reason to fall back.
 
 Security posture:
   - SSRF: hostname allowlist before any HTTPS request fires.
-  - Signature verified BEFORE extraction (zip-slip / symlink defense).
+  - Signature + digest verified BEFORE extraction (zip-slip / symlink defense).
   - Tar safety: per-member walk rejects absolute paths, .. traversal,
     symlinks/hardlinks/specials, and strips suid/sgid/sticky bits.
   - Atomic promote: sibling-symlink rename is atomic on POSIX.
@@ -16,10 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import tarfile
@@ -27,7 +42,12 @@ import time
 from pathlib import Path
 
 import httpx
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ..config import settings
+from . import ota_manifest
+from .ota_manifest import ManifestError
 from .version import server_version, version_triple
 
 log = logging.getLogger(__name__)
@@ -36,11 +56,11 @@ log = logging.getLogger(__name__)
 _OTA_HOSTNAME = "updates.sporeprint.ai"
 _OTA_BASE_URL = f"https://{_OTA_HOSTNAME}/firmware"
 
-_VALID_CHANNELS = {"stable", "beta", "dev"}
+_VALID_CHANNELS = set(ota_manifest.CHANNELS)
 
 # vX.Y.Z[-suffix]; forbids slashes / leading dashes that could escape the
-# URL path or the staging directory.
-_VERSION_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.-]+)?$")
+# URL path or the staging directory. Shared with the manifest format.
+_VERSION_RE = ota_manifest.VERSION_RE
 
 _DEFAULT_INSTALL_ROOT = Path(os.environ.get("SPOREPRINT_INSTALL_ROOT", "/opt/sporeprint"))
 _DEFAULT_STATE_DIR = Path(os.environ.get("SPOREPRINT_OTA_STATE_DIR", "/var/lib/sporeprint/ota"))
@@ -48,6 +68,18 @@ _DEFAULT_STATE_DIR = Path(os.environ.get("SPOREPRINT_OTA_STATE_DIR", "/var/lib/s
 # Real Pi bundles are 5-15 MB; 50 MB gives headroom, bigger bails before
 # download to avoid filling the SD card.
 _MAX_BUNDLE_BYTES = 50 * 1024 * 1024
+# Ed25519 sigs are exactly 64 bytes; cap tightly.
+_MAX_SIG_BYTES = 512
+
+# HTTP statuses that mean "this release has no manifest" (object stores
+# answer 404, or 403 when the bucket hides listing). Only these let a Pi with
+# SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE fall back to the bundle-only .sig.
+_ABSENT_STATUSES = frozenset({403, 404, 410})
+
+# Highest version this Pi has installed through OTA — the anti-rollback
+# floor, kept in the OTA state dir so it does not depend on how the running
+# tree reports its own version.
+_FLOOR_FILE = "version_floor.json"
 
 _DOWNLOAD_TIMEOUT_S = 120
 _DOWNLOAD_CONNECT_TIMEOUT_S = 15
@@ -67,15 +99,12 @@ class OTAError(Exception):
     tree is left in place for inspection."""
 
 
-def _load_pinned_pubkey():
-    # Late imports — keep this module loadable even if cryptography fails.
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-        Ed25519PublicKey,
-    )
+class OTANotFound(OTAError):
+    """The release host answered 403/404/410: the file is not published."""
 
-    from ..config import settings as _settings  # type: ignore
 
-    raw = getattr(_settings, "ota_pubkey_b64", "") or os.environ.get(
+def _load_pinned_pubkey() -> Ed25519PublicKey:
+    raw = getattr(settings, "ota_pubkey_b64", "") or os.environ.get(
         "SPOREPRINT_OTA_PUBKEY", ""
     )
     if not raw:
@@ -122,13 +151,96 @@ def _write_state(state: dict) -> None:
 
 
 def _validate_inputs(version: str, channel: str) -> None:
+    """Format checks only (the channel/version can be used in a URL)."""
     if channel not in _VALID_CHANNELS:
         raise OTAError(
             f"channel must be one of {sorted(_VALID_CHANNELS)}, got {channel!r}"
         )
-    if not isinstance(version, str) or not _VERSION_RE.match(version):
+    if not ota_manifest.is_valid_version(version):
         raise OTAError(
             f"version must match {_VERSION_RE.pattern!r}, got {version!r}"
+        )
+
+
+def _configured_channel() -> str:
+    return getattr(settings, "ota_channel", "stable") or "stable"
+
+
+def _downgrade_allowed() -> bool:
+    return bool(getattr(settings, "ota_allow_downgrade", False))
+
+
+def _legacy_signature_allowed() -> bool:
+    return bool(getattr(settings, "ota_allow_legacy_signature", False))
+
+
+def _check_channel(channel: str) -> None:
+    configured = _configured_channel()
+    if channel != configured:
+        raise OTAError(
+            f"this Pi follows the {configured!r} OTA channel; refusing a "
+            f"{channel!r} release (set SPOREPRINT_OTA_CHANNEL={channel} on the "
+            "Pi to switch channels)"
+        )
+
+
+def _read_version_floor() -> str | None:
+    """The version recorded by the last successful OTA, or None."""
+    try:
+        data = json.loads((_DEFAULT_STATE_DIR / _FLOOR_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if ota_manifest.is_valid_version(version) else None
+
+
+def _write_version_floor(version: str) -> None:
+    """Record the version just promoted. Diagnostic-grade like state.json:
+    a write failure leaves the installed-version check in charge."""
+    try:
+        path = _state_dir() / _FLOOR_FILE
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"version": version, "ts": time.time()}))
+        tmp.replace(path)
+    except OSError as e:
+        log.warning("OTA: could not record the anti-rollback floor: %s", e)
+
+
+def _installed_floor() -> tuple[tuple[int, int, int] | None, str]:
+    """``(triple, label)`` of the lowest version an OTA may install: the
+    higher of the running server's version and the recorded OTA floor."""
+    candidates = []
+    running = server_version()
+    if version_triple(running) is not None:
+        candidates.append((version_triple(running), running))
+    recorded = _read_version_floor()
+    if recorded is not None and version_triple(recorded) is not None:
+        candidates.append((version_triple(recorded), recorded))
+    if not candidates:
+        return None, running
+    return max(candidates, key=lambda c: c[0])
+
+
+def _check_rollback(version: str) -> None:
+    """Anti-rollback. A genuinely signed release is still refused when it
+    is older than what this Pi runs: an older release can carry
+    vulnerabilities fixed since. Pre-release suffixes are not ordered
+    (X.Y.Z only), because the shipped tree reports its bare pyproject
+    version, so 5.1.0-beta.2 → 5.1.0 → 5.1.0-beta.1 all count as equal."""
+    if _downgrade_allowed():
+        return
+    floor, label = _installed_floor()
+    requested = version_triple(version)
+    if floor is None:
+        raise OTAError(
+            f"installed version {label!r} is unknown, so OTA cannot rule out "
+            "a downgrade — set SPOREPRINT_OTA_ALLOW_DOWNGRADE=true on the Pi "
+            "to update anyway"
+        )
+    if requested is None or requested < floor:
+        raise OTAError(
+            f"refusing OTA downgrade from {label} to {version} — set "
+            "SPOREPRINT_OTA_ALLOW_DOWNGRADE=true on the Pi if this is intended"
         )
 
 
@@ -141,7 +253,7 @@ def self_update_unsupported_reason() -> str | None:
     if _DOCKERENV.exists():
         return (
             "Pi self-update is not supported in the Docker deployment — update "
-            "on the Pi with `git pull && docker compose up -d --build`"
+            "on the Pi with `git pull && ./install.sh`"
         )
     current = _DEFAULT_INSTALL_ROOT / "current"
     if not current.is_symlink():
@@ -155,23 +267,45 @@ def self_update_unsupported_reason() -> str | None:
 def validate_request(version: str, channel: str) -> str | None:
     """Pre-ack validation of an OTA command. Returns an error or None.
 
-    Besides the channel/version format checks, refuses a DOWNGRADE: the
-    bundle signature covers only the bundle bytes (not its version/channel),
-    so without this anyone able to issue a signed OTA command could roll the
-    Pi back to an older, validly signed but vulnerable release.
+    Format checks, then the policy the signed manifest is held to later, so
+    a command that can never succeed is refused before it is acknowledged:
+    the channel must be the one this Pi follows, and the version must not be
+    older than the installed one (anti-rollback, unless the operator set
+    SPOREPRINT_OTA_ALLOW_DOWNGRADE on the Pi).
     """
     try:
         _validate_inputs(version, channel)
+        _check_channel(channel)
+        _check_rollback(version)
     except OTAError as e:
         return str(e)
-    requested = version_triple(version)
-    installed = version_triple(server_version())
-    if requested is not None and installed is not None and requested < installed:
-        return (
-            f"refusing OTA downgrade from {server_version()} to {version} — "
-            "roll back manually on the Pi if this is intended"
-        )
     return None
+
+
+def _check_manifest_policy(manifest: dict, version: str, channel: str) -> None:
+    """Hold a verified manifest to this request and this Pi."""
+    if manifest["artifact"] != ota_manifest.ARTIFACT_PI_SERVER:
+        raise OTAError(
+            f"manifest is for {manifest['artifact']!r}, not "
+            f"{ota_manifest.ARTIFACT_PI_SERVER!r} — refusing"
+        )
+    if manifest["version"] != version:
+        raise OTAError(
+            f"manifest version {manifest['version']!r} != requested {version!r} "
+            "— refusing"
+        )
+    if manifest["channel"] != channel:
+        raise OTAError(
+            f"manifest channel {manifest['channel']!r} != requested {channel!r} "
+            "— refusing"
+        )
+    _check_channel(manifest["channel"])
+    if not 0 < manifest["size"] <= _MAX_BUNDLE_BYTES:
+        raise OTAError(
+            f"manifest declares a {manifest['size']}-byte bundle, allowed is "
+            f"1..{_MAX_BUNDLE_BYTES}"
+        )
+    _check_rollback(manifest["version"])
 
 
 def _bundle_url(channel: str, version: str) -> str:
@@ -180,6 +314,14 @@ def _bundle_url(channel: str, version: str) -> str:
 
 def _signature_url(channel: str, version: str) -> str:
     return f"{_OTA_BASE_URL}/{channel}/{version}.tar.gz.sig"
+
+
+def _manifest_url(channel: str, version: str) -> str:
+    return f"{_OTA_BASE_URL}/{channel}/{version}.manifest.json"
+
+
+def _manifest_signature_url(channel: str, version: str) -> str:
+    return f"{_OTA_BASE_URL}/{channel}/{version}.manifest.json.sig"
 
 
 async def _download_to(
@@ -202,15 +344,26 @@ async def _download_to(
         verify=True,
     ) as client:
         async with client.stream("GET", url) as resp:
+            if resp.status_code in _ABSENT_STATUSES:
+                raise OTANotFound(
+                    f"download {url} returned HTTP {resp.status_code}"
+                )
             if resp.status_code != 200:
                 raise OTAError(
                     f"download {url} returned HTTP {resp.status_code}"
                 )
             content_length = resp.headers.get("content-length")
-            if content_length and int(content_length) > max_bytes:
-                raise OTAError(
-                    f"bundle declares {content_length} bytes, max is {max_bytes}"
-                )
+            if content_length:
+                try:
+                    declared = int(content_length)
+                except ValueError:
+                    raise OTAError(
+                        f"download {url} sent a bad Content-Length {content_length!r}"
+                    ) from None
+                if declared > max_bytes:
+                    raise OTAError(
+                        f"bundle declares {content_length} bytes, max is {max_bytes}"
+                    )
             written = 0
             with dest.open("wb") as out:
                 async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
@@ -223,8 +376,8 @@ async def _download_to(
 
 
 def _verify_signature(bundle_path: Path, sig_path: Path) -> None:
-    from cryptography.exceptions import InvalidSignature
-
+    """Legacy check: the raw Ed25519 signature over the bundle bytes. Proves
+    the bytes are a release, not which version or channel."""
     pubkey = _load_pinned_pubkey()
 
     sig_bytes = sig_path.read_bytes()
@@ -242,6 +395,30 @@ def _verify_signature(bundle_path: Path, sig_path: Path) -> None:
         ) from None
     except Exception as e:
         raise OTAError(f"signature verification raised: {type(e).__name__}: {e}") from e
+
+
+def _verify_manifest(manifest_path: Path, sig_path: Path,
+                     pubkey: Ed25519PublicKey) -> dict:
+    try:
+        return ota_manifest.verify(
+            manifest_path.read_bytes(), sig_path.read_bytes(), pubkey
+        )
+    except ManifestError as e:
+        raise OTAError(str(e)) from None
+
+
+def _verify_bundle_digest(bundle_path: Path, manifest: dict) -> None:
+    """The downloaded bundle must be exactly the one the manifest signs."""
+    sha256, size = ota_manifest.file_digest(bundle_path)
+    if size != manifest["size"]:
+        raise OTAError(
+            f"bundle is {size} bytes, the signed manifest says {manifest['size']} "
+            "— refusing"
+        )
+    if not hmac.compare_digest(sha256, manifest["sha256"]):
+        raise OTAError(
+            "bundle sha256 does not match the signed manifest — refusing"
+        )
 
 
 def _safe_extract_tar(bundle_path: Path, dest: Path) -> None:
@@ -352,11 +529,55 @@ async def _emit_step(step: str, **fields) -> None:
         log.warning("OTA progress emit failed (step=%s): %s", step, e)
 
 
+async def _fetch_manifest(version: str, channel: str, incoming: Path,
+                          pubkey: Ed25519PublicKey) -> dict | None:
+    """Download + verify the signed manifest and hold it to this request.
+
+    Returns None only for a release with no manifest at all, and only when
+    the operator allowed the legacy bundle-only signature. A manifest that
+    exists but has no signature, a bad signature or the wrong contents
+    always fails — never a fallback.
+    """
+    manifest_path = incoming / f"{version}.manifest.json"
+    manifest_sig_path = incoming / f"{version}.manifest.json.sig"
+    try:
+        await _download_to(
+            _manifest_url(channel, version), manifest_path,
+            max_bytes=ota_manifest.MAX_MANIFEST_BYTES,
+        )
+    except OTANotFound:
+        if not _legacy_signature_allowed():
+            raise OTAError(
+                f"release {version} on the {channel!r} channel has no signed "
+                "manifest — refusing. Releases published before signed "
+                "manifests carry only the bundle signature; set "
+                "SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=true on the Pi to accept "
+                "one (version and channel are then not signed)"
+            ) from None
+        log.warning(
+            "OTA: %s/%s has no signed manifest; accepting the legacy bundle "
+            "signature because SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE is set",
+            channel, version,
+        )
+        return None
+    await _download_to(
+        _manifest_signature_url(channel, version), manifest_sig_path,
+        max_bytes=_MAX_SIG_BYTES,
+    )
+    manifest = await asyncio.to_thread(
+        _verify_manifest, manifest_path, manifest_sig_path, pubkey
+    )
+    _check_manifest_policy(manifest, version, channel)
+    return manifest
+
+
 async def run_ota_update(version: str, channel: str) -> dict:
     """End-to-end OTA pipeline. Returns a state dict and persists it to
     /var/lib/sporeprint/ota/state.json. On failure `ok=False` and `step`
-    names the stage that failed; the running install is never touched.
-    Emits `ota_step` events to the cloud at every stage (fire-and-forget).
+    names the stage that failed (validate | manifest | download | verify |
+    stage | promote | restart); the running install is never touched before
+    promote. Emits `ota_step` events to the cloud at every stage
+    (fire-and-forget).
     """
 
     state: dict = {
@@ -369,31 +590,55 @@ async def run_ota_update(version: str, channel: str) -> dict:
     try:
         _write_state(state)
         _validate_inputs(version, channel)
+        _check_channel(channel)
 
         # Pre-flight pubkey check — fail fast before downloading 15 MB.
-        _load_pinned_pubkey()
-
-        state["step"] = "download"
-        _write_state(state)
+        pubkey = _load_pinned_pubkey()
+        _check_rollback(version)
 
         incoming = _state_dir() / "incoming"
         incoming.mkdir(parents=True, exist_ok=True)
         bundle_path = incoming / f"{version}.tar.gz"
         sig_path = incoming / f"{version}.tar.gz.sig"
-
-        for p in (bundle_path, sig_path):
+        for p in (
+            bundle_path,
+            sig_path,
+            incoming / f"{version}.manifest.json",
+            incoming / f"{version}.manifest.json.sig",
+        ):
             if p.exists():
                 p.unlink()
 
+        state["step"] = "manifest"
+        _write_state(state)
+        manifest = await _fetch_manifest(version, channel, incoming, pubkey)
+        if manifest is not None:
+            state["verified_by"] = "manifest"
+            state["sha256"] = manifest["sha256"]
+            state["published_at"] = manifest["published_at"]
+        else:
+            state["verified_by"] = "legacy_signature"
+
+        state["step"] = "download"
+        _write_state(state)
         await _emit_step(
             "download_started",
             version=version,
             channel=channel,
             url=_bundle_url(channel, version),
         )
-        await _download_to(_bundle_url(channel, version), bundle_path)
-        # Ed25519 sig is exactly 64 bytes; cap tightly.
-        await _download_to(_signature_url(channel, version), sig_path, max_bytes=512)
+        if manifest is not None:
+            # The signed size is the cap: a longer body is not this release.
+            await _download_to(
+                _bundle_url(channel, version), bundle_path,
+                max_bytes=manifest["size"],
+            )
+        else:
+            await _download_to(_bundle_url(channel, version), bundle_path)
+            await _download_to(
+                _signature_url(channel, version), sig_path,
+                max_bytes=_MAX_SIG_BYTES,
+            )
         bundle_size = bundle_path.stat().st_size
         await _emit_step(
             "download_complete",
@@ -408,8 +653,16 @@ async def run_ota_update(version: str, channel: str) -> dict:
 
         # CPU-heavy verify runs off-loop so heartbeat / health endpoints
         # stay responsive on a Pi Zero.
-        await asyncio.to_thread(_verify_signature, bundle_path, sig_path)
-        await _emit_step("verify_complete", version=version, channel=channel)
+        if manifest is not None:
+            await asyncio.to_thread(_verify_bundle_digest, bundle_path, manifest)
+        else:
+            await asyncio.to_thread(_verify_signature, bundle_path, sig_path)
+        await _emit_step(
+            "verify_complete",
+            version=version,
+            channel=channel,
+            verified_by=state["verified_by"],
+        )
 
         state["step"] = "stage"
         _write_state(state)
@@ -426,6 +679,9 @@ async def run_ota_update(version: str, channel: str) -> dict:
         state["step"] = "promote"
         _write_state(state)
         await asyncio.to_thread(_promote, staging, version)
+        # The new tree is live: it is the floor for the next OTA (also after
+        # an operator-allowed downgrade, which lowers it on purpose).
+        _write_version_floor(version)
         await _emit_step("promote_complete", version=version, channel=channel)
 
         state["step"] = "restart"
@@ -438,8 +694,8 @@ async def run_ota_update(version: str, channel: str) -> dict:
         state["ok"] = True
         _write_state(state)
         log.info(
-            "OTA update succeeded: version=%s channel=%s staging=%s",
-            version, channel, staging,
+            "OTA update succeeded: version=%s channel=%s verified_by=%s staging=%s",
+            version, channel, state["verified_by"], staging,
         )
         return state
 

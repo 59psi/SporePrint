@@ -835,3 +835,9 @@ Rules for new shared code:
   config-flag alternate to the I2C SCD4x), and Winsen's own listings give
   inconsistent module dimensions. Rather than ship a holder built to an
   unverified size, there is none. Use the I2C trio in `sensor_mount`.
+- **Parts only earlier BOMs listed.** The firmware still drives the AHT20,
+  BME280 / BMP280 breakouts and the ESP32-S3 camera boards (Freenove
+  ESP32-S3-WROOM CAM, Seeed XIAO ESP32S3 Sense, Waveshare ESP32-S3-CAM; see
+  `firmware/docs/drivers.md`), but no model is sized for them:
+  `sensor_mount` holds the SHT / SCD / BH1750 trio and `cam_mount` only the
+  AI-Thinker + ESP32-CAM-MB stack.

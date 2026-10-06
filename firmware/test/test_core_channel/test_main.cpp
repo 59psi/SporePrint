@@ -282,6 +282,8 @@ void test_channel_name_validation() {
     TEST_ASSERT_FALSE(sp::channel_name_valid("scene"));
     TEST_ASSERT_FALSE(sp::channel_name_valid("telemetry"));
     TEST_ASSERT_FALSE(sp::channel_name_valid("coredump"));
+    TEST_ASSERT_FALSE(sp::channel_name_valid("coredump_ack"));
+    TEST_ASSERT_FALSE(sp::channel_name_valid("ota_manifest"));
     // Length cap.
     TEST_ASSERT_FALSE(sp::channel_name_valid("abcdefghijklmnopqrstuvwxyz"));
 }

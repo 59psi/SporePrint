@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import get_db
-from .hardware.coredumps import coredump_dir
+from .hardware.coredumps import coredump_dir, discard_partial_writes
 from .health.service import update_task
 from .host_allow import HostAllowMiddleware
 from .retention import service as retention_service
@@ -201,6 +201,12 @@ def _ensure_coredump_dir(log: logging.Logger) -> None:
     if not os.access(path, os.W_OK | os.X_OK):
         log.error("Coredump directory %s is not writable — node panic dumps "
                   "will be lost", path)
+        return
+    # A crash mid-write leaves a temp file; that upload was never
+    # acknowledged, so the node still holds the dump and sends it again.
+    removed = discard_partial_writes()
+    if removed:
+        log.info("Removed %d partially written coredump file(s)", removed)
 
 
 # The one-time auto_vacuum conversion is a full VACUUM: it rewrites the whole

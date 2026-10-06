@@ -1,4 +1,4 @@
-// test_drivers_misc — the config-flag peripherals: MH-Z19C UART state
+// test_drivers_misc — the config-flag peripherals: MH-Z19B/C UART state
 // machine, HX711 bit-bang, reed-switch debounce.
 
 #include <unity.h>
@@ -70,6 +70,41 @@ void test_mhz19_calibrate_zero_frame() {
                                  0x00, 0x00, 0x00, 0x78};
     TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, uart.tx.data(), 9);
+}
+
+void test_mhz19b_datasheet_frames_byte_for_byte() {
+    // The MH-Z19B (CLAUDE.md §5b's original UART CO₂ part, and the BOM's
+    // budget alternate before the MH-Z19C) speaks the same 9-byte protocol
+    // as the C — one driver serves both. Frames from the Winsen MH-Z19B
+    // manual, byte-for-byte:
+    MockUart uart;
+    MockClock clock;
+    sp::Mhz19 mhz(uart, clock);
+
+    mhz.begin(false);  // self-calibration (ABC) off
+    const uint8_t abc_off[9] = {0xFF, 0x01, 0x79, 0x00, 0x00,
+                                0x00, 0x00, 0x00, 0x86};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(abc_off, uart.tx.data(), 9);
+    uart.tx.clear();
+    mhz.begin(true);
+    const uint8_t abc_on[9] = {0xFF, 0x01, 0x79, 0xA0, 0x00,
+                               0x00, 0x00, 0x00, 0xE6};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(abc_on, uart.tx.data(), 9);
+    uart.tx.clear();
+
+    TEST_ASSERT_TRUE(mhz.request_read());
+    const uint8_t read_req[9] = {0xFF, 0x01, 0x86, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x79};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(read_req, uart.tx.data(), 9);
+
+    // Manual's example reply: CO₂ = 0x02 * 256 + 0x60 = 608 ppm. Bytes 4-7
+    // carry vendor fields (0x47 here) the driver ignores but the checksum
+    // covers.
+    uart.queue_reply({0xFF, 0x86, 0x02, 0x60, 0x47, 0x00, 0x00, 0x00, 0xD1});
+    uint16_t ppm = 0;
+    TEST_ASSERT_TRUE(mhz.update(5, &ppm));
+    TEST_ASSERT_EQUAL_UINT16(608, ppm);
+    TEST_ASSERT_EQUAL_UINT32(0, mhz.health().fails);
 }
 
 void test_mhz19_read_roundtrip_trickled() {
@@ -304,6 +339,7 @@ int main(int, char**) {
     RUN_TEST(test_mhz19_resyncs_on_noise);
     RUN_TEST(test_mhz19_bad_checksum_is_fail_not_zero);
     RUN_TEST(test_mhz19_timeout);
+    RUN_TEST(test_mhz19b_datasheet_frames_byte_for_byte);
     RUN_TEST(test_hx711_ready_is_single_pin_read);
     RUN_TEST(test_hx711_reads_24_bits_with_gain_pulse);
     RUN_TEST(test_hx711_sign_extends_negative);

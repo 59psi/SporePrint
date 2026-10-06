@@ -2,10 +2,12 @@
 //
 // image_rollback — OTA probation for both images (fw-node#12).
 //
-// The prebuilt SDK has CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, but the Arduino
-// core marks a freshly-OTA'd image valid in initArduino() — before setup() —
-// unless the weak hook `verifyRollbackLater()` returns true. Each composition
-// root defines that hook itself:
+// The prebuilt SDK has CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE — core 3.x and
+// core 2.0.17 alike, so the 2.x bootloader every field node keeps (OTA never
+// replaces it) honours the probation below for 3.x images too. The Arduino
+// core (2.x and 3.x) marks a freshly-OTA'd image valid in initArduino() —
+// before setup() — unless the weak hook `verifyRollbackLater()` returns
+// true. Each composition root defines that hook itself:
 //
 //     extern "C" bool verifyRollbackLater() { return true; }
 //

@@ -10,6 +10,9 @@ SENSOR_FIELDS = [
     # state, both already on the wire (firmware/src/node/main.cpp), just
     # never persisted to telemetry history until now.
     "weight_g", "door_open",
+    # Barometric pressure (hPa) from a BME280 / BMP280 on a climate node —
+    # firmware sp_drivers/bme280.cpp, emitted only when one is fitted.
+    "pressure_hpa",
 ]
 
 

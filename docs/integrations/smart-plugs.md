@@ -2,8 +2,9 @@
 
 SporePrint drives two kinds of smart plug:
 
-- **MQTT plugs (Tasmota, Shelly)** — the BOM's Athom Tasmota plugs. They talk to
-  the Pi's own broker, need no integration setup, and are what the built-in
+- **MQTT plugs (Tasmota, Shelly Gen1, Shelly Gen2+)** — the BOM's Athom
+  Tasmota plugs, and Shelly plugs of either API generation. They talk to the
+  Pi's own broker, need no integration setup, and are what the built-in
   humidifier / dehumidifier / heater / cooler rules switch.
 - **LAN vendor drivers (Wemo, Kasa, Tapo)** — configured on the Integrations
   page; they are reached through the vendor-actions dispatcher.
@@ -13,7 +14,9 @@ SporePrint drives two kinds of smart plug:
 Both authenticate to the Pi's broker as the smart-plug user **`sp-3p`**. Its
 password is `SPOREPRINT_MQTT_3P_PASSWORD` in the `.env` in the Pi's SporePrint
 folder (`install.sh` generates it; `scripts/rotate-mqtt-creds.sh` rotates it).
-The broker ACL lets `sp-3p` use `tasmota/#` and `shellies/#` only.
+The broker ACL lets `sp-3p` use `tasmota/#` and `shellies/#` only; the
+server may publish only `tasmota/+/cmnd/POWER`, `shellies/+/relay/0/command`
+and `shellies/+/rpc` there (`config/mosquitto/acl.conf`).
 
 ### Tasmota (Athom plugs)
 
@@ -63,6 +66,55 @@ Shelly Gen1 plugs work with their default topics: they publish
 `shellies/<device_id>/relay/0` (`on` / `off`) and `…/relay/0/power`, and take
 `shellies/<device_id>/relay/0/command`. Enter the `sp-3p` login in the Shelly's
 MQTT settings. The plug id is `plug-<device_id>`; assign its role in the app.
+
+### Shelly Gen2+ (Plus, Pro, Mini, Gen3, Gen4)
+
+Every Shelly on the JSON-RPC "Gen2 API" (Plus, Pro and Mini devices, the Gen3
+and Gen4 lines: plugs, 1 / 1PM, 2PM, 4PM, Power Strip) is plug type
+`shelly_gen2`. These devices publish everything under one configurable
+**MQTT prefix**. Its factory value is the device id (`shellyplusplugs-<mac>`),
+a top-level topic tree the broker drops, so the prefix must be changed. In
+the Shelly web UI, **Settings → Connectivity → MQTT**:
+
+| Field | Value |
+|---|---|
+| Enable | on |
+| Server | the Pi's IP and port: `<pi-ip>:1883` |
+| Username | `sp-3p` |
+| Password | `SPOREPRINT_MQTT_3P_PASSWORD` from `.env` |
+| MQTT prefix | **`shellies/<role>`**: `shellies/humidifier`, `shellies/dehumidifier`, `shellies/heater` or `shellies/cooler` (one level under `shellies/`, unique per plug) |
+| RPC status notifications over MQTT | on |
+| Generic status update over MQTT | on |
+
+Saving reboots the plug. When it comes back online the Pi asks it for its
+status (`Shelly.GetStatus`), so it registers without being toggled. The role
+becomes the plug id (`shellies/humidifier` → `plug-humidifier`), as Tasmota's
+Topic does. A prefix with more than one level under `shellies/` is refused:
+the broker would drop the commands, so the Pi does not send them.
+
+Topics under the prefix:
+
+| Topic | Direction | Payload |
+|---|---|---|
+| `<prefix>/rpc` | Pi → plug | `{"id": n, "src": "<prefix>/sporeprint", "method": "Switch.Set", "params": {"id": 0, "on": true}}` |
+| `<prefix>/sporeprint/rpc` | plug → Pi | JSON-RPC replies (incl. `Shelly.GetStatus`) |
+| `<prefix>/events/rpc` | plug → Pi | `NotifyStatus` / `NotifyFullStatus`, e.g. `{"params": {"switch:0": {"output": true, "apower": 52.1}}}` |
+| `<prefix>/status/switch:<n>` | plug → Pi | the full switch status ("Generic status update") |
+| `<prefix>/online` | plug → Pi | `true` / `false` (retained) |
+
+Only `output`, `apower` and `errors` are read. `NotifyStatus` is a delta: a
+missing key means unchanged, never off. An overpower or overtemp entry in
+`errors` is logged. On a multi-channel device, `switch:0` is
+`plug-<role>` and `switch:<n>` is `plug-<role>-<n>`.
+
+### Online / offline
+
+`<prefix>/online` (Shelly, both generations) and `tasmota/<topic>/tele/LWT`
+(`Online` / `Offline`) set every plug under that prefix online or offline,
+pushed to Socket.IO clients as `plug_online`. Any state report also marks its
+plug online. A report arriving on a plug's topics also corrects its stored
+plug type and prefix, so a Gen1 Shelly replaced by a Gen2 one under the same
+name needs no re-registration.
 
 ### Commands and safety
 

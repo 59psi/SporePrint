@@ -1247,7 +1247,29 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
                 co2_max_ppm=10000, co2_tolerance="high",
                 light_hours_on=0, light_hours_off=24, light_spectrum="none",
                 fae_mode="passive", expected_duration_days=(30, 60),
-                notes="Very long colonization. 4-8 weeks. Patience critical.",
+                notes="Very long colonization. 4-8 weeks. Patience critical. Fully colonized → browning.",
+            ),
+            # CLAUDE.md §4b: browning/popcorning 60-70 °F, 70-80 % RH, moderate
+            # CO2, indirect light OK, passive FAE, 7-14 d. Light and air on the
+            # unbagged block drive the skin; RH stays well under fruiting so the
+            # surface never sits wet (green mold is the browning-phase risk).
+            GrowPhase.BROWNING: PhaseParams(
+                temp_min_f=60, temp_max_f=70, humidity_min=70, humidity_max=80,
+                co2_max_ppm=2000, co2_tolerance="moderate",
+                light_hours_on=12, light_hours_off=12, light_spectrum="daylight_6500k",
+                fae_mode="passive", expected_duration_days=(7, 14),
+                notes=(
+                    "Browning/popcorning: the unbagged block blisters into popcorn-like bumps and "
+                    "forms a brown, leathery outer skin — normal and protective for shiitake, NOT "
+                    "contamination. NOT ready to fruit until the whole block is evenly brown and "
+                    "firm. Indirect light is fine; keep the surface from staying wet. Done → "
+                    "cold-water soak, then primordia induction."
+                ),
+                exit_reminder=(
+                    "Cold-water soak before primordia induction: submerge the browned blocks in "
+                    "35-50°F water for 12-24 h (weight them down — they float), drain, then return "
+                    "them to the chamber. The cold soak is shiitake's pinning trigger."
+                ),
             ),
             GrowPhase.PRIMORDIA_INDUCTION: PhaseParams(
                 temp_min_f=50, temp_max_f=60, humidity_min=85, humidity_max=95,

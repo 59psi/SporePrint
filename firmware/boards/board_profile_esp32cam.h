@@ -33,7 +33,11 @@
 #define SP_CAM_HREF 23
 #define SP_CAM_PCLK 22
 
-// Onboard flash LED.
+// Onboard flash LED — plain GPIO on/off. LEDC is the camera's: its XCLK runs
+// on LEDC timer 0 / channel 0 (src/cam/main.cpp init_camera), set up through
+// ESP-IDF, which the Arduino LEDC allocator (ledcAttach / analogWrite) cannot
+// see — it would hand out that same channel. scripts/image_guard.py fails a
+// cam build that links it.
 #define SP_PIN_FLASH 4
 
 // Factory reset — GPIO 13 (changed from v1's GPIO 0 / XCLK conflict).

@@ -1,6 +1,6 @@
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins, get_profile
-from app.species.shopping import generate_shopping_list
+from app.species.shopping import container_kind, generate_shopping_list
 from app.species.substrate import calculate_recipe
 
 
@@ -69,3 +69,53 @@ def test_every_builtin_shopping_list_matches_calculator():
         expected = calculate_recipe(profile.substrate_recipes[0], 12.0)["ingredients"]
         got = {i["name"]: i["quantity"] for i in result["items"] if i["category"] == "substrate"}
         assert got == expected, profile.id
+
+
+# ── 2026-10 audit: the container comes from the recipe ──────────────────
+
+
+def _profile(pid):
+    return next(p for p in BUILTIN_PROFILES if p.id == pid)
+
+
+def _containers(pid, grows=2, liters=5.0):
+    result = generate_shopping_list(_profile(pid), grows=grows, container_liters=liters)
+    return {i["name"]: i["quantity"] for i in result["items"] if i["category"] == "containers"}
+
+
+def test_sawdust_block_species_get_filter_patch_bags_not_a_lined_monotub():
+    # Shiitake + Lion's Mane (supplemented hardwood, pressure-sterilized) came
+    # out as "Monotub / grow container (5.0L) ×2" plus a trash-bag liner.
+    for pid in ("shiitake", "lions_mane"):
+        assert container_kind(_profile(pid).substrate_recipes[0]) == "bag", pid
+        assert _containers(pid) == {"Filter-patch grow bag (5.0L)": "2"}, pid
+    bag = next(
+        i for i in generate_shopping_list(_profile("shiitake"))["items"]
+        if i["name"].startswith("Filter-patch grow bag")
+    )
+    assert bag["supplier_links"], "grow-bag suppliers"
+
+
+def test_pasteurized_bulk_keeps_the_lined_monotub():
+    for pid in ("cubensis_golden_teacher", "blue_oyster"):  # CVG, straw
+        assert _containers(pid) == {
+            "Monotub / grow container (5.0L)": "2",
+            "Liner (trash bag)": "2",
+        }, pid
+
+
+def test_grain_rice_and_outdoor_recipes():
+    assert _containers("cordyceps_militaris") == {"Wide-mouth jars with filter lids (5.0L per grow)": "2"}
+    kinds = {
+        p.substrate_recipes[0].name: container_kind(p.substrate_recipes[0])
+        for p in BUILTIN_PROFILES if p.substrate_recipes
+    }
+    assert kinds["Rye Grain (Sclerotia Production)"] == "jar"
+    assert kinds["Hardwood Log Cultivation"] == "none"
+    assert kinds["Hardwood Chip Bed"] == "none"
+    # every recipe resolves, and only an outdoor bed / log lists no vessel
+    for profile in BUILTIN_PROFILES:
+        if not profile.substrate_recipes:
+            continue
+        got = _containers(profile.id)
+        assert bool(got) == (container_kind(profile.substrate_recipes[0]) != "none"), profile.id

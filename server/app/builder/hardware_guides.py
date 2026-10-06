@@ -82,9 +82,14 @@ _HEATSINK_NOTE = (
     "in this list) — worth it on an LED channel above ~1 A, needed above ~2 A"
 )
 
+# The firmware builds on the pinned pioarduino platform (platformio.ini
+# [esp32_base]); test_docs_consistency pins the core version named here to it.
 _PLATFORMIO_STEP = (
-    "Install PlatformIO on your computer: `pip install platformio` (or download each node's ZIP "
-    "from the Builder page → Firmware tab — self-contained, no git clone needed)"
+    "Install PlatformIO Core 6.2.0 or newer, plus git, on your computer: `pip install -U "
+    "platformio` (-U also upgrades an older install, which cannot fetch the pinned pioarduino "
+    "platform — Arduino-ESP32 core 3.3.12). The first build downloads that platform, about 1 GB. "
+    "Sources: download each node's ZIP from the Builder page → Firmware tab (self-contained, no "
+    "git clone needed)"
 )
 
 
@@ -155,7 +160,13 @@ def _tasmota_step(plugs: str, topics: str) -> str:
         "silently drops, so the plug never appears. Console equivalent: `Backlog MqttHost <pi-ip>; "
         "MqttPort 1883; MqttUser sp-3p; MqttPassword <password>; Topic humidifier; FullTopic "
         "tasmota/%topic%/%prefix%/`. The Topic becomes the plug id (`humidifier` → "
-        "`plug-humidifier`), which is exactly what the built-in rules drive. Toggle the plug and "
+        "`plug-humidifier`), which is exactly what the built-in rules drive. A Shelly Gen2+ plug "
+        "(Plus, Gen3, Gen4) instead: in its web UI, Settings → Connectivity → MQTT, turn MQTT on "
+        "with Server = the Pi's IP and port `1883` (ip:port), Username = `sp-3p`, Password = "
+        "`SPOREPRINT_MQTT_3P_PASSWORD`, MQTT prefix = `shellies/<role>` (e.g. "
+        "`shellies/humidifier` → `plug-humidifier`) — REQUIRED: the factory prefix (the device "
+        "id) is a topic tree the broker drops — and 'RPC status notifications over MQTT' and "
+        "'Generic status update over MQTT' both on; saving reboots the plug. Toggle the plug and "
         "check that `GET /api/automation/plugs` lists it with its new state. Heater: ≤ 1500 W "
         "(≤ 1200 W preferred) on one plug"
     )
@@ -501,9 +512,13 @@ _ESP32_CAM = Component(
           "OV3660 packs work too — the firmware auto-detects OV2640 / OV3660 / OV5640 and applies "
           "the OV3660 tuning: Aideepen B0FQPCQWH2 (~$21, OV3660 + micro-USB MBs), HiLetgo "
           "B07RXPHYNM (~$22, OV3660). Singles: bare OV2640 board B07WCFGMTF (~$12, no programmer) "
-          "or Aideepen B0CMTVFCYD (~$13, with a USB-C MB). Buy only the classic 'ESP32-CAM' "
-          "(ESP32-S, 27 x 40.5 mm): the many 'ESP32-S3-CAM N16R8 OV3660' listings use a "
-          "different chip and pin map and are NOT supported.",
+          "or Aideepen B0CMTVFCYD (~$13, with a USB-C MB). Buy the classic 'ESP32-CAM' "
+          "(ESP32-S, 27 x 40.5 mm) — cam_mount.scad fits only it. ESP32-S3 camera boards from "
+          "earlier BOMs run their own envs (no flash LED): Freenove ESP32-S3-WROOM CAM "
+          "(cam_esp32s3), Seeed XIAO ESP32S3 Sense (cam_xiao_esp32s3), Waveshare "
+          "ESP32-S3-CAM-OV5640 / -OV3660 (cam_waveshare_s3). Other 'ESP32-S3-CAM N16R8 OV3660' "
+          "listings use other pin maps and are not supported unless the seller's example "
+          "selects CAMERA_MODEL_ESP32S3_EYE (a Freenove clone, env cam_esp32s3).",
 )
 
 _USB_C_CABLE = Component(
@@ -705,35 +720,48 @@ _FAN_EXTENSIONS = Component(
           "(B00KG3K9AM).",
 )
 
+# Mixed kits counted per size (pinned listings re-read 2026-10-05): each
+# chamber's pieces are counted by the size its joints and tie slots take, and
+# the line counts the size the chambers use up first — so N chambers buy
+# enough packs of EVERY size (tests/test_hardware_guides.py, N = 1..99).
 _HEAT_SHRINK = Component(
     name="Adhesive-Lined Heat Shrink Tubing Kit, 3:1 (400 pc)",
     role="Seal every splice and LED-strip joint against 85-95% RH",
-    quantity=25,
-    price_approx="$0.03",
+    unit="3/4\" piece",
+    price_approx="$1",
     pack_price="$12",
-    pack_size=400,
+    pack_size=12,
     url="https://www.amazon.com/dp/B0BVVMCY86",
     category="hardware",
-    notes="Eventronic dual-wall 3:1, 7 sizes 3/32\"-3/4\". Counted in pieces of any size. Use "
-          "1/2\"-3/4\" over the IP65 / IP67 strip-to-lead joints and the small sizes on splices; "
-          "it also caps the tri-spectrum strip's unused red and green wires on the Recommended "
-          "tier.",
+    notes="Eventronic HST-400, dual-wall 3:1, every piece 45 mm (1.77\") long: 150 x 3/32\", "
+          "110 x 1/8\", 60 x 3/16\", 32 x 1/4\", 24 x 3/8\", 12 x 1/2\" and 12 x 3/4\" "
+          "(recovered Ø 0.8 / 1.1 / 1.6 / 2.1 / 3.2 / 4.2 / 6.0 mm). By joint: 3/4\" over the "
+          "tri-spectrum strip's joint (its IP67 silicone tube is 12 x 6 mm), 1/2\" over the white "
+          "strip's (10 x 3 mm), 3/8\" over a 22/4 cable's jacket end, 1/4\" on each fuse holder's "
+          "14-to-18 AWG splice, 3/16\" on the pump leads and the reed pull-up, 1/8\" on 22 AWG "
+          "joints and capped strip wires, 3/32\" capping each fan's unused tach + PWM wires. "
+          "Counted in 3/4\" pieces, the size the chambers use up first (the 1/2\" and 3/8\" run "
+          "out with it): one a chamber of the kit's 12, so one kit covers 12 chambers.",
 )
 
 _ZIP_TIES = Component(
     name="UV-Resistant Zip Ties, 4\" / 6\" / 8\" / 12\" (400 pc)",
     role="Printed-mount tie slots, shelf clips and cable routing",
-    quantity=25,
-    price_approx="$0.03",
+    quantity=6,
+    shared_units=2,
+    unit="8\" or 12\" tie",
+    price_approx="$0.07",
     pack_price="$13",
-    pack_size=400,
+    pack_size=200,
     url="https://www.amazon.com/dp/B09SSPXBPR",
     category="hardware",
-    notes="Superun nylon 6/6: 2.5 mm (4\"), 3.6 mm (6\") and 4.8 mm (8\", 12\") widths — the "
-          "printed parts' slots take ≤ 2.5 mm (cam_mount, relay board), ≤ 3.6 mm (esp32_case, "
-          "hx711_scale, pump_bracket) and ≤ 4.8 mm (pi_case ears, sensor_bracket, PSU mount). "
-          "Counted in ties of any length: a chamber takes up to ~25 (the mounts' tie slots, "
-          "both sides of the wall grommet, the shelf runs), so one pack covers 16 chambers.",
+    notes="Superun EST-400MIX-B, nylon 6/6: 100 x 4\" (2.5 mm wide), 100 x 6\" (3.6 mm), 100 x "
+          "8\" and 100 x 12\" (4.8 mm). The printed parts' slots set the size: 4\" through the "
+          "≤ 2.5 mm ones (relay_board_mount 2 a board, cam_mount 2) and esp32_case's strain-relief "
+          "bar (1 a case); 6\" through the ≤ 3.6 mm ones (esp32_case flanges 2 a case, "
+          "hx711_scale 1, pump_bracket up to 4 + its 150 mm cradle tie); 8\" or 12\" for "
+          "sensor_bracket (2 a bracket), power_supply_mount (2), pi_case's ears (2, once) and the "
+          "cable runs — 2 at the wall grommet, 1 per in-chamber run, 1 or 2 outside.",
 )
 
 _ZIP_TIES_DUCT = Component(
@@ -772,16 +800,18 @@ _GROMMETS = Component(
     name="Rubber Grommet Kit, 1/4\" - 1\" (188 pc)",
     role="Cable pass-through into the grow chamber / tent wall",
     unit="large grommet",
-    price_approx="$0.65",
+    price_approx="$1.30",
     pack_price="$13",
-    pack_size=20,
+    pack_size=10,
     url="https://www.amazon.com/dp/B094XY2GVR",
     category="hardware",
-    notes="Vrupin assortment incl. 7/8\" and 1\" grommets. Drill 7/8\" or 1\" for the main "
-          "pass-through: USB overmolds (~13 x 7 mm) and 4-pin fan plugs pass before the "
-          "grommet is seated. A tent's own cable port works too. Counted in large grommets, "
-          "one a chamber: the kit has about ten each of 7/8\" and 1\" (the 168 smaller ones "
-          "are spares), so one kit covers 20 chambers.",
+    notes="Vrupin RG-188: 40 x 1/4\", 40 x 5/16\", 40 x 3/8\", 25 x 7/16\", 20 x 1/2\", 5 x "
+          "5/8\", 10 x 7/8\" (5 open eyelet + 5 closed) and 8 x 1\" (5 open eyelet + 3 closed). "
+          "Drill 7/8\" or 1\" for the main pass-through: USB overmolds (~13 x 7 mm) and 4-pin "
+          "fan plugs pass before the grommet is seated. A tent's own cable port works too. "
+          "Counted in open (eyelet) 7/8\" or 1\" grommets, one a chamber: the kit has 10 (its "
+          "closed ones are blanking plugs for spare holes, the 170 smaller ones spares), so one "
+          "kit covers 10 chambers.",
 )
 
 _INSERTS_M3 = Component(
@@ -873,8 +903,10 @@ _SCREWS_M4 = Component(
     pack_size=38,
     url="https://www.amazon.com/dp/B0DCVTWC5B",
     category="hardware",
-    notes="VGBUY: 15 x M4x25, 15 x M4x30, 13 x M4x35, 10 each M4x40/45/50, nuts, lock + flat "
-          "washers. 4 x M4 x 35 per fan_duct (x30 / x40 also fit). Counted in fan-duct screws: "
+    notes="VGBUY (298 pc): 15 x M4x25, 15 x M4x30, 13 x M4x35, 10 each M4x40/45/50, 75 nuts, "
+          "75 lock and 75 flat washers (a standard M4 flat washer is DIN 125, Ø9 x 0.8 — what "
+          "hx711_scale's counterbores take). 4 x M4 x 35 per fan_duct (x30 / x40 also fit). "
+          "Counted in fan-duct screws: "
           "12 a chamber (3 ducts) from the kit's 38 that fit (15 x30 + 13 x35 + 10 x40), so one "
           "kit covers 3 chambers.",
 )
@@ -1135,7 +1167,11 @@ TIER_BARE_BONES = HardwareTier(
         _USB_CHARGER,
         _tasmota_plug(1, "humidifier on/off"),
         _SURGE_STRIP_6,
-        _ZIP_TIES,
+        _for_tier(_ZIP_TIES, quantity=6,
+                  tier_note="This tier, a chamber: 1 x 4\" (the esp32_case bar), 2 x 6\" (its "
+                            "flanges), 6 x 8\" or 12\" (sensor_bracket 2, cable runs 4) + 2 once "
+                            "for pi_case. Counted in 8\" or 12\" ties, the size it uses up first: "
+                            "6 a chamber + 2 of the kit's 200, so one pack covers 33 chambers."),
         _GROMMETS,
         _for_tier(_INSERTS_M3, quantity=10, shared_units=4,
                   tier_note="This tier: 10 a chamber (esp32_case 4, sensor_mount 4, sensor_bracket "
@@ -1360,11 +1396,17 @@ TIER_RECOMMENDED = HardwareTier(
         _FUSE_HOLDERS,
         _FUSES,
         _FAN_EXTENSIONS,
-        _for_tier(_HEAT_SHRINK, quantity=15,
-                  tier_note="This tier: ~15 pieces a chamber (the strip-to-lead joints, splices "
-                            "and the strip's capped red and green wires), so one kit covers 26 "
-                            "chambers."),
-        _ZIP_TIES,
+        _for_tier(_HEAT_SHRINK, quantity=1,
+                  tier_note="This tier, a chamber: 6 x 3/32\" (3 fans), 4 x 1/8\" (the strip's "
+                            "capped red and green wires, two 22 AWG joints), 2 x 1/4\" (fuse "
+                            "holders), 1 x 1/2\" and 1 x 3/4\" (the two strip joints)."),
+        _for_tier(_ZIP_TIES, quantity=9, shared_units=0, unit="4\" tie", price_approx="$0.13",
+                  pack_size=100,
+                  tier_note="This tier, a chamber: 9 x 4\" (relay + lighting boards 4, cam_mount "
+                            "2, 3 esp32_case bars), 6 x 6\" (3 esp32_cases), 15 x 8\" or 12\" "
+                            "(sensor_bracket 2, power_supply_mount 2, cable runs 11) + 2 once for "
+                            "pi_case. Counted in 4\" ties, the size it uses up first: 9 a chamber "
+                            "of the kit's 100, so one pack covers 11 chambers."),
         _ZIP_TIES_DUCT,
         _HOOK_LOOP,
         _GROMMETS,
@@ -1728,10 +1770,20 @@ TIER_ALL = HardwareTier(
         _FUSE_HOLDERS,
         _FUSES,
         _FAN_EXTENSIONS,
-        _for_tier(_HEAT_SHRINK, quantity=25,
-                  tier_note="This tier: ~25 pieces a chamber (+ the pump leads and the 22/4 cable "
-                            "ends), so one kit covers 16 chambers."),
-        _ZIP_TIES,
+        _for_tier(_HEAT_SHRINK, quantity=1,
+                  tier_note="This tier, a chamber: 6 x 3/32\" (3 fans), 8 x 1/8\" (two 22 AWG "
+                            "joints + the 22/4 cables' 6 conductor joints at the relay node), 3 x "
+                            "3/16\" (pump leads, reed pull-up), 2 x 1/4\" (fuse holders), 2 x "
+                            "3/8\" (the 22/4 runs' in-chamber jacket ends), 1 x 1/2\" and 1 x "
+                            "3/4\" (the two strip joints)."),
+        _for_tier(_ZIP_TIES, quantity=14, shared_units=0, unit="6\" tie", price_approx="$0.13",
+                  pack_size=100,
+                  tier_note="This tier, a chamber: 12 x 4\" (relay + lighting boards 4, 2 "
+                            "cam_mounts 4, 4 esp32_case bars), 14 x 6\" (4 esp32_cases 8, "
+                            "hx711_scale 1, pump_bracket 5), 22 x 8\" or 12\" (2 sensor_brackets "
+                            "4, power_supply_mount 2, cable runs 16) + 2 once for pi_case. "
+                            "Counted in 6\" ties, the size it uses up first: 14 a chamber of the "
+                            "kit's 100, so one pack covers 7 chambers."),
         _ZIP_TIES_DUCT,
         _HOOK_LOOP,
         _GROMMETS,
@@ -1759,7 +1811,8 @@ TIER_ALL = HardwareTier(
                             "from its 10; its M3 x 16 cover the Pi lid (4) — so one kit covers 5 "
                             "chambers."),
         _for_tier(_SCREWS_M4, quantity=12,
-                  tier_note="This tier also takes the scale's 2 x M4 x 25 a chamber from its 15."),
+                  tier_note="This tier also takes the scale's 2 x M4 x 25 a chamber from its 15 "
+                            "and its 4 M4 flat washers from its 75."),
         _SET_SCREWS_M4,
         _for_tier(_SOLDER, quantity=7,
                   tier_note="This tier: ~7 g a chamber (~130 joints: two switch boards, the strip, "

@@ -45,7 +45,6 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Wire.h>
-#include <esp_task_wdt.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -58,14 +57,17 @@
 #include "board_profile_esp32dev.h"
 #endif
 
+#include "aht20.h"
 #include "alert_latch.h"
 #include "arduino_hal.h"
 #include "autodetect.h"
 #include "bh1750.h"
+#include "bme280.h"
 #include "boot_policy.h"
 #include "channel_runtime.h"
 #include "clamps.h"
 #include "cmd_router.h"
+#include "coredump_drain.h"
 #include "coredump_uploader.h"
 #include "freshness.h"
 #include "hmac_verify.h"
@@ -77,6 +79,8 @@
 #include "mhz19.h"
 #include "mqtt_link.h"
 #include "node_config.h"
+#include "ota_build.h"
+#include "ota_gate.h"
 #include "tls_transport.h"
 #include "ota_service.h"
 #include "personality.h"
@@ -90,6 +94,8 @@
 #include "sha256.h"
 #include "sht3x.h"
 #include "sht4x.h"
+#include "stretch_i2c_bus.h"
+#include "task_wdt.h"
 #include "telemetry_buffer.h"
 #include "tls_policy.h"
 #include "wifi_provisioner.h"
@@ -110,20 +116,32 @@ static sp_device::NodeConfig cfg;
 // reed) — the only builds that construct those drivers.
 static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/true,
                                                /*personality_opt=*/true);
-static WiFiClient wifi_client;
-static WiFiClientSecure wifi_client_secure;
+// Bounded DNS (sp_device/bounded_dns.h): a broker lookup can't outlast its
+// slot in the loop-WDT budget (sp_core/link_budget.h).
+static sp_device::BoundedDnsClient wifi_client;
+static sp_device::BoundedDnsSecureClient wifi_client_secure;
 // Transport selection + runtime CA-fetch retry (fw-node#2).
 static sp_device::TlsSupervisor tls_link(cfg, kv, wifi_client,
                                          wifi_client_secure);
 static sp_device::MqttLink* mqtt = nullptr;
 static sp_device::OtaService* ota = nullptr;
 
-static sp_device::ArduinoI2cBus i2c_bus(Wire);
+// Sensors talk through Wire, except the SCD30 (0x61), which needs a real
+// clock-stretch timeout that core 3.x's Wire no longer sets
+// (stretch_i2c_bus.h).
+static sp_device::ArduinoI2cBus wire_bus(Wire);
+static sp_node::StretchI2cBus i2c_bus(wire_bus, /*port=*/0);
 static sp_device::ArduinoClock sys_clock;
 
 static sp::DetectedSensors detected;
+// Temp/RH sources, by priority: SHT3x/SHT4x > AHT20 > BME280 > the SCD4x /
+// SCD30 coarse fallback. The AHT20 driver is only built when no SHT is
+// fitted (it would be a redundant, self-heating second source); the
+// BME280/BMP280 always is — it is the only pressure source.
 static sp::Sht3x* sht3x = nullptr;
 static sp::Sht4x* sht4x = nullptr;
+static sp::Aht20* aht20 = nullptr;
+static sp::Bme280* bme280 = nullptr;  // BME280 or BMP280 (kind())
 static sp::Scd4x* scd4x = nullptr;
 static sp::Scd30* scd30 = nullptr;
 static sp::Bh1750* bh1750 = nullptr;
@@ -144,6 +162,12 @@ static sp::TelemetryBuffer offline_buffer;  // 16 KB byte cap
 static float temp_c = NAN, rh = NAN, lux = NAN;
 static uint16_t co2_ppm = 0;
 static bool have_temp_rh = false, have_co2 = false, have_lux = false;
+// AHT20: the latest sample collected by the loop() pump (its 80 ms
+// conversion is too long to wait out inside a read pass).
+static float aht_temp_c = NAN, aht_rh = NAN;
+// BME280 / BMP280 barometric pressure (hPa).
+static float pressure_hpa = NAN;
+static bool have_pressure = false;
 static int32_t hx711_raw = 0;
 static bool have_hx711 = false;
 
@@ -155,6 +179,8 @@ static sp::ReadingFreshness scd_fresh;  // SCD4x / SCD30
 static sp::ReadingFreshness mhz_fresh;  // MH-Z19C (armed after warm-up)
 static sp::ReadingFreshness lux_fresh;
 static sp::ReadingFreshness hx_fresh;
+static sp::ReadingFreshness aht_fresh;   // AHT20 (async samples)
+static sp::ReadingFreshness baro_fresh;  // BME280 / BMP280
 static bool mhz_warm = false;
 static uint32_t boot_ms = 0;
 // The MH-Z19C answers unreliably during its preheat; don't call it missing
@@ -170,7 +196,7 @@ static sp::ThresholdAlert rh_lo_alert(sp::ThresholdAlert::Dir::Below, 30.0f, 2.0
 static sp::ThresholdAlert co2_hi_alert(sp::ThresholdAlert::Dir::Above, 4000.0f, 200.0f);
 static sp::AlertLatch temp_rh_fail_alert;
 static sp::AlertLatch scd_stale_alert, mhz_stale_alert, lux_stale_alert,
-    hx_stale_alert;
+    hx_stale_alert, aht_stale_alert, baro_stale_alert;
 // Secure MQTT on the plaintext fallback: entry + hourly, and at once when the
 // reason changes (tls_policy.h TlsDowngradeLatch).
 static sp::TlsDowngradeLatch tls_downgrade_alert;
@@ -213,8 +239,11 @@ static float dew_point_c(float t_c, float rh_pct) {
     return (b * alpha) / (a - alpha);
 }
 
+// Arduino-ESP32 3.x LEDC API: channels are addressed by PIN. setup() binds
+// bank index i to LEDC channel i explicitly (ledcAttachChannel), the same
+// channel-per-index map the 2.x ledcSetup(i)/ledcAttachPin(pin, i) code had.
 static void write_channel_duty(int idx) {
-    ledcWrite(idx, channels[idx].duty10());
+    ledcWrite(kChannelPins[idx], channels[idx].duty10());
 }
 
 static void report_switch_channel(int idx, const char* trigger) {
@@ -618,9 +647,26 @@ static void handle_channel_cmd(int idx, JsonDocument& doc) {
     }
 }
 
+// An ack the node would accept right now: none is needed without a signing
+// key, and with one the frame only verifies once NTP has synced.
+static bool coredump_ack_verifiable() {
+    return cfg.hmac_key.empty() || (uint64_t)time(nullptr) >= sp::kMinValidEpoch;
+}
+
 static void on_command(const char* suffix, const char* raw, size_t raw_len,
                        JsonDocument& doc, void*) {
     if (!verify_command(raw, raw_len, suffix)) return;
+    // The Pi stored the panic dump this node uploaded (coredump_uploader.h).
+    // A reserved name, so no channel can shadow it (channel_runtime.cpp).
+    if (strcmp(suffix, sp::kCoredumpAckSuffix) == 0) {
+        sp_device::coredump::on_ack(doc);
+        return;
+    }
+    // A signed release manifest for the push that follows (ota_service.h).
+    if (strcmp(suffix, sp::kOtaManifestSuffix) == 0) {
+        if (ota != nullptr) ota->on_manifest(doc);
+        return;
+    }
     sp::CmdRoute route = router.route(suffix);
     switch (route.target) {
         case sp::CmdTarget::Config:
@@ -665,6 +711,37 @@ static void read_sensors() {
         have_temp_rh = sht4x->measure(&temp_c, &rh);
         if (!have_temp_rh)
             SP_LOG(LOG_WARN, "[SENSOR] SHT4x read error");
+    } else if (aht20 != nullptr) {
+        // The newest pumped sample stands while it is fresh; then start the
+        // next conversion (collected ~80 ms from now by loop()).
+        if (aht_fresh.ever_ok() &&
+            !aht_fresh.check_stale(t0, sp::stale_window_ms(read_interval_ms))) {
+            temp_c = aht_temp_c;
+            rh = aht_rh;
+            have_temp_rh = true;
+        }
+        aht20->start(t0);
+    }
+
+    if (bme280 != nullptr) {
+        // Forced-mode conversion (~10 ms). Pressure always; its temp/RH only
+        // when no better source delivered (BMP280: no humidity at all).
+        float t, p_pa, h = NAN;
+        if (bme280->measure(&t, &p_pa, &h)) {
+            pressure_hpa = p_pa / 100.0f;
+            have_pressure = true;
+            baro_fresh.mark_ok(millis());
+            if (!have_temp_rh && bme280->has_humidity()) {
+                temp_c = t;
+                rh = h;
+                have_temp_rh = true;
+            }
+        } else {
+            SP_LOG(LOG_WARN, "[SENSOR] %s read error: %s",
+                   sp::baro_kind_str(bme280->kind()),
+                   bme280->health().last_error ? bme280->health().last_error
+                                               : "?");
+        }
     }
 
     if (scd4x != nullptr && scd4x->data_ready()) {
@@ -729,6 +806,9 @@ static void read_sensors() {
         have_lux = false;
     if (hx711 != nullptr && hx_fresh.check_stale(now, window))
         have_hx711 = false;
+    if (bme280 != nullptr && baro_fresh.check_stale(now, window))
+        have_pressure = false;
+    if (aht20 != nullptr) aht_fresh.check_stale(now, window);  // alert latch
 
     uint32_t took = millis() - t0;
     if (took > 50) {
@@ -759,10 +839,21 @@ static void check_alerts() {
             emit_alert("humidity", rh, "Humidity critically low!"))
             rh_lo_alert.emitted(now);
     }
-    bool sht_failed = !have_temp_rh && (sht3x != nullptr || sht4x != nullptr);
-    if (temp_rh_fail_alert.due(sht_failed, now) &&
+    // A dedicated, synchronously-read temp/RH sensor is fitted but no temp/RH
+    // came from anywhere this pass (an SCD4x/SCD30 fallback reading still
+    // counts as delivered). The AHT20 delivers asynchronously, ~80 ms after
+    // each pass starts it, so one pass says nothing about it: it is judged by
+    // staleness instead (its own latched alert below).
+    const char* temp_rh_sensor =
+        sht3x                                  ? "SHT3x"
+        : sht4x                                ? "SHT4x"
+        : (bme280 && bme280->has_humidity())   ? "BME280"
+                                               : nullptr;
+    bool temp_rh_failed =
+        !have_temp_rh && temp_rh_sensor != nullptr && aht20 == nullptr;
+    if (temp_rh_fail_alert.due(temp_rh_failed, now) &&
         emit_alert("sensor_failure", 0.0f, "Temp/RH sensor read failed",
-                   sht3x ? "SHT3x" : "SHT4x"))
+                   temp_rh_sensor))
         temp_rh_fail_alert.emitted(now);
     if (have_co2 && co2_hi_alert.due((float)co2_ppm, now) &&
         emit_alert("co2", (float)co2_ppm, "CO2 dangerously high!"))
@@ -786,6 +877,12 @@ static void check_alerts() {
                 "Light sensor stale - no fresh reading", "BH1750");
     stale_alert(hx711 != nullptr, hx_fresh, hx_stale_alert,
                 "Scale stale - no HX711 samples", "HX711");
+    stale_alert(aht20 != nullptr, aht_fresh, aht_stale_alert,
+                "Temp/RH sensor stale - no fresh reading", "AHT20");
+    stale_alert(bme280 != nullptr, baro_fresh, baro_stale_alert,
+                "Pressure sensor stale - no fresh reading",
+                bme280 != nullptr && bme280->has_humidity() ? "BME280"
+                                                            : "BMP280");
 
     // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly
     // until a fetched CA verifies on TLS and is pinned. The message says why
@@ -817,6 +914,10 @@ static void publish_telemetry() {
     if (have_lux) {
         in.have_lux = true;
         in.lux = lux;
+    }
+    if (have_pressure) {
+        in.have_pressure = true;
+        in.pressure_hpa = pressure_hpa;
     }
     if (have_hx711) {
         float grams;
@@ -872,7 +973,7 @@ static void publish_heartbeat() {
     // `roles` carries the full capability set for the patched resolver.
     const char* roles[3];
     int n_roles = 0;
-    if (sht3x || sht4x || scd4x || scd30 || bh1750 || mhz19)
+    if (sht3x || sht4x || aht20 || bme280 || scd4x || scd30 || bh1750 || mhz19)
         roles[n_roles++] = "climate";
     if (cfg.personality == sp::Personality::RelayBank) roles[n_roles++] = "relay";
     if (cfg.personality == sp::Personality::LightingBank)
@@ -911,7 +1012,7 @@ static void publish_heartbeat() {
 }
 
 static void publish_health() {
-    sp::SensorHealthView sviews[8];
+    sp::SensorHealthView sviews[10];
     int ns = 0;
     // A driver can look healthy while its reading is frozen (e.g. an SCD4x
     // that stays "not ready" without a bus fault, an HX711 that never
@@ -926,6 +1027,10 @@ static void publish_health() {
     };
     if (sht3x) add_sensor("sht3x", sht3x->health(), false);
     if (sht4x) add_sensor("sht4x", sht4x->health(), false);
+    if (aht20) add_sensor("aht20", aht20->health(), aht_fresh.is_stale());
+    if (bme280)
+        add_sensor(sp::baro_kind_str(bme280->kind()), bme280->health(),
+                   baro_fresh.is_stale());
     if (scd4x) add_sensor("scd4x", scd4x->health(), scd_fresh.is_stale());
     if (scd30) add_sensor("scd30", scd30->health(), scd_fresh.is_stale());
     if (bh1750) add_sensor("bh1750", bh1750->health(), lux_fresh.is_stale());
@@ -947,7 +1052,8 @@ static void publish_health() {
 
     // Declared-but-missing sensors (each also raises a latched
     // sensor_failure alert from check_alerts):
-    //   temp_rh — only a CLIMATE node is expected to carry a temp/RH sensor;
+    //   temp_rh — only a CLIMATE node is expected to carry a temp/RH sensor
+    //             (SHT3x/SHT4x, AHT20 or BME280 — a BMP280 has no humidity);
     //             sensorless relay/lighting banks used to report it forever.
     //   mhz19 / hx711 — config-enabled, but no fresh sample inside the
     //             staleness window (the driver object always exists once
@@ -957,7 +1063,8 @@ static void publish_health() {
     //   electrically indistinguishable.
     const char* missing[4];
     int nm = 0;
-    if (cfg.personality == sp::Personality::Climate && !sht3x && !sht4x)
+    if (cfg.personality == sp::Personality::Climate && !sht3x && !sht4x &&
+        !aht20 && !(bme280 && bme280->has_humidity()))
         missing[nm++] = "temp_rh";
     if (mhz19 != nullptr && mhz_fresh.is_stale()) missing[nm++] = "mhz19";
     if (hx711 != nullptr && hx_fresh.is_stale()) missing[nm++] = "hx711";
@@ -987,10 +1094,13 @@ static void enter_steady_state() {
     // point is protected by explicit deadlines, not the WDT.
     // One synchronous MQTT connect attempt is budgeted to fit inside this
     // timeout (link_budget.h static_assert).
-    esp_task_wdt_init(sp::kLoopWdtTimeoutS, true);
-    esp_task_wdt_add(NULL);
-    SP_LOG(LOG_INFO, "[BOOT] steady state — WDT armed (%u s)",
-           (unsigned)sp::kLoopWdtTimeoutS);
+    const esp_err_t wdt = sp_device::arm_loop_task_wdt(sp::kLoopWdtTimeoutS);
+    if (wdt == ESP_OK)
+        SP_LOG(LOG_INFO, "[BOOT] steady state — WDT armed (%u s)",
+               (unsigned)sp::kLoopWdtTimeoutS);
+    else
+        SP_LOG(LOG_ERROR, "[BOOT] task WDT arm FAILED (%s) - loop unguarded",
+               esp_err_to_name(wdt));
 }
 
 void setup() {
@@ -998,16 +1108,34 @@ void setup() {
     //    else — including the Serial bring-up delay, which used to leave the
     //    gates at their reset state for an extra 500 ms on every boot (GPIO
     //    14 / aux has boot-time JTAG activity).
+    //    25 kHz / 10-bit on every channel; all four share one LEDC timer
+    //    (same frequency + resolution). If the core refuses an attach (the
+    //    frequency/resolution pair unachievable on this clock, the pin
+    //    claimed by another peripheral), the gate is driven LOW as a plain
+    //    GPIO instead — off, never floating — and the failure is reported
+    //    once Serial is up.
+    uint32_t ledc_failed_mask = 0;
     for (int i = 0; i < SP_CHANNEL_COUNT; ++i) {
-        ledcSetup(i, SP_LEDC_FREQ_HZ, SP_LEDC_RES_BITS);
-        ledcAttachPin(kChannelPins[i], i);
-        ledcWrite(i, 0);
+        if (!ledcAttachChannel(kChannelPins[i], SP_LEDC_FREQ_HZ,
+                               SP_LEDC_RES_BITS, (uint8_t)i) ||
+            !ledcWrite(kChannelPins[i], 0)) {
+            ledc_failed_mask |= (1u << i);
+            pinMode(kChannelPins[i], OUTPUT);
+            digitalWrite(kChannelPins[i], LOW);
+        }
     }
     pinMode(SP_PIN_FACTORY_RESET, INPUT_PULLUP);
 
     Serial.begin(115200);
     delay(500);
     Serial.printf("\n=== SporePrint Node v2 (%s) ===\n", SP_BOARD_NAME);
+    for (int i = 0; i < SP_CHANNEL_COUNT; ++i) {
+        if ((ledc_failed_mask & (1u << i)) != 0)
+            Serial.printf("[CH] LEDC attach FAILED on GPIO %d (channel %d, "
+                          "%d Hz, %d-bit) - held LOW, channel disabled\n",
+                          kChannelPins[i], i, (int)SP_LEDC_FREQ_HZ,
+                          (int)SP_LEDC_RES_BITS);
+    }
 
     // 2. Config + v1 migration.
     std::string migrated = sp_device::migrate_legacy(kv);
@@ -1070,10 +1198,16 @@ void setup() {
 
     // 5. Sensors.
     Wire.begin(SP_PIN_I2C_SDA, SP_PIN_I2C_SCL);
+    if (!i2c_bus.begin())
+        Serial.println("[SENSOR] SCD30 stretch-tolerant I2C path unavailable - "
+                       "0x61 stays on Wire (2 ms stretch limit)");
     detected = sp::autodetect_i2c(i2c_bus, sys_clock);
-    Serial.printf("[SENSOR] autodetect: temp_rh=%s@0x%02x co2=%s bh1750=%d\n",
+    Serial.printf("[SENSOR] autodetect: temp_rh=%s@0x%02x co2=%s bh1750=%d "
+                  "aht20=%d baro=%s@0x%02x\n",
                   sp::temp_rh_kind_str(detected.temp_rh), detected.temp_rh_addr,
-                  sp::co2_kind_str(detected.co2), detected.bh1750);
+                  sp::co2_kind_str(detected.co2), detected.bh1750,
+                  detected.aht20, sp::baro_kind_str(detected.baro),
+                  detected.baro_addr);
     if (detected.temp_rh == sp::TempRhKind::Sht3x)
         sht3x = new sp::Sht3x(i2c_bus, sys_clock, detected.temp_rh_addr);
     if (detected.temp_rh == sp::TempRhKind::Sht4x)
@@ -1091,6 +1225,21 @@ void setup() {
     if (detected.bh1750) {
         bh1750 = new sp::Bh1750(i2c_bus, detected.bh1750_addr);
         bh1750->begin();
+    }
+    if (detected.aht20) {
+        if (sht3x == nullptr && sht4x == nullptr)
+            aht20 = new sp::Aht20(i2c_bus, sys_clock);
+        else
+            Serial.println("[SENSOR] AHT20 present but unused - the SHT is "
+                           "the temp/RH source");
+    }
+    if (detected.baro != sp::BaroKind::None) {
+        bme280 = new sp::Bme280(i2c_bus, sys_clock, detected.baro_addr,
+                                detected.baro);
+        if (!bme280->begin())  // measure() retries it every read pass
+            SP_LOG(LOG_ERROR, "[SENSOR] %s begin failed: %s",
+                   sp::baro_kind_str(detected.baro),
+                   bme280->health().last_error);
     }
     if (cfg.mhz19_enabled) {
         co2_uart = new sp_device::ArduinoUart(Serial2);
@@ -1122,7 +1271,8 @@ void setup() {
                 /*connect_now=*/sp::tls_mode_allows_mqtt(xport.mode));
 
     sp_device::logfwd::attach(mqtt);
-    sp_device::coredump::upload_if_present(*mqtt);
+    // Find + hash a panic dump; loop() uploads it and the Pi's ack erases it.
+    sp_device::coredump::begin(*mqtt, kv);
 
     std::string hostname = "sporeprint-" + cfg.node_id;
     ota = new sp_device::OtaService(*mqtt, hostname.c_str(),
@@ -1131,6 +1281,8 @@ void setup() {
     // channel ticks — drive every output off before it starts.
     ota->on_start([](void*) { force_all_off("OTA update started", true); },
                   nullptr);
+    ota->configure_manifests(
+        sp_device::ota_manifest_build_config(&kv, SPOREPRINT_FW_VERSION));
     ota->begin();
 
     SP_LOG(LOG_INFO,
@@ -1148,6 +1300,11 @@ void setup() {
     if (scd4x != nullptr || scd30 != nullptr) scd_fresh.arm(boot_ms);
     if (bh1750 != nullptr) lux_fresh.arm(boot_ms);
     if (hx711 != nullptr) hx_fresh.arm(boot_ms);
+    if (aht20 != nullptr) {
+        aht_fresh.arm(boot_ms);
+        aht20->start(boot_ms);  // first sample is in hand before the first pass
+    }
+    if (bme280 != nullptr) baro_fresh.arm(boot_ms);
     link_wd.begin(boot_ms);
 
     // 7. Arm the watchdog LAST.
@@ -1193,6 +1350,7 @@ void loop() {
     mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, boot_down));
     ota->loop();
     sp_device::logfwd::loop(now);
+    sp_device::coredump::loop(now, coredump_ack_verifiable());
 
     // OTA probation: a new image proves itself with 60 s of continuous MQTT.
     if (image_confirm.update(now, mqtt->connected()))
@@ -1293,6 +1451,21 @@ void loop() {
             } else {
                 report_dim_levels();
             }
+        }
+    }
+
+    // AHT20 conversion pump: cheap until ~80 ms after read_sensors() started
+    // it; the sample becomes the temp/RH reading at once (the AHT20 is only
+    // built when no SHT is fitted, so it is the primary source).
+    if (aht20 != nullptr) {
+        float t, h;
+        if (aht20->update(now, &t, &h)) {
+            aht_temp_c = t;
+            aht_rh = h;
+            aht_fresh.mark_ok(now);
+            temp_c = t;
+            rh = h;
+            have_temp_rh = true;
         }
     }
 

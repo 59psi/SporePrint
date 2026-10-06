@@ -21,6 +21,9 @@ import asyncio
 import re
 from pathlib import Path
 
+import pytest
+
+from app.automation.smart_plugs import handle_plug_message, send_plug_command
 from app.config import settings
 from app.db import get_db
 from app.mqtt import (
@@ -147,20 +150,58 @@ def test_server_can_publish_node_commands():
         "sporeprint/relay-01/cmd/aux",
         "sporeprint/light-01/cmd/scene",
         "sporeprint/climate-01/cmd/config",
+        # mqtt.py's store-then-ack for a node's panic dump
+        "sporeprint/climate-01/cmd/coredump_ack",
     ):
         assert can_publish("server", topic), f"server denied publish to {topic}"
 
 
 def test_server_can_publish_plug_commands():
-    # smart_plugs.py: shellies/<id>/relay/0/command, <prefix>/cmnd/POWER
+    # smart_plugs.py: shellies/<id>/relay/0/command, <prefix>/cmnd/POWER,
+    # and a Shelly Gen2+ JSON-RPC frame on <prefix>/rpc (prefix shellies/<role>)
     for topic in (
         "shellies/humidifier/relay/0/command",
         "tasmota/heater/cmnd/POWER",
+        "shellies/humidifier/rpc",
     ):
         assert can_publish("server", topic), (
             f"server denied publish to {topic} — plug rules fire into a "
             f"broker that drops them"
         )
+
+
+@pytest.mark.parametrize("plug_type,prefix", [
+    ("shelly", "shellies/humidifier"),
+    ("shelly_gen2", "shellies/humidifier"),
+    ("tasmota", "tasmota/heater"),
+])
+async def test_every_plug_command_the_code_builds_is_granted(mock_mqtt_raw, plug_type, prefix):
+    """Drive the real send_plug_command (and the Gen2 status query) per plug
+    type: every topic it publishes must be one the server account may write."""
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO smart_plugs (plug_id, plug_type, mqtt_topic_prefix, name) "
+            "VALUES ('plug-x', ?, ?, 'x')", (plug_type, prefix))
+        await db.commit()
+    for state in ("on", "off"):
+        assert await send_plug_command("plug-x", state) is True
+    if prefix.startswith("shellies/"):
+        await handle_plug_message(_Sio(), f"{prefix}/online", True)
+    assert mock_mqtt_raw, "nothing was published"
+    denied = sorted({t for t, _ in mock_mqtt_raw if not can_publish("server", t)})
+    assert not denied, f"the ACL denies the server's plug publishes {denied}"
+
+
+def test_gen2_commands_are_scoped_to_one_level_under_shellies():
+    """The Gen2 grant is shellies/+/rpc, nothing wider: not a device's factory
+    prefix (a top-level tree) and not a deeper prefix."""
+    for topic in (
+        "shellyplusplugs-a8032ab12345/rpc",
+        "shellies/closet/humidifier/rpc",
+        "sporeprint/rpc",
+        "rpc",
+    ):
+        assert not can_publish("server", topic), f"server may publish {topic}"
 
 
 # ── the smart-plug account (sp-3p) ───────────────────────────────────────
@@ -181,6 +222,52 @@ def test_plug_account_covers_what_a_plug_does():
         "tasmota/heater/cmnd/POWER",
     ):
         assert can_subscribe("sp-3p", sub), f"sp-3p denied subscribe to {sub}"
+
+
+def _server_subscriptions() -> list[str]:
+    return re.findall(r'client\.subscribe\(\s*"([^"]+)"', MQTT_PY.read_text())
+
+
+def test_plug_account_covers_what_a_gen2_shelly_does():
+    """A Shelly Gen2+ with its MQTT prefix set to shellies/<role> publishes
+    its notifications, status, online flag and RPC replies there and
+    subscribes to its own rpc / command topics (plus the shellies/command
+    broadcast). sp-3p must allow all of it, and the server must hear every
+    report topic handle_plug_message() parses."""
+    reports = (
+        "shellies/humidifier/events/rpc",       # NotifyStatus / NotifyFullStatus
+        "shellies/humidifier/status/switch:0",  # Generic status update over MQTT
+        "shellies/humidifier/online",           # retained online flag + LWT
+        "shellies/humidifier/sporeprint/rpc",   # replies (src = <prefix>/sporeprint)
+    )
+    for topic in reports:
+        assert can_publish("sp-3p", topic), f"sp-3p denied publish to {topic}"
+        assert any(_filter_matches(sub, topic) for sub in _server_subscriptions()), (
+            f"the server never subscribes to {topic}")
+    for sub in (
+        "shellies/humidifier/rpc",
+        "shellies/humidifier/command",
+        "shellies/humidifier/command/switch:0",
+        "shellies/command",
+    ):
+        assert can_subscribe("sp-3p", sub), f"sp-3p denied subscribe to {sub}"
+
+
+def test_plug_account_is_not_widened_for_gen2_factory_prefixes():
+    """A Gen2 device's factory prefix is its device id, a top-level tree.
+    Granting those would need +/… wildcards that cover every two-level topic
+    on the broker — so the ACL stays shellies/# and the device's prefix moves
+    under it instead. A device left on its factory prefix is refused."""
+    for topic in (
+        "shellyplusplugs-a8032ab12345/events/rpc",
+        "shellyplusplugs-a8032ab12345/online",
+        "shellypro4pm-f008d1d8b8b8/status/switch:0",
+    ):
+        assert not can_publish("sp-3p", topic), f"sp-3p may publish {topic}"
+    assert not can_subscribe("sp-3p", "shellyplusplugs-a8032ab12345/rpc")
+    users, _patterns = _parse_acl()
+    assert all(flt.split("/")[0] in ("shellies", "tasmota")
+               for _access, flt in users["sp-3p"]), users["sp-3p"]
 
 
 def test_plug_account_cannot_touch_node_topics():
@@ -206,12 +293,15 @@ def test_node_is_scoped_to_its_own_namespace():
         f"sporeprint/{node}/ota",
         # log_forward.cpp batches SP_LOG lines here (→ node_logs table)
         f"sporeprint/{node}/logs",
-        # coredump_uploader.cpp streams the panic dump here, then ERASES the
-        # partition — a denied (silently dropped) chunk loses it for good.
+        # coredump_uploader.cpp streams the panic dump here; older firmware
+        # then ERASES the partition — a denied (silently dropped) chunk loses
+        # it for good. (Current firmware waits for cmd/coredump_ack.)
         f"sporeprint/{node}/coredump/chunk",
     ):
         assert can_publish(node, topic), f"node denied publish to its own {topic}"
     assert can_subscribe(node, f"sporeprint/{node}/cmd/#")
+    # The Pi's coredump ack reaches the node through that cmd/# grant.
+    assert can_subscribe(node, f"sporeprint/{node}/cmd/coredump_ack")
     # …and never a sibling's:
     assert not can_publish(node, "sporeprint/relay-01/telemetry")
     assert not can_publish(node, "sporeprint/relay-01/logs")

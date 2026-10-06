@@ -37,7 +37,10 @@
 // Factory reset — BOOT button (GPIO 0; read-only use is strapping-safe).
 #define SP_PIN_FACTORY_RESET 0
 
-// LEDC: S3 has exactly 8 channels — both banks fit, nothing else may
-// claim LEDC on this board.
+// LEDC: S3 has exactly 8 channels — the bank takes channels 0-3 on ONE timer
+// (ledcAttachChannel in src/node/main.cpp); nothing else may claim LEDC on
+// this board. Clock: the core runs S3 LEDC from the 40 MHz XTAL — 40 MHz /
+// 2^10 = 39 kHz is the 10-bit ceiling, and 25 kHz is the exact divider
+// 1.5625 (the LEDC divider has 8 fractional bits).
 #define SP_LEDC_FREQ_HZ 25000
 #define SP_LEDC_RES_BITS 10

@@ -5,11 +5,17 @@ from ..db import get_db
 from . import ota_push
 from .coredumps import dump_path, list_dumps
 from .discovery import ReservedNodeIdError, claim_node, list_discovered_nodes
+from .node_manifest import (
+    MAX_NODE_MANIFEST_BYTES,
+    NodeManifestError,
+    check_node_manifest,
+)
 from .service import (
     NODE_ID_RE,
     get_node as service_get_node,
     list_nodes as service_list_nodes,
     peripherals_command,
+    publish_node_command,
     send_command,
 )
 
@@ -120,6 +126,8 @@ async def push_node_firmware(
     file: UploadFile = File(...),
     password: str = Form(...),
     port: int = Form(ota_push.DEFAULT_OTA_PORT),
+    manifest: UploadFile | None = File(None),
+    manifest_sig: UploadFile | None = File(None),
 ):
     """Push a firmware .bin to an ESP32 node via the espota protocol (v4.2).
 
@@ -127,6 +135,11 @@ async def push_node_firmware(
     stored or logged. The transfer runs in the background — poll
     GET .../ota for the Pi-side outcome; the node's own lifecycle arrives
     as node_ota MQTT events.
+
+    Optional ``manifest`` + ``manifest_sig``: the release's signed manifest
+    for this image (``{env}.manifest.json`` + ``.sig``). Verified here
+    against the pinned OTA key and the uploaded bytes, then handed to the
+    node so it flashes only this exact image (hardware/node_manifest.py).
     """
     if not NODE_ID_RE.match(node_id):
         raise HTTPException(400, "Invalid node_id")
@@ -144,11 +157,24 @@ async def push_node_firmware(
         raise HTTPException(413, "Firmware image exceeds the 16 MB cap")
     if not image:
         raise HTTPException(400, "Firmware image is empty")
+    signed = None
+    if manifest is not None or manifest_sig is not None:
+        if manifest is None or manifest_sig is None:
+            raise HTTPException(400, "manifest and manifest_sig go together")
+        try:
+            signed = check_node_manifest(
+                await manifest.read(MAX_NODE_MANIFEST_BYTES + 1),
+                await manifest_sig.read(128),
+                image, node.get("firmware_version"))
+        except NodeManifestError as e:
+            raise HTTPException(400, f"Signed manifest refused: {e}") from None
     # No await between this check and start_push — the check-and-set is
     # atomic on the event loop, so concurrent POSTs cannot both start.
     if ota_push.is_running(node_id):
         raise HTTPException(409, "An OTA push to this node is already running")
-    ota_push.start_push(node_id, node["ip_address"], port, password, image)
+    ota_push.start_push(node_id, node["ip_address"], port, password, image,
+                        manifest=signed,
+                        send_command=publish_node_command if signed else None)
     return {"status": "started", "node_id": node_id}
 
 

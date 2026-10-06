@@ -7,13 +7,13 @@ How data moves through the SporePrint system across its four main flows: sensor 
 ```mermaid
 flowchart TB
     subgraph TelemetryFlow["① Telemetry Flow (sensor → storage → consumers)"]
-        ESP["ESP32 Sensors<br/>SHT31 · SCD41 · BH1750"]
+        ESP["ESP32 Sensors<br/>SHT31/SHT4x · SCD41 · BH1750 · …<br/>16 KB offline buffer, replay flag"]
         Mosq["Mosquitto<br/>auth'd broker (v3.3.0)"]
         PiSrv["Pi Server<br/>FastAPI · mqtt._handle_message<br/>ts below 1e9 = unsynced · replay frames stored, not evaluated"]
         SQLite["SQLite<br/>33 tables · WAL mode<br/>foreign_keys ON · incremental auto-vacuum"]
         Retention["Retention rollup<br/>3am · weighted-merge upsert"]
-        SIO["Socket.IO"]
-        WebUI["Web UI<br/>Live telemetry"]
+        SIO["Socket.IO<br/>live events for other clients"]
+        WebUI["Web UI (ui/dist)<br/>REST page loads"]
         Ntfy["ntfy<br/>Local push"]
 
         ESP -->|MQTT publish| Mosq
@@ -21,7 +21,7 @@ flowchart TB
         PiSrv --> SQLite
         PiSrv --> SIO
         PiSrv --> Ntfy
-        SIO --> WebUI
+        SQLite -->|REST| WebUI
         SQLite --> Retention
         Retention --> SQLite
     end
@@ -93,7 +93,7 @@ flowchart TB
 ## Notable v4.0.0 changes visible in the data flow
 
 - **OTA progress emit** — `ota.py::_emit_step()` now calls `forward_event("ota_step", payload)` per phase (`downloading` / `verifying` / `promoting` / `restarting` / `healthy` / `failed`), so the cloud + mobile + browser can render a real OTA progress bar. `_promote_and_restart` was split into `_promote` + `_restart_unit` for recoverability.
-- **Firmware coredump partition** — `firmware/partitions.csv` adds a 64 KB coredump slot at `0x3F0000`. `coredump.{h,cpp}` (`isPresent / readChunked / erase / uploadIfPresent`) is called from each node's `setup()` so a crashed boot ships its coredump once Wi-Fi + MQTT are up, then erases it.
+- **Firmware coredump partition** — `firmware/partitions.csv` adds a 64 KB coredump slot at `0x3F0000`. `coredump.{h,cpp}` (`isPresent / readChunked / erase / uploadIfPresent`) is called from each node's `setup()` so a crashed boot ships its coredump once Wi-Fi + MQTT are up, then erases it. (Now `sp_device/coredump_uploader.{h,cpp}`: it uploads from `loop()` and erases the dump only when the Pi acknowledges it on `cmd/coredump_ack`, which `server/app/hardware/coredumps.py` sends once the dump is durably stored.)
 - **Firmware log forwarding ring buffer** — `log_forward.{h,cpp}` exposes `SP_LOG()` backed by a 32-entry × 200-byte ring drained over MQTT. Lets us see what a node logged in the seconds before a crash without an attached serial cable.
 - **OTA bundle signatures** — Ed25519 helpers in the submodule's `scripts/`: `generate-ota-keypair.py` mints the keypair, `sign-ota-bundle.py` signs each shipped bundle. Cloud verifies before promotion; Pi verifies during `_promote`.
 - **Lockstep version bump** — Pi server / firmware / Pi UI / cloud all carry `4.0.0` simultaneously. The protocol surface against pre-v4 clouds is unchanged; the bump is bookkeeping for the parent monorepo's release cadence.
@@ -107,3 +107,11 @@ flowchart TB
 - **Commands** — every `cmd/*` frame is HMAC-signed with the destination `topic` and a random `nonce` bound in; an OFF never carries `pwm`/`level`.
 - **Vision** — Claude auto-analysis runs every 6 h per session (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`) plus the first frame after each phase change; frames older than 30 days are thinned to one per camera per day.
 - **Retention** — the nightly job also prunes `automation_firings` older than 90 days that belong to no session, and new databases use incremental auto-vacuum.
+
+## Changes from the 2026-10 follow-ups (unreleased)
+
+- **Coredumps are store-then-ack** — a node uploads a panic dump on `sporeprint/<node>/coredump/chunk` with `coredump_id` (the dump's SHA-256); the Pi checks the reassembled bytes against the id, writes the file durably, and only then publishes `cmd/coredump_ack`. The node erases its flash copy only on that ack.
+- **Signed OTA manifests** — the Pi self-update verifies a signed release manifest (version, channel, sha256, size) before it downloads the bundle; a node OTA push can send the same kind of manifest first (`cmd/ota_manifest`), which a node image built with the key enforces.
+- **Shelly Gen2+ plugs** — JSON-RPC under `shellies/<role>/…` (`rpc`, `events/rpc`, `status/switch:<n>`, `online`) next to Gen1 and Tasmota; plug online/offline is tracked and pushed as `plug_online`.
+- **Shiitake browning** — a `browning` phase between substrate colonization and primordia induction; its exit reminder (the cold-water soak) reaches the session log, the daily phase reminder and `GET /next-phase`, and vision reports `browning_percent`.
+- **BME280 / BMP280** — the telemetry contract gains the optional `pressure_hpa` key.

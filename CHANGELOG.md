@@ -15,6 +15,11 @@ contract stays backward compatible: new payload keys are optional and the
 signing vectors are unchanged. Firmware details are in
 [`firmware/CHANGELOG.md`](firmware/CHANGELOG.md).
 
+Also unreleased, the 2026-10 follow-ups: Arduino-ESP32 core 3.3.12, drivers
+for every sensor the BOM ever listed, the ESP32-S3 camera boards, Shelly
+Gen2+ plugs, the shiitake browning phase, coredump acknowledgements, and
+signed OTA manifests for the Pi and (optionally) for nodes.
+
 ### Upgrade notes
 - **Update a Docker Pi with `git pull && ./install.sh`** — `install.sh` writes
   the new `.env` keys; `git pull && docker compose up -d --build` alone does
@@ -109,14 +114,14 @@ signing vectors are unchanged. Firmware details are in
   solder by the gram (~5 / ~7 g) — and `shared_units` is the Pi case's share of
   the same pack (4 M2.5 inserts, 4 M3 inserts, 4 M2.5 × 6), bought once: N
   chambers buy `ceil((quantity × N + shared_units) / pack_size)` packs. The
-  bulk consumables are per-chamber pack lines too — zip ties (~25 a chamber
-  of 400), heat-shrink (~15 / ~25 pieces of 400), large grommets (1 of the
-  kit's ~20), 18" duct ties (one per fan of 100) — since one pack covering
+  bulk consumables are per-chamber pack lines too — zip ties, heat-shrink and
+  large grommets (each counted in the size a chamber uses up first; see the
+  per-size bullet below), 18" duct ties (one per fan of 100) — since one pack covering
   the 12-chamber preset still under-bought from 17 of the Builder's up to 99
   chambers. Only the Pi side and the bench breadboard stay shared (and Bare
   Bones' screw kit, which only the Pi lid draws on). One-chamber totals are unchanged;
-  at ×4 / ×12 chambers the tiers come to $484.60 / $1,047.80,
-  $1,733.38 / $4,618.18 and $2,613.78 / $7,154.87. The docs' "reusable kits"
+  at ×4 / ×12 chambers the tiers come to $484.60 / $1,060.80,
+  $1,733.38 / $4,644.18 and $2,613.78 / $7,180.87. The docs' "reusable kits"
   share (every shared line except the Pi side) is replaced by what a second
   chamber adds: ~$62 / ~$316 / ~$527.
 - Setup steps name the Builder's current tabs (Firmware, Models) and the
@@ -160,6 +165,23 @@ signing vectors are unchanged. Firmware details are in
 - Capability bullets that described unimplemented features were removed (kWh,
   PID, timelapse, quiet hours, EXIF, sensor fallback/divergence, correlation
   reports, local CNN).
+- Mixed consumable kits are counted per size, from the pinned listings
+  (re-read 2026-10-05). **Heat-shrink**: the 400-piece kit holds only 12 × ½"
+  and 12 × ¾" pieces, and each 12 V chamber uses one of each over its two strip
+  joints, so the line now counts ¾" pieces (one kit covers 12 chambers, not
+  16-26). **Zip ties**: 100 each of 4" / 6" / 8" / 12"; each tier counts its
+  scarcest size from the printed parts' tie slots and its cable runs (one
+  pack covers 33 / 11 / 7 chambers, not 16). **Grommets**: the kit has 10 open
+  7/8" / 1" grommets (the other 8 large ones are closed plugs), so one kit
+  covers 10 chambers, not 20. **M4 kit**: its 75 flat washers now cover
+  hx711_scale's 4 DIN 125 washers (the last uncounted fastener). Every size is
+  checked at 1-99 chambers. One-chamber and ×4 totals are unchanged; the ×12
+  totals above include a second grommet kit ($13) and, on Recommended / All
+  the Things, a second zip-tie pack ($13).
+- The smart-plug setup step also covers a Shelly Gen2+ plug (Plus, Gen3,
+  Gen4): MQTT on, server = the Pi on port 1883, user `sp-3p`, MQTT prefix
+  `shellies/<role>`, and both "RPC status notifications over MQTT" and
+  "Generic status update over MQTT" on.
 
 ### Docs and wiring diagrams
 - **All three tier wiring diagrams redrawn** to the cabling standard: inside vs
@@ -183,6 +205,31 @@ signing vectors are unchanged. Firmware details are in
   chamber adds, fuse ratings, WAGO parts and wire gauges in the build guide and SVGs,
   the common ground in every guide and diagram, the strip sizes, and the
   per-tier insert sourcing.
+- **Docs brought in line with the code (2026-10).** `README.md`: React 19
+  dashboard that loads over REST (no Socket.IO client, no PWA, no unit
+  switch; the Builder's Claude guide generator is API-only), the real
+  Socket.IO event names (`rule_fired`, not `rule_firing`; plus
+  `actuator_state`, `node_status`, `node_log`, `node_ota`, `plug_online`),
+  the node `ota` / `coredump/chunk` / `cmd/coredump_ack` /
+  `cmd/ota_manifest` topics and the Shelly Gen2+ topics and setup,
+  PlatformIO Core ≥ 6.2.0 + git for the core-3 platform, the OTA listener
+  (`ota_service.cpp`, not `ArduinoOTA`) and signed node manifests, the
+  extra drivers and the ESP32-S3 camera boards, and an upgrade note for
+  nodes still on core-2.x images. `AGENTS.md`: the platform pin, the
+  core-3 pitfalls, the espota handshake rule, Shelly Gen2 prefixes,
+  coredump store-then-ack, OTA manifests, the `browning` phase and the
+  current frontend stack. New `firmware/README.md` sections (platform,
+  build, OTA, updating nodes from a core-2.x image, coredumps) and
+  `config/mosquitto/README.md` (listeners, accounts, plug topic layouts,
+  adding a topic). `docs/integrations/smart-plugs.md` gains a Shelly Gen2+
+  section; the build guide the Gen2 setup, a troubleshooting row and node
+  firmware updates; `docs/firmware-security.md`, `docs/data-flow.md` and
+  `docs/dual-repo-architecture.md` (React 19 bundle, 74 species, no
+  Capacitor shell) are corrected. `tests/test_docs_consistency.py` now pins
+  the table count, species count and categories, the `GrowPhase` list, the
+  platform pin, the PWM spec, the Socket.IO event names and the Shelly
+  Gen2 prefix across `README.md`, `AGENTS.md` and (when present) the
+  git-ignored `CLAUDE.md` spec.
 
 ### Dashboard (`ui/dist`)
 - **The Builder page reads this Pi live.** `ui/dist` is rebuilt from the
@@ -353,6 +400,29 @@ signing vectors are unchanged. Firmware details are in
     hand (`lions_mane`) is one grow target on the Shopping List, not two;
     an unknown `?bom=` link warns on a full page load too; the Overview's
     cost caption reads like the BOM totals at ×1.
+- **`ui/dist` rebuilt for the 2026-10 follow-ups** (pi-ui at private
+  `followups/2026-10`; main bundle 1,133 kB, 330 kB gzipped).
+  - Builder: the built-in BOM counts the mixed kits per size (×12: $1,061 /
+    $4,644 / $7,181), the setup step covers Shelly Gen2+ plugs, and the
+    camera card lists `cam`, `cam_esp32s3`, `cam_xiao_esp32s3` and
+    `cam_waveshare_s3`, each with its board and a copyable flash command.
+    Offline, the Firmware tab lists the new firmware files. Resources: "User
+    docs" opens the sporeprint.ai user guide; "Quick start" is the README's.
+  - Sessions: "advance → <next phase>" shows the phase's exit reminder (the
+    cold-water soak when leaving shiitake browning) before the confirm;
+    browning segments read tan on the phase bar, and the browning events are
+    tagged STEP and VISION.
+  - Species: the four categories have their own colours (green, amber,
+    blue-violet, orchid; checked for colour-blind contrast), the tag
+    counter is always announced, and "recently viewed" folds behind the
+    phone's filters button.
+  - Shopping List: a grow supply merged across species counts as bought only
+    when every species it serves is ticked ("partly bought — for …" until
+    then), and cultures and inoculants stay one row per species.
+  - Firmware: a push can carry the release's signed manifest and `.sig`
+    ("signed release manifest (optional)" under update firmware; both or
+    neither), and the status says whether the node or only this Pi checked
+    it.
 
 ### Enclosures (`models/`)
 - **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,
@@ -410,6 +480,65 @@ signing vectors are unchanged. Firmware details are in
   instead); replay guard + topic binding on signed commands; portal node-id and
   password-keep rules; epoch `ts` + `"replay": true`; latched alerts; sensor
   staleness alerts; exact library pins (PubSubClient 2.8, ArduinoJson 7.4.3).
+- **Arduino-ESP32 core 3.3.12 / ESP-IDF 5.5.5** (pioarduino platform
+  55.03.312-1, pinned by release URL) replaces the end-of-life core 2.0.17 /
+  ESP-IDF 4.4. Same images, pins, partition tables, MQTT payloads and signing
+  vectors; still 25 kHz / 10-bit PWM. Field nodes update **over the air from
+  2.x** — they keep their 2.x bootloader, which boots the 3.x image and still
+  rolls back a 3.x image that fails its 60 s MQTT probation; NVS settings
+  carry over. The Pi's OTA push keeps working: the node speaks the same espota
+  handshake (core 3.3's `ArduinoOTA` would have demanded a PBKDF2 answer the Pi
+  does not send). Building needs PlatformIO Core ≥ 6.2.0 and `git`; a
+  post-build guard (`firmware/scripts/image_guard.py`) fails any image that
+  leaves < 64 KiB of its OTA slot or drifts from the fleet partition layout.
+- **Drivers for every sensor the BOM ever recommended**
+  ([`firmware/docs/drivers.md`](firmware/docs/drivers.md) is the inventory):
+  - **AHT20** (I²C 0x38), autodetected. It was a listed SHT31-D alternate with
+    no driver.
+  - **BME280 / BMP280** (I²C 0x76 / 0x77), autodetected. It adds the
+    telemetry key **`pressure_hpa`**, which the Pi now stores.
+  - **MH-Z19B** frames pinned to the manual. The MH-Z19C driver serves it.
+  - **SCD30 on core 3.x:** the SCD30 gets its own I²C path at 50 kHz with
+    the clock-stretch timeout at the chip's hardware ceiling. Core 3.x's Wire
+    allows only 2 ms, which would have made it go stale.
+  - **AHT20 init** follows Aosong's v1.1 datasheet (register re-init of
+    0x1B / 0x1C / 0x1E when the status asks for it, the v1.0 `0xBE` init as
+    the fallback), at boot and, non-blocking, after a part resets.
+  - **ESP32-S3 camera boards** from the 2026-04 to 2026-06 BOMs now run the
+    cam image: envs `cam_esp32s3` (Freenove ESP32-S3-WROOM CAM),
+    `cam_xiao_esp32s3` (Seeed XIAO ESP32S3 Sense) and `cam_waveshare_s3`
+    (Waveshare ESP32-S3-CAM-OV5640 / -OV3660). They have no flash LED and use
+    BOOT (GPIO 0) as the reset button; build guide §8b. The BOM note and the
+    Builder's Assistant context no longer call them unsupported (the BOM
+    still recommends the AI-Thinker ESP32-CAM), and firmware CI and the
+    release workflow build all three.
+
+  These changes are additive and change no node pins. The SCD30 on a
+  WROOM-32 node is listed as partial until bench-tested: the classic ESP32
+  can wait only 13.1 ms for its clock stretch.
+- **Coredumps survive until the Pi has them.** Nodes used to erase a panic
+  dump as soon as its last chunk left, so a Pi restart or a lost chunk lost
+  the crash. Chunks now carry `coredump_id` (the dump's SHA-256); the Pi
+  checks the reassembled bytes against it, writes the file durably (temp
+  file, fsync, rename) and only then sends the signed `cmd/coredump_ack`.
+  The node erases only on that ack, retries with backoff otherwise (3 uploads
+  per boot, 6 per dump), then keeps the dump. A re-upload is acknowledged
+  again without a second file or alert. Older nodes (no id) are stored as
+  before and never acked; a Pi without ack support gets at most 6 copies
+  from a new node, which keeps its dump.
+- **Signed node OTA manifests (optional).** `POST
+  /api/hardware/nodes/{id}/ota` takes optional `manifest` + `manifest_sig`
+  files (the release manifest format the Pi's own OTA uses, with `artifact`
+  = the PlatformIO env). The Pi verifies them against its pinned
+  `SPOREPRINT_OTA_PUBKEY_B64`, the uploaded `.bin` and the node's firmware
+  version, sends them on `cmd/ota_manifest`, and waits for the node's
+  answer: a node image built with the key then flashes only that exact
+  image; a node rejection stops the push; a node without manifest support
+  gets a Pi-verified push. `GET .../ota` reports `manifest`
+  (`node_verified` | `pi_verified` | null) and the node's refusal text.
+  This repo's own release images do not carry the key; the private release
+  pipeline, which holds it, builds its images with the key and signs one
+  manifest per env (see `docs/firmware-security.md`).
 
 ### Added
 - `POST /api/hardware/nodes/{id}/peripherals`
@@ -432,9 +561,42 @@ signing vectors are unchanged. Firmware details are in
 - Tasmota plugs also update from `stat/RESULT` and `tele/STATE` JSON
   (`POWER` / `POWER1`); Shelly and Tasmota plugs register on their first state
   report.
+- **Shelly Gen2+ smart plugs** (Plus / Pro / Mini, Gen3, Gen4 — plug_type
+  `shelly_gen2`) alongside Gen1 and Tasmota. Set the device's MQTT prefix to
+  `shellies/<role>` (e.g. `shellies/humidifier` → `plug-humidifier`) and log in
+  as `sp-3p`; the factory prefix (the device id) is outside the ACL and is
+  dropped. Commands are JSON-RPC `Switch.Set {id, on}` on `<prefix>/rpc`
+  (the `server` account gains `write shellies/+/rpc`; `sp-3p` is unchanged);
+  state and `apower` come from `NotifyStatus` / `NotifyFullStatus` on
+  `<prefix>/events/rpc`, `<prefix>/status/switch:<n>` and the reply to a
+  `Shelly.GetStatus` the Pi sends whenever `<prefix>/online` turns true (so a
+  plug registers and refreshes without a toggle). Multi-channel devices
+  register `plug-<role>-<n>` per extra switch. Safety ceilings, manual OFFs
+  and the cutoff re-assert work as for the other plugs; a Gen2 `errors` trip
+  (overpower, overtemp) is logged. Every plug type now keeps `status`
+  online/offline from its online flag or Tasmota `tele/LWT` (Socket.IO
+  `plug_online`), and a plug report re-types a row whose `plug_type` no longer
+  matches the device (a role assigned with the default `plug_type: "shelly"`
+  keeps a detected Gen2).
 - `docs/auth.md`, the S3 pin map and troubleshooting rows in the build guide,
   and `server/tests/test_docs_consistency.py`, which pins the README, build
   guide, SVGs and AGENTS.md to the code, firmware and BOM.
+- **Shiitake browning phase** (`browning`, between `substrate_colonization`
+  and `primordia_induction`): the unbagged block holds 60-70 °F, 70-80 % RH,
+  CO2 under 2000 ppm, 12/12 light and passive FAE for 7-14 days. `GET
+  /api/sessions/{id}/next-phase` suggests colonization → browning →
+  primordia induction for shiitake (other species unchanged) and returns the
+  new `exit_reminder`, the cold-water soak (35-50 °F, 12-24 h). Stepping on
+  out of browning logs a `phase_exit_reminder` session event (also in the
+  transcript), and the daily phase check offers the soak from day 7. A
+  profile without browning setpoints refuses the phase (422); custom profiles
+  can add it with the new optional `PhaseParams.exit_reminder`. The humidity,
+  dehumidify, misting, CO2 and photoperiod built-in rules now also run in
+  browning, a grow bag counts as open from browning on, and unedited stored
+  copies of those rules upgrade at start-up. Vision tells Claude the brown,
+  popcorned skin is normal for shiitake, reads a `browning_percent`, and
+  sends an INFO "Browning complete" with the soak at 90 %; a colonized
+  shiitake block is reported ready to brown, not to fruit.
 
 ### Changed
 - **Signed node commands** carry two more signed members, `topic` and a random
@@ -576,6 +738,37 @@ signing vectors are unchanged. Firmware details are in
 - `server/.dockerignore` keeps `data/`, SQLite files, `.integration-key` and
   `cloud.env` (the cloud device token) out of the image when the server was
   run from `server/`.
+- **Pi self-update verifies a signed release manifest.** Releases now
+  publish `{version}.manifest.json` + `.manifest.json.sig`: canonical JSON
+  `{schema, artifact, version, channel, sha256, size, published_at}` signed
+  with the existing OTA key (`server/app/cloud/ota_manifest.py`, test vectors
+  in `server/tests/fixtures/ota_manifest_vectors.json`). Before downloading
+  the bundle, the Pi checks the signature over the exact bytes and the
+  canonical form. The version must be the one requested, the channel must
+  be the Pi's new `SPOREPRINT_OTA_CHANNEL` (default `stable`), and the
+  version must not be older than the installed one or the floor recorded by
+  the last OTA. The bundle is then capped at the signed size and its sha256
+  checked. A downgrade needs `SPOREPRINT_OTA_ALLOW_DOWNGRADE=true` on the Pi;
+  the OTA command cannot allow one. A key sent in the command (`ota_pubkey`)
+  is ignored. Bare-metal Pis only (Docker still refuses self-update). **Upgrade notes:**
+  a bare-metal Pi that takes beta or dev builds must set
+  `SPOREPRINT_OTA_CHANNEL`. The legacy bundle `.sig` is still published, so
+  older Pis keep updating. A current Pi accepts a release that has only the
+  legacy `.sig` (published before manifests) only with
+  `SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=true`. A manifest that is present
+  but broken never falls back. `scripts/sign-ota-bundle.py --manifest-out`
+  writes the manifest. The version check uses `fullmatch` (a trailing newline
+  used to pass), and the Docker refusal now says `git pull && ./install.sh`.
+- **The Pi's node OTA push also answers the PBKDF2 login.** arduino-esp32
+  3.3.1+'s stock `ArduinoOTA` challenges with a 64-hex nonce and accepts only
+  `sha256(pbkdf2_hmac_sha256(sha256(password), nonce:cnonce, 10000):nonce:cnonce)`
+  with a 64-hex cnonce; `server/app/hardware/ota_push.py` now picks the answer
+  by nonce length as espota.py does (32 hex: the MD5 digest every SporePrint
+  image still offers; 64 hex: PBKDF2, computed off the event loop) and refuses
+  any other length. Nothing changes on the wire for current nodes. It is the
+  first half of the coordinated move to the stock library: a firmware that
+  drops `ota_service.cpp`'s MD5 login must wait until the Pis that push to it
+  run this release.
 
 ### Deploy
 - `install.sh`: writes `TZ`, generates the command-signing key, issues the
@@ -620,6 +813,43 @@ signing vectors are unchanged. Firmware details are in
   CI and release; the release job alone gets write access.
 
 ### Fixed
+- **2026-10 audit, round 1.** The `phase_change` session event reads
+  "Phase advanced to primordia induction" (it printed the raw enum, which the
+  timeline, chamber feed and transcript then showed); `data.phase` keeps the
+  raw value. A species' grow-supplies list (`GET /api/species/{id}/shopping-list`)
+  now lists the vessel its first recipe uses: a filter-patch grow bag for a
+  pressure-sterilized block (supplemented sawdust, masters mix), jars for
+  grain / brown-rice / agar cultures, nothing for an outdoor bed or log, and
+  the monotub + liner only for pasteurized bulk (CVG, manure, straw) — it gave
+  every species a monotub + trash-bag liner. The Builder's PlatformIO setup step
+  says `pip install -U platformio`, PlatformIO Core 6.2.0+ and git, core 3.3.12
+  and the ~1 GB first build. Docs: README (pairing code lives in Setup → § III
+  Cloud link; unknown `server/.env` keys are ignored, `TZ` must be exported;
+  no side-by-side experiment telemetry, chamber comparison view, label-printer
+  presets, container labels or per-category ntfy topics; the Server Modules
+  table lists all 20 packages and labels the two single-file routers; the
+  cloud pairing steps), AGENTS.md (frame liveness is replay / out-of-order,
+  not frame age; `labels/` is router-only), the build guide (the three S3
+  camera boards of earlier BOMs are supported, §8b) and the spec (Cordyceps /
+  cubensis-rest FAE, the MQTT watchdog, the vision correction mark).
+  `tests/test_docs_consistency.py` pins each claim to the code.
+- **2026-10 audit, round 2.** Leaving a phase that owes a manual step logs the
+  `phase_exit_reminder` event before the `phase_change` (same second, so the
+  event id is the order): the session timeline and the transcript's Key
+  Events — the text Claude analyses — listed shiitake's cold-water soak after
+  "Phase advanced to primordia induction". `get_events` and the transcript
+  sort same-second events by id. README: the Sessions page row names what the
+  page has (a finished session's `report.md`; the drying log and `report.csv`
+  are API-only — no drying tracker or report downloads), `labels/` makes QR
+  code PNGs (no thermal-printer support), and the wizard asks five questions
+  (the API scores six inputs). Dashboard (`ui/dist`, rebuilt): the Sessions
+  phase pill names the grow's phase ("primordia induction", not the
+  "fruiting" bucket) and its chamber by name; its Day column and 30-day
+  yield no longer read every session as day 0; chamber tiles carry the
+  chamber's name; the Quick overrides strip fits five tiles down to ~600px
+  of card; the Planner's cycle table fits its card at 1440; species phases
+  read "Substrate colonization" / "Primordia induction" and flush counts
+  "~4 flushes"; inactive filter chips are legible (WCAG AA).
 - Transcript markdown (`GET /api/transcript/sessions/{id}/transcript?format=markdown`)
   no longer prints Python `None` for unset session fields. The header used
   `session.get(key, 'N/A')`, but a NULL column is present with value None, so

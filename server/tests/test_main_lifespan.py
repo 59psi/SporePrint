@@ -207,3 +207,18 @@ async def test_boot_creates_the_coredump_directory(client):
     from app.hardware.coredumps import coredump_dir
 
     assert coredump_dir().is_dir()
+
+
+async def test_boot_discards_half_written_coredumps(tmp_path, monkeypatch, client_factory):
+    # A crash mid-write leaves <name>.elf.part; that upload was never
+    # acknowledged, so the node still holds the dump and sends it again.
+    from app.hardware import coredumps
+
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    (dumps / "node-1-20261005T000000Z.elf.part").write_bytes(b"half")
+    (dumps / "node-1-20261004T000000Z.elf").write_bytes(b"whole")
+    monkeypatch.setattr(coredumps, "COREDUMP_DIR", dumps)
+    with client_factory():
+        pass
+    assert sorted(p.name for p in dumps.iterdir()) == ["node-1-20261004T000000Z.elf"]

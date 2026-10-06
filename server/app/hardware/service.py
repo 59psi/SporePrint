@@ -90,6 +90,13 @@ async def send_command(node_id: str, command: dict) -> tuple[str, bool]:
     return topic, published
 
 
+async def publish_node_command(topic: str, payload: dict) -> bool:
+    """A raw signed cmd/* publish for the OTA push's background task, which
+    cannot import app.mqtt itself (app.mqtt imports ota_push). Resolves
+    mqtt_publish at call time."""
+    return bool(await mqtt_publish(topic, payload))
+
+
 def peripherals_command(requested: dict) -> dict:
     """The cmd/config body that sets a node's optional peripherals.
 

@@ -16,8 +16,8 @@ from ..automation.smart_plugs import is_plug_target, send_plug_command, target_i
 from ..chambers.service import chambers_for_node, get_chamber
 from ..db import get_db
 from ..mqtt import mqtt_publish
-from ..notifications.service import phase_reminder, pink_oyster_harvest
-from ..species.models import GrowPhase, SpeciesProfile
+from ..notifications.service import notify_info, phase_reminder, pink_oyster_harvest
+from ..species.models import GrowPhase, PhaseParams, SpeciesProfile
 from ..species.profiles import canonical_species_id, species_id_candidates
 from ..species.service import get_profile
 from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 _PHASE_ORDER = [
     "agar", "liquid_culture", "grain_colonization",
-    "substrate_colonization", "cold_storage", "primordia_induction",
+    "substrate_colonization", "browning", "cold_storage", "primordia_induction",
     "fruiting", "rest", "complete",
 ]
 
@@ -35,7 +35,9 @@ _PHASE_ORDER = [
 # 33 of 74 profiles fold pinning into fruiting (no primordia_induction) and 71
 # have no rest phase, yet the lifecycle walks sessions through both. Rest
 # borrows fruiting's envelope with the lights off (the block rests / soaks in
-# the dark).
+# the dark). Browning has NO stand-in: it is shiitake's own stage (cooler and
+# much drier than the fruiting envelope), so a profile without browning
+# setpoints refuses it (phase_error → 422).
 PHASE_PARAM_FALLBACKS: dict[str, tuple[str, ...]] = {
     "primordia_induction": ("fruiting",),
     "fruiting": ("primordia_induction",),
@@ -77,8 +79,8 @@ def phase_error(phase: str, profile: SpeciesProfile | None) -> str | None:
     A typo ('fruitng') or a phase the profile neither defines nor falls back
     for used to be stored as-is — and from then on every profile-driven rule
     and every stage safety alert was silent, because no setpoints resolve for
-    it. Only the closet-driven stages (primordia induction, fruiting, rest)
-    need setpoints: the colonization stages, cold storage and complete are
+    it. Only the closet-driven stages (browning, primordia induction, fruiting,
+    rest) need setpoints: the colonization stages, cold storage and complete are
     always enterable (_ALWAYS_ENTERABLE_PHASES). With no profile (unknown /
     deleted species) only the name is checked.
     """
@@ -108,6 +110,21 @@ def _params_snapshot(profile: SpeciesProfile | None, phase: str) -> str | None:
     except ValueError:
         return None
     return params.model_dump_json() if params is not None else None
+
+
+def _moves_forward(from_phase: str, to_phase: str) -> bool:
+    """A step on into the grow: later in the lifecycle, and not parked or ended.
+
+    Only such a step owes the phase-exit reminder (SpeciesProfile.
+    phase_exit_reminder) — a correction back a stage, a jar parked in cold
+    storage or a session completed does not need a soak.
+    """
+    if to_phase in _SPECIES_AGNOSTIC_PHASES:
+        return False
+    try:
+        return _GROW_PHASES.index(to_phase) > _GROW_PHASES.index(from_phase)
+    except ValueError:
+        return False
 
 
 def _decode_phase_row(row) -> dict:
@@ -286,6 +303,9 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
     1. After colonization: BULK SUBSTRATE (grow bag / monotub / tray) goes on to
        fruit; colonized agar / LC / grain is pulled and parked in the fridge.
            bulk substrate → primordia_induction
+                            (→ browning first when the profile defines it:
+                             a shiitake block browns before it can fruit, and
+                             browning → primordia_induction after the soak)
            agar/LC/grain  → cold_storage
     2. The flush loop: a bag gives 2-3 flushes. After a flush you REST, then go
        back to FRUITING for the next one — until the bag is spent, then COMPLETE.
@@ -297,11 +317,21 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
     skips forward past phases the profile doesn't define: pink oyster folds
     pinning into fruiting, so its bag goes straight to fruiting. REST stays in
     the flush loop whenever fruiting setpoints exist to run it on, and
-    cold_storage / complete need no setpoints.
+    cold_storage / complete need no setpoints. Browning is only ever suggested
+    to a profile that defines it.
     """
     ct = (container_type or "").lower()
     if current_phase in _COLONIZATION_PHASES:
-        candidate = "primordia_induction" if ct in _FRUITING_CONTAINERS else "cold_storage"
+        if ct not in _FRUITING_CONTAINERS:
+            candidate = "cold_storage"
+        elif profile_phases is not None and "browning" in profile_phases:
+            candidate = "browning"
+        else:
+            candidate = "primordia_induction"
+    elif current_phase == "browning":
+        # Not the linear successor (cold_storage is the jar fork): a browned
+        # block is soaked and goes on to pin.
+        candidate = "primordia_induction"
     elif current_phase == "rest":
         candidate = "fruiting" if more_flushes_expected else "complete"
     else:
@@ -329,11 +359,16 @@ def suggested_next_phase(current_phase: str, container_type: str | None,
 
 async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
     """Move the session to data.phase. None for an unknown session; raises
-    InvalidPhaseError for a phase the session cannot run (see phase_error)."""
+    InvalidPhaseError for a phase the session cannot run (see phase_error).
+
+    Stepping on out of a phase that owes a manual step (PhaseParams.
+    exit_reminder — shiitake browning's cold-water soak) logs that step as a
+    ``phase_exit_reminder`` session event alongside the phase change, so the
+    timeline and transcript record when the soak was due."""
     now = time.time()
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT species_profile_id FROM sessions WHERE id = ?", (session_id,)
+            "SELECT species_profile_id, current_phase FROM sessions WHERE id = ?", (session_id,)
         )
         row = await cursor.fetchone()
     if row is None:
@@ -342,6 +377,9 @@ async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
     if error := phase_error(data.phase, profile):
         raise InvalidPhaseError(error)
     snapshot = _params_snapshot(profile, data.phase)
+    leaving = row["current_phase"]
+    reminder = (profile.phase_exit_reminder(leaving)
+                if profile is not None and _moves_forward(leaving, data.phase) else None)
 
     async with get_db() as db:
         # Close current phase
@@ -359,9 +397,25 @@ async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
             "UPDATE sessions SET current_phase = ? WHERE id = ?",
             (data.phase, session_id),
         )
+        # The exit reminder goes in BEFORE the phase change: both carry the
+        # same second, so the event id is the only order, and the step owed
+        # on the way out (shiitake browning's cold soak) must read before
+        # "Phase advanced to primordia induction" in the timeline and in
+        # the transcript fed to Claude analysis.
+        if reminder:
+            await db.execute(
+                "INSERT INTO session_events (session_id, type, source, description, data) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, "phase_exit_reminder", "system",
+                 f"Leaving {leaving.replace('_', ' ')} — {reminder}",
+                 json.dumps({"phase": leaving, "next_phase": data.phase, "reminder": reminder})),
+            )
         await db.execute(
             "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
-            (session_id, "phase_change", data.trigger, f"Phase advanced to {data.phase}",
+            # Readable text ("primordia induction") like the reminder above;
+            # the raw value stays in data.phase for code that needs it.
+            (session_id, "phase_change", data.trigger,
+             f"Phase advanced to {data.phase.replace('_', ' ')}",
              json.dumps({"phase": data.phase})),
         )
         await db.commit()
@@ -577,7 +631,9 @@ async def get_events(session_id: int, limit: int | None = None) -> list[dict]:
     async with get_db() as db:
         if limit is None:
             cursor = await db.execute(
-                "SELECT * FROM session_events WHERE session_id = ? ORDER BY timestamp",
+                # id breaks ties: events written in the same second (a
+                # phase change and its exit reminder) keep their insert order.
+                "SELECT * FROM session_events WHERE session_id = ? ORDER BY timestamp, id",
                 (session_id,),
             )
             return [dict(r) for r in await cursor.fetchall()]
@@ -800,18 +856,30 @@ async def complete_session(session_id: int) -> dict | None:
     return await _end_session(session_id, "completed", "session_completed", "Session completed")
 
 
+def _exit_reminder_message(phase: str, days_in_phase: int, params: PhaseParams) -> str:
+    """The daily phase check for a phase that owes a manual step on exit."""
+    lo, hi = (int(d) for d in params.expected_duration_days)
+    label = phase.replace("_", " ")
+    status = (f"Day {days_in_phase} of {label} — past its {lo}-{hi} d window."
+              if days_in_phase > hi else f"Day {days_in_phase} of {label} ({lo}-{hi} d expected).")
+    return f"{status} Once it is complete: {params.exit_reminder} Then advance the session."
+
+
 async def check_phase_reminders(now: float | None = None) -> int:
     """INFO-tier nudge for each active session that has overrun its phase.
 
     Fires phase_reminder() when days in the current phase exceed the species'
-    expected_duration_days max (the notifier dedups per session+phase). Meant
-    to be run periodically (e.g. daily) by a background task. Returns the
-    number of reminders sent.
+    expected_duration_days max (the notifier dedups per session+phase). A phase
+    that owes a manual step on exit (PhaseParams.exit_reminder — shiitake
+    browning's cold-water soak) is nudged from its expected MINIMUM instead,
+    with the step spelled out, since that is when the operator should start
+    checking whether it is done. Meant to be run periodically (e.g. daily) by a
+    background task. Returns the number of reminders sent.
     """
     now = time.time() if now is None else now
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT s.name, s.species_profile_id, s.current_phase, ph.entered_at "
+            "SELECT s.id, s.name, s.species_profile_id, s.current_phase, ph.entered_at "
             "FROM sessions s JOIN phase_history ph "
             "  ON ph.session_id = s.id AND ph.exited_at IS NULL AND ph.phase = s.current_phase "
             "WHERE s.status = 'active'"
@@ -829,9 +897,17 @@ async def check_phase_reminders(now: float | None = None) -> int:
             continue
         if params is None:
             continue
+        expected_min = int(params.expected_duration_days[0])
         expected_max = int(params.expected_duration_days[1])
         days_in_phase = int((now - row["entered_at"]) // 86400)
-        if days_in_phase > expected_max:
+        if params.exit_reminder and days_in_phase >= expected_min:
+            await notify_info(
+                f"Phase check — {row['name']}",
+                _exit_reminder_message(row["current_phase"], days_in_phase, params),
+                dedup_key=f"phase-exit:{row['id']}:{row['current_phase']}",
+            )
+            sent += 1
+        elif days_in_phase > expected_max:
             await phase_reminder(row["name"], row["current_phase"], days_in_phase, expected_max)
             sent += 1
     return sent

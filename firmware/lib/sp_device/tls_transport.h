@@ -23,8 +23,8 @@
 // before any TLS connection had worked, and a broker certificate that did
 // not cover the node's broker host locked a working node out of MQTT for
 // good. A CA an older image stored WITHOUT the marker gets the same trial,
-// so a node that image locked out recovers on this one (e.g. after an
-// ArduinoOTA push over the LAN).
+// so a node that image locked out recovers on this one (e.g. after a
+// network OTA push over the LAN).
 //
 // No CA can be pinned (fw-node#2):
 //   default     plaintext fallback, but never silently: SP_LOG error, heartbeat
@@ -44,6 +44,7 @@
 
 #include <string>
 
+#include "bounded_dns.h"
 #include "link_budget.h"
 #include "log_forward.h"
 #include "mqtt_link.h"
@@ -64,11 +65,14 @@ struct MqttTransport {
 // plausible public certificate (sp::ca_pem_acceptable). Logs why otherwise.
 inline bool fetch_pi_ca(const std::string& host, int32_t connect_timeout_ms,
                         uint16_t read_timeout_ms, std::string* out) {
+    // Declared before `http`, which keeps a pointer to it until end(). The
+    // bounded-DNS client keeps the lookup inside kCaFetchWorstCaseS.
+    BoundedDnsClient client;
     HTTPClient http;
     std::string url = "http://" + host + ":8000/api/provision/ca";
     http.setConnectTimeout(connect_timeout_ms);
     http.setTimeout(read_timeout_ms);
-    if (!http.begin(url.c_str())) {
+    if (!http.begin(client, url.c_str())) {
         SP_LOG(LOG_ERROR, "[TLS] CA fetch: bad URL %s", url.c_str());
         return false;
     }
@@ -120,10 +124,15 @@ public:
     // candidate; loop() commits or reverts it once the attempt has run.
     MqttTransport select() {
         // Bound every connect attempt (link_budget.h): the core defaults —
-        // 30 s TCP connect, 120 s TLS handshake — outlast the 30 s loop WDT.
-        // Both setters take SECONDS on arduino-esp32 2.x.
-        plain_.setTimeout(sp::kTcpConnectTimeoutS);
-        secure_.setTimeout(sp::kTcpConnectTimeoutS);
+        // 30 s TCP connect on the secure client, 120 s TLS handshake —
+        // outlast the 30 s loop WDT. Units (arduino-esp32 3.x):
+        // setConnectionTimeout takes MILLISECONDS (it bounds the TCP connect
+        // and the socket send/receive waits); setHandshakeTimeout still takes
+        // SECONDS. Core 2.x's setTimeout(seconds) did the former; on 3.x
+        // setTimeout() is plain Stream::setTimeout(ms) and no longer touches
+        // the connect, so it must not be used here.
+        plain_.setConnectionTimeout(sp::kTcpConnectTimeoutS * 1000UL);
+        secure_.setConnectionTimeout(sp::kTcpConnectTimeoutS * 1000UL);
         secure_.setHandshakeTimeout(sp::kTlsHandshakeTimeoutS);
 
         std::string stored;
@@ -304,9 +313,11 @@ private:
 
     void warn_if_ip_host() const {
         if (!sp::is_ipv4_literal(cfg_.broker_host)) return;
-        // WiFiClientSecure verifies the certificate against this exact
-        // string; mbedTLS 2.28 matches it only against a DNS-type SAN entry
-        // (install.sh lists the Pi's IPs as both IP: and DNS: entries).
+        // The TLS client verifies the certificate against this exact string.
+        // mbedTLS 3.6 (core 3.x) matches an IP against the certificate's
+        // IP-type SAN entries; the 2.28 in older (core 2.x) images matched it
+        // only against DNS-type ones — install.sh lists the Pi's IPs as both,
+        // so a mixed fleet verifies either way.
         SP_LOG(LOG_WARN, "[TLS] Broker host %s is an IP: the handshake only "
                          "verifies if the Pi's certificate lists it - prefer "
                          "sporeprint.local",

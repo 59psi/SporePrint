@@ -204,6 +204,40 @@ void test_sensor_profile_ov5640_and_unknown() {
     TEST_ASSERT_EQUAL_STRING("none", n.name);
 }
 
+void test_board_orientation_only_overrides_on_the_freenove() {
+    // AI-Thinker, XIAO, Waveshare: the sensor profile's orientation stands.
+    const sp_cam::Board keep[] = {sp_cam::Board::AiThinker, sp_cam::Board::XiaoS3,
+                                  sp_cam::Board::WaveshareS3};
+    for (sp_cam::Board b : keep) {
+        TEST_ASSERT_FALSE(sp_cam::board_orientation(b, 0x26).apply);
+        TEST_ASSERT_FALSE(sp_cam::board_orientation(b, 0x3660).apply);
+        TEST_ASSERT_FALSE(sp_cam::board_orientation(b, 0x5640).apply);
+    }
+    // Freenove Sketch_07.1 camera_init: OV2640 hmirror 1 / vflip 1, every
+    // other sensor hmirror 1 / vflip 0.
+    sp_cam::Orientation o =
+        sp_cam::board_orientation(sp_cam::Board::FreenoveS3, 0x26);
+    TEST_ASSERT_TRUE(o.apply);
+    TEST_ASSERT_EQUAL_INT8(1, o.hmirror);
+    TEST_ASSERT_EQUAL_INT8(1, o.vflip);
+    o = sp_cam::board_orientation(sp_cam::Board::FreenoveS3, 0x3660);
+    TEST_ASSERT_TRUE(o.apply);
+    TEST_ASSERT_EQUAL_INT8(1, o.hmirror);
+    TEST_ASSERT_EQUAL_INT8(0, o.vflip);
+    o = sp_cam::board_orientation(sp_cam::Board::FreenoveS3, 0x5640);
+    TEST_ASSERT_EQUAL_INT8(1, o.hmirror);
+    TEST_ASSERT_EQUAL_INT8(0, o.vflip);
+}
+
+void test_flash_only_when_requested_and_fitted() {
+    TEST_ASSERT_TRUE(sp_cam::flash_for_capture(true, true));
+    TEST_ASSERT_FALSE(sp_cam::flash_for_capture(false, true));
+    // S3 camera boards have no flash LED: a {"capture":true,"flash":true}
+    // command still captures, without a flash, and says so.
+    TEST_ASSERT_FALSE(sp_cam::flash_for_capture(true, false));
+    TEST_ASSERT_FALSE(sp_cam::flash_for_capture(false, false));
+}
+
 void test_jpeg_quality_backoff_is_bounded() {
     // A dropped frame (JPEG overflowed the fixed buffer → fb_get NULL)
     // steps the quality NUMBER up (smaller files), never past the ceiling.
@@ -232,5 +266,7 @@ int main(int, char**) {
     RUN_TEST(test_sensor_profile_ov3660_matches_espressif_example);
     RUN_TEST(test_sensor_profile_ov5640_and_unknown);
     RUN_TEST(test_jpeg_quality_backoff_is_bounded);
+    RUN_TEST(test_board_orientation_only_overrides_on_the_freenove);
+    RUN_TEST(test_flash_only_when_requested_and_fitted);
     return UNITY_END();
 }

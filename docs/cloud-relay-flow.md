@@ -9,7 +9,7 @@ Remote access flow: client (mobile app or browser) → cloud relay at sporeprint
 ```mermaid
 sequenceDiagram
     autonumber
-    participant App as Client<br/>(Capacitor mobile<br/>OR browser at sporeprint.ai)
+    participant App as Client<br/>(mobile app<br/>OR browser at sporeprint.ai)
     participant Relay as Cloud Relay<br/>(sporeprint.ai · Next + FastAPI)
     participant Pi as Raspberry Pi<br/>(FastAPI)
     participant ESP as ESP32 Node
@@ -118,20 +118,47 @@ the failure mode is recoverable — if `_promote` succeeds but the systemd
 restart fails, the next `_restart_unit` attempt resumes from the right
 place rather than re-promoting.
 
-OTA bundles themselves are now Ed25519-signed (`generate-ota-keypair.py`
-+ `sign-ota-bundle.py` in `sporeprint/scripts/`); the cloud verifies the
-signature before approving the promotion, and the Pi's verification logic
-runs against the same public key during `_promote`.
+OTA releases are Ed25519-signed (`generate-ota-keypair.py` +
+`sign-ota-bundle.py` in `sporeprint/scripts/`; the private repo's
+`server-release.yml` signs and publishes them). Each release has a signed
+manifest, `{version}.manifest.json` + `.manifest.json.sig`: canonical JSON
+`{schema, artifact, version, channel, sha256, size, published_at}`, defined in
+`server/app/cloud/ota_manifest.py` and pinned by
+`server/tests/fixtures/ota_manifest_vectors.json`. The Pi checks it against
+its locally pinned key before downloading the bundle. A key the cloud puts in
+the command (`ota_pubkey`) is ignored.
+
+```
+Pi: ota.run_ota_update(version, channel)
+  ├─ validate: format · channel == SPOREPRINT_OTA_CHANNEL · not older than installed
+  ├─ manifest: fetch .manifest.json + .sig → Ed25519 over the exact bytes →
+  │            canonical form → artifact/version/channel match → anti-rollback
+  ├─ download: bundle, capped at the signed size
+  ├─ verify:   sha256 + size == manifest   (verify_complete: verified_by)
+  └─ stage → promote (records the anti-rollback floor) → restart
+```
+
+The release also keeps publishing the legacy `{version}.tar.gz.sig` (a
+signature over the bundle bytes only) so Pis from before signed manifests
+can still update. A current Pi uses it only when a release has no manifest
+(HTTP 403/404/410) **and** `SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=true`. A
+manifest that exists but has no signature, a bad one or the wrong contents
+fails the update and never falls back.
 
 Limits of Pi self-update:
 - The Docker install refuses a `system/ota` command (`success=false`, "Pi
   self-update is not supported in the Docker deployment"); update a Docker Pi
   on the Pi with `git pull && ./install.sh`. Self-update needs the bare-metal
   `<SPOREPRINT_INSTALL_ROOT>/current` symlink layout.
-- A requested version lower than the installed one is refused before the
-  command is acknowledged, and only one OTA runs at a time.
-- The signature covers the bundle bytes only; version and channel are not
-  signed yet (a signed `{version, channel, sha256}` manifest is future work).
+- A command for a channel other than the Pi's `SPOREPRINT_OTA_CHANNEL`
+  (default `stable`), or for a version lower than the installed one or the
+  floor recorded by the last OTA, is refused before it is acknowledged. Only
+  `SPOREPRINT_OTA_ALLOW_DOWNGRADE=true` on the Pi allows a downgrade; the
+  command cannot. Pre-release suffixes are not ordered (X.Y.Z only). Only one
+  OTA runs at a time.
+- No revocation: any genuine release on the Pi's channel that is not older
+  than the install can still be requested, including a pulled one. Remove a
+  bad release from the release host.
 
 ## External services referenced in this flow
 

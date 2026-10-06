@@ -8,6 +8,7 @@ the S3 pin map, the secure-boot recipe, the Grafana port. When one fails, fix
 the doc (or the code) so the two agree again; don't loosen the check.
 """
 
+import inspect
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -15,10 +16,15 @@ from pathlib import Path
 import pytest
 
 from app.builder.hardware_guides import TIERS, TIER_ALL, TIER_RECOMMENDED
+from app.config import Settings
 from app.db import SCHEMA
 from app.hardware.service import PERIPHERAL_KEYS
+from app.labels.router import _LABEL_PATHS
 from app.main import app as server_app
+from app.mqtt import _CLOCK_STEP_BACK_SECONDS
+from app.species.models import GrowPhase
 from app.species.profiles import BUILTIN_PROFILES
+from app.species.wizard import recommend
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
@@ -27,6 +33,15 @@ AGENTS = ROOT / "AGENTS.md"
 GUIDE = DOCS / "hardware-build-guide.md"
 FW_SECURITY = DOCS / "firmware-security.md"
 DUAL_REPO = DOCS / "dual-repo-architecture.md"
+FW_README = ROOT / "firmware" / "README.md"
+FW_DRIVERS = ROOT / "firmware" / "docs" / "drivers.md"
+BROKER_README = ROOT / "config" / "mosquitto" / "README.md"
+SMART_PLUGS = DOCS / "integrations" / "smart-plugs.md"
+PLATFORMIO_INI = ROOT / "firmware" / "platformio.ini"
+# The operator's spec. Git-ignored (a personal file, not shipped), so a CI
+# checkout has none; where it exists it is held to the same facts.
+CLAUDE = ROOT / "CLAUDE.md"
+SPEC = [CLAUDE] if CLAUDE.exists() else []
 MODELS = ROOT / "models"
 MODELS_README = MODELS / "README.md"
 SVGS = sorted(DOCS.glob("*.svg"))
@@ -36,7 +51,8 @@ SVG_NS = "{http://www.w3.org/2000/svg}"
 # Markdown an operator or contributor follows (release history excluded:
 # CHANGELOG entries describe what WAS true).
 CURRENT_MD = [README, AGENTS, *sorted(DOCS.rglob("*.md")), ROOT / "models" / "README.md",
-              ROOT / "firmware" / "test" / "README.md"]
+              ROOT / "firmware" / "test" / "README.md", FW_README, FW_DRIVERS, BROKER_README,
+              *SPEC]
 
 
 def _read(path: Path) -> str:
@@ -184,7 +200,8 @@ def test_overview_svg_names_the_real_topics():
 # ── Camera sensor (fw-drivers-cam doc note 1) ───────────────────────
 
 
-@pytest.mark.parametrize("path", [README, GUIDE, AGENTS, *SVGS], ids=lambda p: p.name)
+@pytest.mark.parametrize("path", [README, GUIDE, AGENTS, FW_README, *SPEC, *SVGS],
+                         ids=lambda p: str(p.relative_to(ROOT)))
 def test_camera_sensor_is_not_ov2640_only(path):
     chunks = _svg_labels(path) if path.suffix == ".svg" else _read(path).splitlines()
     bad = [c for c in chunks if "OV2640" in c and "OV3660" not in c]
@@ -318,7 +335,7 @@ def test_grafana_doc_points_at_the_api_port():
 def test_readme_and_agents_counts_match_the_code():
     n_species = len(BUILTIN_PROFILES)
     n_tables = len(set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)))
-    for doc in (README, AGENTS):
+    for doc in (README, AGENTS, *SPEC):
         text = _read(doc)
         for n in re.findall(r"(\d+) (?:built-in )?species profiles", text):
             assert int(n) == n_species, f"{doc.name} says {n} species profiles, code has {n_species}"
@@ -339,7 +356,8 @@ def _api_operations() -> int:
 
 # Every doc that states the server's size. dual-repo-architecture.md carried
 # "17 router groups · 106 endpoints" long after the rest moved on.
-_COUNT_DOCS = [README, AGENTS, DOCS / "data-flow.md", DUAL_REPO, DOCS / "architecture-overview.svg"]
+_COUNT_DOCS = [README, AGENTS, DOCS / "data-flow.md", DUAL_REPO, DOCS / "architecture-overview.svg",
+               *SPEC]
 
 
 @pytest.mark.parametrize("doc", _COUNT_DOCS, ids=lambda p: p.name)
@@ -709,3 +727,407 @@ def test_relative_links_resolve(doc):
 def test_env_example_doc_references_exist():
     for ref in re.findall(r"docs/[\w./-]+\.md", _read(ROOT / ".env.example")):
         assert (ROOT / ref).exists(), f".env.example points at missing {ref}"
+
+
+# ── Headline facts (2026-10 docs pass) ───────────────────────────────
+# CLAUDE.md had drifted for months (no auth → opt-in bearer, SSRs, a SPIFFS
+# buffer, 8-bit relay PWM, three species categories, a phase list without
+# cold_storage) while nothing checked it, and README named a Socket.IO event
+# the server never emits. These pin the facts every overview repeats.
+
+_HEADLINE_DOCS = [README, AGENTS, *SPEC]
+
+
+def _rel(path: Path) -> str:
+    return str(path.relative_to(ROOT))
+_CATEGORIES = ("gourmet", "medicinal", "active", "novelty")
+
+
+def _category_counts() -> dict[str, int]:
+    counts = {c: 0 for c in _CATEGORIES}
+    for profile in BUILTIN_PROFILES:
+        counts[profile.category] += 1
+    return counts
+
+
+def test_species_categories_are_the_four_the_docs_name():
+    assert {p.category for p in BUILTIN_PROFILES} == set(_CATEGORIES)
+
+
+@pytest.mark.parametrize("doc", _HEADLINE_DOCS, ids=_rel)
+def test_species_category_counts_match_the_code(doc):
+    counts = _category_counts()
+    text = _read(doc)
+    claims = [(c.lower(), int(n)) for n, c in
+              re.findall(r"\b(\d+) (gourmet|medicinal|active|novelty)\b", text, re.I)]
+    claims += [(c.lower(), int(n)) for c, n in
+               re.findall(r"\*\*(gourmet|medicinal|active|novelty)\*\* \((\d+)", text, re.I)]
+    assert claims, f"{doc.name} states no per-category species count"
+    wrong = [(c, n) for c, n in claims if counts[c] != n]
+    assert not wrong, f"{doc.name}: {wrong} — profiles.py has {counts}"
+    assert {c for c, _ in claims} == set(_CATEGORIES), f"{doc.name} misses a category count"
+
+
+def test_agents_md_lists_every_grow_phase_in_order():
+    m = re.search(r"GrowPhase enum: ([a-z_, ]+)", _read(AGENTS))
+    assert m, "AGENTS.md no longer lists the GrowPhase enum"
+    listed = [p.strip() for p in m.group(1).split(",")]
+    assert listed == [p.value for p in GrowPhase], listed
+
+
+@pytest.mark.parametrize("doc", SPEC, ids=_rel)
+def test_spec_grow_phase_enum_matches_the_code(doc):
+    block = re.search(r"class GrowPhase\(str, Enum\):\n((?:    .*\n)+)", _read(doc))
+    assert block, f"{doc.name} has no GrowPhase block"
+    listed = re.findall(r'= "([a-z_]+)"', block.group(1))
+    assert listed == [p.value for p in GrowPhase], listed
+
+
+def _platform() -> tuple[str, str]:
+    """(pioarduino release tag, Arduino-ESP32 core version) from [esp32_base]."""
+    ini = _read(PLATFORMIO_INI)
+    base = re.split(r"^\[esp32_base\]$", ini, maxsplit=1, flags=re.M)[1].split("\n[", 1)[0]
+    url = re.search(r"^platform = (\S+)", base, re.M).group(1)
+    tag = re.search(r"/download/(\d+\.\d+\.\d+-\d+)/", url).group(1)
+    _idf, major, rest = tag.split("-")[0].split(".")
+    # pioarduino tags read <IDF major+minor>.<core major>.<core minor + patch>:
+    # 55.03.312 = ESP-IDF 5.5, Arduino-ESP32 core 3.3.12.
+    return tag, f"{int(major)}.{rest[0]}.{int(rest[1:])}"
+
+
+_PLATFORM_DOCS = [README, AGENTS, FW_README, GUIDE, *SPEC]
+
+
+@pytest.mark.parametrize("doc", _PLATFORM_DOCS, ids=_rel)
+def test_docs_name_the_pinned_platform(doc):
+    tag, core = _platform()
+    text = _read(doc)
+    assert f"core {core}" in text, f"{doc.name} never names Arduino-ESP32 core {core}"
+    for other in re.findall(r"\bcore (3\.\d+\.\d+)\b", text):
+        assert other == core, f"{doc.name} names core {other}; platformio.ini pins {core}"
+    for other in re.findall(r"\b(5\d\.\d\d\.\d+-\d+)\b", text):
+        assert other == tag, f"{doc.name} names pioarduino {other}; platformio.ini pins {tag}"
+    if doc in (README, FW_README, GUIDE):
+        assert "6.2.0" in text and "git" in text, f"{doc.name}: pioarduino needs PlatformIO 6.2.0+ and git"
+
+
+def test_agents_and_spec_name_the_platform_release():
+    tag, _core = _platform()
+    for doc in (AGENTS, FW_README, *SPEC):
+        assert tag in _read(doc), f"{doc.name} does not name the pinned release {tag}"
+
+
+def test_builder_setup_step_names_the_toolchain():
+    """2026-10 audit: every tier's Builder setup said only `pip install platformio`
+    (no -U, no Core version, nothing about core 3.x), so a reader with an older
+    PlatformIO install hit a platform-install failure the README warns about."""
+    _tag, core = _platform()
+    for tier in TIERS:
+        steps = [s for s in tier.setup_steps if "pip install" in s and "platformio" in s]
+        assert steps, f"{tier.name}: no PlatformIO install step"
+        for step in steps:
+            assert "pip install -U platformio" in step, f"{tier.name}: {step}"
+            assert "6.2.0" in step and "git" in step, f"{tier.name}: needs Core 6.2.0+ and git"
+            assert f"core {core}" in step, f"{tier.name}: names no Arduino-ESP32 core {core}"
+            assert "1 GB" in step, f"{tier.name}: the first-build download is not mentioned"
+
+
+def _pwm_spec() -> tuple[int, int]:
+    header = "board_profile_esp32dev.h"
+    return int(_board_pin(header, "SP_LEDC_FREQ_HZ")), int(_board_pin(header, "SP_LEDC_RES_BITS"))
+
+
+def test_every_node_board_shares_the_pwm_spec():
+    freq, bits = _pwm_spec()
+    for header in ("board_profile_esp32s3.h",):
+        assert (int(_board_pin(header, "SP_LEDC_FREQ_HZ")),
+                int(_board_pin(header, "SP_LEDC_RES_BITS"))) == (freq, bits), header
+
+
+@pytest.mark.parametrize("doc", [*_HEADLINE_DOCS, FW_README, FW_DRIVERS], ids=_rel)
+def test_docs_state_the_pwm_spec(doc):
+    freq, bits = _pwm_spec()
+    pwm_lines = [line for line in _read(doc).splitlines() if re.search(r"PWM|LEDC", line)]
+    assert any(f"{freq // 1000} kHz" in line or f"{freq // 1000}kHz" in line for line in pwm_lines), (
+        f"{doc.name} never states {freq // 1000} kHz PWM")
+    assert any(f"{bits}-bit" in line for line in pwm_lines), f"{doc.name} never states {bits}-bit PWM"
+    for line in pwm_lines:
+        for khz in re.findall(r"\b(\d+) ?kHz", line):
+            assert int(khz) == freq // 1000, f"{doc.name}: {line.strip()}"
+        for b in re.findall(r"\b(\d+)-bit\b", line):
+            assert int(b) == bits, f"{doc.name}: {line.strip()}"
+
+
+def test_offline_buffer_size_matches_the_firmware():
+    src = _read(ROOT / "firmware" / "lib" / "sp_core" / "telemetry_buffer.h")
+    kb = int(re.search(r"cap_bytes = (\d+) \* 1024", src).group(1))
+    for doc in (AGENTS, *SPEC):
+        text = _read(doc)
+        assert f"{kb} KB" in text, f"{doc.name} should state the {kb} KB offline buffer"
+        assert not re.search(r"SPIFFS ring buffer|1000 entries", text), doc.name
+
+
+@pytest.mark.parametrize("doc", [FW_README, *SPEC], ids=_rel)
+def test_firmware_overviews_list_every_env(doc):
+    envs = re.findall(r"^\[env:([a-z0-9_]+)\]", _read(PLATFORMIO_INI), re.M)
+    text = _read(doc)
+    for env in envs:
+        assert f"`{env}`" in text, f"{doc.name} never names env {env}"
+
+
+def _local_socket_events() -> set[str]:
+    """Events the Pi's own Socket.IO server emits (app/cloud/ talks to the
+    cloud relay as a client — its command_result acks are not local)."""
+    events = set()
+    for path in (ROOT / "server" / "app").rglob("*.py"):
+        if "cloud" in path.relative_to(ROOT / "server" / "app").parts:
+            continue
+        events.update(re.findall(r"\bsio\.emit\(\s*\"(\w+)\"", _read(path)))
+    return events
+
+
+def test_readme_socket_events_are_the_ones_the_server_emits():
+    table = _section(_read(README), "WebSocket Events")
+    listed = set(re.findall(r"^\| `(\w+)` \| Server -> Client", table, re.M))
+    assert listed == _local_socket_events(), (
+        f"README lists {sorted(listed)}; the server emits {sorted(_local_socket_events())}")
+
+
+@pytest.mark.parametrize("doc", [README, GUIDE, SMART_PLUGS, BROKER_README], ids=_rel)
+def test_shelly_gen2_prefix_is_documented(doc):
+    acl = _read(ROOT / "config" / "mosquitto" / "acl.conf")
+    assert "topic write shellies/+/rpc" in acl, "the server's Gen2 command grant moved"
+    text = _read(doc)
+    assert "shellies/<role>" in text, f"{doc.name} never gives the Gen2 MQTT prefix"
+    if doc is not BROKER_README:
+        assert "RPC status notifications over MQTT" in text, doc.name
+
+
+def test_readme_mqtt_topics_cover_every_node_topic_the_acl_grants():
+    topics = _section(_read(README), "MQTT Topics")
+    acl = _read(ROOT / "config" / "mosquitto" / "acl.conf")
+    for kind in re.findall(r"^pattern (?:readwrite|write) sporeprint/%u/([a-z]+)", acl, re.M):
+        assert f"sporeprint/{{node_id}}/{kind}" in topics, f"README MQTT Topics misses {kind}"
+    for cmd in ("cmd/coredump_ack", "cmd/ota_manifest"):
+        assert f"sporeprint/{{node_id}}/{cmd}" in topics, f"README MQTT Topics misses {cmd}"
+
+
+@pytest.mark.parametrize("doc", SPEC, ids=_rel)
+def test_spec_states_the_auth_model(doc):
+    # The spec said "No authentication layer" long after v3.3.0 added the
+    # opt-in bearer gate.
+    text = _read(doc)
+    assert "ApiKeyMiddleware" in text and "SPOREPRINT_API_KEY" in text
+    assert "SPOREPRINT_ALLOW_UNAUTHENTICATED" in text
+    assert "**No authentication layer**" not in text
+    for stale in ("IRLZ44N SSRs", "lib/sporeprint_common/` —", "8-bit (0–255)"):
+        assert stale not in text, f"{doc.name} still says {stale!r}"
+
+
+# ── 2026-10 docs audit, round 1: claims pinned to the code ──────────
+
+
+def test_readme_names_the_screen_that_makes_the_pairing_code():
+    # The code is generated in Setup → § III Cloud link; Settings has only a
+    # static "Cloud pairing" row with no button.
+    text = _read(README)
+    assert "Setup → § III Cloud link" in text
+    for doc in CURRENT_MD:
+        assert "Settings → Cloud Pairing" not in _read(doc), doc.name
+
+
+def test_no_doc_says_unknown_env_keys_stop_the_server():
+    assert Settings.model_config.get("extra") == "ignore"
+    for doc in CURRENT_MD:
+        assert not re.search(r"refuses to start on a non-empty key", _read(doc)), doc.name
+
+
+def test_agents_states_the_frame_liveness_rule_the_code_applies():
+    line = next(l for l in _read(AGENTS).splitlines() if l.startswith("- Telemetry timestamps"))
+    # Liveness is replay / out-of-order against the node's newest ts — never
+    # a frame's age against the Pi clock ("synced frames older than 120 s").
+    assert "older than 120 s are stored" not in line
+    assert '"replay": true' in line and "out-of-order" in line, line
+    assert f"{_CLOCK_STEP_BACK_SECONDS} s" in line and "re-baselines" in line, line
+
+
+def test_no_doc_says_the_supported_s3_camera_boards_are_unsupported():
+    ini = _read(PLATFORMIO_INI)
+    assert re.search(r"^\[env:cam_waveshare_s3\]", ini, re.M)
+    for doc in CURRENT_MD:
+        text = _read(doc)
+        assert not re.search(r"\"ESP32-S3-CAM\" boards are\s+\*\*not\*\*\s+supported", text), doc.name
+    guide = _read(GUIDE)
+    assert "Waveshare ESP32-S3-CAM" in guide and "§8b" in guide
+
+
+def test_readme_feature_list_claims_only_what_exists():
+    text = _read(README)
+    # A/B: the comparison returns per-metric values, no telemetry series
+    assert "Side-by-side telemetry" not in text
+    # chambers: /api/chambers/compare exists, a dashboard view does not
+    assert "**Comparison view**" not in text
+    assert "GET /api/chambers/compare" in text
+    # notifications: one ntfy topic for every tier
+    assert "Configurable topics" not in text
+    assert "one ntfy topic" in text
+
+
+def test_readme_label_claims_match_the_labels_router():
+    text = _read(README)
+    assert not re.search(r"Phomemo|NIIMBOT|Thermal printer support", text)
+    row = next(l for l in text.splitlines() if l.startswith("| `labels` |"))
+    named = set(re.findall(r"\b(session|culture|container)s?\b", row))
+    assert named == set(_LABEL_PATHS), row
+
+
+def _api_operations_by_prefix() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path, item in server_app.openapi()["paths"].items():
+        seg = path.split("/")
+        key = seg[2] if seg[1] == "api" else seg[1]
+        ops = [m for m in item if m in ("get", "post", "put", "patch", "delete")]
+        counts[key] = counts.get(key, 0) + len(ops)
+    return counts
+
+
+def test_readme_server_modules_table_lists_the_packages():
+    app_dir = ROOT / "server" / "app"
+    packages = sorted(p.parent.name for p in app_dir.glob("*/__init__.py"))
+    section = _section(_read(README), "Server Modules")
+    rows = re.findall(r"^\| `([a-z_]+)(?:\.py)?` [^|]*\| (\d+)", section, re.M)
+    listed = {name: int(n) for name, n in rows}
+    module_rows = [n for n, _ in rows if n in packages]
+    assert sorted(module_rows) == packages, "every server/app package, once"
+    assert f"The {len(packages)} packages" in section
+    assert f"**{len(packages)} server modules**" in _read(README)
+    ops = _api_operations_by_prefix()
+    for name, n in listed.items():
+        key = name.removesuffix("_router")
+        assert ops.get(key, 0) == n, f"{name}: README says {n}, the API has {ops.get(key, 0)}"
+    # the single-file routers are labelled as files, not modules
+    for single in ("settings_router.py", "provision.py"):
+        assert (app_dir / single).exists()
+        assert f"`{single}`" in section
+
+
+def test_agents_module_pattern_claim_matches_the_files():
+    line = next(l for l in _read(AGENTS).splitlines() if l.startswith("- v3.0+ modules"))
+    claimed = re.findall(r"\b([a-z]+)/", line.split("follow the same pattern")[0])
+    assert claimed
+    app_dir = ROOT / "server" / "app"
+    for mod in claimed:
+        for f in ("models.py", "service.py", "router.py"):
+            assert (app_dir / mod / f).exists(), f"AGENTS says {mod}/ has {f}"
+    if "labels/" in line.split("follow the same pattern")[1]:
+        assert "router-only" in line
+
+
+# The spec's species tables give the code's value where the original spec
+# differed. The FAE column is checked where a cell names a mode.
+_SPEC_SPECIES = {
+    "Cubensis — Golden Teacher": "cubensis_golden_teacher",
+    "Cubensis — Penis Envy (PE)": "cubensis_penis_envy",
+    "Blue Oyster": "blue_oyster",
+    "Pink Oyster": "pink_oyster",
+    "King Trumpet": "king_trumpet",
+    "Lion's Mane": "lions_mane",
+    "Shiitake": "shiitake",
+    "Reishi": "reishi",
+    "Cordyceps militaris": "cordyceps_militaris",
+    "Turkey Tail": "turkey_tail",
+}
+_SPEC_PHASES = {
+    "agar": "agar", "liquid culture": "liquid_culture", "grain colonization": "grain_colonization",
+    "substrate colonization": "substrate_colonization", "browning/popcorning": "browning",
+    "primordia induction": "primordia_induction", "fruiting": "fruiting", "rest": "rest",
+}
+_FAE_MODES = ("none", "passive", "scheduled", "continuous")
+
+
+def _spec_fae_cells():
+    text = _read(CLAUDE)
+    profiles = {p.id: p for p in BUILTIN_PROFILES}
+    for heading, pid in _SPEC_SPECIES.items():
+        m = re.search(rf"^\*\*{re.escape(heading)}[^\n]*\*\*\n", text, re.M)
+        assert m, heading
+        table = re.search(r"^\| Phase [^\n]*\n\|[-| ]+\n((?:\|[^\n]*\n)+)", text[m.end():], re.M)
+        assert table, heading
+        for row in table.group(1).splitlines():
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            label, fae = cells[0], cells[5].replace("*", "")
+            enum = re.search(r"`([a-z_]+)`", label)
+            key = enum.group(1) if enum else _SPEC_PHASES[re.sub(r"\s*\(.*\)$", "", label).lower()]
+            yield heading, label, fae, profiles[pid].phases[key].fae_mode
+
+
+@pytest.mark.skipif(not SPEC, reason="CLAUDE.md is a personal, git-ignored file")
+def test_spec_species_fae_cells_give_the_codes_mode():
+    checked = 0
+    for heading, label, fae, code in _spec_fae_cells():
+        paren = re.search(r"\(([a-z]+)\)", fae)
+        lead = re.match(r"([a-z]+)", fae)
+        if paren and paren.group(1) in _FAE_MODES:
+            named = paren.group(1)
+        elif lead and lead.group(1) in _FAE_MODES:
+            named = lead.group(1)
+        elif fae in ("minimal", "filter", "filter patch", "micropore"):
+            named = "passive"  # some exchange, but no scheduled fan
+        else:
+            continue
+        checked += 1
+        assert named == code, f"{heading} · {label}: the table says {fae!r}, the profile has {code!r}"
+    assert checked >= 20
+
+
+@pytest.mark.skipif(not SPEC, reason="CLAUDE.md is a personal, git-ignored file")
+def test_spec_describes_watchdog_and_vision_as_built():
+    text = _read(CLAUDE)
+    assert "restored when MQTT returns" not in text
+    assert "reported as `safety_cutoff`" in text
+    vision = next(l for l in text.splitlines() if l.startswith("3. **Vision**"))
+    assert "confirm/correct UI" not in vision
+    assert "manual contamination mark" in vision
+
+
+# ── 2026-10 browser audit, round 2 ───────────────────────────────────
+# README claims the dashboard did not back up: a drying tracker and report
+# downloads on Sessions (the page links only a finished session's report.md),
+# QR labels "for thermal printers" (the API returns a PNG), and a "6-step"
+# wizard (the dashboard asks five questions; the API scores six inputs).
+
+
+def _ui_pages_row(page: str) -> str:
+    table = _section(_read(README), "UI Pages")
+    row = next((line for line in table.splitlines() if line.startswith(f"| {page} |")), None)
+    assert row, f"README UI Pages has no {page!r} row"
+    return row
+
+
+def test_readme_sessions_page_row_names_only_what_the_page_has():
+    row = _ui_pages_row("Sessions")
+    for stale in ("drying tracker", "report downloads"):
+        assert stale not in row, f"README UI Pages says Sessions has a {stale}"
+    assert "report.md" in row
+    assert "API-only" in row  # the drying log and report.csv stay API routes
+    paths = server_app.openapi()["paths"]
+    assert "/api/sessions/{session_id}/report.csv" in paths
+    assert any(p.endswith("/drying") or p.endswith("/drying-log") for p in paths)
+
+
+def test_readme_labels_are_png_qr_codes_not_printer_support():
+    text = _read(README)
+    assert "thermal printer" not in text
+    tree_line = next(line for line in text.splitlines() if "── labels/" in line)
+    assert "QR code PNGs" in tree_line
+    assert set(_LABEL_PATHS) >= {"session", "culture"}
+
+
+def test_readme_wizard_counts_match_the_scorer():
+    inputs = [n for n, prm in inspect.signature(recommend).parameters.items()
+              if prm.kind is inspect.Parameter.KEYWORD_ONLY and n != "limit"]
+    assert len(inputs) == 6
+    line = next(row for row in _read(README).splitlines() if "**Species Selector Wizard**" in row)
+    assert "6-step" not in line
+    assert "five-question" in line and "six inputs" in line
+

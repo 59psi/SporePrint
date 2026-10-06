@@ -164,6 +164,12 @@ services:
       # Docker stack refuses cloud OTA (update: git pull && ./install.sh).
       - SPOREPRINT_OTA_PUBKEY_B64=${SPOREPRINT_OTA_PUBKEY_B64:-}
       - SPOREPRINT_OTA_PUBKEY=${SPOREPRINT_OTA_PUBKEY:-}
+      # Signed-manifest policy for that self-update (bare metal only, like
+      # the key): the channel this Pi follows, the operator's downgrade
+      # override, and the transitional bundle-only-signature allowance.
+      - SPOREPRINT_OTA_CHANNEL=${SPOREPRINT_OTA_CHANNEL:-stable}
+      - SPOREPRINT_OTA_ALLOW_DOWNGRADE=${SPOREPRINT_OTA_ALLOW_DOWNGRADE:-false}
+      - SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=${SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE:-false}
       # DNS-rebinding guard (app/host_allow.py): the API answers only for
       # LAN-style Host names — private IPs, localhost, *.local, *.lan,
       # *.home.arpa, *.internal, dotless names and PUBLIC_UI_URL's host. Add
