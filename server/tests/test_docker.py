@@ -3,6 +3,7 @@
 import ipaddress
 import os
 import re
+import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -393,3 +394,15 @@ def test_server_healthcheck_host_passes_the_host_allow_list():
     url = re.search(r"https?://[^'\"\s]+", test).group(0)
     assert urlsplit(url).path == "/api/health"
     assert host_is_allowed(urlsplit(url).netloc)
+
+
+def test_uv_lock_records_the_project_version():
+    # server/Dockerfile installs with `uv export --locked`, which refuses a
+    # lock whose own-project entry disagrees with pyproject.toml — a version
+    # bump that skips uv.lock breaks the image build (5.1.0 hit it).
+    server = REPO_ROOT / "server"
+    project = tomllib.loads((server / "pyproject.toml").read_text())["project"]
+    lock = tomllib.loads((server / "uv.lock").read_text())
+    entry = next(p for p in lock["package"] if p["name"] == project["name"])
+    assert entry["version"] == project["version"]
+
