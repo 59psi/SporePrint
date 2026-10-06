@@ -9,7 +9,6 @@ Requires 7+ days of data before predictions are available.
 
 import json
 import logging
-import math
 import time
 
 from ..db import get_db

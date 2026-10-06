@@ -65,6 +65,10 @@ class InvalidPhaseError(ValueError):
     """A phase a session cannot be advanced to (unknown, or no setpoints)."""
 
 
+class UnknownChamberError(ValueError):
+    """A session bound to a chamber id the Pi has no row for."""
+
+
 def phase_params_source(defined: Collection[str], phase: str) -> str | None:
     """The profile phase whose setpoints `phase` runs on: the phase itself when
     the profile defines it, else its PHASE_PARAM_FALLBACKS stand-in, else None."""
@@ -154,6 +158,12 @@ async def create_session(data: SessionCreate) -> dict:
         raise InvalidPhaseError(error)
     snapshot = _params_snapshot(profile, data.current_phase)
     async with get_db() as db:
+        # sessions.chamber_id references chambers(id): an unknown id used to
+        # surface as a FOREIGN KEY IntegrityError and a bare 500.
+        if data.chamber_id is not None:
+            cursor = await db.execute("SELECT 1 FROM chambers WHERE id = ?", (data.chamber_id,))
+            if await cursor.fetchone() is None:
+                raise UnknownChamberError(f"chamber {data.chamber_id} not found")
         cursor = await db.execute(
             """INSERT INTO sessions (name, species_profile_id, substrate, substrate_volume,
                substrate_prep_notes, inoculation_date, inoculation_method, spawn_source,
@@ -1200,6 +1210,7 @@ async def add_drying_log(session_id: int, harvest_id: int, weight_g: float) -> d
             f"Drying Complete — {name}",
             f"Flush #{progress['flush_number']} has reached cracker-dry "
             f"({progress['moisture_loss_pct']:.0f}% moisture loss, {progress['current_weight_g']}g final weight)",
+            dedup_key=f"drying:{harvest_id}",
         )
     return progress
 
@@ -1566,9 +1577,9 @@ async def generate_session_report_md(session_id: int) -> str | None:
 
     # Build Markdown report
     md = []
-    md.append(f"# SporePrint Grow Report\n")
-    md.append(f"| Field | Value |")
-    md.append(f"|-------|-------|")
+    md.append("# SporePrint Grow Report\n")
+    md.append("| Field | Value |")
+    md.append("|-------|-------|")
     md.append(f"| Session | {name} |")
     md.append(f"| Species | {species} |")
     md.append(f"| Substrate | {substrate} |")

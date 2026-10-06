@@ -4,8 +4,9 @@
 //
 // Pinned here:
 //   * the vendored Ed25519 (Monocypher 4.0.3) against RFC 8032 §7.1 tests
-//     1-3, and the fixture's test seed deriving the fixture's public key
-//     (so node and Pi agree on key bytes)
+//     1-3, the fixture's test seed deriving the fixture's public key (so
+//     node and Pi agree on key bytes), and a malleated S + L signature
+//     refused, as the Pi refuses it
 //   * every case of test/fixtures/ota_manifest_vectors.json — a byte-identical
 //     copy of the Pi's server/tests/fixtures/ota_manifest_vectors.json:
 //     valid → ok, tampered → bad signature, signed-but-invalid → refused
@@ -130,6 +131,50 @@ void test_ed25519_rfc8032_vectors() {
         TEST_ASSERT_EQUAL(-1, crypto_ed25519_check(sig.data(), pub.data(),
                                                    msg.data(), msg.size()));
     }
+}
+
+// S + L (L = the group order, little-endian): the same curve equation, but a
+// non-canonical S. RFC 8032 §5.1.7 requires refusing S >= L, and the Pi's
+// verifier (Python cryptography / OpenSSL) does, so node and Pi must agree.
+static void add_group_order(uint8_t s[32]) {
+    static const uint8_t kL[32] = {
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7,
+        0xa2, 0xde, 0xf9, 0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
+    unsigned carry = 0;
+    for (int i = 0; i < 32; ++i) {
+        const unsigned v = (unsigned)s[i] + kL[i] + carry;
+        s[i] = (uint8_t)v;
+        carry = v >> 8;
+    }
+}
+
+void test_ed25519_refuses_a_malleated_signature() {
+    // RFC 8032 test 1 with S + L, as Python computes it (S + L < 2^256).
+    std::vector<uint8_t> pub = unhex(
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+    std::vector<uint8_t> sig = unhex(
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+    add_group_order(sig.data() + 32);
+    TEST_ASSERT_EQUAL_STRING(
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "4c8c7872aa064e049dbb3013fbf29380d25bf5f0595bbe24655141438e7a101b",
+        hexs(sig.data(), sig.size()).c_str());
+    TEST_ASSERT_EQUAL(-1, crypto_ed25519_check(sig.data(), pub.data(), nullptr, 0));
+
+    // And a genuine release manifest with its S malleated the same way.
+    JsonObject c = g_vectors["valid"][0];
+    std::vector<uint8_t> bytes = unhex(c["manifest_hex"].as<const char*>());
+    std::vector<uint8_t> msig = unhex(c["signature_hex"].as<const char*>());
+    TEST_ASSERT_EQUAL(64, msig.size());
+    OtaManifest m;
+    ASSERT_STATUS(ManifestStatus::Ok, sp::verify_manifest(bytes.data(), bytes.size(),
+                                                          msig.data(), g_pub, &m));
+    add_group_order(msig.data() + 32);
+    ASSERT_STATUS(ManifestStatus::BadSignature,
+                  sp::verify_manifest(bytes.data(), bytes.size(), msig.data(),
+                                      g_pub, &m));
 }
 
 // ── the shared vectors ─────────────────────────────────────────
@@ -443,6 +488,7 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_fixture_loads_and_seed_derives_the_pinned_key);
     RUN_TEST(test_ed25519_rfc8032_vectors);
+    RUN_TEST(test_ed25519_refuses_a_malleated_signature);
     RUN_TEST(test_valid_vectors_verify);
     RUN_TEST(test_tampered_vectors_fail_the_signature);
     RUN_TEST(test_signed_but_invalid_vectors_are_refused);

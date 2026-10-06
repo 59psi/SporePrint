@@ -10,7 +10,7 @@ from ..chambers.service import chambers_for_node
 from ..db import get_db
 from ..integrations import _actions as _vendor_actions
 from ..mqtt import mqtt_publish
-from ..notifications.service import co2_alert, temperature_alert, notify_warning, notify_critical
+from ..notifications.service import co2_alert, notify_warning, notify_critical
 from ..sessions.service import (
     PHASE_PARAM_FALLBACKS,
     add_actuator_off_listener,

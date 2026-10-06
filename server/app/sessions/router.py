@@ -13,7 +13,7 @@ router = APIRouter()
 async def create_session(data: SessionCreate):
     try:
         return await service.create_session(data)
-    except service.InvalidPhaseError as e:
+    except (service.InvalidPhaseError, service.UnknownChamberError) as e:
         raise HTTPException(422, str(e))
 
 

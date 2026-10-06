@@ -3,13 +3,13 @@
 # node_esp32s3_n32r16v.
 #
 # Everything the firmware executes, reads or writes lives in the LOW 16 MB.
-# The pinned core (arduino-esp32 2.0.17 / ESP-IDF 4.4) only cache-maps the
-# first 16 MB of octal flash (32-bit cache addressing arrived later, as an
-# experimental option), so an OTA slot above 16 MB would never boot; the
-# coredump is written from the panic handler and stays low too. The upper
-# 16 MB (0x1000000-0x2000000) is deliberately unallocated: a later core can
-# add a data partition there without moving anything below it — OTA cannot
-# repartition, so the offsets below are fixed for this board's fleet.
+# The table was laid out under core 2.0.17 / ESP-IDF 4.4, which cache-maps
+# only the first 16 MB of octal flash (an OTA slot above 16 MB would never
+# have booted; the coredump, written from the panic handler, stayed low too).
+# The firmware now builds on core 3.x, but the layout is fixed for this
+# board's fleet — OTA cannot repartition — so everything stays low. The upper
+# 16 MB (0x1000000-0x2000000) is deliberately unallocated: a data partition
+# can go there later without moving anything below it.
 #
 #   nvs       20 KB  — config_store (WiFi/MQTT creds, hmac_key, pinned CA)
 #   otadata    8 KB

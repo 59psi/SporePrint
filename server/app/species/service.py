@@ -1,5 +1,3 @@
-import json
-
 from ..db import get_db
 from .models import SpeciesProfile
 from .profiles import BUILTIN_PROFILES, species_id_candidates

@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 

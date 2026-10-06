@@ -126,16 +126,22 @@ ceiling for that plug.
 Keep plugs outside the humid chamber. The Athom plugs are not UL/ETL listed:
 keep a space heater ≤ 1500 W (≤ 1200 W preferred) on one plug.
 
-## LAN vendor drivers (v4.1.2)
+## LAN vendor drivers
 
-Two free-tier drivers control LAN smart plugs and switches without a
-vendor-cloud round-trip:
+Three free-tier drivers control LAN smart plugs and switches without a
+vendor-cloud round-trip (write paths since v4.1.2):
 
 - **Wemo** (Belkin) — UPnP/SOAP over TCP.
 - **Kasa** (TP-Link) — encrypted JSON on TCP/9999.
+- **Tapo** (TP-Link) — the local KLAP (v2) handshake (below).
 
-Both ship with full read + write paths. No new pip dependencies — the
-SOAP envelopes and the Kasa XOR cipher are inline.
+Each has full read + write paths. No extra pip dependencies — the SOAP
+envelopes, the Kasa XOR cipher and the KLAP handshake are inline. An
+automation rule can switch them too: its action sets `vendor_slug`,
+`vendor_action` (`set_power`, `set_dim`) and `vendor_params`, and its
+`target` names the override key `vendor:{slug}:{ip-or-id}`; a
+`safety_max_on_seconds` ceiling switches them off through the same
+dispatcher.
 
 ### Wemo
 

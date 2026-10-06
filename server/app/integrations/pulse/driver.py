@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from .._base import IntegrationDriver, IntegrationHealth
 from .client import PulseCloudClient, PulseError
 from .config import PulseConfig
-from .poller import poll_loop, run_one_poll
+from .poller import poll_loop
 
 
 logger = logging.getLogger(__name__)

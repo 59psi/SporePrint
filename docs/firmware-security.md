@@ -151,8 +151,8 @@ uses, to compare with the Pi's own `ca.crt`
   push (`server/app/hardware/ota_push.py`) now answers both, as espota.py
   decides: a 32-hex nonce gets the MD5 digest, a 64-hex nonce the
   PBKDF2-HMAC-SHA256 one (10 000 rounds over sha256(password)). A firmware
-  that uses the stock library can follow once the Pis it must accept pushes
-  from run this release or later.
+  that uses the stock library can follow once every Pi it must accept pushes
+  from runs a release newer than 5.0.0.
 - **Password:** the listener does not start when the NVS password is empty
   or shorter than 12 characters.
 - **Events:** start / success / error land on `sporeprint/<node>/ota`, so a

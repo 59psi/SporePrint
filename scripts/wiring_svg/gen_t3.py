@@ -330,7 +330,7 @@ steps(s, 1568, 176, [
         "Plugs: humidifier, dehumidifier, heater, cooler —",
         "WiFi only, sp-3p + Full Topic (see the build guide).",
     ]),
-], footnote=(1200, "ESP32-S3 boards use other pins: build guide §8a."))
+], footnote=(1200, "ESP32-S3 nodes use other pins (build guide §8a); S3 cameras: §8b."))
 
 s.comment("═══════════════════════ FOOTER ═══════════════════════")
 s.text(800, 1760, "SporePrint  |  Tier 3: All The Things  |  github.com/59psi/SporePrint", fill="#334155", size=9,

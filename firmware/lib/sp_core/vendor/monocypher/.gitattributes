@@ -1,0 +1,3 @@
+# Upstream release files, kept byte-identical on every checkout (no EOL
+# conversion); server/tests/test_firmware_vendor.py pins their SHA-256.
+* -text

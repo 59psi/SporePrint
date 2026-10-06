@@ -1,5 +1,3 @@
-import time
-
 from ..db import get_db
 from .models import CultureCreate, CultureUpdate
 

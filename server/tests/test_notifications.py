@@ -11,6 +11,8 @@ from app.notifications.service import (
     node_offline,
     notify,
     notify_critical,
+    notify_info,
+    notify_warning,
 )
 
 # Captured before any test patches `httpx.AsyncClient` (the patch replaces the
@@ -150,3 +152,24 @@ async def test_node_offline_is_critical_tier(ntfy):
     assert _body(ntfy[0])["priority"] == 5
     await node_offline("climate-01")
     assert len(ntfy) == 1, "repeat offline page for the same node must dedup"
+
+
+async def test_info_and_warning_dedup_by_title_without_a_key(ntfy):
+    """README and feature-status promise INFO at most once an hour and WARNING
+    5-min dedup, but notify() dedups only with a key, and the drying-complete
+    INFO passed none, so it repeated on every qualifying drying-log entry."""
+    await notify_info("Drying Complete — Run 1", "msg")
+    await notify_info("Drying Complete — Run 1", "msg")
+    await notify_warning("Out of range", "msg")
+    await notify_warning("Out of range", "msg")
+    assert len(ntfy) == 2
+    await notify_info("Drying Complete — Run 2", "msg")
+    assert len(ntfy) == 3
+
+
+def test_module_docstring_describes_the_info_tier_that_exists():
+    """INFO is sent at once and deduped per message; there is no hourly batch
+    and no daily summary (docs/feature-status.md lists both as not built)."""
+    doc = notif.__doc__ or ""
+    assert "batched hourly" not in doc and "daily summary" not in doc
+    assert "at most once an hour" in doc

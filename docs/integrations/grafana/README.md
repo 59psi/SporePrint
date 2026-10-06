@@ -55,6 +55,8 @@ All metrics are prefixed with `sporeprint_` for easy filtering.
 | `sporeprint_node_co2_ppm` | gauge | node_id, chamber_id | |
 | `sporeprint_node_lux` | gauge | node_id, chamber_id | |
 | `sporeprint_node_dewpoint_celsius` | gauge | node_id, chamber_id | Converted from F at scrape time |
+| `sporeprint_node_weight_grams` | gauge | node_id, chamber_id | Calibrated HX711 scale reading |
+| `sporeprint_node_door_open` | gauge | node_id, chamber_id | Door reed: 1 = open, 0 = shut |
 | `sporeprint_chamber_session_active` | gauge | chamber_id, species_profile_id, phase | 1 if active session |
 | `sporeprint_actuator_event_count` | counter | node_id, channel, action | Lifetime events |
 | `sporeprint_contamination_events_total` | counter | chamber_id | Lifetime contamination events (vision detections + manual marks), plus older sessions marked contaminated that have no event row |

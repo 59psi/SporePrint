@@ -49,7 +49,7 @@
 
   <!-- Services row 3 -->
   <rect x="318" y="356" width="328" height="20" rx="4" fill="#0a0a0f" stroke="#94a3b8" stroke-width="0.5"/>
-  <text x="482" y="370" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">SQLite | Automation Rules | Vision Pipeline | Cloud Connector</text>
+  <text x="482" y="370" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">SQLite | Automation | Vision | ntfy :8080 | Cloud Connector</text>
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
@@ -89,7 +89,7 @@
   <!-- Camera Node -->
   <rect x="740" y="86" width="172" height="80" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
   <text x="826" y="110" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Camera Node(s)</text>
-  <text x="826" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">ESP32-CAM (OV2640 / OV3660)</text>
+  <text x="826" y="130" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">ESP32-CAM · OV2640 / OV3660 / OV5640</text>
   <text x="826" y="148" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Still every 15 min · in chamber</text>
 
   <path d="M 775 166 Q 700 210 620 254" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,3"/>
@@ -129,6 +129,7 @@
   <g><rect x="366" y="396" width="128" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
   <text x="430" y="409" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">tasmota/&lt;topic&gt;/cmnd/POWER</text></g>
   <text x="40" y="518" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">Plugs: sp-3p + Full Topic tasmota/%topic%/%prefix%/</text>
+  <text x="384" y="518" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">Shelly Gen2+: MQTT prefix shellies/&lt;role&gt;</text>
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
@@ -142,7 +143,7 @@
 
   <path d="M 250 530 L 400 380" fill="none" stroke="#3b82f6" stroke-width="2"/>
   <g><rect x="276" y="504" width="96" height="18" rx="4" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
-  <text x="324" y="517" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">HTTP + Socket.IO</text></g>
+  <text x="324" y="517" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">HTTP (REST)</text></g>
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
@@ -156,7 +157,7 @@
   <text x="858" y="312" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">WebSocket Relay Server</text>
 
   <rect x="748" y="332" width="220" height="28" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="858" y="350" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Push (FCM) | AI Vision | Auth</text>
+  <text x="858" y="350" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Web app | AI Vision | Auth</text>
 
   <!-- Pi to Cloud -->
   <path d="M 660 295 L 730 295" fill="none" stroke="#eab308" stroke-width="1.5" stroke-dasharray="6,3"/>
@@ -165,24 +166,24 @@
 
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- MOBILE APP (bottom-right) -->
+  <!-- REMOTE ACCESS (bottom-right) -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="730" y="436" width="256" height="130" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="858" y="464" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Mobile App (Remote)</text>
-  <text x="858" y="486" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">iOS / Android | SporePrint Cloud</text>
+  <text x="858" y="464" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Remote Access (Browser)</text>
+  <text x="858" y="486" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">sporeprint.ai web app | Pi dashboard</text>
 
   <rect x="748" y="500" width="220" height="26" rx="4" fill="#0a0a0f" stroke="#eab308" stroke-width="0.5"/>
-  <text x="858" y="517" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Premium: Cloud relay (zero-config)</text>
+  <text x="858" y="517" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Premium: sporeprint.ai via cloud relay</text>
 
   <rect x="748" y="534" width="220" height="26" rx="4" fill="#0a0a0f" stroke="#a78bfa" stroke-width="0.5"/>
-  <text x="858" y="551" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Free: Tailscale VPN (self-setup)</text>
+  <text x="858" y="551" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Free: Pi dashboard over Tailscale</text>
 
-  <!-- Mobile to Cloud -->
+  <!-- Remote browser to Cloud -->
   <path d="M 858 436 L 858 378" fill="none" stroke="#eab308" stroke-width="1.5" stroke-dasharray="6,3"/>
   <g><rect x="864" y="400" width="72" height="18" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
   <text x="900" y="413" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Cloud relay</text></g>
 
-  <!-- Mobile to Pi via Tailscale -->
+  <!-- Remote browser to Pi via Tailscale -->
   <path d="M 730 548 Q 680 548 680 380" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="4,3"/>
   <g><rect x="608" y="506" width="68" height="18" rx="4" fill="#2e1065" stroke="#a78bfa" stroke-width="0.5"/>
   <text x="642" y="519" text-anchor="middle" fill="#c4b5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Tailscale</text></g>
@@ -193,7 +194,7 @@
   <!-- ═══════════════════════════════════════════════════════════ -->
   <rect x="40" y="644" width="920" height="44" rx="6" fill="#111827" stroke="#475569" stroke-width="0.5"/>
   <text x="62" y="662" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Data Flow:</text>
-  <text x="142" y="662" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Sensors --> MQTT --> Pi (ingest, store, alert, automate) --> Web UI (live dashboard via Socket.IO)</text>
+  <text x="142" y="662" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Sensors --> MQTT --> Pi (ingest, store, alert, automate) --> Web UI (REST; Socket.IO for other clients)</text>
   <text x="62" y="680" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Commands:</text>
   <text x="142" y="680" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">UI --> Pi --> MQTT, HMAC-signed --> ESP32 (fan speed, light level) | Pi --> plug on/off | Camera POSTs stills to the Pi REST API</text>
 

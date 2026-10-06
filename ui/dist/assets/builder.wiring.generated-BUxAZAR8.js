@@ -168,7 +168,7 @@ const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",
   <text x="500" y="842" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 1: Bare Bones  |  github.com/59psi/SporePrint</text>
 
 </svg>
-`},recommended:{tierId:"recommended",filename:"wiring-tier2-recommended.svg",title:"Tier 2: Recommended Wiring Diagram",summary:"3 ESP32 nodes + 1 camera · power strip → 12V 5A PSU → 14 AWG pigtail → WAGO → fused 18 AWG branches → 2 switch boards · STEMMA QT sensor chain · 2 smart plugs",width:1600,height:1496,bytes:67509,sha256:"0d82a16eb608b97a51d7859a2a82f8e06390bdb4039ee73c1036ab9fde992942",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1496" width="1600" height="1496">
+`},recommended:{tierId:"recommended",filename:"wiring-tier2-recommended.svg",title:"Tier 2: Recommended Wiring Diagram",summary:"3 ESP32 nodes + 1 camera · power strip → 12V 5A PSU → 14 AWG pigtail → WAGO → fused 18 AWG branches → 2 switch boards · STEMMA QT sensor chain · 2 smart plugs",width:1600,height:1496,bytes:67527,sha256:"ea6bd045b13b38f5a9f57d2183a4929107514a0b7d7dce4c2fdd5f7bdf1ca3e1",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1496" width="1600" height="1496">
 
   <!-- Background -->
   <rect width="1600" height="1496" fill="#0a0a0f"/>
@@ -699,13 +699,13 @@ const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",
   <text x="1200" y="1408" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate + camera: 6 ft (2 m) USB cables through the grommet.</text>
   <text x="1200" y="1423" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Relay + lighting ESP32s stay outside on short cables.</text>
   <text x="1200" y="1438" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Plugs: WiFi only — sp-3p + Full Topic (see the build guide).</text>
-  <text x="1200" y="1462" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 boards use other pins: build guide §8a.</text>
+  <text x="1200" y="1462" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 nodes use other pins (build guide §8a); S3 cameras: §8b.</text>
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
   <text x="800" y="1486" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
 
 </svg>
-`},all_the_things:{tierId:"all_the_things",filename:"wiring-tier3-all-the-things.svg",title:"Tier 3: All The Things Wiring Diagram",summary:"Tier 2 + 2nd climate node, 2nd camera, 4 LED channels, HX711 scale, door contact, peristaltic pump, 4 smart plugs · 12V 10A PSU, fused branches (3 A relay, 7.5 A lighting)",width:1600,height:1770,bytes:84565,sha256:"40d8c3bd2a406288759383f202bf69e27486537a460d88473862fabd10361a15",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1770" width="1600" height="1770">
+`},all_the_things:{tierId:"all_the_things",filename:"wiring-tier3-all-the-things.svg",title:"Tier 3: All The Things Wiring Diagram",summary:"Tier 2 + 2nd climate node, 2nd camera, 4 LED channels, HX711 scale, door contact, peristaltic pump, 4 smart plugs · 12V 10A PSU, fused branches (3 A relay, 7.5 A lighting)",width:1600,height:1770,bytes:84583,sha256:"f1ea0c08c691d6d68a1cd9dfbe4bc318ba1e0da126d3d4fe0969d4f046272f24",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1770" width="1600" height="1770">
 
   <!-- Background -->
   <rect width="1600" height="1770" fill="#0a0a0f"/>
@@ -1370,11 +1370,11 @@ const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",
   <text x="1200" y="1675" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Relay + lighting ESP32s stay outside on short cables.</text>
   <text x="1200" y="1690" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Plugs: humidifier, dehumidifier, heater, cooler —</text>
   <text x="1200" y="1705" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">WiFi only, sp-3p + Full Topic (see the build guide).</text>
-  <text x="1200" y="1736" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 boards use other pins: build guide §8a.</text>
+  <text x="1200" y="1736" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 nodes use other pins (build guide §8a); S3 cameras: §8b.</text>
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
   <text x="800" y="1760" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 3: All The Things  |  github.com/59psi/SporePrint</text>
 
 </svg>
 `}};export{t as BUILDER_WIRING_SVGS};
-//# sourceMappingURL=builder.wiring.generated-mQU5gJ4N.js.map
+//# sourceMappingURL=builder.wiring.generated-BUxAZAR8.js.map

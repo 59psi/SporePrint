@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from app.db import get_db
@@ -157,3 +159,28 @@ def test_put_builtin_endpoint_returns_409(client):
     assert r.status_code == 409
     assert "clone" in r.json()["detail"].lower()
     assert client.get("/api/species/lions_mane").json()["common_name"] != "Edited"
+
+
+# ── A card agrees with itself (2026-10 browser audit) ────────────────
+# The Shiitake card said "Cold shock (38-50°F overnight) … 3-5 flushes" in
+# its summary while its pinning trigger said cold-water soak and its yield
+# said 3-6 flushes; king trumpet, yellow oyster, chestnut, pioppino and
+# nameko had the same summary-vs-yield flush split.
+
+_FLUSH_RANGE = re.compile(r"(\d+)-(\d+) flushes")
+
+
+@pytest.mark.parametrize("profile", BUILTIN_PROFILES, ids=lambda p: p.id)
+def test_summary_and_yield_give_one_flush_range(profile):
+    ranges = {tuple(map(int, m)) for text in (profile.tldr or "", profile.yield_notes or "")
+              for m in _FLUSH_RANGE.findall(text)}
+    assert len(ranges) <= 1, f"{profile.id}: tldr and yield_notes disagree: {sorted(ranges)}"
+    for lo, hi in ranges:
+        assert lo <= profile.flush_count_typical <= hi, (profile.id, lo, hi)
+
+
+def test_shiitake_summary_names_the_soak_it_reminds_about():
+    shiitake = next(p for p in BUILTIN_PROFILES if p.id == "shiitake")
+    assert "Cold-water soak (35-50°F, 12-24h)" in shiitake.pinning_trigger_description
+    assert "cold-water soak (35-50°F, 12-24h)" in shiitake.tldr
+    assert "Cold shock" not in shiitake.tldr

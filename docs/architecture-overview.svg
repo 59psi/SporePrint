@@ -29,7 +29,7 @@
 
   <!-- Title -->
   <text x="400" y="38" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="700" letter-spacing="0.5">SporePrint System Architecture</text>
-  <text x="400" y="58" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">Automated Mushroom Cultivation Platform</text>
+  <text x="400" y="58" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">Automated Mushroom Cultivation Platform  ·  runs locally on the Pi; Claude API, weather and cloud relay are optional</text>
 
   <!-- ═══════════════ WEB UI LAYER ═══════════════ -->
   <rect x="60" y="80" width="680" height="130" rx="8" fill="url(#emeraldFade)" stroke="#334155" stroke-width="1.5"/>
@@ -42,12 +42,13 @@
   <!-- Web UI main box -->
   <rect x="80" y="116" width="640" height="76" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="138" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600">SporePrint Web UI</text>
-  <text x="400" y="156" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">React 18  /  Vite  /  PWA  /  Tailwind CSS</text>
-  <text x="400" y="178" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Pre-built in ui/dist, served by nginx :3001  |  Zustand  |  Recharts  |  Socket.IO real-time</text>
+  <text x="400" y="156" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">React 19  /  TypeScript  /  Vite 6  /  Tailwind CSS v4  /  @sporeprint/design</text>
+  <text x="400" y="178" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Pre-built in ui/dist (source: parent monorepo), served by nginx :3001  |  REST page loads  |  not a PWA</text>
 
   <!-- Arrow: Web UI → Server -->
   <line x1="400" y1="210" x2="400" y2="250" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowDown)"/>
-  <text x="400" y="237" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">REST + Socket.IO</text>
+  <rect x="318" y="226" width="164" height="16" rx="3" fill="#0a0a0f"/>
+  <text x="400" y="237" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">REST  (/api, proxied by nginx)</text>
 
   <!-- ═══════════════ SERVER LAYER ═══════════════ -->
   <rect x="60" y="256" width="680" height="340" rx="8" fill="url(#blueFade)" stroke="#334155" stroke-width="1.5"/>
@@ -55,7 +56,7 @@
 
   <!-- Layer label -->
   <text x="80" y="280" fill="#60a5fa" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">SERVER</text>
-  <text x="152" y="280" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Application Layer  (Raspberry Pi)</text>
+  <text x="152" y="280" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Application Layer  (Raspberry Pi 5  ·  Docker Compose: server, mqtt (Mosquitto), ntfy, ui)</text>
 
   <!-- Server header -->
   <rect x="80" y="292" width="640" height="44" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
@@ -65,11 +66,11 @@
   <!-- Module grid: Row 1 -->
   <rect x="80" y="348" width="205" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="182" y="370" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Telemetry</text>
-  <text x="182" y="392" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">MQTT ingest, time-series, alerts</text>
+  <text x="182" y="392" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">MQTT ingest, rollup-aware history</text>
 
   <rect x="297" y="348" width="206" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="370" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Sessions / Grow</text>
-  <text x="400" y="392" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Lifecycle, harvest, contamination</text>
+  <text x="400" y="392" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Lifecycle, phases, harvests, reports</text>
 
   <rect x="515" y="348" width="205" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="617" y="370" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Vision / Claude</text>
@@ -78,7 +79,7 @@
   <!-- Module grid: Row 2 -->
   <rect x="80" y="416" width="205" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="182" y="438" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Automation Rules</text>
-  <text x="182" y="460" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Triggers, actions, schedules</text>
+  <text x="182" y="460" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Rules, overrides, safety ceilings</text>
 
   <rect x="297" y="416" width="206" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="438" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Weather Forecast</text>
@@ -95,7 +96,7 @@
 
   <rect x="297" y="484" width="206" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="506" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Chamber Mgmt</text>
-  <text x="400" y="528" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Multi-zone, environment profiles</text>
+  <text x="400" y="528" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Multi-chamber, node assignment</text>
 
   <rect x="515" y="484" width="205" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="617" y="506" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Experiments A/B</text>
@@ -103,11 +104,12 @@
 
   <!-- Status bar -->
   <rect x="80" y="556" width="640" height="24" rx="4" fill="#1a1a2e" stroke="#334155" stroke-width="0.5" opacity="0.7"/>
-  <text x="400" y="572" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">+ Hardware  |  Health  |  Cloud Connector  |  Transcripts  |  Builder  |  Integrations  |  Notifications</text>
+  <text x="400" y="572" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">+ Hardware  |  Health  |  Cloud  |  Transcripts  |  Builder  |  Integrations  |  Contamination  |  Labels  |  Retention  |  Notifications  |  Socket.IO</text>
 
   <!-- Arrow: Server → Hardware -->
   <line x1="400" y1="596" x2="400" y2="636" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowDown)"/>
-  <text x="400" y="623" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">MQTT</text>
+  <rect x="244" y="612" width="312" height="16" rx="3" fill="#0a0a0f"/>
+  <text x="400" y="623" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">MQTT  (Mosquitto :1883 / TLS :8883  ·  HMAC-signed cmd/*)</text>
 
   <!-- ═══════════════ HARDWARE LAYER ═══════════════ -->
   <rect x="60" y="642" width="680" height="320" rx="8" fill="url(#amberFade)" stroke="#334155" stroke-width="1.5"/>
@@ -119,40 +121,42 @@
 
   <!-- Climate Node -->
   <rect x="80" y="680" width="316" height="114" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
-  <text x="238" y="702" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Climate Sensors</text>
+  <text x="238" y="702" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Climate Node  (I²C autodetect)</text>
   <rect x="96" y="714" width="130" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="161" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31 Temp/RH</text>
+  <text x="161" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SHT31-D / SHT4x RH</text>
   <rect x="236" y="714" width="144" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="308" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SCD41 CO2</text>
+  <text x="308" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">SCD41 / SCD30 CO₂</text>
   <rect x="96" y="752" width="130" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="161" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 Light</text>
+  <text x="161" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">BH1750 lux</text>
   <rect x="236" y="752" width="144" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="308" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">Alt: SCD30 / MH-Z19C</text>
+  <text x="308" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">MH-Z19 · AHT20 · BMx280</text>
 
   <!-- Relay/SSR Node -->
   <rect x="408" y="680" width="312" height="114" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="564" y="702" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Relay Node (MOSFET switches)</text>
   <rect x="424" y="714" width="140" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="494" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">IRLZ44N, 25 kHz PWM</text>
+  <text x="494" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">IRLZ44N · 25 kHz 10-bit</text>
   <rect x="572" y="714" width="132" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="638" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">4-ch Fan Control</text>
+  <text x="638" y="733" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">HX711 · door reed</text>
   <rect x="424" y="752" width="280" height="30" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
   <text x="564" y="771" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10">FAE  |  Exhaust  |  Circulation  |  Aux (pump)</text>
 
   <!-- Camera Node -->
   <rect x="80" y="806" width="316" height="68" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
-  <text x="238" y="828" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32-CAM</text>
-  <text x="238" y="862" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">OV2640 / OV3660  |  15-min stills  |  Vision pipeline</text>
+  <text x="238" y="828" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Camera Node</text>
+  <text x="238" y="847" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-CAM (or S3 cam)  ·  OV2640 / OV3660 / OV5640</text>
+  <text x="238" y="864" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">15-min stills → POST /api/vision/frame</text>
 
   <!-- Lighting Node -->
   <rect x="408" y="806" width="312" height="68" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="564" y="828" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">Lighting Controller</text>
-  <text x="564" y="862" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">4-ch PWM  |  white  |  450 blue  |  660 red  |  730 far-red</text>
+  <text x="564" y="847" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">4 channels  ·  25 kHz 10-bit PWM  ·  scenes</text>
+  <text x="564" y="864" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">white  ·  450 nm blue  ·  660 nm red  ·  730 nm far-red</text>
 
   <!-- Smart Plugs -->
   <rect x="80" y="886" width="640" height="56" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="908" text-anchor="middle" fill="#fbbf24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">MQTT Smart Plugs</text>
-  <text x="400" y="930" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Tasmota (Athom) + Shelly  |  Humidifier, dehumidifier, heater, cooler  |  Power monitoring</text>
+  <text x="400" y="930" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Tasmota (Athom)  ·  Shelly Gen1  ·  Shelly Gen2+  |  Humidifier, dehumidifier, heater, cooler  |  Power monitoring</text>
 
   <!-- Footer -->
   <text x="400" y="982" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Open Source  |  github.com/59psi/SporePrint</text>

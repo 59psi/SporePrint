@@ -1,0 +1,4 @@
+# Claude Code copies these git-ignored files from the main checkout into each
+# worktree it creates (gitignore syntax; tracked files are never copied).
+# CLAUDE.md is the operator's own context file: it imports @AGENTS.md.
+CLAUDE.md

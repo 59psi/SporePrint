@@ -1,15 +1,15 @@
 # Cloud Relay Flow
 
-Remote access flow: client (mobile app or browser) → cloud relay at sporeprint.ai → paired Pi on the operator's LAN. v3.3.1 added HMAC-SHA256 signing over the command frames; the Pi refuses unsigned frames.
+Remote access flow: client (the browser at sporeprint.ai; a React Native mobile app is being rebuilt and not released) → cloud relay at sporeprint.ai → paired Pi on the operator's LAN. v3.3.1 added HMAC-SHA256 signing over the command frames; the Pi refuses unsigned frames.
 
 **v3.4 gating (cloud side)**: the relay refuses a Socket.IO connect whose effective tier is not `premium` — the connect raises `ConnectionRefusedError("subscription_required")`. The sequence below assumes a paying user. A free user never reaches step 1 beyond the refusal handshake. The Pi-side of the flow (steps starting at the `Pi->>Relay: Socket.IO connect`) is unaffected — Pi device-token auth doesn't know or care about mobile-user tier.
 
-**v4 wire shape**: the browser-side Socket.IO client opens a WebSocket to `wss://sporeprint.ai/socket.io/`. The cloud-web Next.js layer's custom `server.js` listens for HTTP-upgrade events on `/socket.io/*` and proxies the WSS handshake to FastAPI on `127.0.0.1:9000`. The mobile app talks to the same URL directly (no HTTP-upgrade dance — Socket.IO falls through Next's rewrites). From the Pi's perspective, the FastAPI server it talks to is byte-compatible with the v3.x cloud — only the path taken by the *opposite* end of the relay (browser/mobile → FastAPI) changed.
+**v4 wire shape**: the browser-side Socket.IO client opens a WebSocket to `wss://sporeprint.ai/socket.io/`. The cloud-web Next.js layer's custom `server.js` listens for HTTP-upgrade events on `/socket.io/*` and proxies the WSS handshake to FastAPI on `127.0.0.1:9001` (Next itself listens on `$PORT`, default 9000). A native client would talk to the same URL. From the Pi's perspective, the FastAPI server it talks to is byte-compatible with the v3.x cloud — only the path taken by the *opposite* end of the relay (browser/mobile → FastAPI) changed.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant App as Client<br/>(mobile app<br/>OR browser at sporeprint.ai)
+    participant App as Client<br/>(browser at sporeprint.ai)
     participant Relay as Cloud Relay<br/>(sporeprint.ai · Next + FastAPI)
     participant Pi as Raspberry Pi<br/>(FastAPI)
     participant ESP as ESP32 Node
@@ -29,34 +29,40 @@ sequenceDiagram
     Relay-->>App: forward to room device:<id>
 
     Note over App,ESP: Premium: remote command
-    App->>Relay: emit 'command'<br/>{ device_id, target, channel, payload, id }
+    App->>Relay: emit 'command'<br/>{ device_id, target_kind, channel, payload, id }
     Relay->>Relay: tier == 'premium' · device owned by user<br/>sign_frame(device_token, frame) → + ts + signature
     Relay->>Pi: emit 'command' (signed)
 
-    Pi->>Pi: verify_frame(cloud_token, frame)<br/>ts window · tier · id-replay · target registered
+    Pi->>Pi: verify_frame(cloud_token, frame)<br/>ts window · tier · id replay · target_kind → registered node
     alt Signature valid
         Pi->>ESP: mqtt_publish sporeprint/<node>/cmd/<channel><br/>re-signed with the Pi's key + topic + nonce
         ESP-->>Pi: status update (next telemetry)
         Pi-->>Relay: emit 'command_result' { id, success: true }
         Relay-->>App: forward result
     else Signature missing or bad ts
-        Pi-->>Relay: emit 'command_result' { id, success: false, error: 'Signature check failed' }
+        Pi-->>Relay: emit 'command_result' { id, success: false, error: 'Signature check failed: …', reject_reason }
         Relay-->>App: forward error
     end
 ```
 
-## What v3.3.1 enforces (still current under v4)
+## What the Pi enforces on every cloud command
+
+All in `server/app/cloud/service.py::handle_cloud_command`, in this order:
 
 | Check | Code | Failure mode |
 |---|---|---|
-| HMAC-SHA256 over canonical JSON | `server/app/cloud/signing.py::verify_frame` | command dropped with `signature mismatch` |
-| `ts` within ±30 s of Pi wall-clock | same | `ts outside replay window` |
-| `command_id` present, not replayed | `on_command` LRU set (1024 cap) | `Replayed command id` |
-| `tier == 'premium'` | `on_command` | `Remote control requires premium tier` |
-| Target matches registered `hardware_nodes.node_id` or `smart_plugs.plug_id` | `_target_is_registered()` | `Unknown target '<id>'` |
-| `target` / `channel` match `^[a-zA-Z0-9_-]{1,64}$` | `_is_safe_target` / `_is_safe_channel` | `Invalid target or channel` |
+| HMAC-SHA256 over canonical JSON, keyed with the Pi's cloud token | `server/app/cloud/signing.py::verify_frame` | `Signature check failed: signature mismatch` (`reject_reason: signature_mismatch`) |
+| `ts` within ±30 s of the Pi's clock | same | `Signature check failed: ts outside replay window` (`reject_reason: clock_skew`; fix the Pi's NTP) |
+| `tier == 'premium'` | `handle_cloud_command` | `Remote control requires premium tier` |
+| `id` present and not seen before | an in-memory FIFO of 1024 ids, written through to the `cloud_command_replay` table so a restart inside the window still rejects a replay | `Replayed command id` |
+| `target_kind` is `climate`, `relay`, `lighting`, `camera`, `system` or `automation`; `channel` matches `^[a-zA-Z0-9_-]{1,64}$` | `_VALID_TARGET_KINDS`, `_is_safe_channel` | `Invalid target_kind or channel` |
+| A hardware `target_kind` resolves to the most recently seen registered node of that type (or role), and that node id passes the same pattern | `_resolve_node_id_by_type()`, `_is_safe_target()`, `_target_is_registered()` | `No registered <kind> node` / `Unknown target '<id>'` |
 
-Pre-v3.3.1 only the tier string was checked — a compromised cloud relay could have issued any command to any registered target. v3.3.1 closes that by making the Pi require a signature it can verify.
+`system` (automation pause / resume, session start / end, rule suspend,
+reboot, Pi OTA) and `automation` (manual overrides) are handled inside the Pi
+and never reach MQTT. Before v3.3.1 only the tier string was checked, so a
+compromised cloud relay could have issued any command to any registered
+target; the Pi now requires a signature it can verify.
 
 ## The Pi → node leg
 
@@ -83,35 +89,41 @@ forged, replayed or redirected frames; see `docs/firmware-security.md`.
 ## v4 cloud-side rechecks (before forwarding any command)
 
 The cloud relay does its own enforcement before signing + forwarding. As of
-v4, two additional rechecks happen on every inbound `command` from a browser
-or mobile client:
+v4, two additional rechecks happen on every inbound `command` from a client:
 
 | Check | Frequency | Failure mode |
 |---|---|---|
 | Tier recheck (effective tier still `premium`) | every 30 s per session, cached | command rejected with `subscription_required` |
-| Ownership recheck (`device_id ∈ user's devices`) | every 30 s per session, cached | command rejected with `not_owner` |
+| Ownership recheck (`device_id ∈ user's devices`) | every 60 s per session, cached | command rejected with `Device not owned by this user` |
 
 The recheck guarantees that a user whose subscription expires mid-session
-loses control within 30 seconds — they don't keep operating the chamber until
-they happen to disconnect. The 30 s cache keeps the Supabase load bounded; a
+loses control within 30 seconds (a device removed from the account, within
+60 seconds) — they don't keep operating the chamber until they happen to
+disconnect. The caches keep the Supabase load bounded; a
 hard recheck at every command would 4-10× the auth round-trips during a
 busy session.
 
 ## OTA progress events (Pi → cloud, v4)
 
-OTA promotion was rewritten in v4 to emit per-step progress upstream so the
-mobile app and cloud-web can render a real progress bar instead of a "wait
-30 s and pray" spinner.
+A Pi self-update reports each step upstream so cloud-web can render a real progress bar instead of a "wait 30 s and pray"
+spinner.
 
 ```
-Pi: ota.py
-  └─ _emit_step("downloading" | "verifying" | "promoting" | "restarting" | "healthy" | "failed")
-       └─ forward_event("ota_step", { step, percent, detail, error? })
+Pi: server/app/cloud/ota.py
+  └─ _emit_step(step, version, channel, …)
+       steps: download_started {url} → download_complete {size_bytes}
+              → verify_complete {verified_by: manifest | legacy_signature}
+              → extract_complete {files_extracted} → promote_complete
+              → restart_initiated   (or failed {failed_at, error} at any step)
+       └─ forward_event("ota_step", { step, version, channel, … })
             └─ cloud relay: @sio.on("ota_step")
-                 ├─ validate step against allowlist (refuses arbitrary strings)
-                 ├─ persist to ota_progress_events (Supabase)
-                 └─ emit "ota_step" to subscriber rooms (mobile / cloud-web)
+                 ├─ validate step against the same seven names (refuses anything else)
+                 ├─ persist to ota_progress_events (Supabase), 10 rows per device
+                 └─ emit "ota_step" { device_id, step, payload } to the device room
 ```
+
+A progress emit never fails the update: a Pi that cannot reach the cloud
+still completes its OTA.
 
 `_promote_and_restart` was also split into `_promote` + `_restart_unit` so
 the failure mode is recoverable — if `_promote` succeeds but the systemd
@@ -163,6 +175,6 @@ Limits of Pi self-update:
 ## External services referenced in this flow
 
 - **Supabase** — JWT + user↔device mapping
-- **Firebase FCM → APNs/Android** — push (not shown; triggered by Pi events that `forward_event()` to cloud)
+- **Firebase FCM** — native push for the mobile app once it ships (not shown; nothing receives it today, and browser push is built but not live yet)
 - **RevenueCat** — tier source (webhook updates `profiles.tier`)
 - **Anthropic** — Claude vision / grow advisor (separate path, not in this sequence)

@@ -360,7 +360,7 @@ for x, head, colour, lines in cols:
     s.text(x, 1360, head, fill=colour, size=10, weight="700")
     for i, t in enumerate(lines):
         s.text(x, 1378 + i * 15, t, fill=TL, size=9)
-s.text(1200, 1462, "ESP32-S3 boards use other pins: build guide §8a.", fill=T2, size=9, italic=True)
+s.text(1200, 1462, "ESP32-S3 nodes use other pins (build guide §8a); S3 cameras: §8b.", fill=T2, size=9, italic=True)
 
 s.comment("═══════════════════════ FOOTER ═══════════════════════")
 s.text(800, 1486, "SporePrint  |  Tier 2: Recommended  |  github.com/59psi/SporePrint", fill="#334155", size=9,

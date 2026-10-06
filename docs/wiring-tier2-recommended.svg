@@ -529,7 +529,7 @@
   <text x="1200" y="1408" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate + camera: 6 ft (2 m) USB cables through the grommet.</text>
   <text x="1200" y="1423" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Relay + lighting ESP32s stay outside on short cables.</text>
   <text x="1200" y="1438" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Plugs: WiFi only — sp-3p + Full Topic (see the build guide).</text>
-  <text x="1200" y="1462" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 boards use other pins: build guide §8a.</text>
+  <text x="1200" y="1462" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 nodes use other pins (build guide §8a); S3 cameras: §8b.</text>
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
   <text x="800" y="1486" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>

@@ -1,4 +1,4 @@
-# 4 MB flash layout — shared by all four ESP32 nodes.
+# 4 MB flash layout — node_esp32 (ESP32-WROOM-32) and cam (AI-Thinker ESP32-CAM).
 #
 # v4 archaeology fix #12 added the coredump partition; the 64 KB came
 # out of spiffs (loss-tolerant caches that reformat cleanly on first boot

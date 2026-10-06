@@ -43,8 +43,8 @@ docker compose up -d server     # 'docker compose restart' does not re-read .env
 ```
 
 From then on every `/api/*` request and every Socket.IO connect must send
-`Authorization: Bearer <SPOREPRINT_API_KEY>`. Use it to gate the mobile app
-and other external clients. **The bundled browser dashboard sends no key, so it
+`Authorization: Bearer <SPOREPRINT_API_KEY>`. Use it to gate external
+clients (scripts, other tools). **The bundled browser dashboard sends no key, so it
 stops working in this mode.**
 
 Public paths in API-key mode:
@@ -52,7 +52,7 @@ Public paths in API-key mode:
 | Path | Why |
 |---|---|
 | `/api/health` (any method) | Liveness checks |
-| `POST /api/cloud/pair` | The mobile app's pairing handshake (code-gated, rate-limited) |
+| `POST /api/cloud/pair` | The cloud pairing handshake: a LAN client trades the code for a configure token (code-gated, rate-limited) |
 | `GET /api/provision/ca` | The broker's public CA, fetched keyless by Secure-MQTT nodes. It never serves a file containing a private key |
 
 `GET`/`POST /api/cloud/pairing-code` need the bearer in this mode.

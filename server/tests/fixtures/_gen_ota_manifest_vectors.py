@@ -4,7 +4,7 @@ Run from the repo root:
     python3 server/tests/fixtures/_gen_ota_manifest_vectors.py \\
         > server/tests/fixtures/ota_manifest_vectors.json
     cp server/tests/fixtures/ota_manifest_vectors.json \\
-        <sporeprint-cloud>/cloud/tests/fixtures/ota_manifest_vectors.json
+        <cloud parent repo>/cloud/tests/fixtures/ota_manifest_vectors.json
 
 The signing key is a TEST-ONLY key derived from a public string. It signs
 nothing real; no Pi pins it.

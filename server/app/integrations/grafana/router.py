@@ -34,7 +34,6 @@ PROM_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 def _import_driver():
     # Lazy to avoid a registry-time circular when the package's __init__
     # registers the driver.
-    from . import driver as _driver_mod
     from .. import _registry
 
     drv = _registry.registered_drivers().get("grafana")

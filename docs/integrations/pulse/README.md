@@ -11,10 +11,11 @@ Zero) in two transports:
   credentials on the Pi (encrypted at rest) and refresh tokens against
   Pulse's API on your behalf.
 
-Both transports publish into the same SporePrint telemetry pipeline
-under node IDs like `pulse:<device_id>`, so chamber UI, automation,
-and the Grafana exporter all work identically regardless of which
-mode you pick.
+Both transports store readings in the same SporePrint telemetry
+history under node IDs like `pulse:<device_id>`, so the telemetry API
+and the Grafana exporter see them the same way whichever mode you pick.
+They do **not** drive automation rules or safety alerts: those run only
+on MQTT telemetry from SporePrint nodes.
 
 ## Local mode (free)
 
@@ -93,7 +94,7 @@ mode you pick.
   integration needs an update.
 - **Why premium?** Because *our* infrastructure holds your Pulse
   credentials and pays for the Sentry/log noise of a third-party
-  cloud dependency. Per `feedback_tier_model`, that's the line.
+  cloud dependency; that is where the free / premium line sits.
   Local mode is free and recommended whenever your Pulse devices are
   reachable on your LAN.
 
@@ -108,6 +109,7 @@ mode you pick.
 | `light` | `lux` |
 
 `vpd_kpa` and `dew_point_c` are SporePrint sensor names introduced by
-this driver. Existing automation rules that match on `temp_c` /
-`humidity` continue to work; rules that want VPD can match on the
-new name.
+this driver. Every reading is stored (the Grafana exporter picks up
+`temp_c` and `humidity`), but no automation rule evaluates it: rules
+run only on MQTT node telemetry, and the built-in temperature rules
+match `temp_f`, not `temp_c`.

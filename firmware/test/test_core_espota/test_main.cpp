@@ -3,10 +3,12 @@
 //
 // Pinned here:
 //   * MD5 against the RFC 1321 appendix A.5 suite plus the 55/56/64-byte
-//     padding edges (one vs two final blocks)
+//     padding edges (one vs two final blocks), the same edges one block in,
+//     all 256 byte values, and one million 'a'
 //   * the auth answer against the Pi's OWN espota client
-//     (server/app/hardware/ota_push.py auth_response(), vector generated from
-//     it) — a node that computes anything else rejects every Pi push
+//     (server/app/hardware/ota_push.py auth_response(), vectors generated
+//     from it, incl. a non-ASCII UTF-8 password) — a node that computes
+//     anything else rejects every Pi push
 //   * invitation / answer parsing for the exact datagrams the Pi and espota.py
 //     send, and the garbage arduino-esp32 2.x ArduinoOTA silently read as
 //     zeros (a missing number parsed as command 0 = flash)
@@ -62,6 +64,29 @@ void test_md5_padding_edges() {
     assert_md5(buf, 64, "c1bb4f81d892b2d57947682aeb252456");
 }
 
+void test_md5_binary_and_multiblock() {
+    // The RFC 1321 suite is all 7-bit ASCII; every byte value 0x00-0xFF
+    // pins the message loading for bytes >= 0x80 (a UTF-8 password).
+    uint8_t all[256];
+    for (int i = 0; i < 256; ++i) all[i] = (uint8_t)i;
+    assert_md5((const char*)all, sizeof(all), "e2c865db4162bed963bfaa9ef6ac18f0");
+
+    // The padding edges again one block in (63/65, 119/120) and a 2-block
+    // message plus a padding-only block (128). Pattern byte i = 131i + 7.
+    uint8_t pat[128];
+    for (int i = 0; i < 128; ++i) pat[i] = (uint8_t)(i * 131 + 7);
+    assert_md5((const char*)pat, 63, "c9803ddca3b148d91d5f214be64197d4");
+    assert_md5((const char*)pat, 65, "4e114d3e0baf5ace365e0552a3273291");
+    assert_md5((const char*)pat, 119, "e0c0cb3cbc027ba4d5a6c983754f2dc1");
+    assert_md5((const char*)pat, 120, "3d7a96a57e721a4e2c2cbe55937e10e2");
+    assert_md5((const char*)pat, 128, "154b8c17cfb174384edd9557e3e64e2b");
+
+    // One million 'a' (15,625 blocks; the bit length needs 23 bits).
+    static char million[1000000];
+    memset(million, 'a', sizeof(million));
+    assert_md5(million, sizeof(million), "7707d6ae4e027c70eea2a935c2296f21");
+}
+
 // ── the auth answer ────────────────────────────────────────────
 
 static const char* kPassword = "correct-horse-battery";
@@ -83,6 +108,20 @@ void test_expected_response_matches_the_pi_push() {
     sp::espota::password_digest(kPassword, digest);
     sp::espota::expected_response(digest, kNonce, kCnonce, want);
     TEST_ASSERT_EQUAL_STRING(kPiResponse, want);
+}
+
+void test_utf8_password_matches_the_pi_push() {
+    // The portal stores the password's UTF-8 bytes and the Pi hashes
+    // password.encode(): "grüne-pilze-ö-2026" (20 bytes), vectors from
+    // ota_push.py auth_response().
+    const char* pw = "gr\xc3\xbcne-pilze-\xc3\xb6-2026";
+    TEST_ASSERT_EQUAL(20, (int)strlen(pw));
+    char digest[sp::espota::kHexLen + 1];
+    char want[sp::espota::kHexLen + 1];
+    sp::espota::password_digest(pw, digest);
+    TEST_ASSERT_EQUAL_STRING("eb0ebb09ddf47a3443d0cafb61181b54", digest);
+    sp::espota::expected_response(digest, kNonce, kCnonce, want);
+    TEST_ASSERT_EQUAL_STRING("a9bc5999366ff53c3c286545a50649ad", want);
 }
 
 void test_response_matches_accepts_only_the_right_answer() {
@@ -219,8 +258,10 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_md5_rfc1321_suite);
     RUN_TEST(test_md5_padding_edges);
+    RUN_TEST(test_md5_binary_and_multiblock);
     RUN_TEST(test_password_digest_is_md5_hex);
     RUN_TEST(test_expected_response_matches_the_pi_push);
+    RUN_TEST(test_utf8_password_matches_the_pi_push);
     RUN_TEST(test_response_matches_accepts_only_the_right_answer);
     RUN_TEST(test_nonce_is_32_lowercase_hex);
     RUN_TEST(test_parses_the_pi_push_invitation);

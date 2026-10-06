@@ -1,9 +1,11 @@
 # Aranet PRO integration
 
 The SporePrint Pi can poll an Aranet PRO base station's local API and
-merge its sensors into your chambers as if they were native sensors.
-Existing automation rules, alerts, and the Grafana exporter all see
-Aranet readings unchanged. Free-tier — traffic stays on the LAN.
+store its sensors' readings in the Pi's telemetry history, where the
+telemetry API and the Grafana exporter see them. They do **not** drive
+automation rules or safety alerts: those run only on MQTT telemetry
+from SporePrint nodes, so keep a SporePrint climate node in any chamber
+the rules control. Free-tier — traffic stays on the LAN.
 
 ## Hardware requirements
 
@@ -47,8 +49,8 @@ Aranet readings unchanged. Free-tier — traffic stays on the LAN.
 
    The keys are Aranet sensor IDs; the values are SporePrint chamber
    IDs as strings.
-6. Save again, then *Enable*. Within one poll interval you should see
-   readings flow through to the chamber UI under node IDs like
+6. Save again, then *Enable*. Within one poll interval the readings
+   land in telemetry history under node IDs like
    `aranet:abc-123-uuid`.
 
 ## Sensor type mapping

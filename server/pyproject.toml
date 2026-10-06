@@ -60,3 +60,9 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# app/main.py imports the routers after the app and its middleware exist, and
+# each integrations/<vendor>/__init__.py builds its driver before importing the
+# registry it registers with. Both orders are deliberate.
+per-file-ignores = { "app/main.py" = ["E402"], "app/integrations/*/__init__.py" = ["E402"] }

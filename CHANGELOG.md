@@ -7,18 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The 2026-09 hardware + software audit: a live re-check of the whole bill of
-materials, every enclosure re-fit to sourced part drawings and joined with
-heat-set inserts, and ~180 verified software findings fixed test-first across
-the server, firmware, broker/install scripts and dependencies. The wire
+Two passes since 5.0.0. The **2026-09 hardware + software audit**: a live
+re-check of the whole bill of materials, every enclosure re-fit to sourced
+part drawings and joined with heat-set inserts, and ~180 verified software
+findings fixed test-first across the server, firmware, broker/install scripts
+and dependencies. The **2026-10 follow-ups**: Arduino-ESP32 core 3.3.12,
+drivers for every sensor the BOM ever listed, the ESP32-S3 camera boards,
+Shelly Gen2+ plugs, the shiitake browning phase, coredump acknowledgements,
+and signed OTA manifests for the Pi and (optionally) for nodes. The wire
 contract stays backward compatible: new payload keys are optional and the
 signing vectors are unchanged. Firmware details are in
 [`firmware/CHANGELOG.md`](firmware/CHANGELOG.md).
-
-Also unreleased, the 2026-10 follow-ups: Arduino-ESP32 core 3.3.12, drivers
-for every sensor the BOM ever listed, the ESP32-S3 camera boards, Shelly
-Gen2+ plugs, the shiitake browning phase, coredump acknowledgements, and
-signed OTA manifests for the Pi and (optionally) for nodes.
 
 ### Upgrade notes
 - **Update a Docker Pi with `git pull && ./install.sh`** — `install.sh` writes
@@ -31,11 +30,11 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   certificate with every Pi IPv4 in its names. Current firmware pins a fetched
   CA only after a TLS connection with it succeeds and otherwise stays on
   plaintext with a `tls_downgrade` alert that names the reason. **Firmware
-  from before this release pins the CA at its next reboot without that
-  check:** if the certificate does not cover the node's Pi address (an IP the
-  old certificate lacks), that node loses MQTT, drops to safe mode after
-  10 min, and needs physical access (portal gesture or factory reset). Point
-  nodes at `sporeprint.local`, or update their firmware first.
+  from 5.0.0 or earlier pins the CA at its next reboot without that check:**
+  if the certificate does not cover the node's Pi address (an IP the old
+  certificate lacks), that node loses MQTT, drops to safe mode after 10 min,
+  and needs physical access (portal gesture or factory reset). Point nodes at
+  `sporeprint.local`, or update their firmware first.
 - **Schedules move to local time.** `install.sh` writes the host's time zone
   into `.env` as `TZ` (compose passes `TZ=${TZ:-UTC}`) and warns. Rule times
   typed in UTC to compensate must be changed back, or set `TZ=UTC`. Use a
@@ -61,14 +60,26 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   the data volume). Dumps in the old `data/coredumps` are no longer listed.
 - **Built-in species profiles are read-only** (`PUT` returns 409): clone one to
   customize it.
+- **Node firmware moves to core 3.x over the air.** Push the new image from
+  the dashboard's Firmware page as before: nodes on a core 2.x image (every
+  release up to 5.0.0) take the first 3.x image with no USB cable. Update one
+  node per board type and check its heartbeat before the rest
+  ([`firmware/README.md`](firmware/README.md#updating-nodes-from-a-core-2x-image)).
+  Building firmware now needs PlatformIO Core ≥ 6.2.0 and `git`.
+- **Bare-metal Pi self-update checks a signed release manifest** (see *Cloud
+  and Pi self-update*). A bare-metal Pi that takes beta or dev builds must set
+  `SPOREPRINT_OTA_CHANNEL`. The legacy bundle `.sig` is still published, so
+  older Pis keep updating; a current Pi accepts a release that has only the
+  legacy `.sig` (published before manifests) only with
+  `SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=true`.
 
-### Hardware (Builder BOM, `GET /api/builder/tiers`)
+### Hardware and the Builder BOM (`GET /api/builder/tiers`)
 - **Tier totals are now ~$290 / ~$745 / ~$960** (were ~$180 / ~$390 / ~$555),
   re-checked live on 2026-09-27, and now include the cabling, consumables,
   heat-set inserts and screws. A second chamber adds ~$62 / ~$316 / ~$527
-  (the Pi side once, kits and spools in whole packs). They exclude the tri-spectrum
-  strip's shipping and duty (~$10+) and tools. README and the build guide use
-  the same numbers.
+  (the Pi side once, kits and spools in whole packs). They exclude the
+  tri-spectrum strip's shipping and duty (~$10+) and tools. README and the
+  build guide use the same numbers.
 - **Cabling standard + consumables as BOM lines:** a UL-listed surge strip
   outside the chamber (6 / 12 / 12 + 2 USB-A outlets); 12 V distribution as
   14 AWG barrel pigtail → WAGO 221-413 (+12 V split) / 221-415 (GND join) →
@@ -84,51 +95,6 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   cables (USB-C climate, micro-USB camera MBs). New optional field
   `Component.shared` and categories `wiring` / `hardware`; the wiring rows
   come from `_power_rows()`.
-- New optional API fields `Component.pack_price` and `Component.pack_size`
-  for pack-sold lines. `quantity` counts the units a tier needs per chamber,
-  `price_approx` is the per-unit price inside the pinned pack, `pack_price`
-  that pack's price and `pack_size` its units; N chambers buy
-  `ceil(quantity x N / pack_size)` packs (`Component.line_cost(chambers)`,
-  `HardwareTier.parts_cost(chambers)`), and `shared` lines never multiply.
-  Every pack line now has this one shape. The camera 2-pack, USB charger
-  2-packs, 1 ft USB-C 3-pack, micro-USB 2-pack, NA-SEC3 3-pack, DC pigtail
-  2-pack, KF301 30-pack and door-contact 2-set used to count packs (so ×4
-  chambers bought 8 cameras for 4), and the ESP32 / IRLZ44N / resistor /
-  diode packs were bought once per chamber (×4 bought four 100-packs of
-  resistors). One-chamber totals are unchanged. All the Things now lists 4
-  ESP32 boards (the 6-pack leaves 2 spares) instead of 6. The inline fuse
-  holders are two per chamber from a 10-pack instead of a shared line.
-- **Kits and spools the chambers use up are per-chamber pack lines** (new
-  optional API field `Component.shared_units`). They used to be `shared` —
-  bought once whatever the chamber count — so a multi-chamber shopping list
-  under-bought from ~3–4 chambers up: the WAGO 221 assortment (3 × 221-413 +
-  3 × 221-415, one of each per chamber) stayed one kit at ×4 and ×12, and 12
-  All the Things chambers got one ruthex assortment (100 M3 inserts) for 436.
-  Now `quantity` counts what one chamber takes — inserts and screws from the
-  `models/README.md` shopping list (a mixed kit counts the size the chambers
-  use up first: M4 inserts on Recommended, M3 on All the Things; M2.5 × 6;
-  M5 × 16; the M4 × 30/35/40 fan-duct screws), WAGO 221-413 + 221-415 pairs
-  (3 per assortment), fuse sets (15 per box), M-F Dupont jumpers (40 per
-  kit), VELCRO 12" straps (12 per roll), 18 AWG pair by the foot (~20 / ~35 ft
-  a chamber), the 22/4 cable (~12 ft), 22 AWG hookup (~2 ft of black) and
-  solder by the gram (~5 / ~7 g) — and `shared_units` is the Pi case's share of
-  the same pack (4 M2.5 inserts, 4 M3 inserts, 4 M2.5 × 6), bought once: N
-  chambers buy `ceil((quantity × N + shared_units) / pack_size)` packs. The
-  bulk consumables are per-chamber pack lines too — zip ties, heat-shrink and
-  large grommets (each counted in the size a chamber uses up first; see the
-  per-size bullet below), 18" duct ties (one per fan of 100) — since one pack covering
-  the 12-chamber preset still under-bought from 17 of the Builder's up to 99
-  chambers. Only the Pi side and the bench breadboard stay shared (and Bare
-  Bones' screw kit, which only the Pi lid draws on). One-chamber totals are unchanged;
-  at ×4 / ×12 chambers the tiers come to $484.60 / $1,060.80,
-  $1,733.38 / $4,644.18 and $2,613.78 / $7,180.87. The docs' "reusable kits"
-  share (every shared line except the Pi side) is replaced by what a second
-  chamber adds: ~$62 / ~$316 / ~$527.
-- Setup steps name the Builder's current tabs (Firmware, Models) and the
-  dashboard's Hardware page, and check a smart plug with
-  `GET /api/automation/plugs` — the dashboard has no plug panel. The weather
-  API's "unavailable" message names `SPOREPRINT_WEATHER_LON` in full, and the
-  setup-step span check rejects name fragments such as `_LON`.
 - New lines: Raspberry Pi Active Cooler (all tiers); Adafruit 4397 + 4210
   STEMMA QT cables (the climate node is now a no-solder daisy chain, replacing
   the M-F jumpers); USB-A to USB-C cables, USB-A to micro-USB cables (camera
@@ -147,282 +113,98 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   build, not the ESPHome twin).
 - Quantities: IRLZ44N 6 / 8, 10 kΩ 6 / 9, diodes 4 / 4 (inductive channels
   only), Tasmota plugs 1 / 2 / 4.
-- Setup steps (all tiers): `install.sh`; `./scripts/add-node-mqtt-user.sh
-  <node_id>` before the portal, Node ID left blank; Tasmota User / Password /
-  Topic / Full Topic; ESP32-CAM-MB flashing (hold IO0, tap RST if the upload
-  won't start); print presets per part; heat-set insert and screw counts per
-  tier; PSU load budgets; the S3 pin map wherever `node_esp32s3` is named.
-- Setup steps wrap every shell command, file path, JSON payload, MQTT topic,
-  env name and config key in backticks (`` `like this` ``), so the Builder can
-  show them as copyable code. Component notes and wiring rows stay plain.
-  `tests/test_hardware_guides.py` checks that each marked span exists in the
-  repo: scripts (and that they are executable), pio envs, compose services and
-  published ports, `/api` routes, the keys the node reads from `cmd/config`,
-  OpenSCAD parameters and their values, the install URLs, and the broker ACL
-  for the Tasmota topics. The weather step now spells out
-  `SPOREPRINT_WEATHER_LON` (it said `_LON`), and the Tasmota step names the
-  topic that the default Full Topic publishes (`stat/<topic>/POWER`).
+- **The ESP32-S3 camera boards of earlier BOMs are supported again:** the
+  camera's BOM note and the Builder's Assistant context no longer call them
+  unsupported (the BOM still recommends the AI-Thinker ESP32-CAM; firmware
+  below).
+- **Whole packs, counted per chamber.** Every pack line has one shape:
+  - New optional API fields `Component.pack_price` and `Component.pack_size`.
+    `quantity` counts the units a tier needs per chamber, `price_approx` is
+    the per-unit price inside the pinned pack, `pack_price` that pack's price
+    and `pack_size` its units; N chambers buy `ceil(quantity x N / pack_size)`
+    packs (`Component.line_cost(chambers)`, `HardwareTier.parts_cost(chambers)`),
+    and `shared` lines never multiply. The camera 2-pack, USB charger 2-packs,
+    1 ft USB-C 3-pack, micro-USB 2-pack, NA-SEC3 3-pack, DC pigtail 2-pack,
+    KF301 30-pack and door-contact 2-set used to count packs (so ×4 chambers
+    bought 8 cameras for 4), and the ESP32 / IRLZ44N / resistor / diode packs
+    were bought once per chamber (×4 bought four 100-packs of resistors).
+    All the Things now lists 4 ESP32 boards (the 6-pack leaves 2 spares)
+    instead of 6. The inline fuse holders are two per chamber from a 10-pack
+    instead of a shared line.
+  - **Kits and spools the chambers use up are per-chamber pack lines** (new
+    optional API field `Component.shared_units`). They used to be `shared` —
+    bought once whatever the chamber count — so a multi-chamber shopping list
+    under-bought from ~3–4 chambers up: the WAGO 221 assortment (3 × 221-413 +
+    3 × 221-415, one of each per chamber) stayed one kit at ×4 and ×12, and 12
+    All the Things chambers got one ruthex assortment (100 M3 inserts) for
+    436. Now `quantity` counts what one chamber takes — inserts and screws
+    from the `models/README.md` shopping list (a mixed kit counts the size the
+    chambers use up first: M4 inserts on Recommended, M3 on All the Things;
+    M2.5 × 6; M5 × 16; the M4 × 30/35/40 fan-duct screws), WAGO 221-413 +
+    221-415 pairs (3 per assortment), fuse sets (15 per box), M-F Dupont
+    jumpers (40 per kit), VELCRO 12" straps (12 per roll), 18 AWG pair by the
+    foot (~20 / ~35 ft a chamber), the 22/4 cable (~12 ft), 22 AWG hookup
+    (~2 ft of black) and solder by the gram (~5 / ~7 g) — and `shared_units`
+    is the Pi case's share of the same pack (4 M2.5 inserts, 4 M3 inserts,
+    4 M2.5 × 6), bought once: N chambers buy
+    `ceil((quantity × N + shared_units) / pack_size)` packs. The bulk
+    consumables are per-chamber pack lines too — zip ties, heat-shrink, large
+    grommets and 18" duct ties (one per fan, of 100) — since one pack covering
+    the 12-chamber preset still under-bought from 17 of the Builder's up to
+    99 chambers. Only the Pi side and the bench breadboard stay shared (and
+    Bare Bones' screw kit, which only the Pi lid draws on). The docs'
+    "reusable kits" share (every shared line except the Pi side) is replaced
+    by what a second chamber adds: ~$62 / ~$316 / ~$527.
+  - **Mixed consumable kits are counted per size**, from the pinned listings
+    (re-read 2026-10-05). **Heat-shrink**: the 400-piece kit holds only
+    12 × ½" and 12 × ¾" pieces, and each 12 V chamber uses one of each over
+    its two strip joints, so the line counts ¾" pieces (one kit covers 12
+    chambers, not 16-26). **Zip ties**: 100 each of 4" / 6" / 8" / 12"; each
+    tier counts its scarcest size from the printed parts' tie slots and its
+    cable runs (one pack covers 33 / 11 / 7 chambers, not 16). **Grommets**:
+    the kit has 10 open 7/8" / 1" grommets (the other 8 large ones are closed
+    plugs), so one kit covers 10 chambers, not 20. **M4 kit**: its 75 flat
+    washers now cover hx711_scale's 4 DIN 125 washers (the last uncounted
+    fastener). Every size is checked at 1-99 chambers.
+  - One-chamber totals are unchanged throughout. At ×4 / ×12 chambers the
+    tiers come to $484.60 / $1,060.80, $1,733.38 / $4,644.18 and
+    $2,613.78 / $7,180.87 (the ×12 totals include a second grommet kit, $13,
+    and on Recommended / All the Things a second zip-tie pack, $13).
+- **Setup steps**:
+  - All tiers: `install.sh`; `./scripts/add-node-mqtt-user.sh <node_id>`
+    before the portal, Node ID left blank; Tasmota User / Password / Topic /
+    Full Topic (the step names the topic the default Full Topic publishes,
+    `stat/<topic>/POWER`); ESP32-CAM-MB flashing (hold IO0, tap RST if the
+    upload won't start); print presets per part; heat-set insert and screw
+    counts per tier; PSU load budgets; the S3 pin map wherever
+    `node_esp32s3` is named.
+  - The smart-plug step also covers a Shelly Gen2+ plug (Plus, Gen3, Gen4):
+    MQTT on, server = the Pi on port 1883, user `sp-3p`, MQTT prefix
+    `shellies/<role>`, and both "RPC status notifications over MQTT" and
+    "Generic status update over MQTT" on.
+  - The PlatformIO step says `pip install -U platformio`, PlatformIO Core
+    6.2.0+ and git, core 3.3.12 and the ~1 GB first build (every tier said
+    only `pip install platformio`).
+  - The steps name the Builder's current tabs (Firmware, Models) and the
+    dashboard's Hardware page, and check a smart plug with
+    `GET /api/automation/plugs` — the dashboard has no plug panel.
+  - Every shell command, file path, JSON payload, MQTT topic, env name and
+    config key is wrapped in backticks (`` `like this` ``), so the Builder can
+    show them as copyable code; component notes and wiring rows stay plain.
+    `tests/test_hardware_guides.py` checks that each marked span exists in
+    the repo: scripts (and that they are executable), pio envs, compose
+    services and published ports, `/api` routes, the keys the node reads
+    from `cmd/config`, OpenSCAD parameters and their values, the install
+    URLs, and the broker ACL for the Tasmota topics; it rejects name
+    fragments. The weather step spells out `SPOREPRINT_WEATHER_LON` (it said
+    `_LON`), and so does the weather API's "unavailable" message.
 - Capability bullets that described unimplemented features were removed (kWh,
   PID, timelapse, quiet hours, EXIF, sensor fallback/divergence, correlation
   reports, local CNN).
-- Mixed consumable kits are counted per size, from the pinned listings
-  (re-read 2026-10-05). **Heat-shrink**: the 400-piece kit holds only 12 × ½"
-  and 12 × ¾" pieces, and each 12 V chamber uses one of each over its two strip
-  joints, so the line now counts ¾" pieces (one kit covers 12 chambers, not
-  16-26). **Zip ties**: 100 each of 4" / 6" / 8" / 12"; each tier counts its
-  scarcest size from the printed parts' tie slots and its cable runs (one
-  pack covers 33 / 11 / 7 chambers, not 16). **Grommets**: the kit has 10 open
-  7/8" / 1" grommets (the other 8 large ones are closed plugs), so one kit
-  covers 10 chambers, not 20. **M4 kit**: its 75 flat washers now cover
-  hx711_scale's 4 DIN 125 washers (the last uncounted fastener). Every size is
-  checked at 1-99 chambers. One-chamber and ×4 totals are unchanged; the ×12
-  totals above include a second grommet kit ($13) and, on Recommended / All
-  the Things, a second zip-tie pack ($13).
-- The smart-plug setup step also covers a Shelly Gen2+ plug (Plus, Gen3,
-  Gen4): MQTT on, server = the Pi on port 1883, user `sp-3p`, MQTT prefix
-  `shellies/<role>`, and both "RPC status notifications over MQTT" and
-  "Generic status update over MQTT" on.
-
-### Docs and wiring diagrams
-- **All three tier wiring diagrams redrawn** to the cabling standard: inside vs
-  outside the chamber with the wall grommet, the power strip and every AC
-  cord, USB power paths with cable lengths, the 12 V PSU → pigtail → WAGO →
-  fused branches with ratings, wire gauges on each run, the common ground
-  (ESP32 GND → J1 "−") on every switch board, the STEMMA QT chain, fan
-  extension leads, and on All the Things the HX711 / door-contact 22 AWG
-  4-conductor runs, the 10 kΩ reed pull-up and the pump channel. Each has a
-  one-channel end-to-end schematic. `wiring-overall-system.svg` marks what
-  lives in the chamber and adds a power + cabling band.
-- `docs/hardware-build-guide.md`: §7 is now *Power and cabling* (power strip,
-  12 V distribution with fuse table, 5 V USB table, the chamber wall, and a
-  table mapping every cabling / consumable BOM line to where it is used); the
-  §5 channel schematic shows the fuse, wire gauges, the fan extension and the
-  common ground; a *Tools you need* list; a 12 V pre-power check in the
-  bring-up list; new troubleshooting rows (dead board, swapped fan wires).
-- `models/README.md`: per-tier insert and screw totals; the BOM's insert and
-  screw kits, the 18" (457 mm) duct tie and the VELCRO straps.
-- `tests/test_docs_consistency.py` pins the new invariants: what a second
-  chamber adds, fuse ratings, WAGO parts and wire gauges in the build guide and SVGs,
-  the common ground in every guide and diagram, the strip sizes, and the
-  per-tier insert sourcing.
-- **Docs brought in line with the code (2026-10).** `README.md`: React 19
-  dashboard that loads over REST (no Socket.IO client, no PWA, no unit
-  switch; the Builder's Claude guide generator is API-only), the real
-  Socket.IO event names (`rule_fired`, not `rule_firing`; plus
-  `actuator_state`, `node_status`, `node_log`, `node_ota`, `plug_online`),
-  the node `ota` / `coredump/chunk` / `cmd/coredump_ack` /
-  `cmd/ota_manifest` topics and the Shelly Gen2+ topics and setup,
-  PlatformIO Core ≥ 6.2.0 + git for the core-3 platform, the OTA listener
-  (`ota_service.cpp`, not `ArduinoOTA`) and signed node manifests, the
-  extra drivers and the ESP32-S3 camera boards, and an upgrade note for
-  nodes still on core-2.x images. `AGENTS.md`: the platform pin, the
-  core-3 pitfalls, the espota handshake rule, Shelly Gen2 prefixes,
-  coredump store-then-ack, OTA manifests, the `browning` phase and the
-  current frontend stack. New `firmware/README.md` sections (platform,
-  build, OTA, updating nodes from a core-2.x image, coredumps) and
-  `config/mosquitto/README.md` (listeners, accounts, plug topic layouts,
-  adding a topic). `docs/integrations/smart-plugs.md` gains a Shelly Gen2+
-  section; the build guide the Gen2 setup, a troubleshooting row and node
-  firmware updates; `docs/firmware-security.md`, `docs/data-flow.md` and
-  `docs/dual-repo-architecture.md` (React 19 bundle, 74 species, no
-  Capacitor shell) are corrected. `tests/test_docs_consistency.py` now pins
-  the table count, species count and categories, the `GrowPhase` list, the
-  platform pin, the PWM spec, the Socket.IO event names and the Shelly
-  Gen2 prefix across `README.md`, `AGENTS.md` and (when present) the
-  git-ignored `CLAUDE.md` spec.
-
-### Dashboard (`ui/dist`)
-- **The Builder page reads this Pi live.** `ui/dist` is rebuilt from the
-  monorepo's pi-ui. The page now loads the BOM (`/api/builder/tiers` and
-  `/tiers/{id}`), the models, the wiring diagrams and the firmware ZIPs from
-  the Pi. If a request fails, that resource falls back to a copy generated
-  from this repo at build time, and a pill at the top of the page says which
-  data is on screen. This replaces the stale static copy, which had a
-  pre-audit BOM with no cabling, "browse repo" and wiring links to
-  `hardware/3d` and `hardware/wiring` (both 404), raw GitHub `.scad`
-  downloads that cannot render without `models/lib/`, and a false
-  "slicer-ready STL exports" claim.
-- Shopping list: `shared` parts are bought once per installation and every
-  other line's units scale with the chamber count; a pack-sold line buys whole
-  packs (`pack_size`, above), so totals equal `parts_cost(N)`. The total shows
-  the shared and chambered parts separately, and smart plugs, wiring and
-  hardware have their own sections.
-- Models: each card shows the title and description from the model's `.scad`
-  header and downloads the Pi's self-contained file (`lib/` inlined). There is
-  a "download all (.zip)" link, and "browse repo" opens `models/`.
-- Wiring: the tier's SVG as the Pi serves it (click for full size), with a
-  link to its GitHub source. The connection table uses the live wiring rows.
-- Firmware: one card per image (unified node, camera), downloaded as the Pi's
-  self-contained ZIP. An image is listed for a tier when one of its PlatformIO
-  envs is a tier target, which covers `node_esp32s3_n32r16v`.
-- Resources: the repo is labelled AGPL-3.0 (it said MIT). The dead forum
-  link is removed, and the dead Discord invite is replaced by a plain-text
-  "coming soon" placeholder with no link.
-- **`scripts/sync_ui_builder_data.py` now verifies the bundle instead of
-  patching a static copy.** `--check` confirms that the bundle requests
-  `/api/builder/*` live and has none of the old static Builder's dead links or
-  claims. It also confirms that the built-in copy matches this server: the
-  tiers exactly as in `hardware_guides.py`, plus the models, diagrams and
-  firmware envs. Without `--check`, the script rewrites only stale built-in
-  data, in place. `tests/test_ui_builder_sync.py` enforces all of this and
-  also checks the built-in copy against the API's actual responses.
-- The rebuild also brings in the other pi-ui and design-package changes made
-  in the monorepo since the previous `ui/dist` (cloud#73), from the v5.0.0
-  release work and the fixes after it.
-- **`ui/dist` rebuilt again: the Builder page fits a phone, and the Shopping
-  List shows your build.** Checked in Chrome on every tier and tab, from 320
-  to 1600 px wide: nothing sticks out of its box and the page never scrolls
-  sideways.
-  - Wiring: the tier diagram scales to its box's width, with an "open full
-    size" link. If the Pi's SVG does not load, the page shows the same
-    generated diagram from the bundle instead of the old hand-drawn sketch,
-    which clipped labels, put pin labels under wires and cut off the legend.
-    The firmware-file table scrolls inside its own box; the BOM and
-    connection tables stack as cards on narrow screens (third rebuild below).
-  - Setup: the backticked commands, paths and topics show as code with a copy
-    button. On a plain-http Pi the button falls back to `execCommand("copy")`.
-    Copying or selecting text no longer ticks the step. Ticks are now stored
-    per step id instead of per position, so adding a step no longer moves
-    them. Ticks saved by the released dashboard are carried over to the
-    matching new steps.
-  - Firmware: each image card lists the `pio run -t upload -e <env>` command
-    for each board, with copy buttons.
-  - "Send BOM to /shopping" now hands the tier and chamber count to the
-    Shopping List. That page no longer shows demo rows or a restock banner:
-    it lists the sent BOM (live from `/api/builder/tiers/{id}`, totals equal
-    to the Builder's), grow supplies for each species with an active session
-    (`/api/species/{id}/shopping-list`), and your custom items.
-  - Below 768 px the navigation rail becomes a drawer behind a menu button,
-    on every page.
-- **`ui/dist` rebuilt after a second browser audit.**
-  - Tables on Sessions, Transcripts, Inventory, Cultures and Contamination
-    now scroll inside their own column. From 1180 to about 1600 px they ran
-    under the right-hand panel.
-  - Sessions shows a new session as day 0 (it showed "20710d"), and it
-    counts toward the 30-day yield.
-  - Timeline tags name the event (NEW, PHASE, …) instead of truncating it
-    ("SESSI").
-  - The transcript preview renders bold, italic and code. Species show their
-    common names.
-  - The CLOUD KPI no longer breaks mid-word.
-  - The Shopping List's hardware tables now line up, and below 900 px each
-    row becomes a card. "Open in builder →" keeps the build and chamber
-    count.
-  - Builder firmware file names are their download links, so the table fits
-    a phone.
-  - The wiring cards show a thumbnail with a readable "full-size svg →"
-    label.
-  - Single-column model cards no longer leave blank bands.
-  - Cost captions use whole dollars, and the stale "Pi's estimate" clause is
-    removed.
-- **`ui/dist` rebuilt after a third browser audit.**
-  - Pack-sold parts show units and the whole packs that buy them ("×4 · 2
-    packs of 2", "$5.49 / pack of 100 · ~$0.05 ea") on the Builder's Shopping
-    tab, the Shopping List and its CSV. Totals equal `parts_cost(N)` at every
-    chamber count; the caption splits shared from chambered parts and says
-    what whole packs save. The Overview counts BOM lines and units
-    separately.
-  - Builder: below 900 px the BOM and wiring-connection tables stack as cards
-    instead of scrolling (the Buy link and wiring notes were cut off between
-    1024 and 1340 px). The tier and chamber count stay in the URL, "Send BOM"
-    is a real link (`/shopping?bom=…&chambers=…`), and offline the camera
-    firmware card lists `cam_policy.h` as well as `main.cpp`.
-  - Shopping List: one message when the sessions can't be read; a hand-set
-    grow count shows as an override with a reset; a count change refetches
-    only that species; the two 404s are told apart; the CSV defuses every
-    formula-like cell (`-1+2`, a leading tab); custom items validate their
-    name and link inline.
-  - The phone drawer is a modal dialog (focus kept inside, page behind it
-    inert, focus restored on close).
-  - Species cards size to their content; Contamination pills follow one
-    severity ladder (critical red, high amber) and list every entry; Sessions
-    show the session name; Sessions and Transcripts pin their row action
-    instead of scrolling the page; long automation conditions wrap.
-- **`ui/dist` rebuilt after a fourth browser audit.**
-  - The Builder and the Shopping List buy the per-chamber kits above in whole
-    packs (`shared_units` included), so totals equal `parts_cost(N)` at any
-    chamber count from 1 to 99: Bare Bones ×10 now buys two packs of M3
-    inserts for 104. A count outside the presets shows as its own "×7" pill
-    next to a − / + count box. Tier cards price the chosen count ("47 lines ·
-    ~$1,733 for 4 chambers"), and the chamber caption names what is bought
-    once: the Pi side, the bench breadboard and bulk packs that cover 12+
-    chambers.
-  - The Shopping tab, the Shopping List and its CSV word quantities one way
-    ("4 · 2 packs of 2 · 1 spare"), and "(shared)" shows at every chamber
-    count.
-  - The wiring SVGs are their own 173 kB chunk, fetched only when the Wiring
-    tab opens. The main bundle is 1,112 kB (323 kB gzipped), down from
-    1,258 kB (340 kB). `tests/test_ui_builder_sync.py` follows references
-    from `index.html` through the bundle, so that chunk and its source map
-    count as shipped assets.
-  - Offline, the Firmware tab lists files from a listing generated from this
-    repo (raw GitHub links and sizes) instead of a hand-copied list.
-  - Model cards end a cut description on a whole word, and "more" reads the
-    full header from the `.scad` file (the Pi's download first, then GitHub).
-  - Shopping List: notes grow with their text and print in full; a print
-    stylesheet hides the navigation and prints dark on white; ticks and notes
-    follow a part across builds; grow supplies are merged across species, one
-    row per item (spawn stays one row per species).
-  - Species: the 8 novelty species get a filter chip, so the category KPI
-    adds up to the 74 shown; KPI labels fit one line; tags collapse to the 12
-    most used behind an "all 129 tags" toggle; an opened card expands in
-    place, so Tab order matches the screen. Contamination's upload buttons
-    wrap at 390 px.
-- **`ui/dist` rebuilt after a fifth browser audit.**
-  - A printed Shopping List is a table again: the card layout (under 900 px
-    of table) is screen-only, so a Letter or A4 sheet no longer prints one
-    tall card per row (a 4-chamber list ran to 20 pages). The Buy column and
-    the "notes & substitutes" disclosure stay off paper, cells are tighter
-    and the columns size to their content.
-  - Lines counted in something other than pieces say so (new optional API
-    field `Component.unit`): "420 ft · 5 packs of 100 ft · 80 ft spare",
-    "$26 / pack of 100 ft", "~$0.26 / ft"; the WAGO assortment reads "12
-    chamber sets · 4 packs of 3 chamber sets"; solder in grams, VELCRO in
-    straps, the insert and screw kits in the size they are counted in. The
-    Overview counts packs and parts to buy instead of adding feet, grams and
-    pieces, and uses the Shopping tab's "shared, bought once" caption. The
-    CSV writes "×N" and "(shared)" as the table does, one supplier URL per
-    cell, and "lb" for every pound.
-  - The zip ties, heat-shrink, grommets and 18" duct ties are bought per
-    chamber in whole packs (above), so a 17–99-chamber list no longer
-    under-buys them.
-  - Two open Shopping List tabs stay in step: a tick, note, custom item, grow
-    count or build sent in one shows in the other, and every change is
-    written into what is stored, so one tab no longer undoes the other's.
-  - A link's out-of-range `?chambers=` opens on 99 instead of 1, and the URL
-    says what the page shows; an unknown `?bom=` says so.
-  - The sidebar footer (version, uptime) is no longer clipped; the Shopping
-    List's note column is a fifth of the table; Species folds its filters
-    behind one "filters" button on a phone, so the first card is on the
-    first screen; a contamination check without a Claude key says so in
-    words and links to Settings, and the log stacks on a phone.
-  - A species with a session (`lions-mane`) and the same species picked by
-    hand (`lions_mane`) is one grow target on the Shopping List, not two;
-    an unknown `?bom=` link warns on a full page load too; the Overview's
-    cost caption reads like the BOM totals at ×1.
-- **`ui/dist` rebuilt for the 2026-10 follow-ups** (pi-ui at private
-  `followups/2026-10`; main bundle 1,133 kB, 330 kB gzipped).
-  - Builder: the built-in BOM counts the mixed kits per size (×12: $1,061 /
-    $4,644 / $7,181), the setup step covers Shelly Gen2+ plugs, and the
-    camera card lists `cam`, `cam_esp32s3`, `cam_xiao_esp32s3` and
-    `cam_waveshare_s3`, each with its board and a copyable flash command.
-    Offline, the Firmware tab lists the new firmware files. Resources: "User
-    docs" opens the sporeprint.ai user guide; "Quick start" is the README's.
-  - Sessions: "advance → <next phase>" shows the phase's exit reminder (the
-    cold-water soak when leaving shiitake browning) before the confirm;
-    browning segments read tan on the phase bar, and the browning events are
-    tagged STEP and VISION.
-  - Species: the four categories have their own colours (green, amber,
-    blue-violet, orchid; checked for colour-blind contrast), the tag
-    counter is always announced, and "recently viewed" folds behind the
-    phone's filters button.
-  - Shopping List: a grow supply merged across species counts as bought only
-    when every species it serves is ticked ("partly bought — for …" until
-    then), and cultures and inoculants stay one row per species.
-  - Firmware: a push can carry the release's signed manifest and `.sig`
-    ("signed release manifest (optional)" under update firmware; both or
-    neither), and the status says whether the node or only this Pi checked
-    it.
+- `POST /api/builder/guide` returns 503 (`not_configured`) or 502 (refusal,
+  truncated, empty, upstream error) with the body fields unchanged. Firmware
+  ZIPs include `library.json`, `VERSION.txt`, every partition table and the
+  version script, and never bundle a private-looking `extra_configs` file.
 
 ### Enclosures (`models/`)
 - **All 10 models re-fit** to sourced drawings (vendor drawings, STEP files,
@@ -450,36 +232,11 @@ signed OTA manifests for the Pi and (optionally) for nodes.
 - Model downloads (`GET /api/builder/models/<file>.scad`) inline `lib/`
   includes so a single file renders on its own; `models-bundle.zip` ships the
   repo layout.
+- This work supersedes the earlier unreleased model entries (TAL220-only
+  scale, saddle pump clamp, "Adafruit 1150 = Kamoer" wording): Adafruit does
+  not name the pump's OEM.
 
-### Firmware (see `firmware/CHANGELOG.md`)
-- Camera detects **OV2640 / OV3660 / OV5640** and tunes per sensor; flash stays
-  on through the exposure; uploads default to the portal's Pi address; HTTPS
-  uploads require the pinned Pi CA.
-- **Reed invert** (portal checkbox / `cmd/config {"peripherals":
-  {"reed_inv": true}}`) for door contacts wired on NO.
-- New env **`node_esp32s3_n32r16v`** for the ESP32-S3-DevKitC-1-N32R16V (same
-  pin map as `node_esp32s3`), built by CI and shipped as
-  `node_esp32s3_n32r16v.zip` in every release (`node_esp32s3.zip` does not
-  boot on that board).
-- Heartbeat on its own clock (min(publish interval, 5 min)); Secure MQTT never
-  downgrades silently (`tls_downgrade` alert, CA-fetch retries, optional
-  "Require TLS"); heartbeat `tls` and `board` keys.
-- **Secure MQTT verifies before it pins.** A fetched CA is only a candidate:
-  the node tries TLS on 8883 with it from RAM and writes it to NVS only after
-  the broker's CONNACK. A failed trial goes back to plaintext (or stays off
-  MQTT with "Require TLS"), backs off, and the `tls_downgrade` alert says why
-  (certificate name mismatch or another CA, 8883 unreachable, TLS error,
-  login refused). A verified pin is final. A CA an older image pinned without
-  this check is re-verified as a candidate. New optional heartbeat key
-  `ca_fp`: SHA-256 of the pinned CA PEM.
-- The camera's setup portal no longer shows the node-personality select.
-- Safety: `aux` max-on 60 s by default and per-channel `max_on_sec`; an explicit
-  OFF wins over `pwm`/`level`; 10-min MQTT-loss safe mode; channels off at OTA
-  start; OTA rollback on node and camera.
-- The setup AP no longer opens on a WiFi hiccup (BOOT / GPIO 13 gesture
-  instead); replay guard + topic binding on signed commands; portal node-id and
-  password-keep rules; epoch `ts` + `"replay": true`; latched alerts; sensor
-  staleness alerts; exact library pins (PubSubClient 2.8, ArduinoJson 7.4.3).
+### Firmware (details in `firmware/CHANGELOG.md`)
 - **Arduino-ESP32 core 3.3.12 / ESP-IDF 5.5.5** (pioarduino platform
   55.03.312-1, pinned by release URL) replaces the end-of-life core 2.0.17 /
   ESP-IDF 4.4. Same images, pins, partition tables, MQTT payloads and signing
@@ -491,31 +248,76 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   does not send). Building needs PlatformIO Core ≥ 6.2.0 and `git`; a
   post-build guard (`firmware/scripts/image_guard.py`) fails any image that
   leaves < 64 KiB of its OTA slot or drifts from the fleet partition layout.
+  Library pins are exact (PubSubClient 2.8, ArduinoJson 7.4.3).
 - **Drivers for every sensor the BOM ever recommended**
   ([`firmware/docs/drivers.md`](firmware/docs/drivers.md) is the inventory):
   - **AHT20** (I²C 0x38), autodetected. It was a listed SHT31-D alternate with
-    no driver.
+    no driver. Its init follows Aosong's v1.1 datasheet (register re-init of
+    0x1B / 0x1C / 0x1E when the status asks for it, the v1.0 `0xBE` init as
+    the fallback), at boot and, non-blocking, after a part resets.
   - **BME280 / BMP280** (I²C 0x76 / 0x77), autodetected. It adds the
     telemetry key **`pressure_hpa`**, which the Pi now stores.
   - **MH-Z19B** frames pinned to the manual. The MH-Z19C driver serves it.
   - **SCD30 on core 3.x:** the SCD30 gets its own I²C path at 50 kHz with
     the clock-stretch timeout at the chip's hardware ceiling. Core 3.x's Wire
-    allows only 2 ms, which would have made it go stale.
-  - **AHT20 init** follows Aosong's v1.1 datasheet (register re-init of
-    0x1B / 0x1C / 0x1E when the status asks for it, the v1.0 `0xBE` init as
-    the fallback), at boot and, non-blocking, after a part resets.
-  - **ESP32-S3 camera boards** from the 2026-04 to 2026-06 BOMs now run the
-    cam image: envs `cam_esp32s3` (Freenove ESP32-S3-WROOM CAM),
-    `cam_xiao_esp32s3` (Seeed XIAO ESP32S3 Sense) and `cam_waveshare_s3`
-    (Waveshare ESP32-S3-CAM-OV5640 / -OV3660). They have no flash LED and use
-    BOOT (GPIO 0) as the reset button; build guide §8b. The BOM note and the
-    Builder's Assistant context no longer call them unsupported (the BOM
-    still recommends the AI-Thinker ESP32-CAM), and firmware CI and the
-    release workflow build all three.
+    allows only 2 ms, which would have made it go stale. The SCD30 on a
+    WROOM-32 node is listed as partial until bench-tested: the classic ESP32
+    can wait only 13.1 ms for its clock stretch.
 
-  These changes are additive and change no node pins. The SCD30 on a
-  WROOM-32 node is listed as partial until bench-tested: the classic ESP32
-  can wait only 13.1 ms for its clock stretch.
+  These changes are additive and change no node pins.
+- **ESP32-S3 camera boards** from the 2026-04 to 2026-06 BOMs now run the
+  cam image: envs `cam_esp32s3` (Freenove ESP32-S3-WROOM CAM),
+  `cam_xiao_esp32s3` (Seeed XIAO ESP32S3 Sense) and `cam_waveshare_s3`
+  (Waveshare ESP32-S3-CAM-OV5640 / -OV3660). They have no flash LED and use
+  BOOT (GPIO 0) as the reset button; build guide §8b has their pin maps.
+  Firmware CI and the release workflow build all three.
+- New env **`node_esp32s3_n32r16v`** for the ESP32-S3-DevKitC-1-N32R16V (same
+  pin map as `node_esp32s3`), built by CI and shipped as
+  `node_esp32s3_n32r16v.zip` in every release (`node_esp32s3.zip` does not
+  boot on that board).
+- Camera detects **OV2640 / OV3660 / OV5640** and tunes per sensor; flash stays
+  on through the exposure; uploads default to the portal's Pi address; HTTPS
+  uploads require the pinned Pi CA. The camera's setup portal no longer shows
+  the node-personality select.
+- **Reed invert** (portal checkbox / `cmd/config {"peripherals":
+  {"reed_inv": true}}`) for door contacts wired on NO.
+- Heartbeat on its own clock (min(publish interval, 5 min)), with `tls` and
+  `board` keys. Secure MQTT never downgrades silently (`tls_downgrade` alert,
+  CA-fetch retries, optional "Require TLS").
+- **Secure MQTT verifies before it pins.** A fetched CA is only a candidate:
+  the node tries TLS on 8883 with it from RAM and writes it to NVS only after
+  the broker's CONNACK. A failed trial goes back to plaintext (or stays off
+  MQTT with "Require TLS"), backs off, and the `tls_downgrade` alert says why
+  (certificate name mismatch or another CA, 8883 unreachable, TLS error,
+  login refused). A verified pin is final. A CA an older image pinned without
+  this check is re-verified as a candidate. New optional heartbeat key
+  `ca_fp`: SHA-256 of the pinned CA PEM.
+- Safety: `aux` max-on 60 s by default and per-channel `max_on_sec`; an explicit
+  OFF wins over `pwm`/`level`; 10-min MQTT-loss safe mode; channels off at OTA
+  start; OTA rollback on node and camera.
+- The setup AP no longer opens on a WiFi hiccup (BOOT / GPIO 13 gesture
+  instead); replay guard + topic binding on signed commands; portal node-id and
+  password-keep rules; epoch `ts` + `"replay": true`; latched alerts; sensor
+  staleness alerts.
+
+### Nodes: commands, OTA and coredumps (Pi side)
+- `POST /api/hardware/nodes/{id}/peripherals`
+  (`{"mhz19"|"hx711"|"reed"|"reed_inv": bool}`) sends a signed `cmd/config`;
+  the node reboots ~1.5 s later if its driver set changed. `reed_inv` (a door
+  contact wired on its NO terminal) applies live, so the endpoint takes every
+  key the firmware does.
+- **Signed node commands** carry two more signed members, `topic` and a random
+  `nonce`: current firmware rejects redirected frames and no longer drops a
+  legitimate identical command in the same second. Deployed firmware verifies
+  them unchanged.
+- **OFF is never published with `pwm`/`level`** (rules, manual node commands,
+  cloud commands), and every published OFF — manual node, cloud, session-end
+  safing, manual plug — clears that actuator's `safety_max_on_seconds`
+  ceiling. `POST /api/hardware/nodes/{id}/command` returns 503 when nothing
+  was published.
+- Node liveness: any telemetry frame from a registered node refreshes
+  `last_seen`, so nodes on a 15 min–1 h publish interval no longer flap
+  offline.
 - **Coredumps survive until the Pi has them.** Nodes used to erase a panic
   dump as soon as its last chunk left, so a Pi restart or a lost chunk lost
   the crash. Chunks now carry `coredump_id` (the dump's SHA-256); the Pi
@@ -539,28 +341,144 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   This repo's own release images do not carry the key; the private release
   pipeline, which holds it, builds its images with the key and signs one
   manifest per env (see `docs/firmware-security.md`).
+- Pi-pushed node OTA uses fixed TCP port 3233 (published in compose), runs one
+  push at a time and retries invitations. The connect-back listener accepts
+  only the node being flashed: another LAN host that connects first is logged
+  and closed, and can no longer take the image and report a fake success.
 
-### Added
-- `POST /api/hardware/nodes/{id}/peripherals`
-  (`{"mhz19"|"hx711"|"reed"|"reed_inv": bool}`) sends a signed `cmd/config`;
-  the node reboots ~1.5 s later if its driver set changed. `reed_inv` (a door
-  contact wired on its NO terminal) applies live, so the endpoint takes every
-  key the firmware does.
+### Automation
+- The highest-priority rule whose condition holds owns an actuator; ceilings
+  count from the first ON and a trip locks automation out for 15 min (WARNING
+  page, CRITICAL if the OFF fails); life-safety rules (priority ≥ 20,
+  absolute thresholds) run with no session; species-scoped rules match
+  `lions-mane` and `lions_mane`; redundant OFFs to unpaired plugs are skipped,
+  and a repeat OFF is re-sent only every 15 min unless something switched the
+  actuator back ON — a manual, cloud or plug command, or a node reporting the
+  channel ON, drops that suppression so the cutoff rule re-sends its OFF at
+  the next evaluation; cron catch-up; scheduled FAE runs only when the
+  phase's `fae_mode` is scheduled or continuous; new `profile_ref`
+  `temp_mid_f`; `growth_form` antler/conk picks the CO₂ params; `bulk_bag` is
+  sealed until fruiting; the rule `notification` flag now pages (WARNING <
+  priority 20 ≤ CRITICAL).
+- Seeded templates are upgraded on boot unless edited (a WARNING names each
+  edited copy). An edited Pre-cool or Heat Wave rule with no
+  chamber-temperature condition now holds the cooler ON against Cooling
+  Cutoff — add a `temp_f` condition. The Humidity Boost/Cut and Dry Weather
+  rules carry 1800 s ceilings: a humidifier that needs more than 30 min to
+  cross the band trips one (raise `safety_max_on_seconds` if yours is slow).
+
+### Sessions, species and transcripts
+- **Shiitake browning phase** (`browning`, between `substrate_colonization`
+  and `primordia_induction`): the unbagged block holds 60-70 °F, 70-80 % RH,
+  CO2 under 2000 ppm, 12/12 light and passive FAE for 7-14 days. `GET
+  /api/sessions/{id}/next-phase` suggests colonization → browning →
+  primordia induction for shiitake (other species unchanged) and returns the
+  new `exit_reminder`, the cold-water soak (35-50 °F, 12-24 h). Stepping on
+  out of browning logs a `phase_exit_reminder` session event (also in the
+  transcript), and the daily phase check offers the soak from day 7. A
+  profile without browning setpoints refuses the phase (422); custom profiles
+  can add it with the new optional `PhaseParams.exit_reminder`. The humidity,
+  dehumidify, misting, CO2 and photoperiod built-in rules now also run in
+  browning, a grow bag counts as open from browning on, and unedited stored
+  copies of those rules upgrade at start-up. Vision tells Claude the brown,
+  popcorned skin is normal for shiitake, reads a `browning_percent`, and
+  sends an INFO "Browning complete" with the soak at 90 %; a colonized
+  shiitake block is reported ready to brown, not to fruit.
 - Overdue-phase reminders: a daily 09:00 (container-local `TZ`) INFO "Phase
   check — <session>" for each grow past its phase's expected duration
   (`phase_reminders` task).
-- Settings: `SPOREPRINT_VISION_AUTO_INTERVAL_MIN` (default 360),
-  `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` (default false),
-  `SPOREPRINT_PUBLIC_UI_URL`, `SPOREPRINT_CLAUDE_MODEL` (default
-  `claude-sonnet-5`; every Claude feature), `TZ`, `FORWARDED_ALLOW_IPS`. Every
-  `Settings` field is now forwarded by compose (enforced by a test).
-- Vision: frame retention (30 days, then one frame per camera per day; flagged,
-  labelled and referenced frames kept); `X-Camera-Sensor` stored as the node's
-  `camera_sensor` and named in the Claude prompt; harvest-window INFO
-  notification; contamination events recorded with `source='vision'`.
-- Tasmota plugs also update from `stat/RESULT` and `tele/STATE` JSON
-  (`POWER` / `POWER1`); Shelly and Tasmota plugs register on their first state
-  report.
+- `POST /api/sessions` and `/phase` return 422 for an unknown phase or one the
+  species can't enter; missing primordia/fruiting/rest setpoints borrow from
+  each other; `next-phase` skips phases the species lacks; ending a grow safes
+  the actuators it drove (per chamber when several grows run); phase history
+  stores `params_snapshot`.
+- Session events: the `phase_change` event reads "Phase advanced to primordia
+  induction" (it printed the raw enum, which the timeline, chamber feed and
+  transcript then showed); `data.phase` keeps the raw value. Leaving a phase
+  that owes a manual step logs the `phase_exit_reminder` event before the
+  `phase_change` (same second, so the event id is the order): the session
+  timeline and the transcript's Key Events — the text Claude analyses —
+  listed shiitake's cold-water soak after "Phase advanced to primordia
+  induction". `get_events` and the transcript sort same-second events by id.
+- Chamber `PATCH` with `active_session_id: null` detaches; chambers with
+  history can be deleted; iCal dates anchor at the first phase; the
+  pink-oyster harvest page is CRITICAL; the substrate calculator and shopping
+  list scale correctly; species setpoints match the spec's §4b, now
+  `docs/species-reference.md` (pink oyster, cordyceps, king trumpet CO₂);
+  `POST /api/experiments/{id}/analyze` is the preferred route.
+- A species' grow-supplies list (`GET /api/species/{id}/shopping-list`) lists
+  the vessel its first recipe uses: a filter-patch grow bag for a
+  pressure-sterilized block (supplemented sawdust, masters mix), jars for
+  grain / brown-rice / agar cultures, nothing for an outdoor bed or log, and
+  the monotub + liner only for pasteurized bulk (CVG, manure, straw) — it gave
+  every species a monotub + trash-bag liner.
+- Transcripts: per-phase telemetry summaries are filled from rollups for old
+  phases; unknown session ids return 404; session analysis sends at most 150
+  vision summaries. The markdown transcript
+  (`GET /api/transcript/sessions/{id}/transcript?format=markdown`) no longer
+  prints Python `None` for unset session fields: the header used
+  `session.get(key, 'N/A')`, but a NULL column is present with value None, so
+  it printed lines such as `**Substrate**: masters_mix (None)` and
+  `**Inoculated**: None (None)`. A missing value now drops its line, and a
+  missing detail drops its parentheses. The header fields are a list
+  (`- **Species**: …`), so they render on separate lines in any markdown
+  viewer.
+- Species summaries agree with their own cards: the Shiitake summary names
+  the cold-water soak (35-50°F, 12-24 h) its pinning trigger and reminder
+  use and 3-6 flushes, and the king trumpet, yellow oyster, chestnut,
+  pioppino and nameko summaries give their yield notes' flush range
+  (`tests/test_species.py` checks every profile).
+- `POST /api/sessions` with a `chamber_id` the Pi has no chamber for answers
+  422 `chamber N not found` instead of a bare 500 from the foreign-key
+  failure; a cloud `session_start` reports the same reason.
+
+### Telemetry, vision, weather and notifications
+- Telemetry: `ts < 1e9` is treated as unsynced; replayed (`"replay": true`)
+  and out-of-order frames (up to 120 s older than the node's newest live
+  frame; a bigger step back is the node's clock being corrected and
+  re-baselines) are stored but not evaluated or pushed live; history charts
+  fall through every rollup tier. The Pi's own clock never decides whether a
+  frame is live: a Pi clock running minutes fast no longer silently stops
+  automation and safety thresholds for every synced node. Pi-vs-node clock
+  skew is measured per node, logged as a rate-limited WARNING past 120 s, and
+  reported (with non-live frame counts) under `reliability` in
+  `GET /api/health/detail/system`.
+- Readings are tagged with their grow, chamber-aware: a listed node belongs
+  to its chamber's grow, an unlisted node to the newest chamberless grow.
+  With grows in two chambers, list every node in its chamber.
+- Vision auto-analysis runs every 6 h per session
+  (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`, default 360) and on the first frame
+  after a phase change, instead of every capture; the local CNN is still a
+  stub. Contamination pages CRITICAL at confidence ≥ 0.6 and sends one
+  "Possible contamination" WARNING at 0.3–0.6; contamination events are
+  recorded with `source='vision'`. Frame retention: 30 days, then one frame
+  per camera per day (flagged, labelled and referenced frames kept).
+  `X-Camera-Sensor` is stored as the node's `camera_sensor` and named in the
+  Claude prompt; a harvest-window INFO notification; stored frame names are
+  unique and carry the real image type; a failed re-analysis never
+  overwrites a stored one; `POST /api/contamination/identify` returns 415 for
+  non-image uploads.
+- Claude: every feature uses `SPOREPRINT_CLAUDE_MODEL` (default
+  `claude-sonnet-5`); output ceilings are 16,000 tokens (32,000 streamed for
+  the Builder). A refusal or truncated answer returns `{error}` (Builder:
+  `truncated: true` plus the partial guide, not saved) instead of a 500 or a
+  half-saved result.
+- Weather: forecast alerts fire only once the weather→closet model is trained
+  (~7 days), ignore past hours and dedupe per session, kind and day;
+  `forecast_high_f` / `forecast_low_f` cover today's local day; the prediction
+  model trains on 30 days; Open-Meteo times parse as UTC.
+- Notifications: ntfy is published through its JSON API (titles with em dashes
+  or °F now arrive); identical CRITICAL pages collapse for 15 min; temperature
+  and humidity EMERGENCY pages dedupe per node, parameter and direction; node
+  alerts reach ntfy by tier.
+- Nightly retention also prunes session-less `automation_firings` older than
+  90 days and thins vision frames; new index `idx_rollup_node_sensor_time`
+  speeds long-range charts.
+- INFO and WARNING notifications sent without a dedup key now dedupe by
+  title (1 h and 5 min, as documented), and the drying-complete INFO keys on
+  the harvest: it repeated on every drying-log entry past the target.
+
+### Smart plugs and integrations
 - **Shelly Gen2+ smart plugs** (Plus / Pro / Mini, Gen3, Gen4 — plug_type
   `shelly_gen2`) alongside Gen1 and Tasmota. Set the device's MQTT prefix to
   `shellies/<role>` (e.g. `shellies/humidifier` → `plug-humidifier`) and log in
@@ -578,166 +496,30 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   `plug_online`), and a plug report re-types a row whose `plug_type` no longer
   matches the device (a role assigned with the default `plug_type: "shelly"`
   keeps a detected Gen2).
-- `docs/auth.md`, the S3 pin map and troubleshooting rows in the build guide,
-  and `server/tests/test_docs_consistency.py`, which pins the README, build
-  guide, SVGs and AGENTS.md to the code, firmware and BOM.
-- **Shiitake browning phase** (`browning`, between `substrate_colonization`
-  and `primordia_induction`): the unbagged block holds 60-70 °F, 70-80 % RH,
-  CO2 under 2000 ppm, 12/12 light and passive FAE for 7-14 days. `GET
-  /api/sessions/{id}/next-phase` suggests colonization → browning →
-  primordia induction for shiitake (other species unchanged) and returns the
-  new `exit_reminder`, the cold-water soak (35-50 °F, 12-24 h). Stepping on
-  out of browning logs a `phase_exit_reminder` session event (also in the
-  transcript), and the daily phase check offers the soak from day 7. A
-  profile without browning setpoints refuses the phase (422); custom profiles
-  can add it with the new optional `PhaseParams.exit_reminder`. The humidity,
-  dehumidify, misting, CO2 and photoperiod built-in rules now also run in
-  browning, a grow bag counts as open from browning on, and unedited stored
-  copies of those rules upgrade at start-up. Vision tells Claude the brown,
-  popcorned skin is normal for shiitake, reads a `browning_percent`, and
-  sends an INFO "Browning complete" with the soak at 90 %; a colonized
-  shiitake block is reported ready to brown, not to fruit.
-
-### Changed
-- **Signed node commands** carry two more signed members, `topic` and a random
-  `nonce`: current firmware rejects redirected frames and no longer drops a
-  legitimate identical command in the same second. Deployed firmware verifies
-  them unchanged.
-- **OFF is never published with `pwm`/`level`** (rules, manual node commands,
-  cloud commands), and every published OFF — manual node, cloud, session-end
-  safing, manual plug — clears that actuator's `safety_max_on_seconds`
-  ceiling.
-- Automation: the highest-priority rule whose condition holds owns an
-  actuator; ceilings count from the first ON and a trip locks automation out
-  for 15 min (WARNING page, CRITICAL if the OFF fails); life-safety rules
-  (priority ≥ 20, absolute thresholds) run with no session; species-scoped
-  rules match `lions-mane` and `lions_mane`; redundant OFFs to unpaired plugs
-  are skipped, and a repeat OFF is re-sent only every 15 min unless something
-  switched the actuator back ON — a manual, cloud or plug command, or a node
-  reporting the channel ON, drops that suppression so the cutoff rule re-sends
-  its OFF at the next evaluation; cron catch-up; scheduled FAE runs only when
-  the phase's `fae_mode` is scheduled or continuous; new `profile_ref` `temp_mid_f`;
-  `growth_form` antler/conk picks the CO₂ params; `bulk_bag` is sealed until
-  fruiting; the rule `notification` flag now pages (WARNING < priority 20 ≤
-  CRITICAL). Seeded templates are upgraded on boot unless edited (a WARNING
-  names each edited copy). An edited Pre-cool or Heat Wave rule with no
-  chamber-temperature condition now holds the cooler ON against Cooling
-  Cutoff — add a `temp_f` condition. The Humidity Boost/Cut and Dry Weather
-  rules carry 1800 s ceilings: a humidifier that needs more than 30 min to
-  cross the band trips one (raise `safety_max_on_seconds` if yours is slow).
-- Sessions: `POST /api/sessions` and `/phase` return 422 for an unknown phase
-  or one the species can't enter; missing primordia/fruiting/rest setpoints
-  borrow from each other; `next-phase` skips phases the species lacks; ending
-  a grow safes the actuators it drove (per chamber when several grows run);
-  phase history stores `params_snapshot`.
-- Which grow a node belongs to is chamber-aware: a listed node belongs to its
-  chamber's grow, an unlisted node to the newest chamberless grow. With grows
-  in two chambers, list every node in its chamber.
-- Node liveness: any telemetry frame from a registered node refreshes
-  `last_seen`, so nodes on a 15 min–1 h publish interval no longer flap
-  offline.
-- Telemetry: `ts < 1e9` is treated as unsynced; replayed (`"replay": true`)
-  and out-of-order frames (up to 120 s older than the node's newest live
-  frame; a bigger step back is the node's clock being corrected and
-  re-baselines) are stored but not evaluated or pushed live; readings are
-  tagged with their grow; history charts fall through every rollup tier. The
-  Pi's own clock
-  never decides whether a frame is live: a Pi clock running minutes fast no
-  longer silently stops automation and safety thresholds for every synced
-  node. Pi-vs-node clock skew is measured per node, logged as a rate-limited
-  WARNING past 120 s, and reported (with non-live frame counts) under
-  `reliability` in `GET /api/health/detail/system`.
-- Notifications: ntfy is published through its JSON API (titles with em dashes
-  or °F now arrive); identical CRITICAL pages collapse for 15 min; temperature
-  and humidity EMERGENCY pages dedupe per node, parameter and direction; node
-  alerts reach ntfy by tier.
-- Vision auto-analysis runs every 6 h per session (and on the first frame after
-  a phase change) instead of every capture; the local CNN is still a stub.
-  Contamination pages CRITICAL at confidence ≥ 0.6 and sends one "Possible
-  contamination" WARNING at 0.3–0.6; stored frame names are unique and carry
-  the real image type; a failed re-analysis never overwrites a stored one;
-  `POST /api/contamination/identify` returns 415 for non-image uploads.
-- Claude: every feature uses `SPOREPRINT_CLAUDE_MODEL`; output ceilings are
-  16,000 tokens (32,000 streamed for the Builder). A refusal or truncated
-  answer returns `{error}` (Builder: `truncated: true` plus the partial guide,
-  not saved) instead of a 500 or a half-saved result.
-- Weather: forecast alerts fire only once the weather→closet model is trained
-  (~7 days), ignore past hours and dedupe per session, kind and day;
-  `forecast_high_f` / `forecast_low_f` cover today's local day; the prediction
-  model trains on 30 days; Open-Meteo times parse as UTC.
-- Transcripts: per-phase telemetry summaries are filled from rollups for old
-  phases; unknown session ids return 404; session analysis sends at most 150
-  vision summaries.
-- Sessions and species: chamber `PATCH` with `active_session_id: null`
-  detaches; chambers with history can be deleted; iCal dates anchor at the
-  first phase; the pink-oyster harvest page is CRITICAL; the substrate
-  calculator and shopping list scale correctly; species setpoints match
-  CLAUDE.md §4b (pink oyster, cordyceps, king trumpet CO₂);
-  `POST /api/experiments/{id}/analyze` is the preferred route.
+- Tasmota plugs also update from `stat/RESULT` and `tele/STATE` JSON
+  (`POWER` / `POWER1`); Shelly and Tasmota plugs register on their first state
+  report.
+- Plugs following the build guide never registered (missing Full Topic and
+  credentials) — docs, Builder steps and the install summary now say both.
+- `POST /api/automation/plugs/{id}/command` returns 409 for an unknown or
+  unpaired plug and 503 when the broker is down.
 - Integrations: sending back a masked `••••last4` secret (or omitting it)
   keeps it, `""` clears it — but a kept secret stays bound to where it is
   sent: changing a driver's `secret_bound_fields` (`base_url` for Aranet,
   Agrowtek and BIOS) without re-entering the secret returns 422, so a config
   PUT can no longer redirect a stored key to another host. A lost or changed
-  `.integration-key` shows "re-enter the credentials";
-  vendor health transitions that happen while the cloud link is down are
-  retried until delivered.
-- `GET /api/provision/ca` is public in API-key mode, so Secure-MQTT nodes can
-  fetch the CA; in that mode `GET`/`POST /api/cloud/pairing-code` now need the
-  bearer, and a keyless `POST /api/vision/frame` is accepted only from a
-  registered camera with a declared Content-Length ≤ 20 MB.
+  `.integration-key` shows "re-enter the credentials"; vendor health
+  transitions that happen while the cloud link is down are retried until
+  delivered.
+- Vendor drivers: the Tapo local KLAP handshake (real devices authenticate;
+  its `set_power` integration test is no longer `xfail`), Kasa multi-segment
+  replies, Wemo port probing (49153/49152/49154/49155/49151, `host:port`
+  pins), Pulse session reuse, the Grafana contamination counter.
+
+### Cloud and Pi self-update
 - Cloud pairing credentials persist to `cloud.env` beside the DB (0600) and
   survive rebuilds; `cloud_url` must be `https://`; `integrations_request`
   frames are replay-deduped and, after the first signed one, must be signed.
-- `POST /api/automation/plugs/{id}/command` returns 409 for an unknown or
-  unpaired plug and 503 when the broker is down; `POST
-  /api/hardware/nodes/{id}/command` returns 503 when nothing was published.
-- `POST /api/builder/guide` returns 503 (`not_configured`) or 502 (refusal,
-  truncated, empty, upstream error) with the body fields unchanged; firmware
-  ZIPs include `library.json`, `VERSION.txt`, every partition table and the
-  version script, and never bundle a private-looking `extra_configs` file.
-- Socket.IO rate limiting and client tracking use each client's real address
-  (uvicorn `--proxy-headers` behind nginx).
-- Nightly retention also prunes session-less `automation_firings` older than
-  90 days and thins vision frames; new index
-  `idx_rollup_node_sensor_time` speeds long-range charts.
-
-### Security
-- **DNS-rebinding guard.** The API and Socket.IO answer only for Host names an
-  outside attacker cannot point at the Pi: private, loopback, link-local,
-  CGNAT (Tailscale) and IPv6 unique-local IP literals; `localhost`, `*.local`,
-  `*.lan`, `*.home`, `*.home.arpa`, `*.internal`, `*.localdomain`; dotless
-  names; the host of `SPOREPRINT_PUBLIC_UI_URL`; and the new
-  `SPOREPRINT_ALLOWED_HOSTS` (comma list of names, `*.suffix`, IPs or CIDRs;
-  `*` turns the check off). Anything else gets **421** with the setting to
-  change. `GET /api/health` and `GET /api/provision/ca` stay open. Reach the
-  Pi by a public DNS name (Tailscale MagicDNS `*.ts.net`, a reverse-proxy
-  domain)? Add it to `SPOREPRINT_ALLOWED_HOSTS`.
-- **Stored integration secrets stay bound to their destination** (see
-  Integrations above): a config `PUT` that changes `base_url` must re-enter
-  the key.
-- **Broker service accounts never become nodes.** Frames under
-  `sporeprint/<id>/…` for `server`, `sp-3p`, `sp-cmd`, `sp-telemetry` or the
-  Pi's own MQTT user are dropped (WARNING once) before registration or rule
-  evaluation, `POST /api/hardware/claim` refuses those ids, and node rows an
-  older server registered under them are deleted when MQTT starts. A leaked
-  smart-plug credential can no longer register a node, claim a node type or
-  feed the rules engine.
-- **OTA connect-back peer check** (see Deploy): only the node being flashed
-  can take the image.
-- **Secure MQTT verifies before it pins** and reports `ca_fp` (see Firmware).
-- A bearer token with non-ASCII bytes gets 401 instead of a 500 (the API-key
-  check compares UTF-8 bytes, as the Grafana `/metrics` check already did).
-- **`X-Forwarded-For` is trusted from one address only.** The ui and server
-  containers share a fixed `edge` network (`SPOREPRINT_EDGE_SUBNET`, default
-  `172.31.253.0/28`; ui `.2`, server `.3`), and `FORWARDED_ALLOW_IPS`
-  defaults to the ui address instead of the whole `172.16.0.0/12` bridge
-  range, whose gateway relays IPv6 and loopback clients of the published
-  `:8000` that could forge the header. Move all four settings together if
-  compose reports a pool overlap.
-- `server/.dockerignore` keeps `data/`, SQLite files, `.integration-key` and
-  `cloud.env` (the cloud device token) out of the image when the server was
-  run from `server/`.
 - **Pi self-update verifies a signed release manifest.** Releases now
   publish `{version}.manifest.json` + `.manifest.json.sig`: canonical JSON
   `{schema, artifact, version, channel, sha256, size, published_at}` signed
@@ -750,15 +532,48 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   the last OTA. The bundle is then capped at the signed size and its sha256
   checked. A downgrade needs `SPOREPRINT_OTA_ALLOW_DOWNGRADE=true` on the Pi;
   the OTA command cannot allow one. A key sent in the command (`ota_pubkey`)
-  is ignored. Bare-metal Pis only (Docker still refuses self-update). **Upgrade notes:**
-  a bare-metal Pi that takes beta or dev builds must set
-  `SPOREPRINT_OTA_CHANNEL`. The legacy bundle `.sig` is still published, so
-  older Pis keep updating. A current Pi accepts a release that has only the
-  legacy `.sig` (published before manifests) only with
-  `SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=true`. A manifest that is present
-  but broken never falls back. `scripts/sign-ota-bundle.py --manifest-out`
-  writes the manifest. The version check uses `fullmatch` (a trailing newline
-  used to pass), and the Docker refusal now says `git pull && ./install.sh`.
+  is ignored. A manifest that is present but broken never falls back to the
+  legacy `.sig` (upgrade notes above). `scripts/sign-ota-bundle.py
+  --manifest-out` writes the manifest. The version check uses `fullmatch` (a
+  trailing newline used to pass).
+- Pi OTA: bare-metal Pis only — the Docker install refuses cloud self-update
+  and the refusal says `git pull && ./install.sh`; downgrades are refused;
+  bundle extraction applies tarfile's `data` filter.
+
+### Security
+- **DNS-rebinding guard.** The API and Socket.IO answer only for Host names an
+  outside attacker cannot point at the Pi: private, loopback, link-local,
+  CGNAT (Tailscale) and IPv6 unique-local IP literals; `localhost`, `*.local`,
+  `*.lan`, `*.home`, `*.home.arpa`, `*.internal`, `*.localdomain`; dotless
+  names; the host of `SPOREPRINT_PUBLIC_UI_URL`; and the new
+  `SPOREPRINT_ALLOWED_HOSTS` (comma list of names, `*.suffix`, IPs or CIDRs;
+  `*` turns the check off). Anything else gets **421** with the setting to
+  change. `GET /api/health` and `GET /api/provision/ca` stay open. Reach the
+  Pi by a public DNS name (Tailscale MagicDNS `*.ts.net`, a reverse-proxy
+  domain)? Add it to `SPOREPRINT_ALLOWED_HOSTS`.
+- **Broker service accounts never become nodes.** Frames under
+  `sporeprint/<id>/…` for `server`, `sp-3p`, `sp-cmd`, `sp-telemetry` or the
+  Pi's own MQTT user are dropped (WARNING once) before registration or rule
+  evaluation, `POST /api/hardware/claim` refuses those ids, and node rows an
+  older server registered under them are deleted when MQTT starts. A leaked
+  smart-plug credential can no longer register a node, claim a node type or
+  feed the rules engine.
+- `GET /api/provision/ca` is public in API-key mode, so Secure-MQTT nodes can
+  fetch the CA; in that mode `GET`/`POST /api/cloud/pairing-code` now need the
+  bearer, and a keyless `POST /api/vision/frame` is accepted only from a
+  registered camera with a declared Content-Length ≤ 20 MB.
+- A bearer token with non-ASCII bytes gets 401 instead of a 500 (the API-key
+  check compares UTF-8 bytes, as the Grafana `/metrics` check already did).
+- **`X-Forwarded-For` is trusted from one address only.** The ui and server
+  containers share a fixed `edge` network (`SPOREPRINT_EDGE_SUBNET`, default
+  `172.31.253.0/28`; ui `.2`, server `.3`), and `FORWARDED_ALLOW_IPS`
+  defaults to the ui address instead of the whole `172.16.0.0/12` bridge
+  range, whose gateway relays IPv6 and loopback clients of the published
+  `:8000` that could forge the header. Move all four settings together if
+  compose reports a pool overlap.
+- `server/.dockerignore` keeps `data/`, SQLite files, `.integration-key` and
+  `cloud.env` (the cloud device token) out of the image when the server was
+  run from `server/`.
 - **The Pi's node OTA push also answers the PBKDF2 login.** arduino-esp32
   3.3.1+'s stock `ArduinoOTA` challenges with a 64-hex nonce and accepts only
   `sha256(pbkdf2_hmac_sha256(sha256(password), nonce:cnonce, 10000):nonce:cnonce)`
@@ -767,10 +582,15 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   image still offers; 64 hex: PBKDF2, computed off the event loop) and refuses
   any other length. Nothing changes on the wire for current nodes. It is the
   first half of the coordinated move to the stock library: a firmware that
-  drops `ota_service.cpp`'s MD5 login must wait until the Pis that push to it
-  run this release.
+  drops `ota_service.cpp`'s MD5 login must wait until every Pi that pushes to
+  it runs a release newer than 5.0.0.
+- Also security-relevant, described above: stored integration secrets stay
+  bound to their destination (*Smart plugs and integrations*), the OTA
+  connect-back peer check (*Nodes*), Secure MQTT verify-before-pin and `ca_fp`
+  (*Firmware*), and the signed Pi release manifest (*Cloud and Pi
+  self-update*).
 
-### Deploy
+### Install and deploy
 - `install.sh`: writes `TZ`, generates the command-signing key, issues the
   broker certificate with IP and DNS SANs for every host IPv4 (re-issued from
   the same CA when the IP changes), repairs Docker-created bind-mount
@@ -788,22 +608,333 @@ signed OTA manifests for the Pi and (optionally) for nodes.
 - `provision-node.sh` writes the signing key to the repo-root `.env` (reusing
   an existing one); `add-node-mqtt-user.sh` mentions the key; broker password
   edits run inside the broker image and reload the `mqtt` service.
-- Pi-pushed node OTA uses fixed TCP port 3233 (published in compose), runs one
-  push at a time and retries invitations. The connect-back listener accepts
-  only the node being flashed: another LAN host that connects first is logged
-  and closed, and can no longer take the image and report a fake success.
   `generate-ota-keypair.py` creates the private key 0600 atomically.
+- `rotate-mqtt-creds.sh` writes only the `server` password into `server/.env`;
+  the other shared passwords stay in the repo-root `.env`.
+- New settings: `SPOREPRINT_VISION_AUTO_INTERVAL_MIN` (default 360),
+  `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` (default false),
+  `SPOREPRINT_PUBLIC_UI_URL`, `SPOREPRINT_CLAUDE_MODEL` (default
+  `claude-sonnet-5`; every Claude feature), `SPOREPRINT_ALLOWED_HOSTS`,
+  `SPOREPRINT_OTA_CHANNEL` / `_ALLOW_DOWNGRADE` / `_ALLOW_LEGACY_SIGNATURE`,
+  `TZ`, `FORWARDED_ALLOW_IPS` and the `edge` network's
+  `SPOREPRINT_EDGE_SUBNET` / `_UI_IP` / `_SERVER_IP`. Every `Settings` field
+  is now forwarded by compose (enforced by a test).
+- The server boots when `server/.env` holds keys that are not settings (a copy
+  of the repo-root `.env` with `TZ` or `FORWARDED_ALLOW_IPS`) and when a
+  non-string setting is present but blank (`SPOREPRINT_PORT=` means the
+  default). A malformed non-blank value still fails loudly.
+- Upgrading a database created before v3.3.0 no longer crashes `init_db`.
 - Images pinned: `eclipse-mosquitto:2.1.2-alpine`, `binwiederhier/ntfy:v2.28.0`,
   `nginx:1.30.5-alpine` and `python:3.12.14-slim` by digest. The server image
   installs exactly `server/uv.lock` (hash-checked).
-- `rotate-mqtt-creds.sh` writes only the `server` password into `server/.env`;
-  the other shared passwords stay in the repo-root `.env`.
-- Pi OTA: the Docker install refuses cloud self-update; downgrades are refused;
-  bundle extraction applies tarfile's `data` filter.
 - The dashboard's nginx passes request bodies up to 21 MiB and gives `/api/`
-  a 180 s timeout.
+  a 180 s timeout. Socket.IO rate limiting and client tracking use each
+  client's real address (uvicorn `--proxy-headers` behind nginx).
 
-### Dependencies
+### Dashboard (`ui/dist`)
+- **Rebuilt from the monorepo's pi-ui** after five browser audits and again for
+  the 2026-10 follow-ups. The first
+  rebuild also brought in the other pi-ui and design-package changes made in
+  the monorepo since the previous `ui/dist`, from the v5.0.0
+  release work and the fixes after it. The main bundle is 1,133 kB (330 kB
+  gzipped); it was 1,258 kB (340 kB) before the wiring SVGs moved to their
+  own 173 kB chunk, fetched only when the Wiring tab opens (1,112 kB / 323 kB
+  right after the split).
+  `tests/test_ui_builder_sync.py` follows references from `index.html`
+  through the bundle, so that chunk and its source map count as shipped
+  assets.
+- **The Builder page reads this Pi live.** It loads the BOM
+  (`/api/builder/tiers` and `/tiers/{id}`), the models, the wiring diagrams
+  and the firmware ZIPs from the Pi. If a request fails, that resource falls
+  back to a copy generated from this repo at build time, and a pill at the
+  top of the page says which data is on screen. This replaces the stale
+  static copy, which had a pre-audit BOM with no cabling, "browse repo" and
+  wiring links to `hardware/3d` and `hardware/wiring` (both 404), raw GitHub
+  `.scad` downloads that cannot render without `models/lib/`, and a false
+  "slicer-ready STL exports" claim. The built-in BOM counts the mixed kits
+  per size (×12: $1,061 / $4,644 / $7,181).
+  - **Shopping tab and totals:** `shared` parts are bought once per
+    installation and every other line's units scale with the chamber count;
+    pack-sold lines buy whole packs (`shared_units` included), so totals
+    equal `parts_cost(N)` at any chamber count from 1 to 99 (Bare Bones ×10
+    buys two packs of M3 inserts for 104). Lines show their units and the
+    packs that buy them, worded one way on the Shopping tab, the Shopping
+    List and its CSV ("4 · 2 packs of 2 · 1 spare", "$5.49 / pack of 100 ·
+    ~$0.05 ea"), and "(shared)" shows at every chamber count. Lines counted
+    in something other than pieces say so (new optional API field
+    `Component.unit`): "420 ft · 5 packs of 100 ft · 80 ft spare", "$26 /
+    pack of 100 ft", "~$0.26 / ft"; the WAGO assortment reads "12 chamber
+    sets · 4 packs of 3 chamber sets"; solder in grams, VELCRO in straps, the
+    insert and screw kits in the size they are counted in. The total shows
+    the shared and chambered parts separately and says what whole packs
+    save; smart plugs, wiring and hardware have their own sections. Cost
+    captions use whole dollars (the stale "Pi's estimate" clause is
+    removed).
+  - **Overview and tier cards:** the Overview counts packs and parts to buy
+    (and BOM lines and units separately) instead of adding feet, grams and
+    pieces, uses the Shopping tab's "shared, bought once" caption, and its
+    cost caption reads like the BOM totals at ×1. Tier cards price the chosen
+    count ("47 lines · ~$1,733 for 4 chambers"); a count outside the presets
+    shows as its own "×7" pill next to a − / + count box; the chamber caption
+    names what is bought once: the Pi side, the bench breadboard and bulk
+    packs that cover 12+ chambers. The tier and chamber count stay in the
+    URL.
+  - **Setup tab:** the backticked commands, paths and topics show as code
+    with a copy button (on a plain-http Pi it falls back to
+    `execCommand("copy")`). Copying or selecting text no longer ticks the
+    step. Ticks are stored per step id instead of per position, so adding a
+    step no longer moves them; ticks saved by the released dashboard carry
+    over to the matching new steps. The setup step covers Shelly Gen2+
+    plugs.
+  - **Wiring tab:** the tier's SVG as the Pi serves it, scaled to its box's
+    width, with an "open full size" link and a link to its GitHub source;
+    the cards show a thumbnail with a readable "full-size svg →" label. If
+    the Pi's SVG does not load, the page shows the same generated diagram
+    from the bundle instead of the old hand-drawn sketch, which clipped
+    labels, put pin labels under wires and cut off the legend. The
+    connection table uses the live wiring rows.
+  - **Models tab:** each card shows the title and description from the
+    model's `.scad` header (a cut description ends on a whole word, and
+    "more" reads the full header from the Pi's download first, then GitHub)
+    and downloads the Pi's self-contained file (`lib/` inlined); a "download
+    all (.zip)" link; "browse repo" opens `models/`. Single-column model cards
+    no longer leave blank bands.
+  - **Firmware tab:** one card per image (unified node, camera), downloaded
+    as the Pi's self-contained ZIP. An image is listed for a tier when one of
+    its PlatformIO envs is a tier target, which covers
+    `node_esp32s3_n32r16v`. Each card lists the `pio run -t upload -e <env>`
+    command for each board, with copy buttons; the camera card lists `cam`,
+    `cam_esp32s3`, `cam_xiao_esp32s3` and `cam_waveshare_s3`, each with its
+    board. File names are their download links, so the table fits a phone.
+    Offline, the tab lists the files (the new firmware files included, and
+    `cam_policy.h` as well as `main.cpp` on the camera card) from a listing
+    generated from this repo (raw GitHub links and sizes) instead of a
+    hand-copied list.
+  - **Resources:** the repo is labelled AGPL-3.0 (it said MIT). The dead forum
+    link is removed, and the dead Discord invite is replaced by a plain-text
+    "coming soon" placeholder with no link. "User docs" opens the
+    sporeprint.ai user guide; "Quick start" is the README's.
+  - **Layout:** checked in Chrome on every tier and tab from 320 to 1600 px
+    wide: nothing sticks out of its box and the page never scrolls sideways.
+    Below 900 px the BOM and wiring-connection tables stack as cards instead
+    of scrolling (the Buy link and wiring notes were cut off between 1024
+    and 1340 px); the firmware-file table scrolls inside its own box.
+- **Shopping List** shows your build. "Send BOM to /shopping" is a real link
+  (`/shopping?bom=…&chambers=…`) that hands over the tier and chamber count,
+  and "Open in builder →" keeps them. The page no longer shows demo rows or a
+  restock banner: it lists the sent BOM (live from
+  `/api/builder/tiers/{id}`, totals equal to the Builder's), grow supplies
+  for each species with an active session
+  (`/api/species/{id}/shopping-list`), and your custom items.
+  - Grow supplies are merged across species, one row per item (spawn,
+    cultures and inoculants stay one row per species); a merged supply counts
+    as bought only when every species it serves is ticked ("partly bought —
+    for …" until then). A species with a session (`lions-mane`) and the same
+    species picked by hand (`lions_mane`) is one grow target, not two.
+  - A hand-set grow count shows as an override with a reset; a count change
+    refetches only that species; one message when the sessions can't be
+    read; the two 404s are told apart. An out-of-range `?chambers=` opens on
+    99 instead of 1, the URL says what the page shows, and an unknown
+    `?bom=` warns (on a full page load too).
+  - Ticks and notes follow a part across builds; notes grow with their text;
+    custom items validate their name and link inline. Two open Shopping List
+    tabs stay in step: a tick, note, custom item, grow count or build sent in
+    one shows in the other, and every change is written into what is stored,
+    so one tab no longer undoes the other's.
+  - The hardware tables line up; below 900 px of table each row becomes a
+    card on screen. A printed list is a table again: the card layout is
+    screen-only, so a Letter or A4 sheet no longer prints one tall card per
+    row (a 4-chamber list ran to 20 pages). A print stylesheet hides the
+    navigation and prints dark on white; the Buy column and the "notes &
+    substitutes" disclosure stay off paper, notes print in full, cells are
+    tighter and the columns size to their content; the note column is a
+    fifth of the table.
+  - The CSV writes "×N" and "(shared)" as the table does, one supplier URL
+    per cell and "lb" for every pound, and defuses every formula-like cell
+    (`-1+2`, a leading tab).
+- **Sessions:** a new session shows as day 0 (it showed "20710d") and counts
+  toward the 30-day yield, and the Day column and 30-day yield no longer read
+  every session as day 0. The phase pill names the grow's phase ("primordia
+  induction", not the "fruiting" bucket) and its chamber by name; rows show
+  the session name; timeline tags name the event (NEW, PHASE, …) instead of
+  truncating it ("SESSI"). "advance → <next phase>" shows the phase's exit
+  reminder (the cold-water soak when leaving shiitake browning) before the
+  confirm; browning segments read tan on the phase bar, and the browning
+  events are tagged STEP and VISION.
+- **Species:** cards show common names, size to their content and expand in
+  place when opened, so Tab order matches the screen. The four categories
+  have their own colours (green, amber, blue-violet, orchid; checked for
+  colour-blind contrast), and the 8 novelty species get a filter chip, so
+  the category KPI adds up to the 74 shown; KPI labels fit one line. Tags
+  collapse to the 12 most used behind an "all 129 tags" toggle, and the tag
+  counter is always announced. On a phone the filters and "recently viewed"
+  fold behind one "filters" button, so the first card is on the first
+  screen. Phases read "Substrate colonization" / "Primordia induction" and
+  flush counts "~4 flushes"; inactive filter chips are legible (WCAG AA).
+- **Other pages:** tables on Sessions, Transcripts, Inventory, Cultures and
+  Contamination scroll inside their own column (from 1180 to about 1600 px
+  they ran under the right-hand panel), and Sessions and Transcripts pin
+  their row action instead of scrolling the page. The transcript preview
+  renders bold, italic and code. Contamination pills follow one severity
+  ladder (critical red, high amber) and list every entry; its upload buttons
+  wrap at 390 px; a contamination check without a Claude key says so in
+  words and links to Settings, and the log stacks on a phone. Long
+  automation conditions wrap. Chamber tiles carry the chamber's name; the
+  Quick overrides strip fits five tiles down to ~600 px of card; the CLOUD
+  KPI no longer breaks mid-word; the Planner's cycle table fits its card at
+  1440. Firmware: a push can carry the release's signed manifest and `.sig`
+  ("signed release manifest (optional)" under update firmware; both or
+  neither), and the status says whether the node or only this Pi checked it.
+- **Navigation:** below 768 px the rail becomes a drawer behind a menu
+  button on every page; the drawer is a modal dialog (focus kept inside, the
+  page behind it inert, focus restored on close). The sidebar footer
+  (version, uptime) is no longer clipped.
+- **`scripts/sync_ui_builder_data.py` now verifies the bundle instead of
+  patching a static copy.** `--check` confirms that the bundle requests
+  `/api/builder/*` live and has none of the old static Builder's dead links or
+  claims. It also confirms that the built-in copy matches this server: the
+  tiers exactly as in `hardware_guides.py`, plus the models, diagrams and
+  firmware envs. Without `--check`, the script rewrites only stale built-in
+  data, in place. `tests/test_ui_builder_sync.py` enforces all of this and
+  also checks the built-in copy against the API's actual responses.
+- **+ new session works again on a Pi with chambers.** The Chamber select
+  picked the first chamber as the list loaded, but the trigger went blank and
+  an untouched form posted `chamber_id: 0`, which failed with a 500. The
+  select keeps the picked chamber (the shared Select ignores the empty value
+  Radix's hidden form `<select>` reports when value and items change in one
+  render), and the form sends a missing or blank chamber as unassigned.
+- Smaller dashboard fixes: the Settings quiet-hours row says the Pi sends
+  every alert to ntfy (filter by priority in the ntfy app) instead of
+  pointing at the cloud app; the Sessions stage chips' hints read "phases:
+  …" ("rest (between flushes)" under harvest); an idle, unnamed chamber's
+  header names it once; chamber names stay on one line in the inventory and
+  Planner tables (the Planner's node count moved under the name); small text
+  that read under 4.5:1 (Shopping List pack, price and note lines, the
+  Planner's weekday header, the sidebar uptime, "not yet supported on this
+  Pi", chamber tile badges, Automation rule stats, contaminant growth speed,
+  "not edible", the selected Sessions row and Builder tier card) is brighter.
+
+### Docs and diagrams
+- **All three tier wiring diagrams redrawn** to the cabling standard: inside vs
+  outside the chamber with the wall grommet, the power strip and every AC
+  cord, USB power paths with cable lengths, the 12 V PSU → pigtail → WAGO →
+  fused branches with ratings, wire gauges on each run, the common ground
+  (ESP32 GND → J1 "−") on every switch board, the STEMMA QT chain, fan
+  extension leads, and on All the Things the HX711 / door-contact 22 AWG
+  4-conductor runs, the 10 kΩ reed pull-up and the pump channel. Each has a
+  one-channel end-to-end schematic. `wiring-overall-system.svg` marks what
+  lives in the chamber and adds a power + cabling band.
+- `docs/hardware-build-guide.md`: §7 is now *Power and cabling* (power strip,
+  12 V distribution with fuse table, 5 V USB table, the chamber wall, and a
+  table mapping every cabling / consumable BOM line to where it is used); the
+  §5 channel schematic shows the fuse, wire gauges, the fan extension and the
+  common ground; a *Tools you need* list; the S3 pin map (§8a) and the three
+  S3 camera boards of earlier BOMs (§8b); a 12 V pre-power check in the
+  bring-up list; new troubleshooting rows (dead board, swapped fan wires).
+  New `docs/auth.md` (LAN-trust vs API-key mode, public paths).
+- `models/README.md`: per-tier insert and screw totals; the BOM's insert and
+  screw kits, the 18" (457 mm) duct tie and the VELCRO straps.
+- **Docs brought in line with the code (2026-10).** `README.md`: React 19
+  dashboard that loads over REST (no Socket.IO client, no PWA, no unit
+  switch; the Builder's Claude guide generator is API-only), the real
+  Socket.IO event names (`rule_fired`, not `rule_firing`; plus
+  `actuator_state`, `node_status`, `node_log`, `node_ota`, `plug_online`),
+  the node `ota` / `coredump/chunk` / `cmd/coredump_ack` /
+  `cmd/ota_manifest` topics and the Shelly Gen2+ topics and setup,
+  PlatformIO Core ≥ 6.2.0 + git for the core-3 platform, the OTA listener
+  (`ota_service.cpp`, not `ArduinoOTA`) and signed node manifests, the
+  extra drivers and the ESP32-S3 camera boards, and an upgrade note for
+  nodes still on core-2.x images; the pairing code lives in Setup → § III
+  Cloud link; unknown `server/.env` keys are ignored and `TZ` must be
+  exported; no side-by-side experiment telemetry, chamber comparison view,
+  label-printer presets, container labels or per-category ntfy topics; the
+  Server Modules table lists all 20 packages and labels the two single-file
+  routers; the cloud pairing steps; the Sessions page row names what the
+  page has (a finished session's `report.md`; the drying log and
+  `report.csv` are API-only — no drying tracker or report downloads);
+  `labels/` makes QR code PNGs (no thermal-printer support); the wizard asks
+  five questions (the API scores six inputs). `AGENTS.md`: the platform pin,
+  the core-3 pitfalls, the espota handshake rule, Shelly Gen2 prefixes,
+  coredump store-then-ack, OTA manifests, the `browning` phase and the
+  current frontend stack; frame liveness is replay / out-of-order, not frame
+  age; `labels/` is router-only. New `firmware/README.md` sections
+  (platform, build, OTA, updating nodes from a core-2.x image, coredumps) and
+  `config/mosquitto/README.md` (listeners, accounts, plug topic layouts,
+  adding a topic). `docs/integrations/smart-plugs.md` gains a Shelly Gen2+
+  section; the build guide the Gen2 setup, a troubleshooting row and node
+  firmware updates; `docs/firmware-security.md`, `docs/data-flow.md` and
+  `docs/dual-repo-architecture.md` (React 19 bundle, 74 species, no
+  Capacitor shell) are corrected; the spec (Cordyceps / cubensis-rest FAE,
+  the MQTT watchdog, the vision correction mark).
+- **Release docs pass (2026-10).** `docs/architecture-overview.svg` matches
+  the stack: a React 19 / Vite 6 / Tailwind v4 dashboard on REST (it showed
+  React 18, a PWA, Zustand and a Socket.IO client), the Compose services,
+  every server module, the autodetected sensor set, OV5640 and the S3 camera
+  boards, Shelly Gen1 and Gen2+, 25 kHz 10-bit PWM.
+  `docs/wiring-overall-system.svg` names OV5640, ntfy, the Shelly Gen2+
+  prefix and the browser's REST link. The Recommended and All the Things
+  diagrams point S3 camera boards to build guide §8b, which gains a pin table
+  for the AI-Thinker and the three S3 camera boards; the build guide also
+  covers the portal's NTP server field and the Firmware page's signed-manifest
+  upload. `docs/data-flow.md` describes the current flows (adding node
+  maintenance: OTA push and coredump store-then-ack) instead of per-release
+  change lists; `docs/cloud-relay-flow.md` has the real command shape
+  (`target_kind`), the Pi's checks in order and the real `ota_step` names;
+  the Mermaid block in `docs/dual-repo-architecture.md` is valid again (its
+  services subgraph did not parse). README gains a `**Version:**` line that
+  `scripts/bump.sh` keeps current, the cloud command checks (`target_kind`,
+  a 64-character channel), the Shelly `status/switch:<n>` topic, the NTP
+  portal field and `SPOREPRINT_INTEGRATION_KEY_PATH`. The integrations docs
+  list Tapo with the LAN drivers, the vendor write actions (since v4.1.2)
+  and rule-driven vendor actions, and the Grafana weight and door metrics.
+- `tests/test_docs_consistency.py` pins the README, build guide, SVGs,
+  AGENTS.md, the spec's tracked reference pages (`docs/species-reference.md`,
+  `docs/feature-status.md`, `docs/automation-rules.md`) and (when present)
+  the git-ignored `CLAUDE.md` to the code,
+  firmware and BOM: tier prices and what a second chamber adds, fuse ratings,
+  WAGO parts and wire gauges, the common ground in every guide and diagram,
+  the strip sizes, the per-tier insert sourcing, the table and species
+  counts and categories, the `GrowPhase` list, the platform pin, the PWM
+  spec, the Socket.IO event names, the Shelly Gen2 prefix and each 2026-10
+  audit claim; since the release docs pass also the camera pin tables (build
+  guide and `firmware/docs/drivers.md`) against `firmware/boards/`, the
+  architecture diagram's stack and module boxes, the README `**Version:**`
+  line against `server/pyproject.toml`, the cloud command gate
+  (`target_kind`, channel pattern, `ota_step` names), the retention tiers in
+  `docs/data-flow.md`, the Grafana metric list, the vendor write actions, and
+  a parse check for every Mermaid flowchart.
+- **Docs fix round (2026-10).** The Aranet, Pulse and vendor-skeleton docs
+  say vendor readings are stored and exported but never drive automation
+  rules or safety alerts (only MQTT node telemetry does). No doc shows a
+  shipping mobile app any more: README, `docs/dual-repo-architecture.md`,
+  `docs/cloud-relay-flow.md` and `docs/auth.md` drop the iOS/Android app,
+  `guardWriteAction` and FCM push, and `wiring-overall-system.svg`'s
+  bottom-right box is now *Remote Access (Browser)*. The cloud docs put
+  FastAPI on internal `127.0.0.1:9001` and the relay's ownership recheck at
+  60 s. README: remote control is premium only (no read-only free path), QR
+  labels open the Sessions or Cultures page, `SPOREPRINT_OTA_PUBKEY_B64`
+  also verifies signed node manifests on Docker, `SPOREPRINT_CLOUD_URL`
+  takes `https://` (plain `http://` only to a LAN dev relay), and the
+  Development and Contributing commands match `AGENTS.md`. The submodule SHA
+  is pinned by its gitlink, not `.gitmodules`. `AGENTS.md`: no CI runs on
+  push or PR, parallel PlatformIO and `uv sync` pitfalls, REST and relay
+  payloads are additive-only too, the LAN-only CORS rule, the version
+  strings `bump.sh` rewrites, every trigger for stale Builder data, and the
+  general import-cycle rule; its frontend brief points at the monorepo.
+- README: the Chambers page loads chamber readings and events when it opens
+  (only the Pi system panel polls); Chamber inventory shows the maintenance
+  log, lifetime stats and photos, and chambers are created and given nodes
+  through `POST`/`PATCH /api/chambers` only; a chamber follows its active
+  grow's targets; the dashboard rebuild runs `port_builder.py` in the
+  server's environment. The Agrowtek notes say where its readings go
+  (`agrowtek:<sensor id>`; `sensor_mappings` is not used yet). The partition
+  tables' comments name the envs that build with them and no longer call core
+  2.0.17 the pinned core. `AGENTS.md` lists the lint and vendored-Monocypher
+  guard suites and says never to edit the vendored copy. A
+  `.worktreeinclude` copies the operator's git-ignored `CLAUDE.md` into each
+  Claude Code worktree.
+
+### Dependencies and CI
 - anthropic 0.94 → 1.8, fastapi 0.135 → 0.141, starlette 1.0 → 1.7 (Host-header
   bypass of the API-key gate fixed), cryptography 45 → 50.0.1, pillow 11.3 →
   12.3, uvicorn 0.54, python-multipart 0.0.32, python-socketio 5.17 /
@@ -811,67 +942,9 @@ signed OTA manifests for the Pi and (optionally) for nodes.
   missing four runtime dependencies).
 - GitHub Actions pinned to commit SHAs at current majors; PlatformIO 6.2.0 in
   CI and release; the release job alone gets write access.
-
-### Fixed
-- **2026-10 audit, round 1.** The `phase_change` session event reads
-  "Phase advanced to primordia induction" (it printed the raw enum, which the
-  timeline, chamber feed and transcript then showed); `data.phase` keeps the
-  raw value. A species' grow-supplies list (`GET /api/species/{id}/shopping-list`)
-  now lists the vessel its first recipe uses: a filter-patch grow bag for a
-  pressure-sterilized block (supplemented sawdust, masters mix), jars for
-  grain / brown-rice / agar cultures, nothing for an outdoor bed or log, and
-  the monotub + liner only for pasteurized bulk (CVG, manure, straw) — it gave
-  every species a monotub + trash-bag liner. The Builder's PlatformIO setup step
-  says `pip install -U platformio`, PlatformIO Core 6.2.0+ and git, core 3.3.12
-  and the ~1 GB first build. Docs: README (pairing code lives in Setup → § III
-  Cloud link; unknown `server/.env` keys are ignored, `TZ` must be exported;
-  no side-by-side experiment telemetry, chamber comparison view, label-printer
-  presets, container labels or per-category ntfy topics; the Server Modules
-  table lists all 20 packages and labels the two single-file routers; the
-  cloud pairing steps), AGENTS.md (frame liveness is replay / out-of-order,
-  not frame age; `labels/` is router-only), the build guide (the three S3
-  camera boards of earlier BOMs are supported, §8b) and the spec (Cordyceps /
-  cubensis-rest FAE, the MQTT watchdog, the vision correction mark).
-  `tests/test_docs_consistency.py` pins each claim to the code.
-- **2026-10 audit, round 2.** Leaving a phase that owes a manual step logs the
-  `phase_exit_reminder` event before the `phase_change` (same second, so the
-  event id is the order): the session timeline and the transcript's Key
-  Events — the text Claude analyses — listed shiitake's cold-water soak after
-  "Phase advanced to primordia induction". `get_events` and the transcript
-  sort same-second events by id. README: the Sessions page row names what the
-  page has (a finished session's `report.md`; the drying log and `report.csv`
-  are API-only — no drying tracker or report downloads), `labels/` makes QR
-  code PNGs (no thermal-printer support), and the wizard asks five questions
-  (the API scores six inputs). Dashboard (`ui/dist`, rebuilt): the Sessions
-  phase pill names the grow's phase ("primordia induction", not the
-  "fruiting" bucket) and its chamber by name; its Day column and 30-day
-  yield no longer read every session as day 0; chamber tiles carry the
-  chamber's name; the Quick overrides strip fits five tiles down to ~600px
-  of card; the Planner's cycle table fits its card at 1440; species phases
-  read "Substrate colonization" / "Primordia induction" and flush counts
-  "~4 flushes"; inactive filter chips are legible (WCAG AA).
-- Transcript markdown (`GET /api/transcript/sessions/{id}/transcript?format=markdown`)
-  no longer prints Python `None` for unset session fields. The header used
-  `session.get(key, 'N/A')`, but a NULL column is present with value None, so
-  it printed lines such as `**Substrate**: masters_mix (None)` and
-  `**Inoculated**: None (None)`. A missing value now drops its line, and a
-  missing detail drops its parentheses. The header fields are a list
-  (`- **Species**: …`), so they render on separate lines in any markdown
-  viewer.
-- Plugs following the build guide never registered (missing Full Topic and
-  credentials) — docs, Builder steps and the install summary now say both.
-- Tapo local KLAP handshake (real devices authenticate), Kasa multi-segment
-  replies, Wemo port probing (49153/49152/49154/49155/49151, `host:port`
-  pins), Pulse session reuse, Grafana contamination counter.
-- Upgrading a database created before v3.3.0 no longer crashes `init_db`.
-- The server boots when `server/.env` holds keys that are not settings (a copy
-  of the repo-root `.env` with `TZ` or `FORWARDED_ALLOW_IPS`) and when a
-  non-string setting is present but blank (`SPOREPRINT_PORT=` means the
-  default). A malformed non-blank value still fails loudly.
-- The Tapo KLAP `set_power` integration test is no longer `xfail`.
-- The CHANGELOG's earlier unreleased model entries (TAL220-only scale, saddle
-  pump clamp, "Adafruit 1150 = Kamoer" wording) are superseded by the
-  enclosure work above: Adafruit does not name the pump's OEM.
+- `ruff check app/` passes again (unused imports and placeholder-less
+  f-strings removed; E402 is ignored by design for `app/main.py` and the
+  vendor `__init__.py` files) and `tests/test_lint.py` keeps it green.
 
 ## [5.0.0] - 2026-07-16
 

@@ -581,8 +581,30 @@ photos (frames upload with `X-Flash-Used: 0`). Hold BOOT 3–10 s, then release,
 to open the setup portal; holding it more than 10 s is a factory reset, as on
 the nodes. Other "ESP32-S3-CAM" listings use other pin maps: only a board whose
 seller's example selects `CAMERA_MODEL_ESP32S3_EYE` (a Freenove clone) runs
-`cam_esp32s3`. Pin maps and sources: `firmware/boards/board_profile_esp32s3cam.h`
-and `firmware/docs/drivers.md`.
+`cam_esp32s3`.
+
+**Camera pin maps.** A camera board needs no wiring: the sensor sits in the
+board's 24-pin DVP connector and USB is its only cable. The table is what
+each env drives, for checking a board against its seller's example (and for
+knowing which pins are taken). The AI-Thinker column is the BOM camera, for
+comparison. Sources: `firmware/boards/board_profile_esp32cam.h`,
+`firmware/boards/board_profile_esp32s3cam.h` and `firmware/docs/drivers.md`.
+
+| Signal | AI-Thinker ESP32-CAM (`cam`) | Freenove ESP32-S3-WROOM CAM (`cam_esp32s3`) | XIAO ESP32S3 Sense (`cam_xiao_esp32s3`) | Waveshare ESP32-S3-CAM (`cam_waveshare_s3`) |
+|---|---|---|---|---|
+| XCLK (clock) | GPIO 0, 20 MHz | GPIO 15, 10 MHz | GPIO 10, 20 MHz | GPIO 38, 20 MHz |
+| SCCB SDA / SCL | GPIO 26 / 27 | GPIO 4 / 5 | GPIO 40 / 39 | GPIO 8 / 7 (the board I²C bus, shared with its CH32V003 expander at 0x24) |
+| D0–D7 (Y2–Y9) | 5, 18, 19, 21, 36, 39, 34, 35 | 11, 9, 8, 10, 12, 18, 17, 16 | 15, 17, 18, 16, 14, 12, 11, 48 | 45, 47, 48, 46, 42, 40, 39, 21 |
+| VSYNC / HREF / PCLK | GPIO 25 / 23 / 22 | GPIO 6 / 7 / 13 | GPIO 38 / 47 / 13 | GPIO 17 / 18 / 41 |
+| Sensor power-down | GPIO 32 | none | none | expander pin EXIO3 |
+| Flash LED | GPIO 4 | none | none | none |
+| Setup portal / reset | GPIO 13, no button: short IO13 to GND (§9) | BOOT (GPIO 0) | B / BOOT (GPIO 0) | BOOT (GPIO 0) |
+| Heartbeat `board` | `esp32-cam-ai-thinker` | `freenove-esp32-s3-wroom-cam` | `xiao-esp32s3-sense` | `waveshare-esp32-s3-cam` |
+
+The S3 boards also differ in their serial port (Freenove: its USB-UART port;
+XIAO and Waveshare: the S3's native USB) and in orientation: as Freenove's
+own example does, the Freenove image mirrors every sensor and also flips an
+OV2640 (not an OV3660 or OV5640).
 
 ---
 
@@ -623,8 +645,10 @@ Then: on first boot every node raises a WiFi access point called
    one and don't tick it, it will silently never report.
 7. Optionally: **OTA password** (at least 12 characters, or OTA stays off),
    **Command signing key** (the key `provision-node.sh` printed — with it the
-   node rejects unsigned, forged, replayed or redirected commands), and
-   **Secure MQTT (TLS)** (+ **Require TLS**, see below).
+   node rejects unsigned, forged, replayed or redirected commands, and accepts
+   none until its clock has synced over NTP), **Secure MQTT (TLS)** (+
+   **Require TLS**, see below) and **NTP server** (the Pi's address for a
+   room with no internet; the default is `pool.ntp.org`).
 
 Blank password / key fields keep the saved value when you revisit the portal.
 A form the node refuses comes back with "Not saved." and the reason, with what
@@ -890,9 +914,13 @@ Work down this list. Each step proves the one before it.
 - **Update node firmware:** build the image (`pio run -e <env>` writes
   `firmware/.pio/build/<env>/firmware.bin`; the Builder page's ZIP builds the
   same) and push that `firmware.bin` from the dashboard's **Firmware** page
-  with the node's OTA password. Nodes still running a core 2.x image (any release
-  before the core-3 port) take the new image over the air, no USB cable
-  needed. Before updating several nodes, update one node of each board type
+  with the node's OTA password. A firmware release zip from the release
+  pipeline also carries `<env>.manifest.json` and its `.sig`: add both under
+  **signed release manifest (optional)** and the Pi checks them against its
+  pinned release key (Settings → OTA verify key) and the image first; a node
+  image built with that key then flashes only that exact image. Nodes still
+  running a core 2.x image (any release before the core-3 port) take the new
+  image over the air, no USB cable needed. Before updating several nodes, update one node of each board type
   first and check its heartbeat
   ([firmware/README.md](../firmware/README.md#updating-nodes-from-a-core-2x-image)).
 - **Apply `.env` changes:** `docker compose up -d server`

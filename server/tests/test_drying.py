@@ -1,5 +1,6 @@
 """Tests for harvest drying tracker (Task 8)."""
 
+import app.notifications.service as notif
 from app.sessions.models import SessionCreate, HarvestCreate
 from app.sessions.service import (
     create_session,
@@ -139,3 +140,24 @@ def test_drying_endpoint_404(client):
 
     r = client.get("/api/sessions/1/harvest/99999/drying")
     assert r.status_code == 404
+
+
+# ── Drying-complete notice goes out once per harvest ─────────────
+
+
+async def test_drying_complete_notifies_once_per_harvest(monkeypatch):
+    sent = []
+
+    async def fake_notify(title, message, **kw):
+        sent.append((title, kw.get("dedup_key")))
+        return True
+
+    monkeypatch.setattr(notif, "notify", fake_notify)
+    s = await create_session(_make_session())
+    h1 = await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
+    h2 = await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=200.0))
+    await add_drying_log(s["id"], h1["id"], 18.0)
+    await add_drying_log(s["id"], h1["id"], 17.0)
+    await add_drying_log(s["id"], h2["id"], 18.0)
+    keys = [k for _t, k in sent]
+    assert keys == [f"drying:{h1['id']}", f"drying:{h1['id']}", f"drying:{h2['id']}"]

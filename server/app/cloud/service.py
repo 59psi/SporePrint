@@ -7,7 +7,6 @@ Buffers telemetry during disconnects and drains on reconnect.
 
 import asyncio
 import ipaddress
-import json
 import logging
 import os
 import re as _re

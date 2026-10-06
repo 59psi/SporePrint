@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.sessions.models import SessionCreate, PhaseAdvance, NoteCreate, HarvestCreate
 from app.sessions.service import (
     create_session,
@@ -131,3 +133,31 @@ async def test_full_lifecycle():
     assert s["status"] == "completed"
     assert s["total_wet_yield_g"] == 200.0
     assert len(s["phase_history"]) == 3
+
+
+def test_create_with_an_unknown_chamber_is_a_422_not_a_500(client):
+    # The Pi UI once posted chamber_id 0; the FOREIGN KEY failure came back as
+    # a bare 500 "Internal Server Error" and left the form saying nothing useful.
+    for bad in (0, 999):
+        resp = client.post("/api/sessions", json={
+            "name": "G", "species_profile_id": "blue-oyster", "chamber_id": bad,
+        })
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == f"chamber {bad} not found"
+    assert client.get("/api/sessions").json() == []
+    chamber = client.post("/api/chambers", json={"name": "Closet A"}).json()
+    created = client.post("/api/sessions", json={
+        "name": "G", "species_profile_id": "blue-oyster", "chamber_id": chamber["id"],
+    })
+    assert created.status_code == 200
+    assert created.json()["chamber_id"] == chamber["id"]
+
+
+async def test_remote_session_start_reports_an_unknown_chamber():
+    from app.sessions.service import UnknownChamberError, handle_remote_command
+
+    with pytest.raises(UnknownChamberError, match="chamber 42 not found"):
+        await handle_remote_command("session_start", {
+            "name": "G", "species_profile_id": "blue_oyster", "chamber_id": 42,
+        })
+    assert await list_sessions() == []

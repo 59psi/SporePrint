@@ -1131,7 +1131,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=2,
         yield_notes="2-3 flushes. Lower count but large individual fruits with thick stems.",
         tags=["intermediate", "cold-tolerant", "unique-co2"],
-        tldr="Intermediate. Thick meaty stems are the prize. UNIQUE: wants elevated CO2 (1000-2000ppm) during primordia — opposite of other oysters. Sterilized (not pasteurized) substrate required. Excellent 7-10 day shelf life. 1-2 flushes.",
+        tldr="Intermediate. Thick meaty stems are the prize. UNIQUE: wants elevated CO2 (1000-2000ppm) during primordia — opposite of other oysters. Sterilized (not pasteurized) substrate required. Excellent 7-10 day shelf life. 2-3 flushes.",
         flavor_profile="Rich umami, meaty flavor. Thick dense stems with scallop-like texture when sliced and seared. Best king oyster prep: slice stems into 1-inch coins, sear in hot oil until golden. One of the best culinary mushrooms.",
         tek_guide=[
             TekStep(step_number=1, title="Substrate Preparation", description="Prepare Masters Mix (50/50 hardwood pellets and soy hull pellets) or supplemented hardwood sawdust. King trumpet REQUIRES pressure sterilization — pasteurization is insufficient for supplemented substrates.", duration="4-6 hours", tips=["Masters Mix is the industry standard for king trumpet", "Hydrate pellets with measured water (1.2L per liter substrate) before sterilizing"], common_mistakes=["Trying to pasteurize instead of pressure sterilize — supplemented substrates MUST be sterilized", "Not using supplemented substrate — plain straw/sawdust gives poor king trumpet yields"]),
@@ -1291,7 +1291,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=4,
         yield_notes="3-6 flushes from blocks. Cold-water soak between flushes. Logs can produce for years.",
         tags=["intermediate", "slow", "long-cycle", "browning-phase"],
-        tldr="Intermediate. LONG colonization (30-60 days). Unique browning phase — block develops brown skin that MUST complete before fruiting. Cold shock (38-50°F overnight) triggers pinning. Remove entire bag for fruiting. Soak between flushes. 3-5 flushes over months. Avoid Masters Mix.",
+        tldr="Intermediate. LONG colonization (30-60 days). Unique browning phase — block develops brown skin that MUST complete before fruiting. A cold-water soak (35-50°F, 12-24h) after browning triggers pinning. Remove entire bag for fruiting. Soak between flushes. 3-6 flushes over months. Avoid Masters Mix.",
         flavor_profile="Rich, smoky, deeply savory umami. Meaty texture. The world's second most cultivated mushroom. Incredible dried (concentrates flavor). Essential in Asian cuisine — soups, stir-fries, ramen, dashi.",
         tek_guide=[
             TekStep(step_number=1, title="Substrate Preparation", description="Prepare supplemented hardwood sawdust (oak preferred, 80% sawdust, 20% wheat bran). Hydrate and pressure sterilize at 15 PSI for 2.5 hours. Alternatively, inoculate hardwood logs with plug spawn.", duration="4-6 hours (blocks) or 2-3 hours (logs)", tips=["Oak sawdust is the gold standard for shiitake blocks", "For log cultivation, use freshly-cut hardwood logs 3-6 inches diameter, cut 2-4 weeks before inoculation"], common_mistakes=["Using Masters Mix — shiitake performs better on straight supplemented hardwood", "Using logs from conifers — shiitake requires hardwood"]),
@@ -1351,7 +1351,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=3,
         yield_notes="3-4 flushes. Moderate yield. Delicate flavor — best fresh, doesn't dry well.",
         tags=["beginner", "tropical", "fast", "colorful"],
-        tldr="Warm-weather beginner strain. Colonizes at 70-80°F, fruits at 64-78°F. Aggressive colonizer. Bright yellow clusters. Slightly bitter if undercooked. 2-3 flushes.",
+        tldr="Warm-weather beginner strain. Colonizes at 70-80°F, fruits at 64-78°F. Aggressive colonizer. Bright yellow clusters. Slightly bitter if undercooked. 3-4 flushes.",
         flavor_profile="Nutty, cashew-like flavor. Slightly bitter raw — must be thoroughly cooked. Delicate texture. Beautiful garnish when raw (for color only).",
         tek_guide=[
             TekStep(step_number=1, title="Substrate Preparation", description="Chop straw into 2-4 inch pieces (or use hardwood pellets). Pasteurize using hot water bath at 160-170°F for 60-90 minutes, or use cold water lime bath for 18-24 hours. Drain and cool to room temperature.", duration="4-24 hours depending on method", tips=["Hot water pasteurization is faster; cold lime bath is simpler and uses no fuel", "Straw should be damp like a wrung-out sponge, not dripping"], common_mistakes=["Under-pasteurizing — remaining contaminants will outcompete the mycelium", "Not draining thoroughly — excess water pools at the bottom and breeds bacteria"]),
@@ -1418,7 +1418,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=3,
         yield_notes="2-4 flushes. Small dense mushrooms. Nutty flavor. Popular in Asian cuisine.",
         tags=["intermediate", "cold-tolerant", "nutty"],
-        tldr="Beginner-Intermediate. Reliable colonizer on supplemented sawdust. Fruits at 55-65°F. Beautiful brown caps. Great shelf life. 2-3 flushes.",
+        tldr="Beginner-Intermediate. Reliable colonizer on supplemented sawdust. Fruits at 55-65°F. Beautiful brown caps. Great shelf life. 2-4 flushes.",
         flavor_profile="Rich nutty flavor true to its name. Firm texture. Versatile — sautés, roasts, soups. Deeper flavor than oysters.",
         tek_guide=[
             TekStep(step_number=1, title="Substrate Preparation", description="Prepare supplemented hardwood sawdust or Masters Mix. Pressure sterilize at 15 PSI for 2.5 hours.", duration="4-6 hours", tips=["Oak or beech sawdust works best for chestnut mushrooms", "Masters Mix produces reliable results"], common_mistakes=["Using straw — chestnut performs poorly on unsterlized substrates", "Insufficient sterilization time"]),
@@ -1485,7 +1485,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=3,
         yield_notes="2-4 flushes. Moderate yield. Premium gourmet — excellent texture and flavor.",
         tags=["intermediate", "slow", "premium-gourmet", "italian"],
-        tldr="Intermediate. 21-30 day colonization. Cold fruiter (55-65°F). Dense clusters with long crunchy stems. One of the best culinary mushrooms. 2-3 flushes.",
+        tldr="Intermediate. 21-30 day colonization. Cold fruiter (55-65°F). Dense clusters with long crunchy stems. One of the best culinary mushrooms. 2-4 flushes.",
         flavor_profile="Nutty, peppery, with an exceptional crunchy stem texture that holds up to any cooking method. Sometimes called 'swordbelt mushroom.' Highly prized by chefs. Excellent shelf life.",
         tek_guide=[
             TekStep(step_number=1, title="Substrate Preparation", description="Prepare supplemented hardwood sawdust or Masters Mix. Pressure sterilize at 15 PSI for 2.5 hours.", duration="4-6 hours", tips=["Oak sawdust with wheat bran supplementation is ideal", "Masters Mix also works well"], common_mistakes=["Using pasteurized straw without supplementation", "Insufficient sterilization"]),
@@ -1553,7 +1553,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
         flush_count_typical=3,
         yield_notes="2-4 flushes. Moderate yield. Prized for soups — gelatinous texture is the feature.",
         tags=["intermediate", "cold-tolerant", "high-humidity", "japanese"],
-        tldr="Intermediate. Cold fruiter (50-60°F). Requires VERY high humidity (90-100%) for the signature gelatinous coating. Cut most of top off bag, leave 4-inch walls. Prized in Japanese cuisine. 2-3 flushes.",
+        tldr="Intermediate. Cold fruiter (50-60°F). Requires VERY high humidity (90-100%) for the signature gelatinous coating. Cut most of top off bag, leave 4-inch walls. Prized in Japanese cuisine. 2-4 flushes.",
         flavor_profile="Mild, slightly nutty with a distinctive slippery/gelatinous texture. The amber gelatin coating is the prized feature. Essential in Japanese miso soup and nabemono hot pots.",
         tek_guide=[
             TekStep(step_number=1, title="Substrate Preparation", description="Prepare supplemented hardwood sawdust. Pressure sterilize at 15 PSI for 2.5 hours. Nameko requires high-quality substrate.", duration="4-6 hours", tips=["Beech or oak sawdust is preferred for nameko", "Supplementation with wheat bran at 20% is standard"], common_mistakes=["Using straw — nameko requires supplemented hardwood", "Insufficient sterilization"]),

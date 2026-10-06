@@ -13,7 +13,7 @@ from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
 from .._net import split_host_port, url_host
 from ...telemetry.service import store_reading
-from .config import TapoConfig, TapoDeviceMapping
+from .config import TapoConfig
 from .klap import KlapSession, auth_hash, derive_session, random_seed
 
 

@@ -3,8 +3,9 @@
 Free-tier driver. The Aranet PRO base station (≈$500) bridges Aranet4 /
 Aranet RADIATION / Aranet Soil sensors over proprietary 868/915 MHz radio
 to a LAN HTTP server. The Pi polls the PRO's local API on a schedule and
-publishes readings into the existing telemetry pipeline so chamber UI,
-automation rules, alerts, and the Grafana exporter all work unchanged.
+stores the readings in telemetry history (telemetry API, Grafana exporter).
+They never reach the rules engine or the safety alerts, which run only on
+MQTT node telemetry (mqtt.py).
 
 Tier rationale: traffic stays on the LAN — operator's Pi → operator's
 PRO base station. No SporePrint cloud roundtrip. Per

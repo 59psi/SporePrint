@@ -1,7 +1,8 @@
-# Lighting / HVAC vendor skeletons (v4.1.1)
+# Lighting / HVAC vendor skeletons
 
-This release ships seven new vendor drivers as **defensible skeletons**
-rather than hardware-verified integrations:
+Seven vendor drivers ship as **defensible skeletons** rather than
+hardware-verified integrations. They arrived in v4.1.1 as read-only drivers;
+v4.1.2 added their write actions:
 
 | Vendor | Tier | Transport | Doc reference |
 |---|---|---|---|
@@ -28,7 +29,12 @@ Each driver:
 4. **Polls a documented vendor endpoint** with **tolerant pydantic
    models** — unknown payload shapes degrade to empty rather than
    crashing the poll task.
-5. **Is NOT verified against real vendor hardware.** The vendor API
+5. **Advertises its write actions** through the vendor-actions
+   dispatcher (`app/integrations/_actions.py`): `set_dim` for Fluence,
+   Fohse and BIOS, `set_setpoint` for Trane, Quest and Anden, `set_output`
+   for Agrowtek (`POST /api/integrations/{slug}/actions/{action}`; see
+   [smart-plugs.md](smart-plugs.md#write-actions-across-the-rest-of-the-grid)).
+6. **Is NOT verified against real vendor hardware.** The vendor API
    shapes were inferred from documentation; refinements based on
    actual response payloads are expected and will be additive (new
    parser branches, not structural rewrites).
@@ -49,9 +55,10 @@ Each driver:
 The new drivers introduce no new SporePrint sensor names beyond what
 v4.1.0 already established (`vpd_kpa`, `dew_point_c`,
 `setpoint_humidity`, `power_w`, `dimming_percent`, `light_temp_c`).
-Existing automation rules that match on `temp_c` / `humidity` continue
-to work for the temperature/humidity readings emitted by these drivers
-where vendor APIs return those fields.
+Temperature/humidity readings these drivers store (where vendor APIs
+return those fields) land in telemetry history and the Grafana
+exporter. They do **not** drive automation rules or safety alerts:
+those run only on MQTT telemetry from SporePrint nodes.
 
 ## Per-vendor notes
 
@@ -59,8 +66,9 @@ where vendor APIs return those fields.
 
 GCX firmware ≥ 4.0 exposes a documented LAN REST API at
 `/api/sensors`. Mints API keys in the GCX admin UI. The driver pulls
-sensor readings on the configured interval and merges them into your
-chambers via `sensor_mappings`.
+sensor readings on the configured interval and stores them in telemetry
+history under node ids `agrowtek:<sensor id>`, not tied to a chamber or a
+grow. `sensor_mappings` is accepted in the config but not used yet.
 
 ### Trane Nexia / BAS (premium)
 
@@ -93,14 +101,19 @@ LAN HTTP REST. Optional bearer token for newer firmware revisions
 that ship with API auth. Reports per-fixture dim level, watts, and
 fixture temperature.
 
-## What's NOT in v4.1.1
+## What these drivers don't do yet
 
-- Verified write paths (set dim level, set HVAC setpoint, etc.).
-  v4.1.1 ships **read-only** drivers; control flows happen via the
-  existing actuator pipeline once the read path is verified.
-- Per-vendor settings UI fields beyond the generic JSON renderer in
-  `IntegrationsPanel`. Hand-curated per-vendor schemas land
-  vendor-by-vendor in `frontend/packages/design/src/components/IntegrationsPanel.tsx`'s
-  `INTEGRATION_SCHEMAS` map.
-- Vendor-specific event-driven push (e.g. "lights came on, log it").
-  Polling is the single integration paradigm in v4.1.x.
+- **Hardware verification.** Both the read paths and the write actions
+  are written against vendor documentation, not tested on vendor hardware.
+  Test a write action by hand before an automation relies on it.
+- **Unattended control you can trust.** An automation rule can call a
+  vendor write action (its action sets `vendor_slug`, `vendor_action` and
+  `vendor_params`, and its `target` names the override key
+  `vendor:{slug}:{ip-or-id}`), but until the write path is verified on
+  your hardware, watch the first firings.
+- **Event-driven push** (e.g. "lights came on, log it"). Polling is the
+  only integration paradigm.
+
+Every vendor here has its own settings form on the Integrations page (the
+`INTEGRATION_SCHEMAS` map in the parent monorepo's
+`frontend/packages/design/src/components/IntegrationsPanel.tsx`).

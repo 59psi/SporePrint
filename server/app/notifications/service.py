@@ -4,7 +4,9 @@ Three tiers:
 - CRITICAL (immediate; identical pages collapse for 15 min): contamination,
   temp/CO2 safety, node offline
 - WARNING (5min deduped): out-of-range, etiolation, safety cutoffs
-- INFO (batched hourly): phase reminders, harvest readiness, daily summary
+- INFO (each message at most once an hour, keyed by dedup key or title; sent
+  immediately, never batched): phase reminders, harvest readiness, browning and
+  drying complete
 """
 
 import logging
@@ -115,12 +117,15 @@ async def notify_warning(
     dedup_key: str | None = None,
     dedup_seconds: int = 300,
 ):
-    await notify(title, message, priority="warning", dedup_key=dedup_key,
+    """WARNING tier: deduplicated for 5 min, keyed by `dedup_key` or the title."""
+    await notify(title, message, priority="warning", dedup_key=dedup_key or f"warning:{title}",
                  dedup_seconds=dedup_seconds, tags=["mushroom"])
 
 
 async def notify_info(title: str, message: str, dedup_key: str | None = None):
-    await notify(title, message, priority="info", dedup_key=dedup_key, dedup_seconds=3600, tags=["seedling"])
+    """INFO tier: each message at most once an hour, keyed by `dedup_key` or the title."""
+    await notify(title, message, priority="info", dedup_key=dedup_key or f"info:{title}",
+                 dedup_seconds=3600, tags=["seedling"])
 
 
 # Convenience wrappers for common events
