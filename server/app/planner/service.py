@@ -466,6 +466,7 @@ async def update_planned_event(
         set_sql = ", ".join(f"{c} = ?" for c in changed)
         params = list(changed.values()) + [time.time(), event_id]
         async with get_db() as db:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only "?" placeholders or whitelisted column names are interpolated; every value is a bound parameter
             await db.execute(
                 f"UPDATE planned_events SET {set_sql}, updated_at = ? WHERE id = ?",
                 params,

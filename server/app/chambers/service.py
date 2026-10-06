@@ -255,6 +255,7 @@ async def get_chamber_photos(chamber_id: int, limit: int = 50) -> list[dict] | N
 
     placeholders = ",".join("?" for _ in node_ids)
     async with get_db() as db:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only "?" placeholders or whitelisted column names are interpolated; every value is a bound parameter
         cursor = await db.execute(
             f"""SELECT id, session_id, node_id, timestamp, file_path, resolution,
                        flash_used, analysis_local, analysis_claude, created_at

@@ -324,6 +324,7 @@ Provide a structured analysis in JSON format with these fields:
         text = claude_response_text(message)
         result = parse_claude_json(text)
         if stop_reason == "max_tokens":
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs an identifier/path/field names only, never a secret value
             log.warning("Claude vision response truncated at max_tokens (frame %s)", frame.get("id"))
             if "raw_response" in result:
                 # An error result is never persisted over the frame's last good analysis.

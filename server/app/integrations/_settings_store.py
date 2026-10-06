@@ -114,6 +114,7 @@ def _row_to_settings(row, secret_fields: set[str]) -> StoredSettings:
     raw_config = json.loads(row["config"]) if row["config"] else {}
     config, unreadable = _decrypt_secrets(raw_config, secret_fields)
     if unreadable:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs an identifier/path/field names only, never a secret value
         logger.warning(
             "integrations: %s has undecryptable secret(s) %s — re-enter them",
             row["slug"], sorted(unreadable),

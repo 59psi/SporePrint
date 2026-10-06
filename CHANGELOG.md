@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-10-06
+
 Two passes since 5.0.0. The **2026-09 hardware + software audit**: a live
 re-check of the whole bill of materials, every enclosure re-fit to sourced
 part drawings and joined with heat-set inserts, and ~180 verified software

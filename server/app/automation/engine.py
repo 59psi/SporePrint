@@ -1743,6 +1743,7 @@ async def rehydrate_safety_watchdogs() -> int:
             else:
                 keep[key] = dict(row)
         if extra:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only "?" placeholders or whitelisted column names are interpolated; every value is a bound parameter
             await db.execute(
                 f"DELETE FROM safety_watchdogs WHERE rowid IN ({','.join('?' * len(extra))})",
                 extra,

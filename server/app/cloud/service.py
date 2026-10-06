@@ -1092,6 +1092,7 @@ def load_persisted_cloud_credentials() -> bool:
     except FileNotFoundError:
         return False
     except OSError as e:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs an identifier/path/field names only, never a secret value
         log.warning("Cloud: cannot read persisted credentials at %s: %s", path, e)
         return False
     applied = False
@@ -1103,6 +1104,7 @@ def load_persisted_cloud_credentials() -> bool:
             setattr(settings, attr, value)
             applied = True
     if applied:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs an identifier/path/field names only, never a secret value
         log.info("Cloud: loaded paired credentials from %s", path)
     return applied
 

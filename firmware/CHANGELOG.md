@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-10-06
+
 Two passes since 5.0.0: the **2026-09 hardware audit** and the **2026-10
 follow-ups** (Arduino-ESP32 core 3.3.12, a driver for every sensor the BOM
 ever recommended, the ESP32-S3 camera boards, coredump acknowledgements and
