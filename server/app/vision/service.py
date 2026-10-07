@@ -439,8 +439,9 @@ async def _handle_contamination(
     if existing:
         return
 
+    recorded = None
     try:
-        await record_event(
+        recorded = await record_event(
             source="vision",
             session_id=session_id,
             chamber_id=chamber_id,
@@ -465,6 +466,9 @@ async def _handle_contamination(
         from ..cloud.service import forward_event
         await forward_event("contamination_alert", {
             "node_id": frame.get("node_id"),
+            # Names the recorded event: the cloud stores it from the event
+            # sync (app.cloud.session_sync), so the alert must not add a copy.
+            "pi_event_id": recorded["id"] if recorded else None,
             "session_id": session_id,
             "species": species_name,
             "contamination_type": contam_type,

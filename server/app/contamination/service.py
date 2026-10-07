@@ -1,7 +1,23 @@
+import logging
 import time
+from collections.abc import Awaitable, Callable
 
 from ..db import get_db
 from .models import ContaminationEventCreate
+
+log = logging.getLogger(__name__)
+
+# Called with each newly recorded event row. The cloud connector registers one
+# to send it to the cloud (app.cloud.session_sync); this module never imports
+# the cloud package.
+ContaminationListener = Callable[[dict], Awaitable[None]]
+_recorded_listeners: list[ContaminationListener] = []
+
+
+def add_contamination_listener(listener: ContaminationListener) -> None:
+    """Register `listener` for newly recorded events (idempotent)."""
+    if listener not in _recorded_listeners:
+        _recorded_listeners.append(listener)
 
 
 async def record_event(
@@ -28,7 +44,13 @@ async def record_event(
         )
         await db.commit()
         event_id = cursor.lastrowid
-    return await get_event(event_id)
+    event = await get_event(event_id)
+    for listener in list(_recorded_listeners):
+        try:
+            await listener(event)
+        except Exception as e:  # a sync failure must never fail the record itself
+            log.warning("contamination listener failed for event %s: %s", event_id, e)
+    return event
 
 
 async def get_event(event_id: int) -> dict | None:
