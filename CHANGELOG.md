@@ -5,6 +5,17 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.2.1] - 2026-10-07
+
+### Changed
+
+- **README:** rewritten as the front door for the free install. It covers
+  what is open source and what is not (the Pi dashboard ships as a pre-built
+  bundle), install, update and pairing, which integrations are untested on
+  hardware, and the education-and-research notice wherever the active
+  category is mentioned. `server/tests/test_readme_front_door.py` pins
+  those claims to the code.
+
 ## [5.2.0] - 2026-10-07
 
 ### Added
