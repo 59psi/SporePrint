@@ -341,7 +341,11 @@ async def test_existing_installs_upgrade_their_pre_browning_copies(caplog):
     for row in rows:
         stored = json.loads(row["rule_data"])
         assert stored == json.loads(serialize_rule_data(current[row["name"]])), row["name"]
-        assert "browning" in stored["applies_to_phases"]
+        # Built-ins this install never had are added too (seed_builtin_rules
+        # offers every built-in once); only the upgraded copies gate on phases.
+        if row["name"] in PRE_BROWNING_BUILTIN_RULES:
+            assert "browning" in stored["applies_to_phases"]
+    assert {r["name"] for r in rows} >= set(PRE_BROWNING_BUILTIN_RULES)
     # Dehumidify Cutoff has two superseded forms; both upgrade.
     assert len(SUPERSEDED_BUILTIN_RULES["Dehumidify Cutoff"]) == 2
 

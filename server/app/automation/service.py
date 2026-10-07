@@ -104,26 +104,58 @@ def serialize_rule_data(rule: AutomationRule) -> str:
     return json.dumps(rule.model_dump(exclude=_RULE_META_FIELDS))
 
 
-async def seed_builtin_rules():
-    """Seed built-in automation rule templates into the database if empty.
+# user_settings key: JSON list of the built-in names this Pi was ever given.
+_BUILTINS_OFFERED_KEY = "automation_builtins_offered"
 
-    On an already-seeded database, upgrade any built-in whose shipped form was
-    superseded (SUPERSEDED_BUILTIN_RULES: the unsafe LEGACY_BUILTIN_RULES and the
-    pre-browning phase gates) — but only a copy the operator never edited.
+
+async def seed_builtin_rules():
+    """Seed built-in automation rule templates into the database.
+
+    Every built-in is offered once: a name this Pi has not been given yet is
+    inserted (unless a rule by that name already exists) and recorded, so a
+    built-in added in a later release reaches Pis seeded before it, and one
+    the operator deleted stays deleted. On an already-seeded database, also
+    upgrade any built-in whose shipped form was superseded
+    (SUPERSEDED_BUILTIN_RULES: the unsafe LEGACY_BUILTIN_RULES and the
+    pre-browning phase gates), but only a copy the operator never edited.
     """
     async with get_db() as db:
         cursor = await db.execute("SELECT COUNT(*) as cnt FROM automation_rules")
         row = await cursor.fetchone()
-        if row["cnt"] > 0:
+        seeded_before = row["cnt"] > 0
+        if seeded_before:
             await _upgrade_legacy_builtin_rules(db)
-            return
 
+        cursor = await db.execute("SELECT value FROM user_settings WHERE key = ?", (_BUILTINS_OFFERED_KEY,))
+        stored = await cursor.fetchone()
+        offered = set(json.loads(stored["value"])) if stored else set()
+        cursor = await db.execute("SELECT name FROM automation_rules")
+        present = {r["name"] for r in await cursor.fetchall()}
+
+        added = []
         for rule in BUILTIN_RULES:
+            if rule.name in offered:
+                continue
+            offered.add(rule.name)
+            if rule.name in present:
+                continue
             await db.execute(
                 "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) VALUES (?, ?, ?, ?, ?)",
                 (rule.name, rule.description, int(rule.enabled), rule.priority, serialize_rule_data(rule)),
             )
+            added.append(rule.name)
+        await db.execute(
+            "INSERT INTO user_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch('now')",
+            (_BUILTINS_OFFERED_KEY, json.dumps(sorted(offered))),
+        )
         await db.commit()
+    if added and seeded_before:
+        log.info(
+            "Added built-in automation rule(s) this Pi did not have yet: %s. "
+            "Delete any you do not want; a deleted built-in is not added again.",
+            ", ".join(added),
+        )
 
 
 def _same_rule(a: AutomationRule, b: AutomationRule) -> bool:
