@@ -15,7 +15,7 @@ dependencies = [
     # fix binary-attachment + payload-size DoS; multipart 0.0.31 fixes the
     # header / querystring / negative Content-Length DoS + smuggling set;
     # pydantic-settings 2.14.2 fixes secrets_dir symlink escape.
-    "python-socketio>=5.16.2,<6.0",
+    "python-socketio[asyncio_client]>=5.16.2,<6.0",
     "python-engineio>=4.13.2,<5.0",
     # anthropic 1.x (httpx2-based). Only plain AsyncAnthropic(api_key=...)
     # .messages.create(model, max_tokens, system, messages) is used — none of
