@@ -13,6 +13,7 @@ import re as _re
 import tempfile
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from pathlib import Path as _Path
 from urllib.parse import urlparse
 
@@ -760,6 +761,27 @@ def request_reconnect() -> str:
     return "reconnecting"
 
 
+# Awaited on every (re)connect, after the buffered telemetry drains. Modules
+# that must catch the cloud up after a gap register here (app.cloud.session_sync)
+# instead of this module importing them.
+ConnectListener = Callable[[], Awaitable[None]]
+_connect_listeners: list[ConnectListener] = []
+
+
+def add_connect_listener(listener: ConnectListener) -> None:
+    """Register `listener` to run on every cloud connect (idempotent)."""
+    if listener not in _connect_listeners:
+        _connect_listeners.append(listener)
+
+
+async def _run_connect_listeners() -> None:
+    for listener in list(_connect_listeners):
+        try:
+            await listener()
+        except Exception as e:  # noqa: BLE001 — one listener must not stop the rest
+            log.warning("Cloud: connect listener %s failed: %s", getattr(listener, "__name__", listener), e)
+
+
 async def _push_integrations_snapshot() -> None:
     """(Re)warm the cloud's integrations fleet cache on every connect — the
     boot-time snapshot is emitted before the socket exists and is dropped."""
@@ -840,6 +862,7 @@ async def start_cloud_connector():
         if _heartbeat_task is None or _heartbeat_task.done():
             _heartbeat_task = asyncio.create_task(_health_heartbeat_loop())
         await _push_integrations_snapshot()
+        await _run_connect_listeners()
 
     @_sio.on("disconnect")
     async def on_disconnect():
@@ -983,6 +1006,38 @@ async def forward_event(event_type: str, data: dict) -> bool:
         return True
     except Exception as e:
         log.debug("Cloud: event forward failed: %s", e)
+        return False
+
+
+async def forward_session_sync(payload: dict) -> bool:
+    """Send one grow-session snapshot (app.cloud.session_sync) to the cloud.
+
+    Not queued: the caller keeps the session id and resends it on reconnect.
+    Returns True only when the snapshot was handed to the socket.
+    """
+    if not settings.cloud_url or not _connected or not _sio:
+        return False
+    try:
+        await _sio.emit("session_sync", payload)
+        return True
+    except Exception as e:
+        log.debug("Cloud: session_sync forward failed: %s", e)
+        return False
+
+
+async def forward_contamination_event(payload: dict) -> bool:
+    """Send one recorded contamination event (app.cloud.session_sync).
+
+    Not queued: the caller keeps the event id and resends it on reconnect.
+    Returns True only when the event was handed to the socket.
+    """
+    if not settings.cloud_url or not _connected or not _sio:
+        return False
+    try:
+        await _sio.emit("contamination_event", payload)
+        return True
+    except Exception as e:
+        log.debug("Cloud: contamination_event forward failed: %s", e)
         return False
 
 

@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
 
     from .automation.service import seed_builtin_rules
     from .cloud.service import start_cloud_connector
+    from .cloud.session_sync import attach as attach_session_sync
     from .retention.service import start_retention_task
     from .weather.service import start_weather_polling
 
@@ -90,6 +91,9 @@ async def lifespan(app: FastAPI):
         run_health_sweeper,
         push_state_snapshot,
     )
+
+    # Grow sessions → cloud on every change and every (re)connect.
+    attach_session_sync()
 
     tasks = [
         asyncio.create_task(start_mqtt(sio)),
@@ -343,7 +347,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="5.1.2", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="5.2.0", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -474,7 +478,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "5.1.2"}
+    return {"status": "ok", "version": "5.2.0"}
 
 
 # Track Socket.IO clients for health reporting

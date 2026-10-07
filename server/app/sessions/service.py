@@ -143,6 +143,27 @@ def _decode_phase_row(row) -> dict:
     return ph
 
 
+# Called with a session id after every change to it (create, edit, phase,
+# harvest, end). The cloud connector registers one to send the session to the
+# cloud (app.cloud.session_sync); this module never imports the cloud package.
+SessionChangeListener = Callable[[int], Awaitable[None]]
+_session_change_listeners: list[SessionChangeListener] = []
+
+
+def add_session_change_listener(listener: SessionChangeListener) -> None:
+    """Register `listener` for session changes (idempotent)."""
+    if listener not in _session_change_listeners:
+        _session_change_listeners.append(listener)
+
+
+async def _notify_session_changed(session_id: int) -> None:
+    for listener in list(_session_change_listeners):
+        try:
+            await listener(session_id)
+        except Exception as e:  # a sync failure must never fail the change itself
+            log.warning("session-change listener failed for session %s: %s", session_id, e)
+
+
 async def create_session(data: SessionCreate) -> dict:
     now = time.time()
     # Normalize to the hyphenated UI spelling so the stored id matches what the
@@ -193,7 +214,8 @@ async def create_session(data: SessionCreate) -> dict:
             (session_id, "session_created", "user", f"Session '{data.name}' created"),
         )
         await db.commit()
-        return await get_session(session_id)
+    await _notify_session_changed(session_id)
+    return await get_session(session_id)
 
 
 async def list_sessions(status: str | None = None, species: str | None = None,
@@ -292,6 +314,7 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
     async with get_db() as db:
         await db.execute(_UPDATE_SESSION_SQL, params)
         await db.commit()
+    await _notify_session_changed(session_id)
     return await get_session(session_id)
 
 
@@ -429,6 +452,7 @@ async def advance_phase(session_id: int, data: PhaseAdvance) -> dict | None:
              json.dumps({"phase": data.phase})),
         )
         await db.commit()
+    await _notify_session_changed(session_id)
     return await get_session(session_id)
 
 
@@ -498,6 +522,7 @@ async def add_harvest(session_id: int, data: HarvestCreate) -> dict:
         cursor = await db.execute("SELECT * FROM harvests WHERE id = ?", (harvest_id,))
         harvest = dict(await cursor.fetchone())
 
+    await _notify_session_changed(session_id)
     if srow and await _harvest_needs_immediate_processing(srow["species_profile_id"]):
         await pink_oyster_harvest()
     return harvest
@@ -855,6 +880,7 @@ async def _end_session(session_id: int, status: str, event_type: str, descriptio
         )
         await db.commit()
     await _safe_actuators_after_session_end(session_id)
+    await _notify_session_changed(session_id)
     return await get_session(session_id)
 
 

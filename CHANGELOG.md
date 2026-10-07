@@ -5,6 +5,29 @@ All notable changes to the public SporePrint Pi-side repo.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.2.0] - 2026-10-07
+
+### Added
+
+- **Grow sessions and contamination events reach the cloud.**
+  `app/cloud/session_sync.py` sends each session's snapshot after every
+  change: create, edit, phase advance, harvest, complete or abort. Every
+  recorded contamination event (vision, identify, manual) is sent as it is
+  recorded. Anything unsent is resent on reconnect, and every connect
+  backfills the last year, so the cloud's sessions, analytics, planner,
+  chamber tiles and contamination history fill from real grows. See
+  [`docs/cloud-relay-flow.md`](docs/cloud-relay-flow.md).
+
+### Fixed
+
+- **The cloud connector could not connect.** python-socketio's asyncio
+  client needs aiohttp, which nothing installed, so every connect failed.
+  The Pi now depends on `python-socketio[asyncio_client]`.
+- **Pis seeded by an older release never got newer built-in rules.** CO2
+  Hard Ceiling and CO2 Floor — Restrict FAE were missing on those Pis. Each
+  built-in is now offered once, and a built-in the operator deleted stays
+  deleted.
+
 ## [5.1.2] - 2026-10-06
 
 ### Changed

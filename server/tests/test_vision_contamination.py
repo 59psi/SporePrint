@@ -152,6 +152,9 @@ async def test_confident_detection_pages_records_event_and_dedups(tmp_path, monk
     events = await _vision_events(sid)
     assert len(events) == 1
     ev = events[0]
+    # The alert names the recorded event, so the cloud writes it once (from
+    # the event sync), not again from the alert.
+    assert spies["forward"].await_args.args[1]["pi_event_id"] == ev["id"]
     assert ev["contamination_type"] == "trichoderma"
     assert ev["confidence"] == 0.92
     assert ev["frame_id"] == frame["id"]
