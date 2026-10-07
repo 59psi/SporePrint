@@ -55,4 +55,18 @@ inline uint16_t clamp_level10(int32_t v) {
     return (uint16_t)v;
 }
 
+// CO2 forced-recalibration reference (cmd/config {"calibrate_co2": ppm}).
+// Sensirion's FRC reference range is 400-2000 ppm (SCD30 datasheet; the SCD4x
+// FRC assumes a fresh-air-class reference too). A typo (42, 4200) or a 0
+// shifts every later reading by thousands of ppm, so the FAE / emergency
+// exhaust / 4000 ppm alert thresholds act on garbage until someone notices —
+// refuse it before any sensor is told. The MH-Z19C ignores the value (it
+// zero-points to 400) but a nonsense target is still refused: the operator
+// clearly isn't following the fresh-air procedure.
+constexpr int32_t kMinCo2CalPpm = 400;
+constexpr int32_t kMaxCo2CalPpm = 2000;
+inline bool co2_cal_target_valid(int32_t ppm) {
+    return ppm >= kMinCo2CalPpm && ppm <= kMaxCo2CalPpm;
+}
+
 }  // namespace sp

@@ -9,7 +9,6 @@ Requires 7+ days of data before predictions are available.
 
 import json
 import logging
-import math
 import time
 
 from ..db import get_db
@@ -120,31 +119,55 @@ async def get_model_status() -> dict:
 
 
 async def _build_training_data() -> list[dict]:
-    """Join weather_readings with telemetry_readings on timestamp (±5min window).
+    """Hourly outdoor (weather_readings) vs indoor (telemetry) averages.
 
-    Returns hourly-averaged data points with outdoor + indoor conditions.
+    Indoor history comes from raw `telemetry_readings` UNION the 5-minute
+    `telemetry_rollups`: retention compresses raw telemetry older than 7 days
+    into 5-min buckets (and deletes the raw rows), so joining raw readings
+    alone capped the "30-day" window at ~7 days. Rollups are weighted by their
+    sample count so an hour mixing both sources averages correctly. A reading
+    lives in exactly one of the two tables (retention moves it atomically), so
+    nothing is double counted.
     """
     cutoff = time.time() - TRAINING_WINDOW_DAYS * 86400
     async with get_db() as db:
         cursor = await db.execute(
-            """SELECT
-                 CAST(w.timestamp / 3600 AS INT) * 3600 as hour_ts,
-                 AVG(w.temp_f) as outdoor_temp,
-                 AVG(w.humidity) as outdoor_humidity,
-                 AVG(t_temp.value) as indoor_temp,
-                 AVG(t_hum.value) as indoor_humidity
-               FROM weather_readings w
-               LEFT JOIN telemetry_readings t_temp
-                 ON t_temp.sensor = 'temp_f'
-                 AND t_temp.timestamp BETWEEN w.timestamp - 300 AND w.timestamp + 300
-               LEFT JOIN telemetry_readings t_hum
-                 ON t_hum.sensor = 'humidity'
-                 AND t_hum.timestamp BETWEEN w.timestamp - 300 AND w.timestamp + 300
-               WHERE w.timestamp > ?
-                 AND t_temp.value IS NOT NULL
-               GROUP BY hour_ts
-               ORDER BY hour_ts""",
-            (cutoff,),
+            """WITH indoor AS (
+                   SELECT CAST(timestamp / 3600 AS INT) * 3600 AS hour_ts,
+                          sensor, value AS v, 1 AS n
+                     FROM telemetry_readings
+                    WHERE sensor IN ('temp_f', 'humidity') AND timestamp > ?
+                   UNION ALL
+                   SELECT CAST(timestamp / 3600 AS INT) * 3600 AS hour_ts,
+                          sensor, avg_value AS v, COALESCE(count, 1) AS n
+                     FROM telemetry_rollups
+                    WHERE resolution = '5min' AND sensor IN ('temp_f', 'humidity')
+                      AND timestamp > ? AND avg_value IS NOT NULL
+               ),
+               indoor_hourly AS (
+                   SELECT hour_ts,
+                          SUM(CASE WHEN sensor = 'temp_f' THEN v * n END)
+                            / NULLIF(SUM(CASE WHEN sensor = 'temp_f' THEN n END), 0) AS indoor_temp,
+                          SUM(CASE WHEN sensor = 'humidity' THEN v * n END)
+                            / NULLIF(SUM(CASE WHEN sensor = 'humidity' THEN n END), 0) AS indoor_humidity
+                     FROM indoor
+                    GROUP BY hour_ts
+               ),
+               outdoor_hourly AS (
+                   SELECT CAST(timestamp / 3600 AS INT) * 3600 AS hour_ts,
+                          AVG(temp_f) AS outdoor_temp,
+                          AVG(humidity) AS outdoor_humidity
+                     FROM weather_readings
+                    WHERE timestamp > ? AND temp_f IS NOT NULL
+                    GROUP BY hour_ts
+               )
+               SELECT o.hour_ts, o.outdoor_temp, o.outdoor_humidity,
+                      i.indoor_temp, i.indoor_humidity
+                 FROM outdoor_hourly o
+                 JOIN indoor_hourly i ON i.hour_ts = o.hour_ts
+                WHERE i.indoor_temp IS NOT NULL
+                ORDER BY o.hour_ts""",
+            (cutoff, cutoff, cutoff),
         )
         rows = await cursor.fetchall()
 

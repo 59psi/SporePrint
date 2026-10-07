@@ -89,6 +89,16 @@ class IntegrationDriver(ABC):
     # registry encrypts these per-field at rest and never logs them.
     secret_fields: ClassVar[set[str]] = set()
 
+    # Config fields that decide WHERE the secrets are sent (a caller-set
+    # base_url/host the driver authenticates to). A PUT that omits a secret,
+    # or sends back its ``••••last4`` preview, keeps the stored value only
+    # while every one of these is unchanged; changing one means re-entering
+    # the secret (422). Without this, anyone who can PUT a config could point
+    # the stored key at their own host without ever seeing it. Leave empty
+    # when the secret only goes to a fixed vendor host or is never sent
+    # (tests/test_integrations_registry_secrets.py audits every driver).
+    secret_bound_fields: ClassVar[frozenset[str]] = frozenset()
+
     @abstractmethod
     async def configure(self, config: BaseModel) -> None:
         """Validate and stage configuration. Do not start I/O here."""

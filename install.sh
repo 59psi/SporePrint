@@ -14,8 +14,10 @@
 #      (official get.docker.com convenience script), plus chrony (NTP) and
 #      openssl if needed. Nothing else has to be installed by hand.
 #   3. Writes a LAN-trust .env and generates the secrets the stack needs:
-#      the MQTT broker credentials (+ TLS certificates) and a smart-plug
-#      credential. No secret is ever committed to git.
+#      the MQTT broker credentials (+ TLS certificates), a smart-plug
+#      credential and the node command-signing key; records the host's time
+#      zone (TZ) for the automation schedules. Keys already set are kept. No
+#      secret is ever committed to git.
 #   4. Brings the whole stack up with `docker compose up -d --build` and
 #      waits for the API to report healthy.
 #   5. Prints the dashboard URL.
@@ -25,7 +27,7 @@
 # there is no HTTP auth by default — keep the Pi behind your home router/NAT
 # and never port-forward it. The MQTT broker is still credentialed. To gate
 # the API for the mobile app / external clients, set SPOREPRINT_API_KEY in
-# .env and restart (see the README).
+# .env and run `docker compose up -d server` (see the README).
 #
 # Environment overrides:
 #   SPOREPRINT_REPO_URL   git URL to clone when piped   (default: 59psi/SporePrint)
@@ -37,6 +39,11 @@ set -euo pipefail
 REPO_URL="${SPOREPRINT_REPO_URL:-https://github.com/59psi/SporePrint.git}"
 REPO_DIR="${SPOREPRINT_REPO_DIR:-$HOME/SporePrint}"
 SKIP_START="${SPOREPRINT_SKIP_START:-0}"
+
+# The broker image — MUST equal services.mqtt.image in docker-compose.yml
+# (tests/test_docker.py). Password hashes are generated inside it so their
+# format always matches the broker that reads them.
+MOSQUITTO_IMAGE="eclipse-mosquitto:2.1.2-alpine"
 
 # ── Output helpers ───────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -69,7 +76,9 @@ require curl
 ARCH="$(uname -m)"
 OS_ID="unknown"; OS_LIKE=""
 if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091  # the host's own os-release, read at runtime
   OS_ID="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-unknown}" || true)"
+  # shellcheck disable=SC1091
   OS_LIKE="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID_LIKE:-}" || true)"
 fi
 info "OS: ${OS_ID} (${ARCH})"
@@ -152,6 +161,28 @@ else
 fi
 cd "$REPO_DIR" || fail "cannot cd into $REPO_DIR"
 
+# ── 4b. Repair bind-mount sources Docker auto-created as directories ─────────
+# A `docker compose up` that ran before these files existed (the old
+# scripts/setup-pi.sh, or a bare `up` with the pre-long-syntax compose file)
+# made Docker create each missing source as an EMPTY root-owned DIRECTORY.
+# The broker then dies ("pwfile is a directory") and writing the real file
+# fails. Remove them, and recreate the containers that mounted them (a mere
+# restart would try to mount the new FILE onto the old directory mountpoint).
+REPAIRED_MOUNTS=0
+for p in config/mosquitto/passwd config/mosquitto/certs/ca.crt; do
+  if [ -d "$p" ]; then
+    $SUDO rmdir "$p" 2>/dev/null \
+      || fail "$p is a directory (created by Docker) and is not empty — move it aside and re-run ./install.sh"
+    warn "Removed Docker-created directory $p (it must be a file)"
+    REPAIRED_MOUNTS=1
+  fi
+done
+if [ -d config/mosquitto/certs ] && [ ! -w config/mosquitto/certs ]; then
+  $SUDO chown "$(id -u):$(id -g)" config/mosquitto/certs
+  warn "Reclaimed Docker-created config/mosquitto/certs for $(id -un)"
+  REPAIRED_MOUNTS=1
+fi
+
 # ── 5. .env — LAN-trust config + generated secrets ───────────────────────────
 step "Preparing configuration (.env)"
 
@@ -169,10 +200,12 @@ env_set() { # env_set KEY VALUE — replace in place or append. Idempotent.
   mv "$tmp" .env
 }
 
+EXISTING_INSTALL=0
 if [ ! -f .env ]; then
   if [ -f .env.example ]; then cp .env.example .env; info "Created .env from .env.example"
   else : > .env; info "Created empty .env"; fi
 else
+  EXISTING_INSTALL=1
   info ".env already present — updating only unset keys"
 fi
 
@@ -206,50 +239,188 @@ if [ -z "$MQTT_3P_PASS" ]; then
   MQTT_CREDS_FRESH=1
   info "Generated MQTT 'sp-3p' (smart-plug) credential"
 fi
+
+# Command-signing key (SPOREPRINT_MQTT_HMAC_KEY). With a key the Pi signs
+# every cmd/* frame: nodes that have no key accept signed frames, keyed nodes
+# verify them. Without one, a cloud-paired Pi (mqtt_require_signing=auto)
+# REFUSES every node command, so pairing a Pi whose nodes were never
+# provisioned used to cut off all actuation. Reuse a key an older
+# scripts/provision-node.sh left in server/.env — nodes may already hold it.
+# Keep in step with scripts/lib/host.sh sp_ensure_signing_key.
+if [ -z "$(env_get SPOREPRINT_MQTT_HMAC_KEY)" ]; then
+  HMAC_KEY="$(grep -E '^SPOREPRINT_MQTT_HMAC_KEY=' server/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$HMAC_KEY" ]; then
+    info "Reusing the command-signing key from server/.env"
+  else
+    HMAC_KEY="$(openssl rand -hex 32)"
+    info "Generated the command-signing key (SPOREPRINT_MQTT_HMAC_KEY)"
+  fi
+  env_set SPOREPRINT_MQTT_HMAC_KEY "$HMAC_KEY"
+  unset HMAC_KEY
+fi
+
+# Time zone: automation schedules (photoperiod, time windows, cron) run on
+# the server container's local clock, which is UTC unless compose passes TZ.
+# Only fills an unset TZ — an operator's choice in .env is kept.
+# Keep in step with scripts/lib/host.sh sp_host_timezone.
+host_timezone() { # the host's canonical IANA zone, or nothing
+  local zi="${SP_ZONEINFO_DIR:-/usr/share/zoneinfo}" tz="" real=""
+  if command -v timedatectl >/dev/null 2>&1; then
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  fi
+  if [ -z "$tz" ] && [ -r /etc/timezone ]; then
+    tz="$(head -n 1 /etc/timezone 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  if [ -z "$tz" ] && [ -L /etc/localtime ]; then
+    tz="$(readlink /etc/localtime 2>/dev/null || true)"
+    tz="${tz##*zoneinfo/}"
+  fi
+  # A legacy alias (US/Pacific) is a symlink on Debian hosts: resolve it. The
+  # server image carries canonical zones only, and glibc runs an unknown TZ
+  # on UTC without a word.
+  if [ -n "$tz" ] && [ -L "$zi/$tz" ]; then
+    real="$(readlink -f "$zi/$tz" 2>/dev/null || true)"
+    case "$real" in */zoneinfo/*) tz="${real##*/zoneinfo/}" ;; esac
+  fi
+  tz="${tz#posix/}"
+  printf '%s\n' "$tz" | grep -Eq '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$' || return 0
+  if [ -d "$zi" ] && [ ! -f "$zi/$tz" ]; then return 0; fi
+  printf '%s' "$tz"
+}
+if [ -z "$(env_get TZ)" ]; then
+  HOST_TZ="$(host_timezone)"
+  if [ -n "$HOST_TZ" ]; then
+    env_set TZ "$HOST_TZ"
+    info "Time zone ${HOST_TZ} (TZ in .env — automation schedules follow it)"
+    if [ "$EXISTING_INSTALL" = "1" ] && [ "$HOST_TZ" != "UTC" ] && [ "$HOST_TZ" != "Etc/UTC" ]; then
+      warn "Schedules ran on UTC until now. Rule times you entered in UTC to compensate"
+      warn "(photoperiod, time windows, cron) now read as ${HOST_TZ} — set them back to local"
+      warn "time, or put TZ=UTC in .env and re-run to keep the old behaviour."
+    fi
+  else
+    warn "Could not determine this host's time zone — automation schedules will run on UTC."
+    warn "Set TZ=<Region/City> (e.g. America/Los_Angeles) in .env and re-run ./install.sh."
+  fi
+fi
 chmod 600 .env 2>/dev/null || true
 
 # ── 6. Mosquitto password file (hashes generated inside the broker image) ─────
+# Ownership matters: mosquitto drops to its `mosquitto` user (uid/gid 1883 in
+# the image) right after reading mosquitto.conf and BEFORE it opens
+# password_file or the TLS keyfile. A 0600 file owned by this (host) user is
+# unreadable to it — "Unable to open pwfile" — and the broker crash-loops.
+# So on Linux the broker's secret files belong to 1883:1883 (mode 0600), and
+# every edit runs as root inside a throwaway broker container (the host user
+# can no longer write them). Docker Desktop (macOS) maps ownership itself.
+# Keep in step with scripts/lib/broker.sh.
 step "Provisioning MQTT broker credentials"
 PASSWD_FILE="config/mosquitto/passwd"
 mkdir -p config/mosquitto
+BROKER_CHOWN=0
+[ "$(uname -s)" = "Linux" ] && BROKER_CHOWN=1
+PASSWD_CHANGED=0
 if [ ! -f "$PASSWD_FILE" ] || [ "$MQTT_CREDS_FRESH" = "1" ]; then
-  # Generate the PBKDF2 hashes inside a throwaway broker container and capture
-  # them on stdout, so the host file is written by us (correct ownership) — no
-  # root-owned bind-mounted file to chown back.
-  HASHES="$(dc run --rm -e SP="$MQTT_PASS" -e TP="$MQTT_3P_PASS" eclipse-mosquitto:2 sh -c '
-    mosquitto_passwd -c -b /tmp/pw server "$SP" >/dev/null 2>&1 &&
-    mosquitto_passwd -b /tmp/pw sp-3p "$TP" >/dev/null 2>&1 &&
-    cat /tmp/pw')" || fail "failed to generate mosquitto password file"
-  printf '%s\n' "$HASHES" | grep -q '^server:' || fail "mosquitto password generation produced no 'server' entry"
-  printf '%s\n' "$HASHES" > "$PASSWD_FILE"
-  chmod 600 "$PASSWD_FILE"
-  info "Wrote $PASSWD_FILE (server + sp-3p)"
+  # Set `server` + `sp-3p` IN PLACE (never `mosquitto_passwd -c` on an
+  # existing file): per-node users added by scripts/add-node-mqtt-user.sh
+  # survive a re-run, and the inode the running broker's bind mount points at
+  # stays the same. Credentials travel on stdin, not argv.
+  # shellcheck disable=SC2016  # the -c script expands inside the container
+  printf '%s\n%s\n%s\n%s\n' server "$MQTT_PASS" sp-3p "$MQTT_3P_PASS" \
+    | dc run --rm -i -e SP_CHOWN="$BROKER_CHOWN" \
+        -v "$PWD/config/mosquitto:/work" --entrypoint sh "$MOSQUITTO_IMAGE" -c '
+      set -e
+      [ -f /work/passwd ] || : > /work/passwd
+      while IFS= read -r u && IFS= read -r p; do
+        mosquitto_passwd -b /work/passwd "$u" "$p" >/dev/null
+      done
+      grep -q "^server:" /work/passwd
+      grep -q "^sp-3p:" /work/passwd
+      if [ "$SP_CHOWN" = "1" ]; then chown 1883:1883 /work/passwd; fi
+      chmod 600 /work/passwd' \
+    || fail "failed to write the mosquitto password file ($PASSWD_FILE)"
+  PASSWD_CHANGED=1
+  info "Wrote server + sp-3p into $PASSWD_FILE (other users kept)"
 else
-  info "$PASSWD_FILE already present — leaving as-is"
+  info "$PASSWD_FILE already present — leaving its users as-is"
 fi
 
 # ── 7. Broker TLS certificates (8883 listener; nodes pin the CA) ──────────────
 step "Provisioning MQTT TLS certificates"
 CERT_DIR="config/mosquitto/certs"
-if [ -f "$CERT_DIR/server.crt" ]; then
-  info "TLS certificates already present — leaving as-is"
-else
+HOST_NAME="$(hostname -s 2>/dev/null || echo sporeprint)"
+# Every IPv4 address of this host goes into the broker certificate, so a node
+# provisioned with the Pi's IP as its broker host passes the TLS name check
+# (with a CA already pinned there is no plaintext fallback — a mismatch means
+# the node never connects). Each IP is listed twice: IP:<ip> for standard
+# clients (mosquitto_sub, Python), and DNS:<ip> because arduino-esp32 2.x
+# (mbedTLS 2.28) compares the host string against SAN entries verbatim and
+# cannot match an iPAddress entry. mDNS (sporeprint.local) stays the most
+# robust broker address — a DHCP change moves the IP.
+HOST_IPS="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' || true)"
+PRIMARY_IP="$(printf '%s\n' "$HOST_IPS" | head -1)"
+server_san() {
+  local san="DNS:sporeprint.local,DNS:${HOST_NAME}.local,DNS:${HOST_NAME},DNS:localhost,IP:127.0.0.1" ip
+  for ip in $HOST_IPS; do san="${san},IP:${ip},DNS:${ip}"; done
+  printf '%s' "$san"
+}
+issue_server_cert() { # (re)issue server.key + server.crt from the existing CA
+  local tmp
+  tmp="$(mktemp -d)"
+  if openssl req -newkey rsa:2048 -nodes \
+       -keyout "$tmp/server.key" -out "$tmp/server.csr" \
+       -subj "/CN=sporeprint.local" 2>/dev/null \
+     && openssl x509 -req -in "$tmp/server.csr" \
+       -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
+       -CAcreateserial -CAserial "$tmp/ca.srl" \
+       -days 1825 -out "$tmp/server.crt" \
+       -extfile <(printf 'subjectAltName=%s' "$(server_san)") 2>/dev/null; then
+    chmod 600 "$tmp/server.key"
+    chmod 644 "$tmp/server.crt"
+    mv -f "$tmp/server.key" "$CERT_DIR/server.key"
+    mv -f "$tmp/server.crt" "$CERT_DIR/server.crt"
+    rm -rf "$tmp"
+    return 0
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+CERTS_CHANGED=0
+CA_CHANGED=0
+if [ ! -f "$CERT_DIR/server.crt" ]; then
   mkdir -p "$CERT_DIR"
-  HOST_NAME="$(hostname -s 2>/dev/null || echo sporeprint)"
   openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
     -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
     -subj "/CN=SporePrint Local CA" 2>/dev/null || fail "CA certificate generation failed"
-  openssl req -newkey rsa:2048 -nodes \
-    -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.csr" \
-    -subj "/CN=sporeprint.local" 2>/dev/null || fail "server key/CSR generation failed"
-  openssl x509 -req -in "$CERT_DIR/server.csr" \
-    -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
-    -days 1825 -out "$CERT_DIR/server.crt" \
-    -extfile <(printf "subjectAltName=DNS:sporeprint.local,DNS:%s.local,DNS:%s,DNS:localhost" \
-               "$HOST_NAME" "$HOST_NAME") 2>/dev/null || fail "server certificate signing failed"
-  rm -f "$CERT_DIR/server.csr" "$CERT_DIR/ca.srl"
-  chmod 600 "$CERT_DIR/ca.key" "$CERT_DIR/server.key"
+  chmod 600 "$CERT_DIR/ca.key"
+  chmod 644 "$CERT_DIR/ca.crt"
+  issue_server_cert || fail "server certificate generation failed"
+  CERTS_CHANGED=1
+  CA_CHANGED=1
   info "Generated CA + server certificate in $CERT_DIR"
+elif [ -n "$PRIMARY_IP" ] && ! openssl x509 -in "$CERT_DIR/server.crt" -noout -text 2>/dev/null \
+       | grep -qE "IP Address:$(printf '%s' "$PRIMARY_IP" | sed 's/\./\\./g')(,|\$)"; then
+  # Older installs issued a DNS-only certificate. Re-issue just the server
+  # certificate from the SAME CA — nodes pin the CA, so they keep verifying.
+  if [ -r "$CERT_DIR/ca.key" ] && issue_server_cert; then
+    CERTS_CHANGED=1
+    info "Re-issued the broker certificate to cover ${PRIMARY_IP} (same CA — pinned nodes unaffected)"
+  else
+    warn "The broker certificate does not cover ${PRIMARY_IP}. Nodes using Secure MQTT must use"
+    warn "sporeprint.local (or ${HOST_NAME}.local) as the broker address."
+  fi
+else
+  info "TLS certificates already present — leaving as-is"
+fi
+[ -f "$CERT_DIR/ca.crt" ] || fail "$CERT_DIR/ca.crt is missing — delete $CERT_DIR and re-run ./install.sh to regenerate the CA"
+
+# ── 7b. Hand the broker's secret files to the broker user (Linux) ─────────────
+# Idempotent, and also repairs installs made by older versions of this script
+# (passwd + server.key owned by the host user → the broker could not start).
+if [ "$BROKER_CHOWN" = "1" ]; then
+  dc run --rm -v "$PWD/config/mosquitto:/work" --entrypoint sh "$MOSQUITTO_IMAGE" -c \
+    'chown 1883:1883 /work/passwd /work/certs/server.key && chmod 600 /work/passwd /work/certs/server.key' \
+    || fail "could not hand $PASSWD_FILE + $CERT_DIR/server.key to the broker user (uid 1883)"
+  info "Broker secrets owned by the broker user (uid 1883, mode 0600)"
 fi
 
 # ── 8. Build + start the stack ───────────────────────────────────────────────
@@ -259,8 +430,27 @@ if [ "$SKIP_START" = "1" ]; then
 fi
 
 step "Building and starting the stack (this can take a few minutes on first run)"
+if [ "$REPAIRED_MOUNTS" = "1" ]; then
+  # Their mountpoints were created as directories — recreate, don't restart.
+  dc compose rm -s -f mqtt server >/dev/null 2>&1 || true
+fi
+MQTT_WAS_RUNNING="$(dc compose ps -q --status running mqtt 2>/dev/null || true)"
+SERVER_WAS_RUNNING="$(dc compose ps -q --status running server 2>/dev/null || true)"
 dc compose pull --ignore-pull-failures >/dev/null 2>&1 || true
 dc compose up -d --build || fail "docker compose failed to start the stack. Inspect: $( [ -n "$DOCKER_SUDO" ] && echo 'sudo ' )docker compose logs"
+if [ -n "$MQTT_WAS_RUNNING" ] && { [ "$PASSWD_CHANGED" = "1" ] || [ "$CERTS_CHANGED" = "1" ]; }; then
+  # A broker that was already running still holds the old users / old
+  # certificate. (For passwd alone `docker compose kill -s HUP mqtt` would
+  # do; the TLS certificate needs a restart.)
+  dc compose restart mqtt >/dev/null || warn "could not restart the broker — run: docker compose restart mqtt"
+  info "Broker restarted to load the new credentials / certificate"
+fi
+if [ -n "$SERVER_WAS_RUNNING" ] && [ "$CA_CHANGED" = "1" ]; then
+  # ca.crt is a single-file bind mount: a running container keeps the OLD
+  # file's inode until it is restarted, and would keep serving the old CA
+  # from /api/provision/ca.
+  dc compose restart server >/dev/null || warn "could not restart the server — run: docker compose restart server"
+fi
 
 # ── 9. Wait for the API to report healthy ────────────────────────────────────
 step "Waiting for the API to come up"
@@ -282,6 +472,7 @@ info "API is healthy"
 PI_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "$PI_IP" ] || PI_IP="<pi-ip>"
 DC_PREFIX=""; [ -n "$DOCKER_SUDO" ] && DC_PREFIX="sudo "
+SCHED_TZ="$(env_get TZ)"; [ -n "$SCHED_TZ" ] || SCHED_TZ="UTC (set TZ in .env)"
 
 cat <<EOF
 
@@ -292,24 +483,33 @@ ${GREEN}${BOLD}✓ SporePrint is running.${NC}
 
   API health   http://${PI_IP}:8000/api/health
   MQTT broker  ${PI_IP}:1883   (TLS on 8883)   — ESP32 nodes connect here
+               Secure MQTT nodes: use sporeprint.local (or ${PI_IP}) as the broker host
   ntfy push    http://${PI_IP}:8080
+  Schedules    ${SCHED_TZ} — photoperiod, time windows and cron rules follow it
 
 ${BOLD}Next steps${NC}
   • Open the dashboard and finish the first-run setup.
   • Pair firmware nodes to the broker: ./scripts/add-node-mqtt-user.sh <node_id>
+  • Command signing is on: the Pi signs every node command. Nodes accept signed
+    commands without the key; to make a node reject forged ones, paste the key
+    into its portal's "Command signing key" — print it with ./scripts/provision-node.sh
+  • Smart plugs (Shelly/Tasmota): MQTT user sp-3p, password SPOREPRINT_MQTT_3P_PASSWORD
+    in .env (Tasmota: FullTopic tasmota/%topic%/%prefix%/ and a unique Topic;
+    Shelly Plus/Pro/Mini/Gen3/Gen4: MQTT prefix shellies/<role>, e.g. shellies/humidifier).
   • To pair with the cloud (premium remote access), generate a code in the app.
 
 ${BOLD}Manage the stack${NC}  (from ${REPO_DIR})
   ${DC_PREFIX}docker compose ps                # service status
   ${DC_PREFIX}docker compose logs -f server    # live server logs
-  ${DC_PREFIX}docker compose restart server    # apply .env changes
+  ${DC_PREFIX}docker compose up -d server      # apply .env changes ('restart' does NOT re-read .env)
   ${DC_PREFIX}docker compose down              # stop everything (data is kept in named volumes)
-  ./install.sh                     # re-run to update + rebuild
+  git pull && ./install.sh        # update the checkout + rebuild
 
 ${BOLD}Security${NC}
   Running in LAN-trust mode (no HTTP auth) — the browser UI is same-origin.
   Keep the Pi behind your router/NAT; do not port-forward it. To require an
   API key for the mobile app / external clients, set SPOREPRINT_API_KEY in
-  ${REPO_DIR}/.env and run: ${DC_PREFIX}docker compose restart server
+  ${REPO_DIR}/.env and run: ${DC_PREFIX}docker compose up -d server
+  (the bundled browser dashboard sends no API key, so it stops working then).
 
 EOF

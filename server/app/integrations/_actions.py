@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any
+from typing import Any, get_type_hints
 
 from fastapi import APIRouter, HTTPException
+from pydantic import TypeAdapter, ValidationError
 
 from . import _registry
 
@@ -42,6 +43,35 @@ VENDOR_ACTIONS: dict[str, dict[str, str]] = {
 }
 
 
+# Lax pydantic bool: true/false, on/off, yes/no, 1/0 (int or string) map to a
+# real bool; anything else is a ValidationError. Drivers do `1 if on else 0`,
+# so without this a JSON string like "false"/"off"/"0" is truthy and turns a
+# heater/humidifier plug ON.
+_BOOL = TypeAdapter(bool)
+
+
+def _coerce_bool_kwargs(method: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Coerce every kwarg whose (resolved) annotation is ``bool``.
+
+    Driver modules use ``from __future__ import annotations``, so the
+    signature holds the string ``"bool"`` — resolve hints first.
+    """
+    try:
+        hints = get_type_hints(method)
+    except Exception:  # noqa: BLE001 — unresolvable hints: leave values as-is
+        return kwargs
+    out = dict(kwargs)
+    for name, value in kwargs.items():
+        if hints.get(name) is bool:
+            try:
+                out[name] = _BOOL.validate_python(value)
+            except ValidationError:
+                raise HTTPException(
+                    400, f"{name} must be a boolean (true/false), got {value!r}"
+                ) from None
+    return out
+
+
 async def dispatch(slug: str, action: str, payload: dict[str, Any]) -> Any:
     actions = VENDOR_ACTIONS.get(slug)
     if actions is None:
@@ -64,6 +94,7 @@ async def dispatch(slug: str, action: str, payload: dict[str, Any]) -> Any:
     # extra field doesn't blow up the dispatch.
     sig = inspect.signature(method)
     kwargs = {k: v for k, v in (payload or {}).items() if k in sig.parameters}
+    kwargs = _coerce_bool_kwargs(method, kwargs)
     try:
         return await method(**kwargs)
     except HTTPException:

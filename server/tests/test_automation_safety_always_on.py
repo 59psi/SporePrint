@@ -44,7 +44,7 @@ def spy_alerts(monkeypatch):
     critical: list[tuple] = []
     forward: list[tuple] = []
 
-    async def _fake_critical(title, message, tags=None):
+    async def _fake_critical(title, message, tags=None, **kwargs):
         critical.append((title, message, tags))
 
     async def _fake_forward(event_type, data):

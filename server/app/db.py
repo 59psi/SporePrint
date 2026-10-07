@@ -154,7 +154,9 @@ CREATE TABLE IF NOT EXISTS automation_firings (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_firings_time ON automation_firings(timestamp);
-CREATE INDEX IF NOT EXISTS idx_firings_status ON automation_firings(status);
+-- idx_firings_status is created in init_db() AFTER the v3.3.0 `status`
+-- column migration: on a pre-3.3.0 database this CREATE TABLE is a no-op,
+-- so indexing `status` here would fail with "no such column".
 
 -- Safety watchdog registry. Each row represents a currently-ARMED
 -- safety_max_on_seconds auto-off. Survives Pi restart: on boot we scan
@@ -291,6 +293,10 @@ CREATE TABLE IF NOT EXISTS telemetry_rollups (
     count INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rollup_unique ON telemetry_rollups(timestamp, node_id, sensor, resolution);
+-- History reads (telemetry.get_history, transcripts) filter one node + sensor
+-- over a time range; idx_rollup_unique leads with timestamp, so without this
+-- the range covered every node's and sensor's rollups.
+CREATE INDEX IF NOT EXISTS idx_rollup_node_sensor_time ON telemetry_rollups(node_id, sensor, timestamp);
 
 -- Weather rollups (compressed historical weather)
 CREATE TABLE IF NOT EXISTS weather_rollups (
@@ -415,7 +421,9 @@ CREATE TABLE IF NOT EXISTS integration_settings (
 -- Contamination events (persisted identify detections + manual marks).
 -- source='identify' rows are auto-created when POST /api/contamination/identify
 -- returns a positive detection; source='manual' rows come from the page's
--- manual-mark flow. root_cause is stamped later via the RCA endpoint.
+-- manual-mark flow; source='vision' rows are written by the camera frame
+-- analysis pipeline for a confident detection, with frame_id and chamber_id
+-- set. root_cause is stamped later via the RCA endpoint.
 CREATE TABLE IF NOT EXISTS contamination_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER REFERENCES sessions(id),
@@ -485,6 +493,13 @@ async def _apply_connection_pragmas(db):
 async def init_db():
     Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(settings.database_path) as db:
+        # New databases start in auto_vacuum=INCREMENTAL, so the nightly
+        # retention job can hand freed pages back without a full VACUUM. The
+        # mode only sticks before WAL mode is set and the first table exists;
+        # on an existing database this is a no-op (converting one needs a full
+        # VACUUM — see retention.service.ensure_incremental_auto_vacuum, which
+        # the lifespan runs at boot).
+        await db.execute("PRAGMA auto_vacuum=INCREMENTAL")
         # journal_mode + synchronous are persistent, set once at init
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
@@ -507,6 +522,11 @@ async def init_db():
         await _add_column_if_missing(
             db, "PRAGMA table_info(automation_firings)", "error",
             "ALTER TABLE automation_firings ADD COLUMN error TEXT",
+        )
+        # Indexes over migrated columns go after their migration (see SCHEMA).
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_firings_status "
+            "ON automation_firings(status)"
         )
         # v4.2: combined-node role routing (firmware v2 heartbeats).
         await _add_column_if_missing(

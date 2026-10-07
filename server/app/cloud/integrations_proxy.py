@@ -43,11 +43,120 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ..config import settings
+from ..db import get_db
 from ..integrations import _registry
 from ..integrations import _actions as _vendor_actions
+from . import service as _cloud_service
+from .signing import verify_frame
 
 
 logger = logging.getLogger(__name__)
+
+
+# Replay-cache namespace. Integration request ids share the command channel's
+# FIFO + SQLite replay table, but are prefixed so an integrations id can never
+# collide with (and falsely "replay") a command id, or vice versa.
+_REPLAY_NAMESPACE = "integrations:"
+
+# Downgrade latch. Once this Pi has verified ONE signed integrations_request,
+# the cloud it is paired with provably signs this channel, so an unsigned
+# frame from then on can only be a stripped/injected frame and is rejected.
+# Until then unsigned frames stay accepted (backward compatibility with a
+# cloud that has never signed the channel). Persisted in `user_settings` so a
+# Pi restart does not reopen the window.
+_SIGNED_LATCH_KEY = "cloud_integrations_signed_seen"
+
+
+def _require_signed_setting() -> bool:
+    """Operator opt-in to reject every unsigned integrations_request, even
+    before the latch engages. Reads `settings.cloud_require_signed_integrations`
+    when the config field exists; defaults to False (today's behaviour)."""
+    return bool(getattr(settings, "cloud_require_signed_integrations", False))
+
+
+async def _signed_frames_seen() -> bool:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT value FROM user_settings WHERE key = ?", (_SIGNED_LATCH_KEY,)
+        )
+        row = await cursor.fetchone()
+    return bool(row) and row["value"] == "1"
+
+
+async def _mark_signed_frames_seen() -> None:
+    async with get_db() as db:
+        await db.execute(
+            """INSERT INTO user_settings (key, value) VALUES (?, '1')
+               ON CONFLICT(key) DO UPDATE SET value='1', updated_at=unixepoch('now')""",
+            (_SIGNED_LATCH_KEY,),
+        )
+        await db.commit()
+
+
+async def reset_signing_latch() -> None:
+    """Forget the downgrade latch — called when the Pi is (re)paired, since
+    the new pairing may be a different cloud whose signing is not yet known."""
+    async with get_db() as db:
+        await db.execute("DELETE FROM user_settings WHERE key = ?", (_SIGNED_LATCH_KEY,))
+        await db.commit()
+
+
+async def _reject(sio_client, cmd_id: str, status: int, error: str) -> None:
+    await sio_client.emit(
+        "integrations_response",
+        {"id": cmd_id, "success": False, "status": status, "error": error},
+    )
+
+
+async def _check_signed_frame(sio_client, cmd_id: str, data: dict[str, Any]) -> bool:
+    """Verify a frame that carries a `signature`, then replay-dedup its id.
+
+    Returns True when the frame may be dispatched; otherwise the rejection
+    has already been emitted.
+    """
+    # A signature we cannot check fails closed — never "skip verification".
+    ok, reason = verify_frame(settings.cloud_token, data)
+    if not ok:
+        logger.warning(
+            "integrations_request signature check failed (id=%s): %s", cmd_id, reason,
+        )
+        await _reject(sio_client, cmd_id, 401, f"signature check failed: {reason}")
+        return False
+
+    if not isinstance(cmd_id, str):
+        await _reject(sio_client, cmd_id, 400, "invalid request id")
+        return False
+
+    replay_key = f"{_REPLAY_NAMESPACE}{cmd_id}"
+    already_seen = False
+    async with _cloud_service._replay_lock:
+        seen = _cloud_service._seen_command_ids
+        if replay_key in seen:
+            already_seen = True
+        else:
+            seen[replay_key] = None
+            while len(seen) > _cloud_service._COMMAND_ID_CACHE_CAP:
+                seen.popitem(last=False)
+    if already_seen:
+        logger.warning("integrations_request replay rejected (id=%s)", cmd_id)
+        await _reject(sio_client, cmd_id, 409, "Replayed request id")
+        return False
+    try:
+        await _cloud_service._persist_replay_id(replay_key)
+    except Exception as e:  # noqa: BLE001 — in-memory cache still dedups
+        logger.warning("integrations_request replay persist failed: %s", e)
+
+    try:
+        if not await _signed_frames_seen():
+            await _mark_signed_frames_seen()
+            logger.info(
+                "Cloud signs integrations_request frames — unsigned frames "
+                "are rejected from now on"
+            )
+    except Exception as e:  # noqa: BLE001 — latch is defence in depth
+        logger.warning("integrations_request signing latch persist failed: %s", e)
+    return True
 
 
 _VALID_ACTIONS = {
@@ -221,31 +330,24 @@ async def handle_request(sio_client, data: dict[str, Any]) -> None:
         logger.warning("integrations_request missing id; dropping")
         return
 
-    # v4.1.4 — verify the HMAC signature on signed frames. Unsigned
-    # frames continue to be accepted during the rollout window so a
-    # cloud running v4.1.3 talking to a Pi running v4.1.4 (or vice
-    # versa) doesn't break. Once both sides are on v4.1.4+ we can
-    # tighten this to require signatures.
+    # v4.1.4 — verify the HMAC signature on signed frames (and, since the
+    # audit fix, replay-dedup their id). Unsigned frames are still accepted
+    # for a cloud that has never signed this channel, but NOT once a signed
+    # frame has been seen (downgrade latch) or when the operator opted into
+    # strict mode — see _SIGNED_LATCH_KEY.
     if "signature" in data:
-        from ..config import settings
-        from .signing import verify_frame
-        if settings.cloud_token:
-            ok, reason = verify_frame(settings.cloud_token, data)
-            if not ok:
-                logger.warning(
-                    "integrations_request signature check failed (id=%s): %s",
-                    cmd_id, reason,
-                )
-                await sio_client.emit(
-                    "integrations_response",
-                    {
-                        "id": cmd_id,
-                        "success": False,
-                        "status": 401,
-                        "error": f"signature check failed: {reason}",
-                    },
-                )
-                return
+        if not await _check_signed_frame(sio_client, cmd_id, data):
+            return
+    elif _require_signed_setting() or await _signed_frames_seen():
+        logger.warning(
+            "integrations_request rejected: unsigned frame (id=%s) but this Pi "
+            "requires signed integrations frames", cmd_id,
+        )
+        await _reject(
+            sio_client, cmd_id, 401,
+            "unsigned integrations_request rejected — this Pi requires signed frames",
+        )
+        return
 
     action = data.get("action")
     if action not in _VALID_ACTIONS:

@@ -9,6 +9,8 @@ namespace {
 const char* const kReservedNames[] = {
     "config", "scene",  "status", "health",   "telemetry",
     "logs",   "ota",    "alert",  "coredump", "heartbeat",
+    "coredump_ack",  // cmd/coredump_ack (coredump_drain.h)
+    "ota_manifest",  // cmd/ota_manifest (ota_gate.h)
 };
 
 }  // namespace
@@ -45,6 +47,32 @@ void Channel::configure(const ChannelConfig& cfg) {
     last_was_cutoff_ = false;
 }
 
+void Channel::set_max_on_ms(uint32_t max_on_ms) {
+    cfg_.max_on_ms = max_on_ms;
+    if (cfg_.mode == ChannelMode::Switch && cfg_.max_on_ms == 0) {
+        cfg_.max_on_ms = kDefaultMaxOnMs;
+    }
+}
+
+bool max_on_override_ms(ChannelMode mode, int32_t sec, uint32_t* out_ms,
+                        bool* clamped) {
+    if (sec < 0) return false;
+    const uint32_t lo_sec = mode == ChannelMode::Switch ? 1u : 0u;
+    const uint32_t hi_sec = mode == ChannelMode::Switch
+                                ? kDefaultMaxOnMs / 1000UL
+                                : kMaxDimMaxOnSec;
+    uint32_t s = (uint32_t)sec;
+    if (s < lo_sec) return false;  // a switch channel keeps a backstop
+    bool c = false;
+    if (s > hi_sec) {
+        s = hi_sec;
+        c = true;
+    }
+    *out_ms = s * 1000UL;
+    if (clamped != nullptr) *clamped = c;
+    return true;
+}
+
 void Channel::set_output(bool on, uint8_t pwm8, uint16_t level10, uint32_t now_ms) {
     bool was_on = on_;
     on_ = on;
@@ -71,9 +99,15 @@ uint32_t Channel::on_time_sec_live(uint32_t now_ms) const {
 ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
     last_was_cutoff_ = false;
 
+    // Dim channels take `pwm` as a 10-bit level alias when `level` is absent:
+    // the Pi automation's RuleAction only carries pwm (documented 0-1023 for
+    // lighting), so a dimmed rule used to be ignored and drive 100 %.
+    const bool dim_has_level = cmd.has_level || cmd.has_pwm;
+    const int32_t dim_level_in = cmd.has_level ? cmd.level : cmd.pwm;
+
     const bool dialect_ok =
         cfg_.mode == ChannelMode::Switch ? (cmd.has_state || cmd.has_pwm)
-                                         : (cmd.has_state || cmd.has_level);
+                                         : (cmd.has_state || dim_has_level);
     if (!dialect_ok) {
         // Never default an empty/foreign-dialect payload to ON — a retained
         // `{}` latching a channel at full power was the old firmware's
@@ -84,6 +118,12 @@ ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
         return ChannelEvent::Rejected;
     }
 
+    // An explicit "state":"off" always wins over any pwm/level in the same
+    // command. The Pi clears its safety watchdog when it sends an off, so
+    // {"state":"off","pwm":255} turning the output ON left a pump running
+    // with nothing watching it.
+    const bool explicit_off = cmd.has_state && !cmd.state_on;
+
     bool on = on_;
     uint8_t pwm = pwm8_;
     uint16_t level = level10_;
@@ -93,19 +133,19 @@ ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
             on = cmd.state_on;
             pwm = on ? 255 : 0;
         }
-        if (cmd.has_pwm) {
+        if (cmd.has_pwm && !explicit_off) {
             pwm = clamp_pwm8(cmd.pwm);
             on = pwm > 0;
         }
     } else {
-        if (cmd.has_level) {
-            level = clamp_level10(cmd.level);
+        if (dim_has_level) {
+            level = clamp_level10(dim_level_in);
             on = level > 0;
         }
-        if (cmd.has_state && !cmd.state_on) {
+        if (explicit_off) {
             level = 0;
             on = false;
-        } else if (cmd.has_state && cmd.state_on && !cmd.has_level) {
+        } else if (cmd.has_state && cmd.state_on && !dim_has_level) {
             // "on" without a level restores full brightness — symmetric
             // with the switch dialect's state-only command.
             level = 1023;
@@ -137,7 +177,7 @@ ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
         ramping_ = false;
     }
 
-    if (cmd.has_duration) {
+    if (cmd.has_duration && on) {
         if (cmd.duration_sec > 0) {
             int32_t d = cmd.duration_sec > kMaxDurationSec ? kMaxDurationSec
                                                            : cmd.duration_sec;
@@ -147,9 +187,28 @@ ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
         // duration_sec <= 0: ignored — the rest of the command still
         // applies, matching the old handler's logged-and-skipped behavior.
     }
+    // A command that leaves the channel OFF must not leave an off-timer
+    // armed: set_output() only disarms on an on→off edge, so an off (with or
+    // without duration_sec) sent to an already-off channel used to keep a
+    // stale timer that later cut a plain ON short.
+    if (!on) off_timer_armed_ = false;
 
     set_output(on, pwm, level, now_ms);
     reason_ = "";
+    return ChannelEvent::Changed;
+}
+
+ChannelEvent Channel::force_off(uint32_t now_ms, const char* reason) {
+    last_was_cutoff_ = false;
+    // Disarm unconditionally — an idle channel must not carry a timer or
+    // ramp across the forced-off state.
+    off_timer_armed_ = false;
+    ramping_ = false;
+    if (!on_) return ChannelEvent::None;
+    set_output(false, 0, 0, now_ms);
+    ++health_.safety_cutoffs;
+    reason_ = reason != nullptr ? reason : "forced off";
+    last_was_cutoff_ = true;
     return ChannelEvent::Changed;
 }
 

@@ -4,8 +4,12 @@
 Run ONCE, on a release-signing host that you trust. Outputs:
 
   - The base64-encoded **public** key — paste into every Pi's
-    Settings → OTA verify key (or set SPOREPRINT_OTA_PUBKEY=<value>
-    in /opt/sporeprint/.env).
+    Settings → OTA verify key (or set SPOREPRINT_OTA_PUBKEY_B64=<value>
+    in the SporePrint checkout's .env, then `docker compose up -d server`).
+    Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current (systemd)
+    layout self-update from signed bundles. The Docker install (install.sh)
+    refuses cloud OTA — it updates with `git pull && ./install.sh` — so the key
+    has no effect there.
 
   - The base64-encoded **private** key — keep this on hardware you
     control (a YubiKey with PIV slot, an offline laptop, a sealed
@@ -18,10 +22,10 @@ Run ONCE, on a release-signing host that you trust. Outputs:
 
         python3 scripts/sign-ota-bundle.py \\
             --bundle dist/sporeprint-server-3.4.11.tar.gz \\
-            --private-key ~/.config/sporeprint/ota-signing.key
+            --private-key ~/.config/sporeprint/ota/ota-signing.key
 
 Usage:
-    python3 sporeprint/scripts/generate-ota-keypair.py [--out DIR]
+    python3 scripts/generate-ota-keypair.py [--out DIR]
 
 By default the keys are printed to stdout and NOT written to disk.
 Pass `--out DIR` to write `ota-signing.key` (private) and
@@ -85,14 +89,22 @@ def _write_keys(out_dir: Path, priv_b64: str, pub_b64: str) -> None:
             raise SystemExit(2)
     else:
         out_dir.mkdir(parents=True, mode=0o700)
+    # Lock the directory down even when it already existed (e.g. a 0755 dir
+    # on a shared signing host) — mkdir's mode is also subject to the umask.
+    os.chmod(out_dir, stat.S_IRWXU)
 
     priv_path = out_dir / "ota-signing.key"
     pub_path = out_dir / "ota-verify.pub"
 
-    priv_path.write_text(priv_b64 + "\n")
+    # Create the private key 0600 from the first byte (O_EXCL: never follow
+    # or clobber an existing file) instead of write-then-chmod, which left it
+    # umask-readable (typically 0644) until — or, if chmod failed, after —
+    # the chmod.
+    fd = os.open(priv_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                 stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w") as f:
+        f.write(priv_b64 + "\n")
     pub_path.write_text(pub_b64 + "\n")
-    # Restrict the private key to user-only read/write.
-    os.chmod(priv_path, stat.S_IRUSR | stat.S_IWUSR)
     print(f"\nWrote {priv_path}  (mode 0600 — keep offline)", file=sys.stderr)
     print(f"Wrote {pub_path}", file=sys.stderr)
 
@@ -120,9 +132,14 @@ def main() -> int:
     print("=" * 72)
     print()
     print("Public verify key (paste into every Pi's Settings → OTA verify key,")
-    print("or set SPOREPRINT_OTA_PUBKEY=<value> in /opt/sporeprint/.env):")
+    print("or set SPOREPRINT_OTA_PUBKEY_B64=<value> in the Pi's SporePrint/.env and")
+    print("run `docker compose up -d server`):")
     print()
     print(f"  {pub_b64}")
+    print()
+    print("Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current (systemd)")
+    print("layout self-update. A Docker install (install.sh) refuses cloud OTA and")
+    print("updates with `git pull && ./install.sh`, so the key has no effect there.")
     print()
     print("-" * 72)
     print("Private signing key — KEEP THIS OFFLINE. Never commit. Never email.")

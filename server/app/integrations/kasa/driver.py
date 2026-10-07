@@ -16,17 +16,20 @@ import json
 import struct
 import time
 from typing import Any, ClassVar
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import split_host_port
 from ...telemetry.service import store_reading
 
 
 _KASA_PORT = 9999
 _KEY_SEED = 0xAB
+# Upper bound on one response frame. Multi-outlet strips (HS300/KP303) return
+# a few KB of sysinfo; anything this large is not a Kasa reply.
+_MAX_FRAME_BYTES = 256 * 1024
 
 
 def _encrypt(plaintext: str) -> bytes:
@@ -65,9 +68,7 @@ class KasaDeviceMapping(BaseModel):
     def _check_ip(cls, v: str) -> str:
         if not v:
             return v
-        parsed = urlparse(f"//{v}")
-        if not parsed.hostname:
-            raise ValueError(f"invalid ip {v!r}")
+        split_host_port(v)
         return v
 
 
@@ -81,23 +82,41 @@ class KasaError(RuntimeError):
     pass
 
 
+async def _read_frame(reader: asyncio.StreamReader) -> bytes:
+    """Read one complete length-prefixed frame (header + body).
+
+    A single ``read()`` returns whatever one TCP segment delivered; replies
+    larger than ~1460 bytes (multi-outlet sysinfo) arrive in several, and the
+    device keeps the socket open, so read exactly the advertised length.
+    """
+    header = await reader.readexactly(4)
+    length = struct.unpack("!I", header)[0]
+    if length > _MAX_FRAME_BYTES:
+        raise KasaError(f"kasa frame too large ({length} bytes)")
+    return header + await reader.readexactly(length)
+
+
 async def _kasa_query(ip: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     """Send one JSON request, await one response. Connection per call —
     Kasa devices accept this fine and it keeps state minimal."""
+    host, port = split_host_port(ip)
+    port = port or _KASA_PORT
     text = json.dumps(payload, separators=(",", ":"))
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, _KASA_PORT), timeout=timeout
+            asyncio.open_connection(host, port), timeout=timeout
         )
     except (OSError, asyncio.TimeoutError) as exc:
-        raise KasaError(f"connect to {ip}:{_KASA_PORT} failed: {exc}") from exc
+        raise KasaError(f"connect to {host}:{port} failed: {exc}") from exc
     try:
         writer.write(_encrypt(text))
         await writer.drain()
         try:
-            buf = await asyncio.wait_for(reader.read(8192), timeout=timeout)
+            buf = await asyncio.wait_for(_read_frame(reader), timeout=timeout)
         except asyncio.TimeoutError as exc:
             raise KasaError(f"read from {ip} timed out") from exc
+        except asyncio.IncompleteReadError as exc:
+            raise KasaError(f"{ip} closed the connection mid-frame") from exc
     finally:
         writer.close()
         try:

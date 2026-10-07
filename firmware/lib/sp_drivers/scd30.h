@@ -2,12 +2,19 @@
 //
 // scd30 — Sensirion SCD30 NDIR CO₂ driver (alternate, Adafruit 4867).
 //
-// The awkward one in the family: its measurement read can clock-stretch up
-// to ~150 ms, far beyond what the ESP32 I²C peripheral tolerates. The
-// driver contract is therefore NEVER READ BLIND — poll the data-ready word
-// (0x0202) and only then read the measurement, with the documented ≥3 ms
-// command-to-read gaps. A stretch/timeout mid-read is a read-fail, never
-// data.
+// The awkward one in the family: Sensirion's Interface Description (v1.0,
+// §1.1) has it clock-stretch up to 30 ms in write and read frames, and up to
+// 150 ms once a day during internal calibration; 100 kHz max, 50 kHz
+// recommended, no repeated start. The driver contract is therefore NEVER
+// READ BLIND — poll the data-ready word (0x0202) and only then read the
+// measurement, with the documented ≥3 ms command-to-read gaps. A
+// stretch/timeout mid-read is a read-fail, never data.
+//
+// Bus side (device): the node routes 0x61 through its own ESP-IDF device
+// handle at 50 kHz with the controller's SCL timeout at the chip's hardware
+// ceiling (src/node/stretch_i2c_bus.h) — core 3.x's Wire leaves it at 2 ms,
+// which the SCD30 overruns routinely. ESP32: 13.1 ms ceiling (a longer
+// stretch still fails the read); ESP32-S3: 52 ms, covering the 30 ms.
 //
 // Measurement payload is 6 CRC'd words = 3 big-endian IEEE-754 floats
 // (CO₂ ppm, temp °C, RH %). ASC is disabled at begin() for the same
@@ -35,6 +42,9 @@ public:
     // Disable ASC, start continuous measurement (no pressure compensation).
     bool begin();
 
+    // True when a new sample is waiting. A bus failure (NACK / stretch
+    // timeout / CRC) returns false AND counts as a health failure
+    // ("data_ready error"); "no sample yet" is healthy.
     bool data_ready();
 
     // Read the measurement triple (call only when data_ready()).

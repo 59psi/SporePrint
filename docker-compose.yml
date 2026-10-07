@@ -16,6 +16,27 @@
 #   1883  MQTT           — credentialed; ESP32 firmware nodes connect here
 #   8883  MQTT over TLS  — opt-in per node (portal "Secure MQTT" toggle)
 #   8080  ntfy           — local push notifications
+#   3233  OTA push       — TCP port ESP32 nodes connect BACK to during a
+#                          Pi-initiated firmware push (espota; see
+#                          server/app/hardware/ota_push.py CALLBACK_PORT)
+#
+# ui and server also share the `edge` network (fixed subnet, fixed addresses)
+# so the server trusts X-Forwarded-For from the ui container alone.
+#
+# Images are pinned to exact versions: install.sh runs `compose pull` on every
+# update, and a floating tag once moved the broker 2.0.x → 2.1.x underneath a
+# running install. Bump deliberately (and keep install.sh +
+# scripts/lib/broker.sh on the same eclipse-mosquitto tag — tests/test_docker.py
+# checks).
+
+# Bounded container logs: the json-file driver is unbounded by default and
+# the broker logs every connect/disconnect; left alone that fills the Pi's SD
+# card and SQLite starts failing with "database or disk is full".
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   # One-shot: the server runs as non-root appuser (uid 1000 — see
@@ -23,21 +44,31 @@ services:
   # server's data volumes to appuser before it boots, otherwise SQLite cannot
   # create the database file. mqtt/ntfy run as root, so their volumes are fine.
   init-perms:
-    image: busybox:1.36
+    # BusyBox's latest *stable* release (1.37.0 and 1.38.0 are labeled
+    # unstable upstream; Docker Hub's busybox:stable is this same digest).
+    image: busybox:1.36.1
     command: ["sh", "-c", "mkdir -p /data/db /data/vision && chown -R 1000:1000 /data/db /data/vision"]
     volumes:
       - sporeprint_db:/data/db
       - sporeprint_vision:/data/vision
+    logging: *default-logging
     restart: "no"
 
   server:
     build: ./server
     ports:
       - "8000:8000"
+      # espota connect-back. The server advertises this fixed port in the UDP
+      # invitation; behind the bridge network an ephemeral port would never
+      # be reachable from the node. Must equal ota_push.CALLBACK_PORT.
+      - "3233:3233"
     volumes:
       # Runtime data → named volumes so it survives `docker compose down`
-      # and container rebuilds. SQLite DB + the Fernet integration key live
-      # in sporeprint_db; captured vision frames in sporeprint_vision.
+      # and container rebuilds. sporeprint_db holds the SQLite DB, the Fernet
+      # integration key (.integration-key — lose it and every stored vendor
+      # credential must be re-entered) and cloud.env (the cloud pairing
+      # credentials, 0600): back that volume up as a whole. Captured vision
+      # frames live in sporeprint_vision.
       - sporeprint_db:/data/db
       - sporeprint_vision:/data/vision
       # Read-only content the hardware builder serves. These live OUTSIDE the
@@ -46,7 +77,31 @@ services:
       - ./models:/models:ro
       - ./firmware:/firmware:ro
       - ./docs:/docs:ro
+      # The broker's PUBLIC CA certificate only, for GET /api/provision/ca
+      # (the "Secure MQTT" trust-on-first-use fetch; app/provision.py). Never
+      # mount the certs directory: it holds ca.key and server.key, and the
+      # server's appuser (uid 1000) is usually the installing host user.
+      # create_host_path: false — install.sh generates it before `up`; a
+      # bare `docker compose up` without it fails loudly instead of Docker
+      # creating a root-owned directory named ca.crt.
+      - type: bind
+        source: ./config/mosquitto/certs/ca.crt
+        target: /certs/ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    # Every setting reaches the container ONLY through this list (no
+    # env_file:, and server/.dockerignore keeps .env out of the image).
+    # Values interpolate from the repo-root .env. Give a non-str setting a
+    # real default mirroring the server's: an empty value now falls back to
+    # the server default (app/config.py) instead of crash-looping, but the
+    # explicit default documents it (tests/test_docker.py boots Settings from
+    # these).
     environment:
+      # Automation schedules (photoperiod, time windows, cron) run on the
+      # container's local clock. install.sh writes the host's zone into .env
+      # (canonical Region/City, e.g. America/Los_Angeles); unset means UTC.
+      - TZ=${TZ:-UTC}
       - SPOREPRINT_DATABASE_PATH=/data/db/sporeprint.db
       - SPOREPRINT_VISION_STORAGE=/data/vision
       # Fernet key for encrypted third-party integration secrets. The app
@@ -64,10 +119,18 @@ services:
       - SPOREPRINT_NTFY_TOPIC=${SPOREPRINT_NTFY_TOPIC:-sporeprint}
       - SPOREPRINT_WEATHER_PROVIDER=${SPOREPRINT_WEATHER_PROVIDER:-openmeteo}
       - SPOREPRINT_CLAUDE_API_KEY=${SPOREPRINT_CLAUDE_API_KEY:-}
+      # Model for every Claude feature; blank = the server's default.
+      - SPOREPRINT_CLAUDE_MODEL=${SPOREPRINT_CLAUDE_MODEL:-}
+      # Claude vision auto-analysis cadence per session, minutes. Keep the
+      # default equal to the server's (6 h, spec §6 — tests check).
+      - SPOREPRINT_VISION_AUTO_INTERVAL_MIN=${SPOREPRINT_VISION_AUTO_INTERVAL_MIN:-360}
       - SPOREPRINT_WEATHER_API_KEY=${SPOREPRINT_WEATHER_API_KEY:-}
       - SPOREPRINT_WEATHER_LAT=${SPOREPRINT_WEATHER_LAT:-}
       - SPOREPRINT_WEATHER_LON=${SPOREPRINT_WEATHER_LON:-}
       - SPOREPRINT_WEATHER_POLL_MINUTES=${SPOREPRINT_WEATHER_POLL_MINUTES:-10}
+      # Dashboard URL printed into QR labels when the request carries no
+      # Origin/Referer (the ui service's port 3001). Same default as the server.
+      - SPOREPRINT_PUBLIC_UI_URL=${SPOREPRINT_PUBLIC_UI_URL:-http://sporeprint.local:3001}
       # HTTP auth. The Pi LAN UI (ui/dist) calls /api same-origin with NO
       # bearer token, so the browser dashboard only works in LAN-trust mode.
       # install.sh writes SPOREPRINT_ALLOW_UNAUTHENTICATED=true into .env; the
@@ -77,11 +140,56 @@ services:
       # clients (which CAN present `Authorization: Bearer`).
       - SPOREPRINT_API_KEY=${SPOREPRINT_API_KEY:-}
       - SPOREPRINT_ALLOW_UNAUTHENTICATED=${SPOREPRINT_ALLOW_UNAUTHENTICATED:-false}
-      # Cloud pairing (opt-in — normally written by the mobile app via
-      # POST /api/cloud/configure; here for completeness).
+      # Cloud pairing (opt-in). Pairing from the mobile app (POST
+      # /api/cloud/configure) writes cloud.env on the sporeprint_db volume,
+      # whose non-empty values override these; they stay for operators who
+      # configure the cloud link from .env.
       - SPOREPRINT_CLOUD_URL=${SPOREPRINT_CLOUD_URL:-}
       - SPOREPRINT_CLOUD_TOKEN=${SPOREPRINT_CLOUD_TOKEN:-}
       - SPOREPRINT_CLOUD_DEVICE_ID=${SPOREPRINT_CLOUD_DEVICE_ID:-}
+      # Strict mode for cloud integrations_request frames: reject unsigned
+      # ones even before the first signed frame arrives.
+      - SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=${SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS:-false}
+      # cmd/* command signing. install.sh provisions the key in the
+      # repo-root .env (scripts/provision-node.sh prints and rotates it), so
+      # the Pi signs every command: nodes without a key accept signed
+      # frames, keyed nodes verify them. Without a key, a cloud-paired Pi in
+      # `auto` mode REFUSES every node command. Apply a change with
+      # `docker compose up -d server` (`restart` does not re-read .env).
+      # REQUIRE_SIGNING keeps an explicit `auto` default: an empty value
+      # fails the auto|always|never check.
+      - SPOREPRINT_MQTT_HMAC_KEY=${SPOREPRINT_MQTT_HMAC_KEY:-}
+      - SPOREPRINT_MQTT_REQUIRE_SIGNING=${SPOREPRINT_MQTT_REQUIRE_SIGNING:-auto}
+      # OTA self-update verify key (base64 Ed25519 public key). The _B64 name
+      # is the setting; SPOREPRINT_OTA_PUBKEY is the older name (cloud/ota.py
+      # falls back to it). Only bare-metal installs self-update — this
+      # Docker stack refuses cloud OTA (update: git pull && ./install.sh).
+      - SPOREPRINT_OTA_PUBKEY_B64=${SPOREPRINT_OTA_PUBKEY_B64:-}
+      - SPOREPRINT_OTA_PUBKEY=${SPOREPRINT_OTA_PUBKEY:-}
+      # Signed-manifest policy for that self-update (bare metal only, like
+      # the key): the channel this Pi follows, the operator's downgrade
+      # override, and the transitional bundle-only-signature allowance.
+      - SPOREPRINT_OTA_CHANNEL=${SPOREPRINT_OTA_CHANNEL:-stable}
+      - SPOREPRINT_OTA_ALLOW_DOWNGRADE=${SPOREPRINT_OTA_ALLOW_DOWNGRADE:-false}
+      - SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE=${SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE:-false}
+      # DNS-rebinding guard (app/host_allow.py): the API answers only for
+      # LAN-style Host names — private IPs, localhost, *.local, *.lan,
+      # *.home.arpa, *.internal, dotless names and PUBLIC_UI_URL's host. Add
+      # any other name you reach the Pi by (comma list; "*.example.net"
+      # wildcards, IPs/CIDRs); "*" turns the check off.
+      - SPOREPRINT_ALLOWED_HOSTS=${SPOREPRINT_ALLOWED_HOSTS:-}
+      # uvicorn trusts X-Forwarded-For only from the ui container's fixed
+      # address on the `edge` network below (nginx sets it to the browser's
+      # address). Never a range: a bridge gateway is where docker-proxy relays
+      # IPv6/loopback clients of the published :8000 from, and they could
+      # forge the header. Keep equal to SPOREPRINT_EDGE_UI_IP and to
+      # server/Dockerfile's ENV (tests check).
+      - FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-172.31.253.2}
+    networks:
+      # mqtt / ntfy by service name.
+      default:
+      edge:
+        ipv4_address: ${SPOREPRINT_EDGE_SERVER_IP:-172.31.253.3}
     healthcheck:
       # The health route is /api/health (public — bypasses the api-key gate).
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]
@@ -100,10 +208,11 @@ services:
         condition: service_started
       ntfy:
         condition: service_started
+    logging: *default-logging
     restart: unless-stopped
 
   mqtt:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.1.2-alpine
     # LAN-scoped, credentialed broker (allow_anonymous false + per-user ACL).
     # 1883 is published on the LAN so firmware nodes can reach it; 8883 adds
     # TLS for nodes that opt in. Never expose either port to the public
@@ -115,10 +224,25 @@ services:
       - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./config/mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
       # passwd + certs are generated on first run by install.sh. They MUST
-      # exist before `up`: a missing bind-mount file would be created by Docker
-      # as a directory and break the broker.
-      - ./config/mosquitto/passwd:/mosquitto/config/passwd:ro
-      - ./config/mosquitto/certs:/mosquitto/certs:ro
+      # exist before `up`: with the short `./a:/b` syntax Docker would create
+      # a missing source as a root-owned directory, which kills the broker
+      # and blocks a later install.sh from writing the file. Long syntax with
+      # create_host_path: false fails the `up` loudly instead.
+      # Ownership: mosquitto drops to its `mosquitto` user (uid/gid 1883 in
+      # this image) BEFORE it opens password_file and the TLS keyfile, so
+      # install.sh hands passwd + certs/server.key to 1883:1883 (mode 0600).
+      - type: bind
+        source: ./config/mosquitto/passwd
+        target: /mosquitto/config/passwd
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./config/mosquitto/certs
+        target: /mosquitto/certs
+        read_only: true
+        bind:
+          create_host_path: false
       - mosquitto_data:/mosquitto/data
     environment:
       # Consumed only by the healthcheck below (the broker's own `server` creds).
@@ -131,10 +255,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
   ntfy:
-    image: binwiederhier/ntfy
+    image: binwiederhier/ntfy:v2.28.0
     command: serve
     ports:
       - "8080:80"
@@ -146,19 +271,38 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
   ui:
     build: ./ui
     ports:
       - "3001:80"
+    networks:
+      # Only the server: nginx's connections to it come from this fixed
+      # address, the one FORWARDED_ALLOW_IPS trusts.
+      edge:
+        ipv4_address: ${SPOREPRINT_EDGE_UI_IP:-172.31.253.2}
     depends_on:
       # Wait for a working API so the first dashboard load proxies cleanly
       # instead of hitting a 502 storm. The server healthcheck hits
       # /api/health, which is reliable once the process is up.
       server:
         condition: service_healthy
+    logging: *default-logging
     restart: unless-stopped
+
+networks:
+  # The ui → server hop. Fixed subnet and addresses (both static, so neither
+  # can be handed the other's) so uvicorn can trust X-Forwarded-For from
+  # exactly the ui container. If `docker compose up` reports "Pool overlaps
+  # with other one on this address space", move it in .env: set
+  # SPOREPRINT_EDGE_SUBNET, SPOREPRINT_EDGE_UI_IP, SPOREPRINT_EDGE_SERVER_IP
+  # and FORWARDED_ALLOW_IPS (= the ui address) together.
+  edge:
+    ipam:
+      config:
+        - subnet: ${SPOREPRINT_EDGE_SUBNET:-172.31.253.0/28}
 
 volumes:
   sporeprint_db:

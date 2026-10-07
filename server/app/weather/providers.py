@@ -3,7 +3,7 @@
 import logging
 import math
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -20,6 +20,34 @@ def _dew_point(temp_f: float, rh: float) -> float:
         return round(dp_c * 9 / 5 + 32, 1)
     except (ValueError, ZeroDivisionError):
         return round(temp_f - 10, 1)
+
+
+def _utc_timestamp(value) -> float:
+    """Epoch seconds for a provider time value.
+
+    Open-Meteo (with no `timezone` param) returns naive GMT ISO strings such as
+    "2026-01-01T00:00"; `datetime.fromisoformat(...).timestamp()` would read
+    those as HOST-local time, shifting every hour by the UTC offset on a native
+    (non-Docker) install. Naive values are therefore pinned to UTC; aware ISO
+    strings (NWS) and numeric unix times pass through unchanged.
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _nws_point(lat: str, lon: str) -> str:
+    """Format a /points path segment the way api.weather.gov wants it.
+
+    NWS answers /points requests with more than 4 decimal places (e.g. a
+    browser-geolocated 40.712776,-74.005974) with a 301 to the rounded point.
+    """
+    def _fmt(v) -> str:
+        return f"{float(v):.4f}".rstrip("0").rstrip(".")
+    return f"{_fmt(lat)},{_fmt(lon)}"
 
 
 class WeatherProvider(ABC):
@@ -72,6 +100,7 @@ class OpenMeteoProvider(WeatherProvider):
             "temperature_unit": "fahrenheit",
             "wind_speed_unit": "mph",
             "forecast_days": 7,
+            "timezone": "GMT",  # explicit: hourly times are parsed as UTC below
         }
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -81,8 +110,7 @@ class OpenMeteoProvider(WeatherProvider):
             hourly = data["hourly"]
             results = []
             for i, time_str in enumerate(hourly["time"]):
-
-                ts = datetime.fromisoformat(time_str).timestamp()
+                ts = _utc_timestamp(time_str)
                 results.append({
                     "timestamp": ts,
                     "temp_f": hourly["temperature_2m"][i],
@@ -155,9 +183,9 @@ class NWSProvider(WeatherProvider):
     async def _get_station_url(self, lat: str, lon: str) -> str | None:
         """Resolve lat/lon to the nearest NWS observation station."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 r = await client.get(
-                    f"https://api.weather.gov/points/{lat},{lon}",
+                    f"https://api.weather.gov/points/{_nws_point(lat, lon)}",
                     headers={"User-Agent": "SporePrint/1.0"},
                 )
                 r.raise_for_status()
@@ -172,7 +200,7 @@ class NWSProvider(WeatherProvider):
         if not stations_url:
             return None
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 r = await client.get(stations_url, headers={"User-Agent": "SporePrint/1.0"})
                 r.raise_for_status()
                 station_id = r.json()["features"][0]["properties"]["stationIdentifier"]
@@ -208,9 +236,9 @@ class NWSProvider(WeatherProvider):
 
     async def fetch_forecast(self, lat: str, lon: str) -> list[dict]:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 r = await client.get(
-                    f"https://api.weather.gov/points/{lat},{lon}",
+                    f"https://api.weather.gov/points/{_nws_point(lat, lon)}",
                     headers={"User-Agent": "SporePrint/1.0"},
                 )
                 r.raise_for_status()
@@ -220,10 +248,9 @@ class NWSProvider(WeatherProvider):
                 r.raise_for_status()
                 periods = r.json()["properties"]["periods"]
 
-            from datetime import datetime
             results = []
             for p in periods[:168]:  # max 7 days
-                ts = datetime.fromisoformat(p["startTime"]).timestamp()
+                ts = _utc_timestamp(p["startTime"])
                 temp_f = p["temperature"]
                 results.append({
                     "timestamp": ts,

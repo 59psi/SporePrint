@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import path_segment
 from ...telemetry.service import store_reading
 
 
@@ -53,6 +54,8 @@ class AgrowtekDriver(HttpVendorDriver):
     tier_required: ClassVar[str] = "free"
     config_schema: ClassVar[type[BaseModel]] = AgrowtekConfig
     secret_fields: ClassVar[set[str]] = {"api_key"}
+    # api_key is sent to base_url: a new base_url needs the key re-entered.
+    secret_bound_fields: ClassVar[frozenset[str]] = frozenset({"base_url"})
 
     async def test_connection(self) -> IntegrationHealth:
         cfg: AgrowtekConfig | None = self._cfg  # type: ignore[assignment]
@@ -87,6 +90,7 @@ class AgrowtekDriver(HttpVendorDriver):
     async def set_output(
         self, output_id: str, value: float | bool
     ) -> dict[str, Any]:
+        segment = path_segment(output_id, field="output_id")
         cfg: AgrowtekConfig = self._cfg  # type: ignore[assignment]
         if not cfg or not cfg.base_url or not cfg.api_key:
             raise RuntimeError("agrowtek not configured")
@@ -94,7 +98,7 @@ class AgrowtekDriver(HttpVendorDriver):
             timeout=cfg.request_timeout_seconds, follow_redirects=False
         ) as client:
             resp = await client.put(
-                f"{cfg.base_url}/api/outputs/{output_id}",
+                f"{cfg.base_url}/api/outputs/{segment}",
                 headers={"Authorization": f"Bearer {cfg.api_key}"},
                 json={"value": value},
             )

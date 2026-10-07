@@ -20,6 +20,14 @@ constexpr uint32_t kShortDelayMs = 1;
 }  // namespace
 
 bool Scd4x::probe() {
+    // get_serial_number is an idle-mode-only command: a sensor still in
+    // periodic mode from before a warm reboot (OTA, WDT/panic, EN button,
+    // portal restart — anything that doesn't cut its 3V3) NACKs it and
+    // would look absent. Stop periodic first (Sensirion's reference
+    // bring-up sequence); an ACK means the datasheet 500 ms wait must pass
+    // before the next command. A NACK (absent part) still falls through to
+    // the serial read, which is the presence criterion either way.
+    if (xport_.cmd(kCmdStopPeriodic)) clock_.delay_ms(kStopPeriodicMs);
     uint16_t serial[3];
     return xport_.cmd_read(kCmdGetSerial, kShortDelayMs, serial, 3);
 }
@@ -30,13 +38,22 @@ bool Scd4x::begin() {
     // if it was already idle, but the wait must still happen after an ack).
     if (xport_.cmd(kCmdStopPeriodic)) clock_.delay_ms(kStopPeriodicMs);
 
-    // ASC off — and persist only when the stored setting differs, because
-    // persist_settings is an EEPROM write with a wear budget.
+    // ASC off — and persist only when the stored setting is KNOWN to
+    // differ, because persist_settings is an EEPROM write with a wear
+    // budget. If the ASC read itself fails (NACK / CRC) the stored value is
+    // unknown: still write ASC off to RAM for this session (the factory
+    // default is ON — skipping the write would leave the baseline drag this
+    // driver exists to prevent), but don't spend an EEPROM write on a guess.
     uint16_t asc = 1;
-    if (xport_.cmd_read(kCmdGetAsc, kShortDelayMs, &asc, 1) && asc != 0) {
-        if (!xport_.cmd_arg(kCmdSetAsc, 0)) return false;
+    const bool got_asc = xport_.cmd_read(kCmdGetAsc, kShortDelayMs, &asc, 1);
+    if (!got_asc || asc != 0) {
+        if (!xport_.cmd_arg(kCmdSetAsc, 0)) {
+            health_.fail("asc off failed");
+            return false;
+        }
         clock_.delay_ms(kShortDelayMs);
-        if (xport_.cmd(kCmdPersistSettings)) clock_.delay_ms(kPersistMs);
+        if (got_asc && xport_.cmd(kCmdPersistSettings))
+            clock_.delay_ms(kPersistMs);
     }
 
     if (!xport_.cmd(kCmdStartPeriodic)) return false;
@@ -45,7 +62,13 @@ bool Scd4x::begin() {
 
 bool Scd4x::data_ready() {
     uint16_t word = 0;
-    if (!xport_.cmd_read(kCmdDataReady, kShortDelayMs, &word, 1)) return false;
+    if (!xport_.cmd_read(kCmdDataReady, kShortDelayMs, &word, 1)) {
+        // A NACK / CRC failure here is a bus fault, not "no sample yet" —
+        // count it, or a sensor that fell off the bus keeps reporting
+        // healthy reads/fails while its reading goes stale.
+        health_.fail("data_ready error");
+        return false;
+    }
     return (word & 0x07FF) != 0;
 }
 

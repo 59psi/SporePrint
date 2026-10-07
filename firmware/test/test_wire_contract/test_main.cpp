@@ -19,6 +19,8 @@
 
 #include <ArduinoJson.h>
 
+#include <string.h>
+
 #include <set>
 #include <string>
 
@@ -32,14 +34,19 @@ void tearDown() {}
 
 // design TELEMETRY_KEYS — sensor fields on a telemetry frame (envelope `ts`
 // excluded; `scale_raw` excluded — emitted but not persisted).
+// `pressure_hpa` (BME280 / BMP280, additive) is the newest key: the Pi
+// persists it (SENSOR_FIELDS); the cloud design list adopts it in the same
+// change (cross-repo — its wire-contract test parses build_telemetry too).
 static const char* const kTelemetryKeys[] = {
     "temp_f", "temp_c", "humidity", "dew_point_f",
-    "co2_ppm", "lux", "weight_g", "door_open"};
+    "co2_ppm", "lux", "weight_g", "door_open", "pressure_hpa"};
+static constexpr int kNTelemetryKeys = 9;
 // Pi SENSOR_FIELDS — the fields store_bulk_readings actually persists. Must be
 // the SAME set as TELEMETRY_KEYS (different declaration order in the Python).
 static const char* const kSensorFields[] = {
     "temp_f", "temp_c", "humidity", "co2_ppm",
-    "lux", "dew_point_f", "weight_g", "door_open"};
+    "lux", "dew_point_f", "weight_g", "door_open", "pressure_hpa"};
+static constexpr int kNSensorFields = 9;
 // design ALERT_TYPES — the `type` values emit_alert() may publish.
 static const char* const kAlertTypes[] = {
     "temperature", "humidity", "co2", "door", "sensor_failure"};
@@ -83,6 +90,8 @@ void test_telemetry_all_present_matches_contract() {
     in.co2_ppm = 812;
     in.have_lux = true;
     in.lux = 340.44f;
+    in.have_pressure = true;
+    in.pressure_hpa = 1006.53f;
     in.have_weight = true;
     in.weight_g = 128.44f;
     in.have_door = true;
@@ -93,7 +102,7 @@ void test_telemetry_all_present_matches_contract() {
     std::set<std::string> k = keys_of(doc.as<JsonObject>());
 
     // ts (envelope) + every TELEMETRY_KEY, nothing else.
-    TEST_ASSERT_EQUAL_INT(9, (int)k.size());
+    TEST_ASSERT_EQUAL_INT(1 + kNTelemetryKeys, (int)k.size());
     TEST_ASSERT_TRUE(k.count("ts") == 1);
     for (const char* key : kTelemetryKeys)
         TEST_ASSERT_TRUE_MESSAGE(k.count(key) == 1, key);
@@ -101,7 +110,7 @@ void test_telemetry_all_present_matches_contract() {
     for (const std::string& key : k) {
         if (key == "ts") continue;
         TEST_ASSERT_TRUE_MESSAGE(
-            in_list(kSensorFields, 8, key),
+            in_list(kSensorFields, kNSensorFields, key),
             "telemetry key not in Pi SENSOR_FIELDS (would be dropped)");
     }
 
@@ -115,6 +124,7 @@ void test_telemetry_all_present_matches_contract() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 55.5f, doc["humidity"].as<float>());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 51.9f, doc["dew_point_f"].as<float>());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 340.4f, doc["lux"].as<float>());
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1006.5f, doc["pressure_hpa"].as<float>());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 128.4f, doc["weight_g"].as<float>());
     TEST_ASSERT_TRUE(doc["door_open"].as<bool>());
 }
@@ -134,6 +144,7 @@ void test_telemetry_partial_presence_omits_absent_keys() {
     TEST_ASSERT_TRUE(k.count("co2_ppm") == 1);
     TEST_ASSERT_FALSE(k.count("temp_f") == 1);
     TEST_ASSERT_FALSE(k.count("door_open") == 1);
+    TEST_ASSERT_FALSE(k.count("pressure_hpa") == 1);  // no BMx280
 }
 
 void test_telemetry_uncalibrated_emits_scale_raw_not_weight() {
@@ -149,7 +160,46 @@ void test_telemetry_uncalibrated_emits_scale_raw_not_weight() {
     TEST_ASSERT_FALSE(k.count("weight_g") == 1);
     TEST_ASSERT_EQUAL_INT32(-80123, doc["scale_raw"].as<int32_t>());
     // scale_raw is deliberately NOT a persisted sensor field.
-    TEST_ASSERT_FALSE(in_list(kSensorFields, 8, "scale_raw"));
+    TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, "scale_raw"));
+}
+
+void test_telemetry_replay_flag_is_optional_envelope_key() {
+    // fw-node#3 / shared contract: frames replayed from the offline buffer
+    // carry "replay": true so the Pi stores them but never runs rules on
+    // them or lets them overwrite the latest reading. Live frames omit the
+    // key entirely (backward compatible with every existing consumer).
+    sp::TelemetryInputs in;
+    in.ts = 1700000000u;
+    in.have_co2 = true;
+    in.co2_ppm = 700;
+
+    JsonDocument live;
+    sp::build_telemetry(in, live);
+    TEST_ASSERT_FALSE(keys_of(live.as<JsonObject>()).count("replay") == 1);
+
+    in.replay = true;
+    JsonDocument replayed;
+    sp::build_telemetry(in, replayed);
+    std::set<std::string> k = keys_of(replayed.as<JsonObject>());
+    TEST_ASSERT_EQUAL_INT(3, (int)k.size());  // ts + co2_ppm + replay
+    TEST_ASSERT_TRUE(replayed["replay"].is<bool>());
+    TEST_ASSERT_TRUE(replayed["replay"].as<bool>());
+    // Envelope, not a sensor field: never persisted as a reading.
+    TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, "replay"));
+    TEST_ASSERT_FALSE(in_list(kTelemetryKeys, kNTelemetryKeys, "replay"));
+}
+
+void test_telemetry_ts_epoch_when_synced_else_uptime() {
+    // Shared contract: Unix-epoch seconds once NTP has synced; the old
+    // uptime ts before that. The Pi treats ts < 1e9 as unsynced and stamps
+    // arrival time, so the two ranges must never overlap.
+    TEST_ASSERT_EQUAL_UINT32(1700000000u, sp::telemetry_ts(1700000000ULL, 42u));
+    TEST_ASSERT_EQUAL_UINT32(1577836800u, sp::telemetry_ts(1577836800ULL, 42u));
+    // Unsynced clock (ESP32 boots at epoch 0 + uptime).
+    TEST_ASSERT_EQUAL_UINT32(42u, sp::telemetry_ts(42ULL, 42u));
+    TEST_ASSERT_EQUAL_UINT32(42u, sp::telemetry_ts(1577836799ULL, 42u));
+    TEST_ASSERT_TRUE(sp::telemetry_ts(0ULL, 3600u) < 1000000000u);
+    TEST_ASSERT_TRUE(sp::telemetry_ts(1700000000ULL, 3600u) >= 1000000000u);
 }
 
 // ── alert ──────────────────────────────────────────────────────
@@ -182,6 +232,25 @@ void test_alert_every_firmware_type_is_a_known_alert_type() {
         TEST_ASSERT_TRUE_MESSAGE(
             in_list(kAlertTypes, 5, doc["type"].as<const char*>()), t);
     }
+}
+
+// Firmware alert types that are NOT (yet) in the design ALERT_TYPES. The Pi
+// pages unknown node alert types at WARNING (server/app/mqtt.py
+// _notify_node_alert) and forwards them unchanged, so each is additive; the
+// cloud design list should adopt them (cross-repo follow-up).
+static const char* const kFirmwareOnlyAlertTypes[] = {"tls_downgrade"};
+
+void test_tls_downgrade_alert_shape() {
+    // fw-node#2: Secure MQTT on, no Pi CA pinned, running on plaintext. The
+    // value is the plaintext port in use; no `sensor` (dedup is per type).
+    JsonDocument doc;
+    sp::build_alert(sp::kAlertTlsDowngrade, 1883.0f,
+                    "Secure MQTT is on but no Pi CA is pinned", nullptr, doc);
+    const char* expected[] = {"type", "value", "message"};
+    assert_exact_keys(doc.as<JsonObject>(), expected, 3, "tls_downgrade alert");
+    TEST_ASSERT_EQUAL_STRING("tls_downgrade", doc["type"]);
+    TEST_ASSERT_TRUE(in_list(kFirmwareOnlyAlertTypes, 1, doc["type"].as<const char*>()));
+    TEST_ASSERT_FALSE(in_list(kAlertTypes, 5, doc["type"].as<const char*>()));
 }
 
 // ── switch-channel report ──────────────────────────────────────
@@ -222,7 +291,7 @@ void test_dim_levels_keyed_by_channel_name_and_not_persisted() {
         TEST_ASSERT_TRUE_MESSAGE(k.count(nm) == 1, nm);
         // Documented drop: dim channel names are NOT SENSOR_FIELDS, so the Pi
         // forwards them live but never persists them to telemetry history.
-        TEST_ASSERT_FALSE(in_list(kSensorFields, 8, nm));
+        TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, nm));
     }
     TEST_ASSERT_EQUAL_UINT16(100, doc["white"].as<uint16_t>());
     TEST_ASSERT_EQUAL_UINT16(400, doc["far_red"].as<uint16_t>());
@@ -265,6 +334,14 @@ void test_node_heartbeat_contract() {
                              "heartbeat type must be a COMPONENT_TYPE");
     TEST_ASSERT_EQUAL_INT(0, doc["wifi_reconnects"].as<int>());
     TEST_ASSERT_EQUAL_INT(3, doc["mqtt_reconnects"].as<int>());
+    // wifi_reconnects now carries the node's app-level WiFi re-begin count
+    // (fw-node#7) — same key, same int type.
+    in.wifi_reconnects = 5;
+    JsonDocument doc_w;
+    sp::build_heartbeat(in, doc_w);
+    TEST_ASSERT_EQUAL_INT(5, doc_w["wifi_reconnects"].as<int>());
+    assert_exact_keys(doc_w.as<JsonObject>(), expected, 11,
+                      "node heartbeat (wifi_reconnects > 0)");
     // roles array carries the transcribed capability set.
     JsonArray r = doc["roles"].as<JsonArray>();
     TEST_ASSERT_EQUAL_INT(2, (int)r.size());
@@ -312,6 +389,82 @@ void test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals() {
     TEST_ASSERT_EQUAL_STRING("camera", doc["type"]);
     TEST_ASSERT_EQUAL_STRING("cam", doc["fw_image"]);
     TEST_ASSERT_TRUE(in_list(kComponentTypes, 4, "camera"));
+}
+
+void test_heartbeat_transport_and_board_keys_are_optional_additions() {
+    // fw-node#2 / new S3 board env: `tls` (the MQTT transport actually in
+    // use), `tls_fallback` (only while Secure MQTT is on but the node runs
+    // plaintext) and `board` (which image a node needs for OTA). All are
+    // additive: an input set that doesn't ask for them yields exactly the
+    // pre-existing key set (asserted above), and the Pi ignores unknown keys.
+    const char* roles[] = {"relay"};
+    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
+    in.emit_tls = true;
+    in.tls = true;
+    in.board = "esp32-s3-devkitc-1-n32r16v";
+    JsonDocument doc;
+    sp::build_heartbeat(in, doc);
+    std::set<std::string> k = keys_of(doc.as<JsonObject>());
+    TEST_ASSERT_EQUAL_INT(13, (int)k.size());  // 11 + tls + board
+    TEST_ASSERT_TRUE(doc["tls"].is<bool>());
+    TEST_ASSERT_TRUE(doc["tls"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("esp32-s3-devkitc-1-n32r16v", doc["board"]);
+    TEST_ASSERT_FALSE(k.count("tls_fallback") == 1);  // only when true
+
+    in.tls = false;
+    in.tls_fallback = true;
+    JsonDocument fb;
+    sp::build_heartbeat(in, fb);
+    TEST_ASSERT_FALSE(fb["tls"].as<bool>());
+    TEST_ASSERT_TRUE(fb["tls_fallback"].is<bool>());
+    TEST_ASSERT_TRUE(fb["tls_fallback"].as<bool>());
+
+    // Defaults: none of the three keys.
+    sp::HeartbeatInputs plain = node_hb_inputs(roles, 1);
+    JsonDocument d0;
+    sp::build_heartbeat(plain, d0);
+    std::set<std::string> k0 = keys_of(d0.as<JsonObject>());
+    TEST_ASSERT_FALSE(k0.count("tls") == 1);
+    TEST_ASSERT_FALSE(k0.count("tls_fallback") == 1);
+    TEST_ASSERT_FALSE(k0.count("board") == 1);
+    // An empty board string is treated as unset.
+    plain.board = "";
+    JsonDocument d1;
+    sp::build_heartbeat(plain, d1);
+    TEST_ASSERT_FALSE(keys_of(d1.as<JsonObject>()).count("board") == 1);
+}
+
+void test_heartbeat_ca_fp_is_an_optional_addition() {
+    // Security review: `ca_fp` = lowercase hex SHA-256 of the CA PEM the TLS
+    // link trusts, so the Pi can spot a node that trust-on-first-use pinned
+    // some other CA. Additive: emitted only when set (the images set it only
+    // while `tls` is true); older Pis ignore it.
+    const char* roles[] = {"relay"};
+    const char* fp =
+        "cab3b27e4135403fdb3b368802d2b1bce67d4b8c1ab4c73245961524ceab0ef4";
+    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
+    in.emit_tls = true;
+    in.tls = true;
+    in.board = "esp32-wroom-32";
+    in.ca_fp = fp;
+    JsonDocument doc;
+    sp::build_heartbeat(in, doc);
+    std::set<std::string> k = keys_of(doc.as<JsonObject>());
+    TEST_ASSERT_EQUAL_INT(14, (int)k.size());  // 11 + tls + board + ca_fp
+    TEST_ASSERT_TRUE(doc["ca_fp"].is<const char*>());
+    TEST_ASSERT_EQUAL_STRING(fp, doc["ca_fp"]);
+    TEST_ASSERT_EQUAL_size_t(64, strlen(doc["ca_fp"].as<const char*>()));
+
+    // Unset or empty (plaintext link): omitted — the key set is unchanged.
+    in.tls = false;
+    in.ca_fp = "";
+    JsonDocument off;
+    sp::build_heartbeat(in, off);
+    TEST_ASSERT_FALSE(keys_of(off.as<JsonObject>()).count("ca_fp") == 1);
+    sp::HeartbeatInputs plain = node_hb_inputs(roles, 1);
+    JsonDocument d0;
+    sp::build_heartbeat(plain, d0);
+    TEST_ASSERT_FALSE(keys_of(d0.as<JsonObject>()).count("ca_fp") == 1);
 }
 
 // ── health ─────────────────────────────────────────────────────
@@ -409,13 +562,18 @@ int main(int, char**) {
     RUN_TEST(test_telemetry_all_present_matches_contract);
     RUN_TEST(test_telemetry_partial_presence_omits_absent_keys);
     RUN_TEST(test_telemetry_uncalibrated_emits_scale_raw_not_weight);
+    RUN_TEST(test_telemetry_replay_flag_is_optional_envelope_key);
+    RUN_TEST(test_telemetry_ts_epoch_when_synced_else_uptime);
     RUN_TEST(test_alert_keys_and_types);
     RUN_TEST(test_alert_every_firmware_type_is_a_known_alert_type);
+    RUN_TEST(test_tls_downgrade_alert_shape);
     RUN_TEST(test_switch_report_contract);
     RUN_TEST(test_dim_levels_keyed_by_channel_name_and_not_persisted);
     RUN_TEST(test_node_heartbeat_contract);
     RUN_TEST(test_node_heartbeat_migrated_from_appears_only_when_set);
     RUN_TEST(test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals);
+    RUN_TEST(test_heartbeat_transport_and_board_keys_are_optional_additions);
+    RUN_TEST(test_heartbeat_ca_fp_is_an_optional_addition);
     RUN_TEST(test_node_health_contract_with_sensors_and_channels);
     RUN_TEST(test_climate_health_omits_channels_object);
     RUN_TEST(test_log_entry_contract);

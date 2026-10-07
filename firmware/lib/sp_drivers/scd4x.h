@@ -34,14 +34,19 @@ public:
 
     Scd4x(I2cBus& bus, Clock& clock) : xport_(bus, clock, kAddr), clock_(clock) {}
 
-    // Serial-number probe (works in idle mode only — call before begin()).
+    // Serial-number probe. get_serial only works in idle mode, so the probe
+    // first sends stop_periodic_measurement (and waits the datasheet 500 ms
+    // when it is ACKed) — a sensor left in periodic mode by a warm reboot
+    // is otherwise invisible. Boot-only; call before begin().
     bool probe();
 
     // Stop any stale periodic mode, disable ASC, persist the ASC setting
     // if it changed (EEPROM-wear-aware), start periodic measurement.
     bool begin();
 
-    // True when a fresh measurement is available.
+    // True when a fresh measurement is available. A bus failure (NACK / CRC)
+    // returns false AND counts as a health failure ("data_ready error");
+    // "no sample yet" is healthy and leaves the counters alone.
     bool data_ready();
 
     // Read the current measurement (call only when data_ready()).

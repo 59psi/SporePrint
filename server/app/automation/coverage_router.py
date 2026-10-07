@@ -31,4 +31,4 @@ async def automation_coverage(
     profile = await get_profile(species)
     if not profile:
         raise HTTPException(404, f"Unknown species profile '{species}'")
-    return {"phases": await compute_coverage(profile)}
+    return {"phases": await compute_coverage(profile, chamber.get("node_ids") or None)}

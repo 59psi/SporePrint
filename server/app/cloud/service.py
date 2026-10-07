@@ -6,15 +6,24 @@ Buffers telemetry during disconnects and drains on reconnect.
 """
 
 import asyncio
-import json
+import ipaddress
 import logging
+import os
+import re as _re
+import tempfile
 import time
 from collections import OrderedDict
+from pathlib import Path as _Path
+from urllib.parse import urlparse
 
 import socketio
+from pydantic import TypeAdapter, ValidationError
 
+from ..automation.service import drop_duty_from_off, is_off_command
 from ..config import settings
 from ..health.service import get_system_metrics
+from ..integrations import _health_sweeper
+from . import ota as _ota
 from .signing import verify_frame
 
 log = logging.getLogger(__name__)
@@ -59,8 +68,26 @@ _replay_lock = asyncio.Lock()
 
 HEALTH_HEARTBEAT_INTERVAL = 60  # seconds
 
+# A session shorter than this that the server (or network) ends is treated as
+# a failed attempt: backoff grows instead of reconnecting ~1 s later forever
+# (relay kick loops, two Pis sharing a token kicking each other, ...).
+_STABLE_SESSION_SECONDS = 60
+
+# Set by request_reconnect() to cut a retry/backoff sleep short.
+_wake_event: asyncio.Event | None = None
+_connector_running: bool = False
+
+# The single in-flight OTA pipeline (kept referenced so it can't be GC'd
+# mid-run, and so a second OTA command is refused while one runs).
+_ota_task: asyncio.Task | None = None
+
 # Task registry for health reporting
 _task_status: dict = {"cloud_connector": {"status": "idle", "last_run": None}}
+
+# Lax bool for command payload flags: true/false, on/off, 1/0 (int or string).
+# `bool("false")` is True — a plain bool() cast would PAUSE automation on
+# {"paused": "false"}.
+_BOOL = TypeAdapter(bool)
 
 
 def _is_subscription_refusal(exc: Exception) -> bool:
@@ -170,7 +197,11 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
         except ImportError:
             return False, "automation engine not available on this Pi"
         try:
-            await set_paused(bool(payload.get("paused", False)))
+            paused = _BOOL.validate_python(payload.get("paused", False))
+        except ValidationError:
+            return False, f"automation.paused must be a boolean, got {payload.get('paused')!r}"
+        try:
+            await set_paused(paused)
             return True, None
         except Exception as e:
             return False, f"automation toggle failed: {type(e).__name__}: {e}"
@@ -222,18 +253,32 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
         if channel_str not in ("stable", "beta", "dev"):
             return False, "ota channel must be one of: stable | beta | dev"
 
+        # Refuse BEFORE acking when the pipeline cannot possibly succeed, so
+        # the cloud gets a failure instead of a success ack followed by
+        # silence: unsupported install layout (Docker), bad version string,
+        # a downgrade, or an OTA already running.
+        unsupported = _ota.self_update_unsupported_reason()
+        if unsupported:
+            return False, unsupported
+        invalid = _ota.validate_request(firmware_version, channel_str)
+        if invalid:
+            return False, invalid
+        global _ota_task
+        if _ota_task is not None and not _ota_task.done():
+            return False, "an OTA update is already in progress"
+
         # Run the full OTA pipeline (download → verify Ed25519 → stage →
         # promote → systemctl restart) as a background task so the
         # command_result ack flushes BEFORE we restart ourselves. Failure
-        # state is persisted to /var/lib/sporeprint/ota/state.json — the
-        # next-boot health check surfaces it. The running install is
-        # never touched if any step fails.
-        from . import ota as _ota
+        # state is persisted to the OTA state.json and emitted as an
+        # `ota_step: failed` event. The running install is never touched
+        # if any step before promote fails.
         log.info(
             "OTA pipeline starting: version=%s channel=%s",
             firmware_version, channel_str,
         )
-        async def _ota_task():
+
+        async def _run_ota():
             await asyncio.sleep(2)  # let the ack flush
             try:
                 result = await _ota.run_ota_update(firmware_version, channel_str)
@@ -246,7 +291,8 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
                     )
             except Exception as e:
                 log.exception("OTA pipeline raised: %s", e)
-        asyncio.create_task(_ota_task())
+
+        _ota_task = asyncio.create_task(_run_ota())
         return True, None
 
     return False, f"Unknown system channel '{channel}'"
@@ -589,7 +635,10 @@ async def handle_cloud_command(sio, data):
                 "executed" if ok else "rejected", channel, tier,
             )
         else:
-            # Late import to avoid circular dependency with mqtt.py
+            # Late imports: mqtt.py imports this module at top level, and the
+            # automation engine imports mqtt.py, so either at module top here
+            # would be a circular import.
+            from ..automation import engine as _engine
             from ..mqtt import mqtt_publish
 
             if channel:
@@ -597,7 +646,35 @@ async def handle_cloud_command(sio, data):
             else:
                 topic = f"sporeprint/{target}/cmd/config"
 
+            # Automation bookkeeping applies to a switch command on a channel
+            # or scene (cmd/config carries no switch state) with an object
+            # body (a node drops anything else). A scene is keyed on the node
+            # with no channel, as the engine and hardware.service key it.
+            actuates = (bool(channel) and channel != "config"
+                        and isinstance(payload, dict))
+            key_channel = None if channel == "scene" else channel
+            is_off = actuates and is_off_command(payload)
+            if isinstance(payload, dict):
+                # An OFF never carries pwm / level: deployed firmware reads
+                # {"state":"off","pwm":N} as ON at duty N.
+                payload = drop_duty_from_off(payload)
+            sent_at = time.time()
             published = await mqtt_publish(topic, payload)
+            if published and actuates:
+                try:
+                    if is_off:
+                        # An OFF outside automation ends the ON a safety
+                        # ceiling is timing; otherwise the next automation ON
+                        # inherits the stale deadline and trips early (false
+                        # page + 15 min lockout).
+                        await _engine.note_actuator_off(target, key_channel, sent_at=sent_at)
+                    else:
+                        # An ON outside automation: a rule cutoff must re-send
+                        # its OFF, not skip it as a redundant repeat.
+                        await _engine.note_actuator_on(target, key_channel)
+                except Exception as e:
+                    log.warning("Cloud: automation bookkeeping for %s/%s failed: %s",
+                                target, channel, e)
 
             await sio.emit("command_result", {
                 "id": command_id,
@@ -622,13 +699,97 @@ async def handle_cloud_command(sio, data):
         })
 
 
+def cloud_url_transport_ok(url: str) -> bool:
+    """May the device token be sent to ``url``?
+
+    The token authenticates the socket AND is the HMAC key for every signed
+    command frame, so it must never cross the internet in plaintext:
+    https/wss always; plain http/ws only to a loopback, private-range or
+    mDNS (``.local``) host — a dev relay on the operator's own LAN.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme in ("https", "wss"):
+        return bool(parsed.hostname)
+    if parsed.scheme not in ("http", "ws"):
+        return False
+    host = parsed.hostname or ""
+    if host == "localhost" or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def _backoff_seconds(attempts: int) -> int:
+    return min(300, 5 * (2 ** min(attempts, 6)))
+
+
+async def _backoff_sleep(seconds: float) -> None:
+    """Retry sleep that request_reconnect() can cut short."""
+    event = _wake_event
+    if event is None:
+        await asyncio.sleep(seconds)
+        return
+    try:
+        await asyncio.wait_for(event.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        event.clear()
+
+
+def request_reconnect() -> str:
+    """Wake the connector out of its retry/backoff sleep.
+
+    Returns ``"reconnecting"`` when a retry was triggered, ``"connected"``
+    when already connected (nothing to do), or ``"restart_required"`` when
+    the connector is not running in this process (e.g. credentials were
+    paired after boot).
+    """
+    if not _connector_running:
+        return "restart_required"
+    if _connected:
+        return "connected"
+    if _wake_event is not None:
+        _wake_event.set()
+    return "reconnecting"
+
+
+async def _push_integrations_snapshot() -> None:
+    """(Re)warm the cloud's integrations fleet cache on every connect — the
+    boot-time snapshot is emitted before the socket exists and is dropped."""
+    try:
+        await _health_sweeper.push_state_snapshot()
+    except Exception as e:  # noqa: BLE001 — best effort
+        log.debug("Cloud: integrations snapshot push failed: %s", e)
+
+
 async def start_cloud_connector():
     """Background task started in main.py lifespan. No-op if cloud not configured."""
     global _sio, _connected, _start_time, _reconnect_attempts, _subscription_blocked
+    global _wake_event, _connector_running
+
+    # Credentials paired via /api/cloud/configure live on the data volume
+    # (see env_path) and override the process env.
+    load_persisted_cloud_credentials()
 
     if not settings.cloud_url or not settings.cloud_token:
         log.info("Cloud connector disabled — set SPOREPRINT_CLOUD_URL and _TOKEN to enable")
         _task_status["cloud_connector"]["status"] = "disabled"
+        return
+
+    if not cloud_url_transport_ok(settings.cloud_url):
+        log.error(
+            "Cloud connector disabled — refusing to send the device token over "
+            "plaintext to %s (cloud_url must be https://, or http:// only to a "
+            "LAN/loopback dev relay)", settings.cloud_url,
+        )
+        _task_status["cloud_connector"]["status"] = "disabled — insecure cloud_url (https required)"
         return
 
     _start_time = time.time()
@@ -642,6 +803,8 @@ async def start_cloud_connector():
         log.info("Cloud: replay cache rehydrated with %d recent command ids", loaded)
 
     _sio = socketio.AsyncClient(reconnection=False)
+    _wake_event = asyncio.Event()
+    _connector_running = True
 
     # v4.1 — register the integrations RPC handler so cloud-web can read
     # this Pi's /api/integrations state through the relay.
@@ -650,9 +813,11 @@ async def start_cloud_connector():
 
     @_sio.on("connect")
     async def on_connect():
-        global _connected, _reconnect_attempts, _heartbeat_task, _subscription_blocked
+        global _connected, _heartbeat_task, _subscription_blocked
         _connected = True
-        _reconnect_attempts = 0
+        # _reconnect_attempts is reset by the connection loop only once a
+        # session proves stable — a relay that accepts then immediately kicks
+        # us must keep growing the backoff.
         # A successful connect means the cloud accepted us — the subscription is
         # live again (or never lapsed). Resume buffering.
         if _subscription_blocked:
@@ -674,6 +839,7 @@ async def start_cloud_connector():
         # Start health heartbeat
         if _heartbeat_task is None or _heartbeat_task.done():
             _heartbeat_task = asyncio.create_task(_health_heartbeat_loop())
+        await _push_integrations_snapshot()
 
     @_sio.on("disconnect")
     async def on_disconnect():
@@ -693,38 +859,60 @@ async def start_cloud_connector():
         await handle_cloud_command(_sio, data)
 
     # Connection loop with exponential backoff
-    while True:
-        try:
-            await _sio.connect(
-                settings.cloud_url,
-                auth={"token": settings.cloud_token, "device_id": settings.cloud_device_id},
-                transports=["websocket"],
-            )
-            await _sio.wait()
-        except asyncio.CancelledError:
-            if _sio.connected:
-                await _sio.disconnect()
-            return
-        except Exception as e:
-            if _is_subscription_refusal(e):
-                # Not a fault — the cloud is correctly refusing an unsubscribed
-                # account. Retrying hard would achieve nothing but noise.
-                _subscription_blocked = True
-                _drop_undeliverable_queue()
-                log.warning(
-                    "Cloud: subscription required — cloud sync paused (local control "
-                    "is unaffected). Rechecking every %ds; resubscribe to resume.",
-                    _SUBSCRIPTION_RETRY_SECONDS,
+    try:
+        while True:
+            try:
+                await _sio.connect(
+                    settings.cloud_url,
+                    auth={"token": settings.cloud_token, "device_id": settings.cloud_device_id},
+                    transports=["websocket"],
                 )
-                _task_status["cloud_connector"]["status"] = "paused — subscription required"
-                await asyncio.sleep(_SUBSCRIPTION_RETRY_SECONDS)
+                connected_at = time.time()
+                await _sio.wait()
+            except asyncio.CancelledError:
+                if _sio.connected:
+                    await _sio.disconnect()
+                return
+            except Exception as e:
+                if _is_subscription_refusal(e):
+                    # Not a fault — the cloud is correctly refusing an unsubscribed
+                    # account. Retrying hard would achieve nothing but noise.
+                    _subscription_blocked = True
+                    _drop_undeliverable_queue()
+                    log.warning(
+                        "Cloud: subscription required — cloud sync paused (local control "
+                        "is unaffected). Rechecking every %ds; resubscribe to resume.",
+                        _SUBSCRIPTION_RETRY_SECONDS,
+                    )
+                    _task_status["cloud_connector"]["status"] = "paused — subscription required"
+                    await _backoff_sleep(_SUBSCRIPTION_RETRY_SECONDS)
+                    continue
+
+                _reconnect_attempts += 1
+                backoff = _backoff_seconds(_reconnect_attempts)
+                log.warning("Cloud: connection failed (%s), retry in %ds", e, backoff)
+                _task_status["cloud_connector"]["status"] = f"reconnecting ({backoff}s)"
+                await _backoff_sleep(backoff)
                 continue
 
-            _reconnect_attempts += 1
-            backoff = min(300, 5 * (2 ** min(_reconnect_attempts, 6)))
-            log.warning("Cloud: connection failed (%s), retry in %ds", e, backoff)
+            # wait() returned: an established session was ended by the server
+            # or the network. Without a delay here the loop reconnects ~1 s
+            # later forever. A stable session resets the backoff; a short one
+            # counts as a failed attempt.
+            session_seconds = time.time() - connected_at
+            if session_seconds >= _STABLE_SESSION_SECONDS:
+                _reconnect_attempts = 0
+            else:
+                _reconnect_attempts += 1
+            backoff = _backoff_seconds(_reconnect_attempts)
+            log.warning(
+                "Cloud: session ended after %.0fs, reconnecting in %ds",
+                session_seconds, backoff,
+            )
             _task_status["cloud_connector"]["status"] = f"reconnecting ({backoff}s)"
-            await asyncio.sleep(backoff)
+            await _backoff_sleep(backoff)
+    finally:
+        _connector_running = False
 
 
 async def forward_telemetry(node_id: str, payload: dict):
@@ -774,22 +962,28 @@ async def forward_component_health(node_id: str, data: dict):
         log.debug("Cloud: component health forward failed: %s", e)
 
 
-async def forward_event(event_type: str, data: dict):
+async def forward_event(event_type: str, data: dict) -> bool:
     """Forward session events, alerts, vision results to cloud.
 
     `ota_step` rides its own Socket.IO channel so the cloud relay can persist
     pipeline progress into `ota_progress_events`. Everything else uses the
     legacy `event` envelope so existing push/escalation handlers fire unchanged.
+
+    Events are NOT queued: while the socket is down they are dropped. Returns
+    True only when the event was handed to the socket, so callers that must
+    not lose a transition (the vendor-health sweeper) can retry.
     """
     if not settings.cloud_url or not _connected or not _sio:
-        return
+        return False
     try:
         if event_type == "ota_step":
             await _sio.emit("ota_step", {"ts": time.time(), **data})
         else:
             await _sio.emit("event", {"type": event_type, "ts": time.time(), **data})
+        return True
     except Exception as e:
         log.debug("Cloud: event forward failed: %s", e)
+        return False
 
 
 async def _health_heartbeat_loop():
@@ -837,7 +1031,6 @@ def get_task_status() -> dict:
     return dict(_task_status)
 
 
-import re as _re
 _SAFE_ID_RE = _re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
@@ -866,16 +1059,54 @@ async def _target_is_registered(target: str) -> bool:
 
 # ─── Pairing / cloud-configure helpers ───────────────────────────
 
-# The `.env` lives next to the `server/` package root, not next to whatever the
-# systemd unit chose as CWD (which is often `/`). Resolve from this file so the
-# path is stable regardless of invocation context.
-#  cloud/service.py -> app/ -> server/ -> repo-root
-from pathlib import Path as _Path
-_ENV_PATH = _Path(__file__).resolve().parents[2] / ".env"
+# Paired cloud credentials are persisted to `cloud.env` NEXT TO THE DATABASE —
+# i.e. on the persistent data volume (/data/db in Docker). The old location,
+# `<server>/.env` beside the code, is root-owned and ephemeral in the
+# container (PermissionError → HTTP 500 on /configure, and lost on rebuild),
+# and even when writable it was shadowed by the empty SPOREPRINT_CLOUD_* vars
+# docker-compose injects. The connector loads this file at startup and it
+# OVERRIDES the process env (see load_persisted_cloud_credentials).
+_CLOUD_ENV_FILENAME = "cloud.env"
+_CLOUD_ENV_KEYS: dict[str, str] = {
+    "SPOREPRINT_CLOUD_URL": "cloud_url",
+    "SPOREPRINT_CLOUD_TOKEN": "cloud_token",
+    "SPOREPRINT_CLOUD_DEVICE_ID": "cloud_device_id",
+}
 
 
 def env_path() -> _Path:
-    return _ENV_PATH
+    """Where pairing writes cloud credentials: beside the SQLite DB."""
+    return _Path(settings.database_path).resolve().parent / _CLOUD_ENV_FILENAME
+
+
+def load_persisted_cloud_credentials() -> bool:
+    """Apply credentials saved by /api/cloud/configure onto ``settings``.
+
+    Returns True when at least one value was applied. Non-empty values in
+    the file win over the environment (a fresh pairing must take effect even
+    though compose passes empty SPOREPRINT_CLOUD_* variables).
+    """
+    path = env_path()
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs an identifier/path/field names only, never a secret value
+        log.warning("Cloud: cannot read persisted credentials at %s: %s", path, e)
+        return False
+    applied = False
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        attr = _CLOUD_ENV_KEYS.get(key.strip())
+        value = value.strip()
+        if sep and attr and value:
+            setattr(settings, attr, value)
+            applied = True
+    if applied:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs an identifier/path/field names only, never a secret value
+        log.info("Cloud: loaded paired credentials from %s", path)
+    return applied
 
 
 _FORBIDDEN_VALUE_CHARS = ("\n", "\r", "=", "\x00")
@@ -888,10 +1119,8 @@ def _validate_env_value(key: str, value: str) -> None:
 
 
 def write_cloud_env(updates: dict) -> _Path:
-    """Atomically merge `updates` into .env. Rejects newline-injection values."""
-    import os
-    import tempfile
-
+    """Atomically merge `updates` into the persisted cloud.env (mode 0600).
+    Rejects newline-injection values."""
     path = env_path()
     for key, value in updates.items():
         if not isinstance(value, str):

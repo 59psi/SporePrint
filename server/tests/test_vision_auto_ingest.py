@@ -16,11 +16,13 @@ These tests pin the gating and the wire-up.
 """
 
 import json
+import re
 import time
 from unittest.mock import AsyncMock
 
 import pytest
 
+import app.vision.router as vrouter
 from app.config import settings
 from app.db import get_db
 from app.vision import service
@@ -37,9 +39,11 @@ from app.vision.service import (
 def _reset_auto_analysis_state():
     """The throttle table + task set are module-global; isolate each test."""
     service._last_auto_analysis.clear()
+    service._last_auto_phase.clear()
     service._auto_analysis_tasks.clear()
     yield
     service._last_auto_analysis.clear()
+    service._last_auto_phase.clear()
     service._auto_analysis_tasks.clear()
 
 
@@ -71,6 +75,12 @@ async def _insert_frame_with_file(tmp_path, session_id: int, node_id: str = "cam
 # ── throttle logic (pure) ───────────────────────────────────────────────────
 
 
+def test_default_auto_cadence_matches_spec_six_hours():
+    """srv-rest#32: spec §6 — Claude Vision runs every 6h (+ on demand), not on
+    every 15-minute capture (~24x the specified API spend on a BYOK key)."""
+    assert _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS == 6 * 3600
+
+
 def test_claim_slot_throttles_per_session_and_expires():
     base = 1_000_000.0
     # first frame for the session claims the slot
@@ -82,6 +92,44 @@ def test_claim_slot_throttles_per_session_and_expires():
     assert _claim_auto_analysis_slot(2, now=base + 60) is True
     # once the window elapses, the session is eligible again
     assert _claim_auto_analysis_slot(1, now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS) is True
+
+
+def test_phase_transition_bypasses_the_cadence_window():
+    """Spec §6: Claude Vision also runs on phase transitions. With the 6h
+    cadence, the first frame after a phase change is analysed straight away
+    (once) instead of waiting out the window."""
+    base = 1_000_000.0
+    assert _claim_auto_analysis_slot(1, now=base, phase="primordia_induction") is True
+    assert _claim_auto_analysis_slot(1, now=base + 60, phase="primordia_induction") is False
+    assert _claim_auto_analysis_slot(1, now=base + 120, phase="fruiting") is True
+    assert _claim_auto_analysis_slot(1, now=base + 180, phase="fruiting") is False
+
+
+async def test_first_frame_after_phase_change_is_analysed(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "claude_api_key", "test-key")
+    sid = await _make_active_session(phase="primordia_induction")
+    mock = AsyncMock(return_value={"health_assessment": "healthy", "summary": "ok"})
+    monkeypatch.setattr(service, "analyze_frame_claude", mock)
+
+    async def ingest():
+        fid, fpath = await _insert_frame_with_file(tmp_path, sid)
+        return await maybe_schedule_auto_analysis(
+            frame_id=fid, session_id=sid, node_id="cam-01", file_path=fpath
+        )
+
+    t1 = await ingest()
+    assert t1 is not None
+    await t1
+    assert await ingest() is None  # same phase, inside the window
+
+    async with get_db() as db:
+        await db.execute("UPDATE sessions SET current_phase = 'fruiting' WHERE id = ?", (sid,))
+        await db.commit()
+    t3 = await ingest()
+    assert t3 is not None, "phase transition must trigger an analysis"
+    await t3
+    assert await ingest() is None  # back on the cadence
+    assert mock.await_count == 2
 
 
 # ── scheduling on ingest ────────────────────────────────────────────────────
@@ -189,8 +237,6 @@ def test_ingest_endpoint_invokes_auto_analysis(client, monkeypatch, tmp_path):
     """POST /api/vision/frame must hand every ingested frame to the auto-analysis
     scheduler (which then applies the cost gate)."""
     monkeypatch.setattr(settings, "vision_storage", str(tmp_path / "frames"))
-    import app.vision.router as vrouter
-
     recorder = AsyncMock(return_value=None)
     monkeypatch.setattr(vrouter, "maybe_schedule_auto_analysis", recorder)
 
@@ -211,4 +257,5 @@ def test_ingest_endpoint_invokes_auto_analysis(client, monkeypatch, tmp_path):
     assert kwargs["frame_id"] == body["frame_id"]
     assert kwargs["node_id"] == "cam-01"
     assert kwargs["session_id"] is None  # fresh DB → no active session
-    assert kwargs["file_path"].endswith("cam-01_1752300000.jpg")
+    # Stored names are unique per frame (srv-rest#7): node + ts + random suffix.
+    assert re.search(r"cam-01_1752300000_[0-9a-f]{12}\.jpg$", kwargs["file_path"])

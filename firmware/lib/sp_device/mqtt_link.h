@@ -10,9 +10,13 @@
 // coredump chunk into unparseable JSON.
 //
 // Inbound stays at a 1024-byte cap with an explicit oversize drop (logged,
-// never truncated). Reconnect is non-blocking-ish: one connect attempt per
-// 5 s window (PubSubClient's socket timeout bounds the attempt; the WDT
-// budget accounts for it). LWT publishes a retained offline status; the
+// never truncated). Reconnect is non-blocking-ish: at most one connect
+// attempt per pass, at least 5 s after the previous attempt ENDED (so a
+// failing attempt is always followed by 5 s of unblocked passes), skipped
+// while WiFi is down. The attempt is synchronous, so its worst case (DNS +
+// TCP + TLS handshake + CONNACK) is budgeted against the loop WDT in
+// sp_core/link_budget.h — the transport timeouts are set in tls_transport.h,
+// the CONNACK wait here. LWT publishes a retained offline status; the
 // connect callback re-publishes retained online status and re-subscribes.
 //
 // The transport Client* is injected so phase 6 can swap a WiFiClientSecure
@@ -41,14 +45,35 @@ public:
           node_type_(node_type),
           fw_version_(fw_version) {}
 
+    // `connect_now` = false skips the immediate connect attempt (Secure MQTT
+    // required but no Pi CA pinned yet — tls_policy.h FailClosed).
     void begin(const char* host, uint16_t port, const char* user,
-               const char* pass);
+               const char* pass, bool connect_now = true);
 
-    // Pump: reconnect window + PubSubClient loop. Call every loop pass.
-    void loop(uint32_t now_ms);
+    // Move the link onto another transport (a candidate Pi CA to try on TLS
+    // 8883, or back to plaintext when that trial failed — tls_policy.h).
+    // Publishes the retained offline status the LWT would (so the Pi isn't
+    // left showing "online" if the new transport can't connect), drops the
+    // connection, and lets the next allowed loop() pass reconnect on the new
+    // transport. `transport` must outlive the link.
+    void switch_transport(Client& transport, uint16_t port);
+
+    // Pump: reconnect window + PubSubClient loop. Call every loop pass with
+    // a `now` taken at the top of the pass. `may_connect` = false skips
+    // starting a (blocking) connect attempt this pass — the node passes it
+    // while the BOOT button is held so the hold is sampled densely.
+    void loop(uint32_t now_ms, bool may_connect = true);
 
     bool connected() { return mqtt_.connected(); }
     uint32_t reconnect_count() const { return reconnects_; }
+    // Connect attempts actually started (a pass skipped because WiFi is down
+    // does not count) and those that got a CONNACK — the TLS trial's "has the
+    // candidate been tried yet, and did it connect" (tls_policy.h).
+    uint32_t connect_attempts() const { return attempts_; }
+    uint32_t connect_successes() const { return successes_; }
+    // PubSubClient::state(): why the last attempt failed (tls_policy.h
+    // classify_tls_trial_failure).
+    int state() { return mqtt_.state(); }
 
     // Streamed publish. Returns false when disconnected or the write fails.
     bool publish(const char* topic, JsonDocument& doc, bool retain = false);
@@ -85,6 +110,8 @@ private:
     std::string pass_;
     uint32_t last_attempt_ms_ = 0;
     uint32_t reconnects_ = 0;
+    uint32_t attempts_ = 0;
+    uint32_t successes_ = 0;
     bool ever_connected_ = false;
     MessageFn cmd_fn_ = nullptr;
     void* cmd_ctx_ = nullptr;

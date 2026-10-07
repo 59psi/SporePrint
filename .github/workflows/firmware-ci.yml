@@ -6,19 +6,22 @@ name: firmware-ci
 #      golden file the server's Python suite asserts on), HMAC verify,
 #      buffer/channel/clamp/wrap suites, driver mock-bus suites, and the
 #      cam URL allowlist.
-#   2. A build matrix for all three shipped images (node_esp32,
-#      node_esp32s3, cam) — catches platform-pin regressions, library API
-#      drift, and link breaks same-day. No hardware required; HIL testing
+#   2. A build matrix for every shipped image (node_esp32, node_esp32s3,
+#      node_esp32s3_n32r16v, cam, and the cam's ESP32-S3 builds
+#      cam_esp32s3, cam_xiao_esp32s3, cam_waveshare_s3) — catches platform-pin
+#      regressions, library API drift, and link breaks same-day. No hardware required; HIL testing
 #      remains a manual step per release.
 #
 # Security: no step consumes untrusted event input (issue titles, PR
 # bodies, head refs, commit messages) — only VERSION.txt, which is
 # committed by the operator via the release tooling. Safe against the
 # workflow-injection class.
+# Actions are pinned to commit SHAs (tag in the trailing comment), checkouts
+# do not persist the token, and PlatformIO is pinned to an exact version.
 
 # RELEASE-GATED CI (2026-07): push/PR triggers removed org-wide — Actions
 # minutes are reserved for releases. Firmware validation happens locally
-# (`pio test -e native` + the three-image build) before merges, and
+# (`pio test -e native` + the four-image build) before merges, and
 # firmware-release.yml still runs on `firmware-v*` tags. On demand:
 #   gh workflow run firmware-ci.yml
 on:
@@ -36,16 +39,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.platformio
@@ -55,7 +60,7 @@ jobs:
       - name: Install PlatformIO
         run: |
           python -m pip install --upgrade pip
-          python -m pip install platformio
+          python -m pip install platformio==6.2.0
 
       - name: Native test suite
         working-directory: firmware
@@ -66,6 +71,9 @@ jobs:
           diff -q firmware/test/fixtures/signing_vectors.json \
                   server/tests/fixtures/signing_vectors.json
           echo "signing vectors byte-identical"
+          diff -q firmware/test/fixtures/ota_manifest_vectors.json \
+                  server/tests/fixtures/ota_manifest_vectors.json
+          echo "OTA manifest vectors byte-identical"
 
       - name: Arduino-free core check
         # lib/sp_core + lib/sp_drivers must stay host-compilable: no
@@ -84,18 +92,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [node_esp32, node_esp32s3, cam]
+        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam, cam_esp32s3,
+              cam_xiao_esp32s3, cam_waveshare_s3]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Cache PlatformIO platform + libdeps
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.platformio
@@ -105,7 +116,7 @@ jobs:
       - name: Install PlatformIO + esptool prereq
         run: |
           python -m pip install --upgrade pip
-          python -m pip install platformio intelhex
+          python -m pip install platformio==6.2.0 intelhex==2.3.0
 
       - name: Read firmware version
         id: fwver

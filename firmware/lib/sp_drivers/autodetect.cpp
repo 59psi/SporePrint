@@ -1,5 +1,6 @@
 #include "autodetect.h"
 
+#include "aht20.h"
 #include "bh1750.h"
 #include "scd30.h"
 #include "scd4x.h"
@@ -64,6 +65,24 @@ DetectedSensors autodetect_i2c(I2cBus& bus, Clock& clock) {
         if (bh.probe()) {
             out.bh1750 = true;
             out.bh1750_addr = addr;
+            break;
+        }
+    }
+
+    // Temp/RH alternate — AHT2x at its fixed address (CRC-gated probe).
+    {
+        Aht20 aht(bus, clock);
+        out.aht20 = aht.probe();
+    }
+
+    // Barometric — BME280 / BMP280, SDO-low address first (GY-BME280 /
+    // GY-BMP280 modules), then SDO-high (Adafruit, AHT20+BMP280 combos).
+    const uint8_t baro_addrs[] = {Bme280::kAddrPrimary, Bme280::kAddrAlt};
+    for (uint8_t addr : baro_addrs) {
+        BaroKind k = Bme280::identify(bus, addr);
+        if (k != BaroKind::None) {
+            out.baro = k;
+            out.baro_addr = addr;
             break;
         }
     }

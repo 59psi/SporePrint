@@ -1,11 +1,22 @@
 import asyncio
+import datetime as dt
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from .config import settings
+from .db import get_db
+from .hardware.coredumps import coredump_dir, discard_partial_writes
+from .health.service import update_task
+from .host_allow import HostAllowMiddleware
+from .retention import service as retention_service
+from .sessions.service import check_phase_reminders
 
 # Socket.IO accepts wildcard origins because engineio's CORS implementation only
 # allows exact-string match (no regex/callable) and the Pi binds to a dynamic
@@ -47,9 +58,10 @@ async def lifespan(app: FastAPI):
         if not settings.allow_unauthenticated:
             raise RuntimeError(
                 "SPOREPRINT_API_KEY is empty and SPOREPRINT_ALLOW_UNAUTHENTICATED=false. "
-                "Either set SPOREPRINT_API_KEY (recommended — run setup.sh) or, for "
-                "intentional LAN-trust mode on an isolated network, set "
-                "SPOREPRINT_ALLOW_UNAUTHENTICATED=true."
+                "On a Pi, run ./install.sh (it sets up LAN-trust mode for the bundled "
+                "dashboard); otherwise set SPOREPRINT_API_KEY to require a bearer "
+                "token, or set SPOREPRINT_ALLOW_UNAUTHENTICATED=true for intentional "
+                "LAN-trust mode on an isolated network."
             )
         log.warning(
             "SPOREPRINT_API_KEY is empty — running in LAN-trust mode with no auth. "
@@ -57,22 +69,9 @@ async def lifespan(app: FastAPI):
         )
 
     await init_db()
+    _ensure_coredump_dir(log)
     await seed_builtins()
     await seed_builtin_rules()
-
-    # Re-arm any safety watchdogs that were in-flight before the Pi restarted.
-    # If an actuator's safety_max_on_seconds elapsed while the Pi was down,
-    # rehydrate_safety_watchdogs publishes OFF immediately to get the device
-    # back to a safe state.
-    try:
-        from .automation.engine import rehydrate_safety_watchdogs
-        count = await rehydrate_safety_watchdogs()
-        if count:
-            logging.getLogger(__name__).info(
-                "Rehydrated %d safety watchdog(s) from prior process", count
-            )
-    except Exception as e:
-        logging.getLogger(__name__).warning("safety watchdog rehydration failed: %s", e)
 
     # v3.4.9 Debt 4 — wire the previously-orphaned task registry. Each
     # long-running supervisor registers on boot; the admin dashboard now
@@ -85,6 +84,7 @@ async def lifespan(app: FastAPI):
     register_task("daily_retrain", "idle")
     register_task("nightly_weather_aggregate", "idle")
     register_task("node_liveness_sweeper", "running")
+    register_task("phase_reminders", "idle")
 
     from .integrations._health_sweeper import (
         run_health_sweeper,
@@ -99,18 +99,37 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_daily_retrain()),
         asyncio.create_task(_nightly_weather_aggregate()),
         asyncio.create_task(_node_liveness_sweeper()),
+        asyncio.create_task(_phase_reminder_loop()),
         # v4.1.5 — emit vendor_health_degraded events on transitions
         # so the cloud's push-rules + escalation chains can fire.
         asyncio.create_task(run_health_sweeper()),
     ]
+
+    # Re-arm any safety watchdogs that were in-flight before the Pi restarted.
+    # Runs after start_mqtt is scheduled: every row (including one that expired
+    # while the Pi was down) becomes a watchdog task that sends its OFF over the
+    # actuator's own transport, retrying until MQTT / the vendor drivers are up,
+    # and deletes the row only once the OFF actually went out.
+    try:
+        from .automation.engine import rehydrate_safety_watchdogs
+        count = await rehydrate_safety_watchdogs()
+        if count:
+            log.info("Rehydrated %d safety watchdog(s) from prior process", count)
+    except Exception as e:
+        log.warning("safety watchdog rehydration failed: %s", e)
+
     # v4.1 integrations — boot every driver persisted as enabled. Failures
     # are isolated per-driver in the registry so a misconfigured Aranet
     # base station can't take down the Pi.
     await _start_enabled_integrations()
-    # v4.1.5 — push the initial snapshot so the cloud's fleet cache
-    # warms up immediately. Forwarded events queue if the cloud
-    # connector is still establishing its socket.
+    # v4.1.5 — push the initial snapshot so the cloud's fleet cache warms up
+    # immediately. forward_event does NOT queue: if the connector's socket is
+    # not up yet this push is dropped, which is harmless because the connector
+    # re-pushes the snapshot on every (re)connect.
     await push_state_snapshot()
+    # Last, once MQTT (the rules engine), the re-armed safety watchdogs and
+    # the vendor drivers are all running: the one-time auto_vacuum rewrite.
+    await _convert_to_incremental_auto_vacuum(log)
     yield
     await _stop_all_integrations()
     for task in tasks:
@@ -166,9 +185,107 @@ async def _nightly_weather_aggregate():
             await asyncio.sleep(3600)
 
 
+def _ensure_coredump_dir(log: logging.Logger) -> None:
+    """Create the node coredump directory at boot and say if it is unusable.
+
+    Dumps are reassembled there when a node reports a panic; finding out it
+    is unwritable only then means that dump is lost.
+    """
+    path = coredump_dir()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error("Coredump directory %s cannot be created: %s — node panic "
+                  "dumps will be lost", path, e)
+        return
+    if not os.access(path, os.W_OK | os.X_OK):
+        log.error("Coredump directory %s is not writable — node panic dumps "
+                  "will be lost", path)
+        return
+    # A crash mid-write leaves a temp file; that upload was never
+    # acknowledged, so the node still holds the dump and sends it again.
+    removed = discard_partial_writes()
+    if removed:
+        log.info("Removed %d partially written coredump file(s)", removed)
+
+
+# The one-time auto_vacuum conversion is a full VACUUM: it rewrites the whole
+# file while holding the write lock. Up to this size that is seconds on a Pi
+# SD card. A bigger database is left to the nightly retention window, which
+# converts once a large share of the file is free (retention._vacuum), rather
+# than stalling MQTT ingest and rule writes for minutes after every upgrade.
+_BOOT_AUTO_VACUUM_MAX_BYTES = 32 * 1024 * 1024
+
+
+async def _convert_to_incremental_auto_vacuum(log: logging.Logger) -> None:
+    """Switch a small existing database to auto_vacuum=INCREMENTAL at boot.
+
+    Called at the END of startup: MQTT (the rules engine), the rehydrated
+    safety watchdogs and the vendor drivers are already running, so a
+    persisted safety ceiling is re-armed (or tripped) before the rewrite, not
+    after it. New databases are created incremental, so this is a no-op for
+    them. A failure (e.g. disk full) is logged and boot continues — the
+    nightly job only loses its ability to hand freed pages back.
+    """
+    try:
+        try:
+            size = Path(settings.database_path).stat().st_size
+        except OSError:
+            size = 0
+        if size <= _BOOT_AUTO_VACUUM_MAX_BYTES:
+            await retention_service.ensure_incremental_auto_vacuum()
+            return
+        async with get_db() as db:
+            mode = await retention_service._pragma_int(db, "PRAGMA auto_vacuum")
+        if mode != retention_service._AUTO_VACUUM_INCREMENTAL:
+            log.info(
+                "Database is %.0f MB and not in auto_vacuum=INCREMENTAL mode; "
+                "leaving the one-time conversion VACUUM to the nightly retention "
+                "window instead of stalling writers at boot", size / 1e6,
+            )
+    except Exception as e:
+        log.error("auto_vacuum conversion failed; continuing boot: %s", e)
+
+
+# Overdue-phase reminders (INFO) go out once a day at this local hour
+# (container time: UTC unless TZ is set). Daily rather than hourly: the INFO
+# tier's dedup is 1 h, so an hourly check would nag every hour for days.
+_PHASE_REMINDER_LOCAL_HOUR = 9
+
+
+def _seconds_until_next_phase_reminder(now: float | None = None) -> float:
+    now = time.time() if now is None else now
+    current = dt.datetime.fromtimestamp(now)
+    target = current.replace(hour=_PHASE_REMINDER_LOCAL_HOUR, minute=0,
+                             second=0, microsecond=0)
+    if target <= current:
+        target += dt.timedelta(days=1)
+    return target.timestamp() - now
+
+
+async def _phase_reminder_loop():
+    """Nudge the operator about active sessions that have overrun their phase."""
+    log = logging.getLogger(__name__)
+    while True:
+        try:
+            await asyncio.sleep(_seconds_until_next_phase_reminder())
+            update_task("phase_reminders", "running")
+            sent = await check_phase_reminders()
+            update_task("phase_reminders", "idle")
+            if sent:
+                log.info("Sent %d overdue-phase reminder(s)", sent)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            update_task("phase_reminders", "error", error=str(e))
+            log.error("Phase reminder check failed: %s", e)
+
+
 # A node is considered offline once we haven't heard from it for this long.
-# Climate nodes publish every 60s + heartbeats every 5 min, so 15 min is three
-# missed heartbeats — enough to discriminate a WiFi blip from a true outage.
+# last_seen is refreshed by status/* frames and by every telemetry frame
+# (mqtt.py). Heartbeats come at least every 5 min (current firmware keeps them
+# on their own clock) and relay banks report switch state every 60 s, so 15
+# min is three missed heartbeats — enough to tell a WiFi blip from an outage.
 _NODE_OFFLINE_THRESHOLD_SECONDS = 900
 _NODE_SWEEPER_INTERVAL_SECONDS = 60
 
@@ -226,7 +343,7 @@ async def _node_liveness_sweeper():
             await asyncio.sleep(60)
 
 
-app = FastAPI(title="SporePrint", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="SporePrint", version="5.1.0", lifespan=lifespan)
 
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
@@ -270,7 +387,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-from .auth import ApiKeyMiddleware, socketio_auth_ok
+from .auth import ApiKeyMiddleware, socketio_auth_ok, socketio_client_addr
 from ._request_id_mw import RequestIdMiddleware
 
 # v3.4.9 Debt 5 — request-id middleware lives BEFORE the api key check
@@ -357,7 +474,7 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "5.0.0"}
+    return {"status": "ok", "version": "5.1.0"}
 
 
 # Track Socket.IO clients for health reporting
@@ -368,9 +485,11 @@ from .health.service import track_client_connect, track_client_disconnect
 async def _sio_connect(sid, environ, auth=None):
     # v3.3.3 — pass the remote address into the auth callback so its rate-limit
     # can kick in (see app.auth.socketio_auth_ok docstring for the LAN-trust
-    # rationale). environ['REMOTE_ADDR'] is set by uvicorn's ASGI layer.
+    # rationale). The address is the ASGI scope's peer (behind nginx, the
+    # dashboard's real IP via uvicorn --proxy-headers); engineio's ASGI
+    # REMOTE_ADDR is a hardcoded placeholder — see socketio_client_addr.
     _log = logging.getLogger(__name__)
-    remote_addr = environ.get("REMOTE_ADDR") or environ.get("HTTP_X_FORWARDED_FOR")
+    remote_addr = socketio_client_addr(environ)
     if not socketio_auth_ok(auth, remote_addr=remote_addr):
         _log.warning("Socket.IO connect refused: sid=%s remote=%s", sid, remote_addr or "?")
         return False
@@ -383,4 +502,7 @@ async def _sio_disconnect(sid):
     track_client_disconnect(sid)
 
 
-socket_app = socketio.ASGIApp(sio, app)
+# Outermost layer: the Host allow-list (DNS-rebinding guard, app/host_allow.py)
+# wraps Socket.IO as well as every FastAPI route. uvicorn serves this object
+# (server/Dockerfile CMD), so nothing reaches the app for an unlisted Host.
+socket_app = HostAllowMiddleware(socketio.ASGIApp(sio, app))

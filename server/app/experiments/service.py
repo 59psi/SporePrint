@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 
 import anthropic
@@ -6,8 +7,15 @@ import anthropic
 from ..config import settings
 from ..db import get_db
 from ..sessions.service import get_session, get_session_stats
-from ..vision.service import parse_claude_json
+from ..vision.service import (
+    CLAUDE_MAX_TOKENS,
+    claude_response_text,
+    claude_stop_reason,
+    parse_claude_json,
+)
 from .models import ExperimentCreate, ExperimentUpdate
+
+log = logging.getLogger(__name__)
 
 
 def _parse_experiment(row: dict) -> dict:
@@ -92,6 +100,41 @@ async def update_experiment(experiment_id: int, data: ExperimentUpdate) -> dict 
     return await get_experiment(experiment_id)
 
 
+# Metrics where the SMALLER value is the better outcome. Everything else
+# (yield, BE, flush count) is higher-is-better.
+LOWER_IS_BETTER = {"colonization_days", "contamination_count"}
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _pick_winner(metric: str, control_val, variant_val) -> str | None:
+    """'control' | 'variant' | 'tie' for numeric values; None if not comparable."""
+    if not (_is_number(control_val) and _is_number(variant_val)):
+        return None
+    if variant_val == control_val:
+        return "tie"
+    variant_better = variant_val < control_val if metric in LOWER_IS_BETTER else variant_val > control_val
+    return "variant" if variant_better else "control"
+
+
+async def _contamination_count(session: dict | None) -> int | None:
+    """Logged contamination events for a session; a session whose status is
+    'contaminated' counts at least once even with no event rows."""
+    if not session:
+        return None
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS n FROM contamination_events WHERE session_id = ?",
+            (session["id"],),
+        )
+        count = (await cursor.fetchone())["n"]
+    if session.get("status") == "contaminated":
+        count = max(count, 1)
+    return count
+
+
 def _extract_metric(stats: dict | None, session: dict | None, metric: str):
     """Extract a metric value from stats or session data.
 
@@ -129,19 +172,17 @@ async def get_comparison(experiment_id: int) -> dict | None:
 
     metrics = []
     for dep_var in experiment["dependent_variables"]:
-        control_val = _extract_metric(control_stats, control_session, dep_var)
-        variant_val = _extract_metric(variant_stats, variant_session, dep_var)
+        if dep_var == "contamination_count":
+            control_val = await _contamination_count(control_session)
+            variant_val = await _contamination_count(variant_session)
+        else:
+            control_val = _extract_metric(control_stats, control_session, dep_var)
+            variant_val = _extract_metric(variant_stats, variant_session, dep_var)
 
+        winner = _pick_winner(dep_var, control_val, variant_val)
         pct_diff = None
-        winner = None
-        if control_val is not None and variant_val is not None and control_val != 0:
+        if winner is not None and control_val != 0:
             pct_diff = round(((variant_val - control_val) / abs(control_val)) * 100, 1)
-            if variant_val > control_val:
-                winner = "variant"
-            elif control_val > variant_val:
-                winner = "control"
-            else:
-                winner = "tie"
 
         metrics.append({
             "metric": dep_var,
@@ -196,12 +237,24 @@ Provide a brief analysis in JSON format:
         return {"error": "Claude API not configured", "comparison": comparison}
 
     client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
-    response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        response = await client.messages.create(
+            model=settings.claude_model,
+            max_tokens=CLAUDE_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.APIError as e:
+        # Rate limit / bad key / overloaded / retired model: report it with the
+        # comparison instead of an unhandled 500.
+        log.warning("Experiment %s analysis failed: %s", exp_id, e)
+        return {"error": f"Claude analysis failed: {e.__class__.__name__}", "comparison": comparison}
 
-    text = response.content[0].text
-    parsed = parse_claude_json(text)
+    stop_reason = claude_stop_reason(response)
+    if stop_reason == "refusal":
+        return {"error": "Claude declined to analyze this experiment (refusal)", "comparison": comparison}
+    # Text blocks only — content[0] need not be text (e.g. a thinking block).
+    text = claude_response_text(response)
+    parsed = parse_claude_json(text) if text else None
+    if stop_reason == "max_tokens" and (parsed is None or "raw_response" in parsed):
+        return {"error": "Claude analysis was cut off at max_tokens", "comparison": comparison}
     return {"analysis": parsed or {"raw": text}, "comparison": comparison}

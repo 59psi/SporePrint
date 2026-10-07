@@ -8,7 +8,10 @@ router = APIRouter()
 
 @router.post("")
 async def create_culture(data: CultureCreate):
-    return await service.create_culture(data)
+    try:
+        return await service.create_culture(data)
+    except service.ParentCultureNotFound as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("")
@@ -34,7 +37,10 @@ async def update_culture(culture_id: int, data: CultureUpdate):
 
 @router.delete("/{culture_id}")
 async def delete_culture(culture_id: int):
-    deleted = await service.delete_culture(culture_id)
+    try:
+        deleted = await service.delete_culture(culture_id)
+    except service.CultureHasDescendants as e:
+        raise HTTPException(409, str(e))
     if not deleted:
         raise HTTPException(404, "Culture not found")
     return {"deleted": True}

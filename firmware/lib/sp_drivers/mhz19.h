@@ -1,7 +1,10 @@
 #pragma once
 //
-// mhz19 — Winsen MH-Z19C NDIR CO₂ driver (UART 9600, monitoring-tier
-// alternate). Config-flag enabled, never autodetected: UART has no
+// mhz19 — Winsen MH-Z19C / MH-Z19B NDIR CO₂ driver (UART 9600, monitoring-
+// tier alternate). The B (the original spec's UART CO₂ part and the BOM's
+// earlier budget alternate) and the C share every frame used here (read
+// 0x86, ABC 0x79, zero 0x87) — test_drivers_misc pins the B manual's frames
+// byte-for-byte. Config-flag enabled, never autodetected: UART has no
 // enumeration semantics, RX floats when nothing is wired, and the sensor
 // needs ~3 minutes of warmup — a boot-time probe gives false negatives.
 //

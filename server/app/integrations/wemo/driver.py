@@ -5,20 +5,24 @@ from __future__ import annotations
 import re
 import time
 from typing import Any, ClassVar
-from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import split_host_port, url_host
 from ...telemetry.service import store_reading
 
 
-# Wemo plugs respond on either port; we hit basicevent1 first then
-# fall back. The Insight ALSO exposes /upnp/control/insight1 for power
-# stats which we attempt only when the device replies as an Insight.
+# Wemo firmware serves UPnP on one of 49151-49155 and commonly moves between
+# them after a reboot/firmware update. We try the usual port first, fall back
+# through the others on a connect failure, and cache the port that answered
+# per host. An explicit `host:port` in the device ip pins the port.
+# The Insight ALSO exposes /upnp/control/insight1 for power stats which we
+# attempt only when the device replies as an Insight.
 _WEMO_PORT = 49153
+_WEMO_PORTS = (49153, 49152, 49154, 49155, 49151)
 
 _GET_STATE_BODY = """<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
@@ -61,9 +65,7 @@ class WemoConfig(BaseModel):
         for d in devices:
             if not d.ip:
                 continue
-            parsed = urlparse(f"//{d.ip}")
-            if not parsed.hostname:
-                raise ValueError(f"invalid ip in devices: {d.ip!r}")
+            split_host_port(d.ip, field="devices.ip")
         return devices
 
 
@@ -76,6 +78,11 @@ class WemoDriver(HttpVendorDriver):
     tier_required: ClassVar[str] = "free"
     config_schema: ClassVar[type[BaseModel]] = WemoConfig
     secret_fields: ClassVar[set[str]] = set()
+
+    def __init__(self) -> None:
+        super().__init__()
+        # host → UPnP port that last answered.
+        self._ports: dict[str, int] = {}
 
     async def test_connection(self) -> IntegrationHealth:
         cfg: WemoConfig | None = self._cfg  # type: ignore[assignment]
@@ -183,16 +190,43 @@ class WemoDriver(HttpVendorDriver):
         body: str,
         timeout: float,
     ) -> str:
-        url = f"http://{ip}:{_WEMO_PORT}{path}"
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            resp = await client.post(
-                url,
-                content=body,
-                headers={
-                    "Content-Type": 'text/xml; charset="utf-8"',
-                    "SOAPACTION": f'"{action}"',
-                },
+        host, pinned_port = split_host_port(ip)
+        if pinned_port is not None:
+            ports: tuple[int, ...] = (pinned_port,)
+        else:
+            cached = self._ports.get(host)
+            ports = ((cached,) if cached else ()) + tuple(
+                p for p in _WEMO_PORTS if p != cached
             )
-        if resp.status_code >= 400:
-            raise WemoError(f"HTTP {resp.status_code} from {ip}: {resp.text[:200]!r}")
-        return resp.text
+        errors: list[str] = []
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            for port in ports:
+                url = f"http://{url_host(host)}:{port}{path}"
+                try:
+                    resp = await client.post(
+                        url,
+                        content=body,
+                        headers={
+                            "Content-Type": 'text/xml; charset="utf-8"',
+                            "SOAPACTION": f'"{action}"',
+                        },
+                    )
+                except httpx.ConnectError as exc:
+                    # Refused: the host is up but nothing listens on this
+                    # port — try the next one. (A connect TIMEOUT means the
+                    # host itself is unreachable; probing four more ports
+                    # would only multiply the delay, so it falls through to
+                    # the HTTPError branch below.)
+                    errors.append(f"{port}: {exc}")
+                    continue
+                except httpx.HTTPError as exc:
+                    raise WemoError(f"{ip}:{port}: {exc}") from exc
+                if pinned_port is None:
+                    self._ports[host] = port
+                if resp.status_code >= 400:
+                    raise WemoError(
+                        f"HTTP {resp.status_code} from {ip}: {resp.text[:200]!r}"
+                    )
+                return resp.text
+        self._ports.pop(host, None)
+        raise WemoError(f"no Wemo UPnP port answered on {ip} ({'; '.join(errors)})")

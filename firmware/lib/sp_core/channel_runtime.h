@@ -8,8 +8,11 @@
 //            {channel,state,pwm,trigger} per-channel. Default 30-min max-on
 //            safety cutoff (the load-bearing backstop for misters/pumps).
 //   dim    — lighting-bank channels (white/blue/red/far_red). Accepts
-//            {level:0-1023, state:"off", ramp_sec, duration_sec}; reports in
-//            the aggregate lighting telemetry doc. No max-on by default
+//            {level:0-1023, state:"off", ramp_sec, duration_sec}; `pwm` is
+//            accepted as a 10-bit level alias when `level` is absent (the
+//            Pi automation's RuleAction only has pwm, documented 0-1023 for
+//            lighting). Reports in the aggregate lighting telemetry doc.
+//            No max-on by default
 //            (lights legitimately run 12 h). ramp_sec is a linear ramp —
 //            the automation engine has always sent it; the old firmware
 //            silently dropped it.
@@ -18,6 +21,9 @@
 //   * empty commands are rejected, never defaulted to ON — a retained
 //     broker message latching a channel at 255 was the old firmware's
 //     highest-consequence bug
+//   * an explicit "state":"off" always wins over any pwm/level value — the
+//     Pi clears its safety watchdog on an off it sends
+//   * the off-timer is only ever armed for a channel that ends up ON
 //   * duration_sec <= 0 is ignored with a reason; > 3600 clamps
 //   * re-ON while already on does NOT restart the max-on clock
 //   * all deadline math is millis-wrap-safe
@@ -43,6 +49,15 @@ constexpr uint32_t kDefaultMaxOnMs = 30UL * 60UL * 1000UL;  // switch mode
 // Channel names become MQTT topic suffixes and command keys — they must be
 // safe as both, and must not shadow the fixed command endpoints.
 bool channel_name_valid(const char* name);
+
+// Operator override of a channel's max-on backstop, in seconds (cmd/config
+// {"max_on_sec": {"<channel>": N}}, persisted in NVS). Switch channels must
+// keep a backstop: 1 s .. kDefaultMaxOnMs (larger values clamp). Dim
+// channels accept 0 (no cutoff) .. 24 h. Returns false — *out_ms untouched —
+// for values that cannot be honoured (negative; 0 on a switch channel).
+constexpr uint32_t kMaxDimMaxOnSec = 24UL * 3600UL;
+bool max_on_override_ms(ChannelMode mode, int32_t sec, uint32_t* out_ms,
+                        bool* clamped);
 
 struct ChannelConfig {
     char name[kChannelNameMax + 1] = {0};
@@ -90,6 +105,15 @@ public:
     // Advance time: duration expiry, max-on cutoff, ramp interpolation.
     // Returns Changed when the output moved (cutoffs set reason()).
     ChannelEvent tick(uint32_t now_ms);
+    // Firmware-imposed off (link-loss safe mode, OTA start): output off,
+    // off-timer and ramp disarmed, counted as a safety cutoff. Returns
+    // Changed only when the channel was on; `reason` must be static.
+    ChannelEvent force_off(uint32_t now_ms, const char* reason);
+
+    // Operator max-on override at runtime (does not reset channel state; a
+    // running channel past the new limit is cut on the next tick()). Same
+    // coercion as configure(): a switch channel cannot drop its backstop.
+    void set_max_on_ms(uint32_t max_on_ms);
 
     bool is_on() const { return on_; }
     uint8_t pwm8() const { return pwm8_; }       // switch-mode output

@@ -5,15 +5,18 @@ two-step handshake to derive an AES-128-CBC session key + an HMAC
 signing key + an IV-seed; subsequent commands are encrypted with the
 session key and authenticated with the signing key.
 
+KLAP v2 (the variant Tapo firmware speaks; matches python-kasa's
+``KlapTransportV2`` / ``KlapEncryptionSession``).
+
 Auth derivation
 ---------------
-   user_hash = sha1(username) || sha1(password)        # 40 bytes
-   auth_hash = sha256(local_seed || remote_seed || user_hash)
+   user_hash = sha256(sha1(username) || sha1(password))   # 32 bytes
 
 Handshake1 (client → server):
    POST /app/handshake1 with body = local_seed (16 random bytes)
-   Server replies with body = remote_seed (16) || server_auth_hash (32)
-   Client validates server_auth_hash matches its own derivation.
+   Server replies with body = remote_seed (16) || server_proof (32) and a
+   ``TP_SESSIONID`` cookie that must accompany every later request.
+   server_proof = sha256(local_seed || remote_seed || user_hash)
 
 Handshake2 (client → server):
    POST /app/handshake2 with body = sha256(remote_seed || local_seed || user_hash)
@@ -22,15 +25,16 @@ Handshake2 (client → server):
 Session derivation:
    encrypt_key = sha256(b"lsk" || local_seed || remote_seed || user_hash)[:16]
    sig_key     = sha256(b"ldk" || local_seed || remote_seed || user_hash)[:28]
-   iv_seed     = sha256(b"iv"  || local_seed || remote_seed || user_hash)[:16]
-   seq         = int.from_bytes(iv_seed[-4:], "big", signed=True)
+   full_iv     = sha256(b"iv"  || local_seed || remote_seed || user_hash)  # 32 bytes
+   iv_prefix   = full_iv[:12]
+   seq         = int.from_bytes(full_iv[-4:], "big", signed=True)   # last 4 of the FULL digest
 
 Each request:
-   seq += 1
-   iv      = iv_seed[:12] || seq.to_bytes(4, "big", signed=True)
+   seq += 1                  (signed 32-bit; wraps 2**31-1 → -2**31)
+   iv      = iv_prefix || seq.to_bytes(4, "big", signed=True)
    ct      = AES-CBC(encrypt_key, iv).encrypt(pkcs7_pad(plaintext))
    sig     = sha256(sig_key || seq.to_bytes(4, "big", signed=True) || ct)
-   POST /app/request?seq=<seq> with body = sig || ct
+   POST /app/request?seq=<seq> with body = sig || ct   (+ TP_SESSIONID cookie)
 
 ⚠ Live-device verification still needed. Refinements based on real
 firmware are expected to be additive.
@@ -39,9 +43,8 @@ firmware are expected to be additive.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -64,15 +67,15 @@ def _digest_sha1(data: bytes) -> bytes:
 
 
 def _user_hash(email: str, password: str) -> bytes:
-    """40 bytes — `_digest_sha1(email) || _digest_sha1(password)`.
+    """32 bytes — ``sha256(sha1(email) || sha1(password))`` (KLAP v2).
 
-    SHA-1 is a hard requirement of the Tapo KLAP wire protocol; using
-    SHA-256 here would derive the wrong session key and the device
-    would reject every request. See `_digest_sha1` for the rationale.
+    The inner SHA-1 digests are a hard requirement of the Tapo KLAP wire
+    protocol (see `_digest_sha1`); the outer SHA-256 is what the device
+    actually keys the handshake proofs and session derivation on.
     """
-    return _digest_sha1(email.encode("utf-8")) + _digest_sha1(
-        password.encode("utf-8")
-    )
+    return hashlib.sha256(
+        _digest_sha1(email.encode("utf-8")) + _digest_sha1(password.encode("utf-8"))
+    ).digest()
 
 
 def auth_hash(local_seed: bytes, remote_seed: bytes, email: str, password: str) -> bytes:
@@ -86,9 +89,9 @@ def derive_session(
     uh = _user_hash(email, password)
     encrypt_key = hashlib.sha256(b"lsk" + local_seed + remote_seed + uh).digest()[:16]
     sig_key = hashlib.sha256(b"ldk" + local_seed + remote_seed + uh).digest()[:28]
-    iv_seed = hashlib.sha256(b"iv" + local_seed + remote_seed + uh).digest()[:16]
-    seq = int.from_bytes(iv_seed[-4:], "big", signed=True)
-    return KlapSession(encrypt_key=encrypt_key, sig_key=sig_key, iv_prefix=iv_seed[:12], seq=seq)
+    full_iv = hashlib.sha256(b"iv" + local_seed + remote_seed + uh).digest()
+    seq = int.from_bytes(full_iv[-4:], "big", signed=True)
+    return KlapSession(encrypt_key=encrypt_key, sig_key=sig_key, iv_prefix=full_iv[:12], seq=seq)
 
 
 @dataclass
@@ -97,10 +100,16 @@ class KlapSession:
     sig_key: bytes
     iv_prefix: bytes
     seq: int
+    # Session cookies from handshake1 (TP_SESSIONID); sent with handshake2
+    # and every /app/request, or the device rejects them.
+    cookies: dict[str, str] = field(default_factory=dict)
 
     def next_iv(self) -> tuple[bytes, int]:
-        """Increment the sequence counter and return (iv, seq)."""
-        self.seq = (self.seq + 1) & 0x7FFFFFFF
+        """Increment the signed 32-bit sequence counter; return (iv, seq)."""
+        seq = self.seq + 1
+        if seq > 0x7FFFFFFF:
+            seq -= 1 << 32
+        self.seq = seq
         return self.iv_prefix + self.seq.to_bytes(4, "big", signed=True), self.seq
 
     def encrypt(self, plaintext: bytes) -> tuple[bytes, int]:

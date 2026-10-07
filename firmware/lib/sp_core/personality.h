@@ -17,6 +17,14 @@
 
 namespace sp {
 
+// The relay bank's `aux` channel drives the misting pump in every documented
+// build (peristaltic, ~100 mL/min). A lost off, or a manual {"state":"on"}
+// without duration_sec, must not run it for the generic 30-min switch
+// backstop (~3 L into a chamber full of 12 V wiring). Operators using aux
+// for something else raise it via cmd/config {"max_on_sec":{"aux":N}}
+// (persisted in NVS; switch channels cap at 30 min).
+constexpr uint32_t kAuxMaxOnMs = 60UL * 1000UL;
+
 enum class Personality : uint8_t {
     Climate = 0,   // sensors only — no channel bank
     RelayBank,     // 4× switch channels: fae/exhaust/circulation/aux
@@ -53,7 +61,7 @@ inline int personality_channels(Personality p, ChannelConfig out[4]) {
                 ChannelConfig c;
                 strncpy(c.name, names[i], kChannelNameMax);
                 c.mode = ChannelMode::Switch;
-                c.max_on_ms = kDefaultMaxOnMs;
+                c.max_on_ms = (i == 3) ? kAuxMaxOnMs : kDefaultMaxOnMs;
                 out[i] = c;
             }
             return 4;

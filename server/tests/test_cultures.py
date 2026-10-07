@@ -1,5 +1,9 @@
+import pytest
+
 from app.cultures.models import CultureCreate, CultureUpdate
 from app.cultures.service import (
+    CultureHasDescendants,
+    ParentCultureNotFound,
     create_culture,
     get_culture,
     list_cultures,
@@ -232,3 +236,48 @@ async def test_contamination_rate_no_children():
     tree = await get_lineage_tree(root["id"])
     assert tree["contamination_rate"] == 0.0
     assert tree["total_children"] == 0
+
+
+# ── FK violations surface as client errors, not 500s (srv-rest#29) ──
+
+
+async def test_delete_culture_with_children_is_refused():
+    root = await create_culture(_make_culture())
+    await create_culture(_make_culture(type="agar", source="transfer", parent_id=root["id"]))
+    with pytest.raises(CultureHasDescendants) as exc:
+        await delete_culture(root["id"])
+    assert exc.value.count == 1
+    assert await get_culture(root["id"]) is not None
+
+
+async def test_delete_leaf_culture_still_works():
+    root = await create_culture(_make_culture())
+    child = await create_culture(_make_culture(type="agar", source="transfer", parent_id=root["id"]))
+    assert await delete_culture(child["id"]) is True
+    assert await delete_culture(root["id"]) is True
+
+
+async def test_create_culture_with_unknown_parent_is_refused():
+    with pytest.raises(ParentCultureNotFound):
+        await create_culture(_make_culture(source="transfer", parent_id=9999))
+
+
+def test_delete_culture_with_children_endpoint_returns_409(client):
+    root = client.post("/api/cultures", json={
+        "type": "agar", "species_profile_id": "blue_oyster", "source": "vendor",
+    }).json()
+    client.post("/api/cultures", json={
+        "type": "grain_spawn", "species_profile_id": "blue_oyster", "source": "transfer",
+        "parent_id": root["id"],
+    })
+    r = client.delete(f"/api/cultures/{root['id']}")
+    assert r.status_code == 409
+    assert "archive" in r.json()["detail"].lower()
+
+
+def test_create_culture_unknown_parent_endpoint_returns_400(client):
+    r = client.post("/api/cultures", json={
+        "type": "agar", "species_profile_id": "blue_oyster", "source": "transfer",
+        "parent_id": 424242,
+    })
+    assert r.status_code == 400

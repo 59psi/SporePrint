@@ -8,6 +8,12 @@ class GrowPhase(str, Enum):
     LIQUID_CULTURE = "liquid_culture"
     GRAIN_COLONIZATION = "grain_colonization"
     SUBSTRATE_COLONIZATION = "substrate_colonization"
+    # Shiitake only (CLAUDE.md §4b): the colonized block, out of its bag, forms
+    # a brown, popcorned outer skin and is NOT ready to fruit until that skin is
+    # complete. Its own closet setpoints (60-70 °F, 70-80 % RH, passive FAE,
+    # indirect light), so a profile must define it to enter it — there is no
+    # fallback. substrate_colonization → browning → primordia_induction.
+    BROWNING = "browning"
     # Fully colonized agar / LC / grain that is not going straight to fruiting
     # goes in the fridge to hold until use. Only temperature matters here — no
     # light, no FAE, no CO2 control. This is the fork the product spec describes:
@@ -69,6 +75,12 @@ class PhaseParams(BaseModel):
     substrate_moisture: str = "field_capacity"
     expected_duration_days: tuple[int, int]
     notes: str = ""
+    # A MANUAL step due when a session leaves this phase — shiitake browning's
+    # cold-water soak, the pinning trigger the closet cannot perform. "" = none.
+    # The daily phase reminder offers it once the phase has run its minimum
+    # expected duration, GET /api/sessions/{id}/next-phase returns it, and
+    # advancing out of the phase logs it to the session (phase_exit_reminder).
+    exit_reminder: str = ""
 
 
 class TekStep(BaseModel):
@@ -123,3 +135,16 @@ class SpeciesProfile(BaseModel):
     contamination_risks: list[str] = []  # species-specific contamination vulnerabilities
     regional_notes: str = ""  # sourcing / availability notes
     photo_references: dict[str, str] = {}  # phase → reference URL, e.g., {"fruiting": "https://..."}
+
+    def phase_exit_reminder(self, phase: str) -> str | None:
+        """The manual step due when a session leaves ``phase``, or None.
+
+        PhaseParams.exit_reminder of a phase this profile itself defines —
+        shiitake browning's cold-water soak. A phase running on a
+        PHASE_PARAM_FALLBACKS stand-in does not inherit the stand-in's step.
+        """
+        try:
+            params = self.phases.get(GrowPhase(phase))
+        except ValueError:
+            return None
+        return (params.exit_reminder or None) if params is not None else None

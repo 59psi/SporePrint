@@ -1,13 +1,21 @@
 #include "mqtt_link.h"
 
-#include "cmd_router.h"  // sp::cmd_suffix
+#include <WiFi.h>
+
+#include "cmd_router.h"   // sp::cmd_suffix
+#include "link_budget.h"  // connect-attempt time budget vs the loop WDT
 
 namespace sp_device {
 
 MqttLink* MqttLink::instance_ = nullptr;
 
+namespace {
+// Same bytes as the connect()-time LWT.
+const char kOfflineStatus[] = "{\"status\":\"offline\"}";
+}  // namespace
+
 void MqttLink::begin(const char* host, uint16_t port, const char* user,
-                     const char* pass) {
+                     const char* pass, bool connect_now) {
     instance_ = this;
     host_ = host;
     port_ = port;
@@ -15,35 +23,62 @@ void MqttLink::begin(const char* host, uint16_t port, const char* user,
     pass_ = pass;
     mqtt_.setServer(host_.c_str(), port_);
     mqtt_.setBufferSize(kInboundCap + 128);  // inbound cap + header headroom
+    // CONNACK wait (default 15 s) — part of the link_budget.h attempt budget.
+    mqtt_.setSocketTimeout((uint16_t)sp::kMqttSocketTimeoutS);
     mqtt_.setCallback(static_callback);
-    connect_attempt();
+    if (connect_now) connect_attempt();
+    last_attempt_ms_ = millis();
 }
 
-void MqttLink::loop(uint32_t now_ms) {
-    if (!mqtt_.connected()) {
+void MqttLink::switch_transport(Client& transport, uint16_t port) {
+    if (mqtt_.connected()) {
+        publish_raw(topic("status").c_str(), kOfflineStatus, /*retain=*/true);
+        mqtt_.disconnect();
+    }
+    mqtt_.setClient(transport);
+    port_ = port;
+    mqtt_.setServer(host_.c_str(), port_);
+    // Eligible for a connect attempt on the next allowed pass.
+    last_attempt_ms_ = millis() - kRetryWindowMs - 1;
+}
+
+void MqttLink::loop(uint32_t now_ms, bool may_connect) {
+    if (!mqtt_.connected() && may_connect) {
         if (now_ms - last_attempt_ms_ > kRetryWindowMs) {
-            last_attempt_ms_ = now_ms;
             connect_attempt();
+            // Stamp the END of the attempt: a failed one can block for
+            // seconds (DNS / TCP / TLS timeouts), and stamping its start let
+            // the next pass launch another at once — loop() spent nearly all
+            // its time blocked while the broker was unreachable. Callers pass
+            // a `now` taken at the top of the following pass, so it is never
+            // earlier than this stamp.
+            last_attempt_ms_ = millis();
         }
     }
     mqtt_.loop();
 }
 
 void MqttLink::connect_attempt() {
+    // No STA link: a connect would only burn the DNS timeout inside loop().
+    // WiFi recovery is the composition root's job (node: link watchdog).
+    if (WiFi.status() != WL_CONNECTED) return;
+
     std::string lwt_topic = topic("status");
-    const char* lwt_payload = "{\"status\":\"offline\"}";
+    const char* lwt_payload = kOfflineStatus;
     const char* user_ptr = user_.empty() ? nullptr : user_.c_str();
     const char* pass_ptr = pass_.empty() ? nullptr : pass_.c_str();
     std::string client_id = "sporeprint-" + node_type_ + "-" + node_id_;
 
     Serial.printf("[MQTT] Connecting as '%s' (user=%s)...\n", client_id.c_str(),
                   user_ptr ? user_ptr : "<anonymous>");
+    ++attempts_;
     if (!mqtt_.connect(client_id.c_str(), user_ptr, pass_ptr, lwt_topic.c_str(),
                        1, true, lwt_payload)) {
         Serial.printf("[MQTT] Failed, rc=%d\n", mqtt_.state());
         return;
     }
     Serial.println("[MQTT] Connected.");
+    ++successes_;
     if (ever_connected_) ++reconnects_;
     ever_connected_ = true;
 

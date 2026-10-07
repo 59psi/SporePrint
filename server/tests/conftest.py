@@ -129,10 +129,26 @@ def _reset_engine_state():
     engine._rule_cache.clear()
     engine._cache_ts = 0
     engine._overrides_loaded = False
+    engine._rule_seen.clear()
+    engine._alert_last_sent.clear()
+    engine._last_off_sent.clear()
+    engine._phase_fallback_logged.clear()
     for task in list(engine._safety_tasks.values()):
         if not task.done():
             task.cancel()
     engine._safety_tasks.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_mqtt_clock_state():
+    """Clear the per-node telemetry ordering / clock-skew bookkeeping in mqtt.py
+    (a node's newest live ts from one test would make the next test's frames
+    look out of order)."""
+    import app.mqtt as mqtt
+    mqtt._node_newest_ts.clear()
+    mqtt._node_clock.clear()
+    mqtt._skew_logged_at.clear()
+    mqtt._reserved_drop_logged.clear()
 
 
 @pytest.fixture(autouse=True)

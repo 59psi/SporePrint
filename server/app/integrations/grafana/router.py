@@ -34,7 +34,6 @@ PROM_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 def _import_driver():
     # Lazy to avoid a registry-time circular when the package's __init__
     # registers the driver.
-    from . import driver as _driver_mod
     from .. import _registry
 
     drv = _registry.registered_drivers().get("grafana")
@@ -74,7 +73,11 @@ async def metrics(authorization: str | None = Header(default=None)) -> Response:
     cfg = drv.config
     if cfg.bearer_token:
         presented = _extract_bearer(authorization)
-        if not presented or not hmac.compare_digest(presented, cfg.bearer_token):
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str,
+        # which would turn a wrong/odd token into a 500 instead of a 401.
+        if not presented or not hmac.compare_digest(
+            presented.encode("utf-8"), cfg.bearer_token.encode("utf-8")
+        ):
             raise HTTPException(401, "invalid bearer token")
 
     try:

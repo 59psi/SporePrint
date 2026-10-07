@@ -1,5 +1,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anthropic
+import httpx
+
+from app.db import get_db
 from app.experiments.models import ExperimentCreate, ExperimentUpdate
 from app.experiments.service import (
     create_experiment,
@@ -274,3 +278,121 @@ async def test_analyze_experiment_with_mock_claude(monkeypatch):
     assert result["analysis"]["hypothesis_supported"] is True
     assert result["analysis"]["confidence"] == "high"
     assert "comparison" in result
+
+
+# ── srv-rest#14: lower-is-better metrics + contamination_count ─────────
+
+
+async def _set_colonization(session_id, days):
+    base = 1_700_000_000.0
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE phase_history SET entered_at = ?, exited_at = ? "
+            "WHERE session_id = ? AND phase = 'substrate_colonization'",
+            (base, base + days * 86400, session_id),
+        )
+        await db.commit()
+
+
+async def _add_contamination(session_id, n=1):
+    async with get_db() as db:
+        for _ in range(n):
+            await db.execute(
+                "INSERT INTO contamination_events (session_id, source, contamination_type) "
+                "VALUES (?, 'manual', 'trich')",
+                (session_id,),
+            )
+        await db.commit()
+
+
+async def test_slower_colonization_does_not_win():
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    await advance_phase(control["id"], PhaseAdvance(phase="primordia_induction"))
+    await advance_phase(variant["id"], PhaseAdvance(phase="primordia_induction"))
+    await _set_colonization(control["id"], 14)
+    await _set_colonization(variant["id"], 21)
+
+    exp = await _make_experiment(control["id"], variant["id"])
+    comparison = await get_comparison(exp["id"])
+    col = next(m for m in comparison["metrics"] if m["metric"] == "colonization_days")
+    assert (col["control_value"], col["variant_value"]) == (14.0, 21.0)
+    assert col["pct_difference"] == 50.0
+    assert col["winner"] == "control"
+
+    completed = await update_experiment(exp["id"], ExperimentUpdate(status="completed"))
+    assert "colonization_days: control" in completed["conclusion"]
+
+
+async def test_contamination_count_is_computed_and_lower_wins():
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    await _add_contamination(variant["id"], 2)
+
+    exp = await _make_experiment(control["id"], variant["id"])
+    comparison = await get_comparison(exp["id"])
+    cc = next(m for m in comparison["metrics"] if m["metric"] == "contamination_count")
+    assert (cc["control_value"], cc["variant_value"]) == (0, 2)
+    # control is 0 → no % difference, but a clean control still wins.
+    assert cc["pct_difference"] is None
+    assert cc["winner"] == "control"
+
+
+async def test_higher_yield_still_wins():
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    await add_harvest(control["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
+    await add_harvest(variant["id"], HarvestCreate(flush_number=1, wet_weight_g=50.0))
+    exp = await _make_experiment(control["id"], variant["id"])
+    comparison = await get_comparison(exp["id"])
+    y = next(m for m in comparison["metrics"] if m["metric"] == "total_wet_yield_g")
+    assert y["winner"] == "control"
+
+
+async def test_non_numeric_metric_does_not_crash_comparison():
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    exp = await _make_experiment(control["id"], variant["id"],
+                                 dependent_variables=["flush_decline_pct", "name"])
+    comparison = await get_comparison(exp["id"])
+    assert all(m["winner"] is None for m in comparison["metrics"])
+
+
+# ── srv-rest#28: /analyze error handling + POST ────────────────────────
+
+
+async def test_analyze_api_error_returns_error_payload(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_api_key", "test-key")
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    exp = await _make_experiment(control["id"], variant["id"])
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=anthropic.APIConnectionError(
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+    ))
+    with patch("app.experiments.service.anthropic.AsyncAnthropic", return_value=mock_client):
+        result = await analyze_experiment(exp["id"])
+
+    assert "error" in result
+    assert "comparison" in result
+    assert "analysis" not in result
+
+
+def test_analyze_endpoint_accepts_post(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_api_key", "")
+    c = client.post("/api/sessions", json={"name": "C", "species_profile_id": "blue_oyster"}).json()
+    v = client.post("/api/sessions", json={"name": "V", "species_profile_id": "blue_oyster"}).json()
+    exp = client.post("/api/experiments", json={
+        "title": "t", "hypothesis": "h", "control_session_id": c["id"],
+        "variant_session_id": v["id"], "independent_variable": "x",
+        "control_value": "a", "variant_value": "b",
+    }).json()
+    r = client.post(f"/api/experiments/{exp['id']}/analyze")
+    assert r.status_code == 200
+    assert r.json()["error"] == "Claude API not configured"
+    # The shipped Pi UI still calls GET; keep it working.
+    assert client.get(f"/api/experiments/{exp['id']}/analyze").status_code == 200
+    assert client.post("/api/experiments/9999/analyze").status_code == 404

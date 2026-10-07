@@ -9,7 +9,10 @@ Now signing is:
 with "auto" enforcement keyed off whether the Pi is cloud-configured.
 """
 
+import hashlib
+import hmac
 import json
+import re
 
 import pytest
 
@@ -114,6 +117,88 @@ async def test_non_cmd_topic_never_blocked(monkeypatch, fake_client):
     assert ok is True
     topic, body = fake_client.published[0]
     assert "signature" not in body
+
+
+# ── destination binding + per-frame nonce (fw-node#11) ──────────────────
+#
+# Firmware verifies HMAC over canonical(frame minus "signature"), covering every
+# member, so extra members are backward compatible with deployed nodes. Current
+# firmware additionally rejects a frame whose signed "topic" differs from the
+# arrival topic, and remembers accepted (topic, MAC) pairs to reject replays.
+
+def _expected_sig(key: str, body: dict) -> str:
+    canonical = json.dumps(
+        {k: v for k, v in body.items() if k != "signature"},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()
+    return hmac.new(key.encode(), canonical, hashlib.sha256).hexdigest()
+
+
+async def test_signed_cmd_binds_the_topic_and_a_nonce(monkeypatch, fake_client):
+    _set(monkeypatch, key="deadbeef")
+    assert await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on", "pwm": 200}) is True
+    topic, body = fake_client.published[0]
+    assert topic == CMD_TOPIC
+    assert body["topic"] == CMD_TOPIC
+    assert re.fullmatch(r"[0-9a-f]{16}", body["nonce"])
+    assert body["state"] == "on" and body["pwm"] == 200
+    # Both members are inside the MAC, exactly as the firmware recomputes it.
+    assert body["signature"] == _expected_sig("deadbeef", body)
+
+
+async def test_identical_same_second_commands_are_distinct_frames(monkeypatch, fake_client):
+    # on/off/on inside one second: without a nonce the third frame is
+    # byte-identical to the first and the node's replay guard drops it.
+    _set(monkeypatch, key="deadbeef")
+    monkeypatch.setattr(mqtt.time, "time", lambda: 1_790_000_000.25)
+    await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
+    await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
+    (_, first), (_, second) = fake_client.published
+    assert first["ts"] == second["ts"]
+    assert first["nonce"] != second["nonce"]
+    assert first["signature"] != second["signature"]
+
+
+async def test_payload_cannot_choose_the_bound_topic(monkeypatch, fake_client):
+    # A relayed payload smuggling its own "topic"/"nonce" never wins: the
+    # signed destination is always the topic the frame is published on.
+    _set(monkeypatch, key="deadbeef")
+    await mqtt.mqtt_publish(
+        CMD_TOPIC,
+        {"state": "on", "topic": "sporeprint/relay-02/cmd/heater", "nonce": "x"},
+    )
+    _, body = fake_client.published[0]
+    assert body["topic"] == CMD_TOPIC
+    assert body["nonce"] != "x"
+    assert body["signature"] == _expected_sig("deadbeef", body)
+
+
+async def test_unsigned_frames_carry_no_binding_members(monkeypatch, fake_client):
+    # Trusted-LAN (no key) frames keep their pre-binding shape.
+    _set(monkeypatch, key="", policy="never")
+    await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
+    _, body = fake_client.published[0]
+    assert "topic" not in body and "nonce" not in body
+
+
+async def test_binding_is_dropped_rather_than_overflow_the_node_buffer(monkeypatch, fake_client):
+    # The node's MqttLink drops any frame >= 1024 bytes. A payload that only
+    # fits without the two extra members still goes out, signed but unbound.
+    _set(monkeypatch, key="deadbeef")
+    topic = "sporeprint/relay-01/cmd/config"
+    # Fits unbound (~1000 B on the wire), not with topic + nonce (~1070 B).
+    await mqtt.mqtt_publish(topic, {"server_url": "x" * 880})
+    _, body = fake_client.published[0]
+    assert len(json.dumps(body).encode()) < 1024
+    assert "topic" not in body and "nonce" not in body
+    assert body["signature"] == _expected_sig("deadbeef", body)
+    bound = {**body, "topic": topic, "nonce": "0" * 16}
+    assert len(json.dumps(bound).encode()) >= 1024
+
+    # A normal-sized config frame is still bound.
+    await mqtt.mqtt_publish(topic, {"server_url": "x" * 100})
+    _, small = fake_client.published[1]
+    assert small["topic"] == topic
 
 
 # ── health surfacing ────────────────────────────────────────────────────

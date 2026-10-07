@@ -1,6 +1,6 @@
 [project]
 name = "sporeprint-server"
-version = "5.0.0"
+version = "5.1.0"
 requires-python = ">=3.11"
 dependencies = [
     # v3.4.9 — cap-only pins matching cloud/pyproject.toml policy (L-3).
@@ -11,21 +11,46 @@ dependencies = [
     "uvicorn[standard]>=0.27,<1.0",
     "aiosqlite>=0.20,<1.0",
     "aiomqtt>=2.0,<3.0",
-    "python-socketio>=5.11,<6.0",
-    "anthropic>=0.40,<1.0",
+    # Security floors (2026-09 audit): socketio 5.16.2 / engineio 4.13.2
+    # fix binary-attachment + payload-size DoS; multipart 0.0.31 fixes the
+    # header / querystring / negative Content-Length DoS + smuggling set;
+    # pydantic-settings 2.14.2 fixes secrets_dir symlink escape.
+    "python-socketio>=5.16.2,<6.0",
+    "python-engineio>=4.13.2,<5.0",
+    # anthropic 1.x (httpx2-based). Only plain AsyncAnthropic(api_key=...)
+    # .messages.create(model, max_tokens, system, messages) is used — none of
+    # the parameters/aliases 1.0 removed.
+    "anthropic>=1.8,<2.0",
     "httpx>=0.27,<1.0",
-    "pillow>=10.0,<12.0",
+    # Pillow does not backport fixes; 12.3.0 closes the 11.x/12.x OOB-write
+    # and decompression-bomb advisories. Only reached via qrcode labels.
+    "pillow>=12.3,<13.0",
     "pydantic>=2.5,<3.0",
-    "pydantic-settings>=2.1,<3.0",
-    "python-multipart>=0.0.18,<1.0",
+    "pydantic-settings>=2.14.2,<3.0",
+    "python-multipart>=0.0.31,<1.0",
+    # Transitive (FastAPI / httpx) but security-relevant, so floored here:
+    # starlette < 1.0.1 lets a crafted Host header poison request.url.path
+    # and skip ApiKeyMiddleware's public-path check (GHSA-86qp-5c8j-p5mr);
+    # 1.3.1 also fixes the form-limit DoS. anyio 4.14.2 fixes TLS host-name
+    # spoofing (GHSA-82r6-8w77-94w6).
+    "starlette>=1.3.1,<2.0",
+    "anyio>=4.14.2,<5.0",
     "psutil>=5.9,<8.0",
     "qrcode[pil]>=7.4,<9.0",
-    "icalendar>=5.0,<7.0",
+    # icalendar 7 (2026-10): its breaking changes (module moves in
+    # icalendar.prop / .parser, Component.decoded() returning str, Python
+    # 3.10+) miss the Calendar / Event / add / to_ical / from_ical / walk
+    # surface the two calendar feeds and their tests use.
+    "icalendar>=7.0,<8.0",
     # OTA self-update: Ed25519 detached-signature verification of firmware
     # bundles fetched from updates.sporeprint.ai. cryptography ships with
     # vetted, constant-time Ed25519 — much safer than a hand-rolled
     # implementation (per the project's secure-by-default policy).
-    "cryptography>=41.0,<46.0",
+    # Floor 50.0.2: its wheels bundle OpenSSL 4.0.3, a High-severity security
+    # release; pyca patches only the latest release, and <48.0.1 wheels
+    # bundle a vulnerable OpenSSL too (GHSA-537c-gmf6-5ccf). The Ed25519 /
+    # Fernet / AES-CBC APIs used here are unchanged across 41–50.
+    "cryptography>=50.0.2,<51.0",
     # v4.1 Grafana integration — Prometheus text-format exposition for
     # users who run their own Grafana + Prometheus on the LAN. The
     # exporter at /metrics queries telemetry on each scrape, so there is
@@ -34,9 +59,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vision = ["tflite-runtime", "onnxruntime", "numpy", "opencv-python-headless"]
+# No `vision` extra: the local CNN first pass is not built
+# (vision/service.py analyze_frame_local() is a stub), and the runtimes the
+# extra listed went unused; its tflite-runtime has had no release since 2023
+# and ships no wheel for the image's Python 3.12. Add the runtime the CNN
+# actually loads in the change that builds it.
 dev = ["pytest", "pytest-asyncio", "ruff"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# The rule set `ruff check app/` gates on (tests/test_lint.py), pinned: ruff
+# 0.16 widened its implicit default from these 59 rules to 413 (291 findings
+# in app/ at 5.1.0), and a ruff bump must not move the gate by itself. Adopt
+# more rules deliberately, fixing app/ in the same change.
+select = ["E4", "E7", "E9", "F"]
+# app/main.py imports the routers after the app and its middleware exist, and
+# each integrations/<vendor>/__init__.py builds its driver before importing the
+# registry it registers with. Both orders are deliberate.
+per-file-ignores = { "app/main.py" = ["E402"], "app/integrations/*/__init__.py" = ["E402"] }

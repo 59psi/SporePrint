@@ -1,10 +1,15 @@
+import time
+
 from fastapi import APIRouter, HTTPException
 
 from ..db import get_db
 from .models import AutomationRule, ManualOverride
-from .engine import set_override, get_overrides, clear_override as clear_override_engine
+from .engine import (
+    set_override, get_overrides, clear_override as clear_override_engine, note_actuator_off,
+    note_actuator_on,
+)
 from .service import deserialize_rule_row, serialize_rule_data, validate_action_channel
-from .smart_plugs import get_all_plugs, register_plug, send_plug_command
+from .smart_plugs import get_all_plugs, paired_plug, register_plug, send_plug_command
 
 router = APIRouter()
 
@@ -144,5 +149,25 @@ async def add_plug(data: dict):
 @router.post("/plugs/{plug_id}/command")
 async def command_plug(plug_id: str, data: dict):
     state = data.get("state", "off")
-    await send_plug_command(plug_id, state)
+    # Nothing switched in either failure, so neither reports success: an
+    # unknown / unpaired plug is the caller's problem (409), a broker that is
+    # down or refused the publish is ours (503).
+    if await paired_plug(plug_id) is None:
+        raise HTTPException(409, f"Plug '{plug_id}' is not paired")
+    sent_at = time.time()
+    published = await send_plug_command(plug_id, state)
+    if not published:
+        raise HTTPException(
+            503, f"Command to plug '{plug_id}' not published — MQTT broker unavailable",
+        )
+    # Exactly what the plug is sent (send_plug_command only changes case), so a
+    # state the plug won't read as OFF never clears a ceiling.
+    if str(state).lower() == "off":
+        # A manual OFF ends whatever automation ON a safety ceiling was timing;
+        # without this the next automation ON keeps the stale deadline.
+        await note_actuator_off(plug_id, None, sent_at=sent_at)
+    else:
+        # A manual ON (or anything but a plain OFF): a rule cutoff must
+        # re-send its OFF rather than skip it as a redundant repeat.
+        await note_actuator_on(plug_id, None)
     return {"status": "sent", "plug_id": plug_id, "state": state}

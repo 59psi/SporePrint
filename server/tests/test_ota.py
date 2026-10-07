@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import base64
 import io
-import os
 import tarfile
 from pathlib import Path
 
 import pytest
 
-from app.cloud import ota
+from app.cloud import ota, ota_manifest
 from app.cloud.ota import (
     OTAError,
     _bundle_url,
@@ -136,6 +135,20 @@ def test_safe_extract_accepts_normal_files(tmp_path):
     assert (staging / "server" / "app.py").read_bytes() == b"print('hello')"
     assert (staging / "server" / "main.py").exists()
     assert (staging / "README.md").exists()
+
+
+def test_safe_extract_uses_an_explicit_tar_filter(tmp_path):
+    """Unfiltered extract() is deprecated (Python 3.12+ warns; 3.14 changes
+    the default). The manual member walk stays, and the stdlib 'data' filter
+    is applied on top of it wherever the running Python has one."""
+    import warnings
+
+    bundle = _build_tar([("server/app.py", b"x"), ("docs/a.md", b"y")], tmp_path)
+    staging = tmp_path / "staging"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        _safe_extract_tar(bundle, staging)
+    assert (staging / "server" / "app.py").read_bytes() == b"x"
 
 
 # ─── Ed25519 signature verification ──────────────────────────────────
@@ -323,16 +336,30 @@ async def test_run_ota_update_emits_every_step_on_success(
     )
     bundle_bytes_holder["bundle"] = bundle_src.read_bytes()
     bundle_bytes_holder["sig"] = sk.sign(bundle_bytes_holder["bundle"])
+    sha256, size = ota_manifest.file_digest(bundle_src)
+    manifest, manifest_sig = ota_manifest.sign(
+        ota_manifest.build(
+            artifact=ota_manifest.ARTIFACT_PI_SERVER, version="3.4.10",
+            channel="stable", sha256=sha256, size=size,
+            published_at="2026-10-05T12:00:00Z",
+        ),
+        sk,
+    )
+    served = {
+        ".manifest.json": manifest,
+        ".manifest.json.sig": manifest_sig,
+        ".tar.gz.sig": bundle_bytes_holder["sig"],
+        ".tar.gz": bundle_bytes_holder["bundle"],
+    }
 
     async def _fake_download(url, dest, *, max_bytes=ota._MAX_BUNDLE_BYTES):
-        body = (
-            bundle_bytes_holder["sig"] if url.endswith(".sig")
-            else bundle_bytes_holder["bundle"]
-        )
-        dest.write_bytes(body)
+        suffix = next(sfx for sfx in served if url.endswith(sfx))
+        dest.write_bytes(served[suffix])
 
     monkeypatch.setattr(ota, "_download_to", _fake_download)
     monkeypatch.setattr(ota, "_restart_unit", lambda: None)
+    # Same version as installed: a re-install, which anti-rollback allows.
+    monkeypatch.setattr(ota, "server_version", lambda: "3.4.10")
 
     seen: list[tuple[str, dict]] = []
 

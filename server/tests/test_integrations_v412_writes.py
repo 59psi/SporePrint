@@ -232,8 +232,14 @@ async def test_kasa_query_writes_correct_command(fresh_keystore, monkeypatch):
             pass
 
     class FakeReader:
-        async def read(self, n):
-            return _encrypt(json.dumps({"system": {"set_relay_state": {"err_code": 0}}}))
+        # The driver reads the 4-byte length header, then exactly that many
+        # body bytes (a reply can span several TCP segments).
+        def __init__(self):
+            self._buf = _encrypt(json.dumps({"system": {"set_relay_state": {"err_code": 0}}}))
+
+        async def readexactly(self, n):
+            chunk, self._buf = self._buf[:n], self._buf[n:]
+            return chunk
 
     async def fake_open_connection(host, port):
         captured["host"] = host

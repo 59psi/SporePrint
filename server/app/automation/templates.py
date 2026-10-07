@@ -11,6 +11,14 @@ from .models import (
     CompoundOp,
 )
 
+# Phases in which the substrate sits OPEN in the chamber air and the closet
+# holds a humidity / CO2 band and a photoperiod for it: the fruiting run, plus
+# shiitake's browning stage — the unbagged block browns at 70-80 % RH, CO2
+# under its moderate ceiling, 12/12 light, and the engine's stage alerts
+# already page on that band, so the rules that answer them must run there too.
+# Scheduled FAE stays fruiting-only (browning is fae_mode="passive").
+_OPEN_SUBSTRATE_PHASES = ("browning", "primordia_induction", "fruiting")
+
 BUILTIN_RULES: list[AutomationRule] = [
     # ─── Humidity Control ────────────────────────────────────────
     AutomationRule(
@@ -54,7 +62,7 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="Dehumidify",
         description="Run the dehumidifier when humidity exceeds the species maximum",
         priority=10,
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
@@ -64,31 +72,35 @@ BUILTIN_RULES: list[AutomationRule] = [
         safety_max_on_seconds=3600,
         log_to_session=True,
     ),
+    # Like the heating/cooling cutoffs, this is true the whole time the chamber
+    # is in range, so it stays out of the session timeline (it wrote ~1,440
+    # events a day there). The firing history still records it.
     AutomationRule(
         name="Dehumidify Cutoff",
         description="Stop the dehumidifier once humidity is back within range",
         priority=10,
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_max"),
         ),
         action=RuleAction(target="plug-dehumidifier", state="off"),
         cooldown_seconds=60,
-        log_to_session=True,
+        log_to_session=False,
     ),
     # Graceful degradation: no dehumidifier? Shed humidity by exchanging chamber
     # air with (drier) ambient using the exhaust fan. This is how a monotub
     # without a dehumidifier is actually managed. `requires_absent_target` makes
     # it go silent the moment a real dehumidifier is paired, so the two never
-    # fight. Note the tradeoff: venting also sheds CO2 and heat — so this is
-    # fruiting-only (colonization's fae_mode=none already blocks it via the
-    # air-exchange guard) and deliberately gentler than the emergency exhaust.
+    # fight. Note the tradeoff: venting also sheds CO2 and heat — so this runs
+    # only with the substrate open (browning + fruiting; colonization's
+    # fae_mode=none already blocks it via the air-exchange guard) and is
+    # deliberately gentler than the emergency exhaust.
     AutomationRule(
         name="Humidity Vent (no dehumidifier)",
         description="Vent moist air with the exhaust fan when humidity is high and no dehumidifier is present",
         priority=9,
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         requires_absent_target="plug-dehumidifier",
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
@@ -127,7 +139,7 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="Mist (no humidifier)",
         description="Brief misting pulse when humidity is low and no humidifier plug is present",
         priority=9,
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         requires_absent_target="plug-humidifier",
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
@@ -144,12 +156,13 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="CO2 FAE Trigger",
         description="Vent when CO2 exceeds the species' fruiting/pinning ceiling",
         priority=8,
-        # Fruiting phases only. Colonization WANTS high CO2 (5000-15000ppm at
-        # zero FAE — Stamets & Chilton); this rule used to have no phase gate and
-        # latched the fan on from day one of the spawn run, drying the substrate
-        # and venting the CO2 the mycelium needs. The fae_mode guard in the engine
-        # backstops this, but the phase gate makes the intent explicit.
-        applies_to_phases=["primordia_induction", "fruiting"],
+        # Open-substrate phases only (browning + the fruiting run). Colonization
+        # WANTS high CO2 (5000-15000ppm at zero FAE — Stamets & Chilton); this
+        # rule used to have no phase gate and latched the fan on from day one of
+        # the spawn run, drying the substrate and venting the CO2 the mycelium
+        # needs. The fae_mode guard in the engine backstops this, but the phase
+        # gate makes the intent explicit.
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
@@ -167,12 +180,12 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="Emergency CO2 Exhaust",
         description="Hard exhaust when CO2 runs above the species' emergency edge",
         priority=20,
-        # Fruiting-only AND species-relative. The old hardcoded 3000 was normal —
+        # Open-substrate phases only AND species-relative. The old hardcoded 3000 was normal —
         # even low — for a reishi antler fruiting (1000-10000ppm) or a maitake
         # rosette, so it fought species that legitimately hold CO2 high. Now it
         # fires at co2_emergency_ppm = the phase's co2_max_ppm + its margin, so
         # "emergency" means the same distance above target for every species.
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
@@ -307,7 +320,7 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="Photoperiod — Lights On",
         description="Lights on during the species' light window for this phase",
         priority=3,
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.SCHEDULE,
             schedule=ScheduleCondition(photoperiod="on", photoperiod_start="06:00"),
@@ -320,7 +333,7 @@ BUILTIN_RULES: list[AutomationRule] = [
         name="Photoperiod — Lights Off",
         description="Lights off outside the species' light window (the dark period)",
         priority=3,
-        applies_to_phases=["primordia_induction", "fruiting"],
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.SCHEDULE,
             schedule=ScheduleCondition(photoperiod="off", photoperiod_start="06:00"),
@@ -347,11 +360,15 @@ BUILTIN_RULES: list[AutomationRule] = [
 
     # ─── SPECIES-SPECIFIC RULES ─────────────────────────────────
 
-    # Lion's Mane — Temperature Swing Scheduler
+    # Lion's Mane — Temperature Swing Scheduler. Priority 11 puts it above the
+    # generic Cooling Cutoff (10), which is true across the whole 60-65 °F band
+    # this rule cools through. The engine gives an actuator to the highest-
+    # priority rule whose condition holds; at 7 the cutoff switched the cooler
+    # straight back off and the swing never happened.
     AutomationRule(
         name="Lion's Mane Night Cool",
         description="Cool down for lion's mane temp swing requirement (night cycle 10pm-6am)",
-        priority=7,
+        priority=11,
         applies_to_species=["lions_mane"],
         applies_to_phases=["primordia_induction"],
         condition=RuleCondition(
@@ -400,8 +417,194 @@ BUILTIN_RULES: list[AutomationRule] = [
         log_to_session=True,
     ),
 
-    # Cordyceps — Blue light enforcement
+    # Cordyceps — Blue light enforcement. It holds the light during the
+    # species' light window, outranking the generic Photoperiod — Lights On
+    # (which would otherwise swap in the white fruiting scene), and lets go for
+    # the dark period so Photoperiod — Lights Off still gives it 16/8. It used
+    # to re-assert blue every 60 min around the clock.
     AutomationRule(
+        name="Cordyceps Blue Light",
+        description="Blue-only lighting for cordyceps militaris during the species' light window",
+        priority=7,
+        applies_to_species=["cordyceps_militaris"],
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(photoperiod="on", photoperiod_start="06:00"),
+        ),
+        action=RuleAction(target="light-01", scene="cordyceps_blue"),
+        cooldown_seconds=3600,
+        log_to_session=True,
+    ),
+
+    # ─── Weather-Aware Rules ────────────────────────────────────
+    # The two forecast rules outrank the Cooling Cutoff (10), so while their
+    # condition holds they keep the cooler on for their duration_sec instead of
+    # being switched off in the same pass. That is only safe with a chamber-
+    # temperature gate: they cool a chamber sitting in the upper half of its
+    # band (temp_mid_f = midpoint of the phase's range) and let go at the
+    # midpoint, never chilling a warm-loving species toward its floor (or into a
+    # heater/cooler fight).
+    AutomationRule(
+        name="Pre-cool for Hot Forecast",
+        description=(
+            "Run the cooler when today's forecast high exceeds 90°F and the chamber "
+            "is in the upper half of its temperature band, to preempt closet warming"
+        ),
+        priority=11,
+        condition=RuleCondition(
+            type=ConditionType.COMPOUND,
+            compound=CompoundCondition(
+                op=CompoundOp.AND,
+                conditions=[
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(
+                            sensor="forecast_high_f", operator="gt", value=90.0,
+                        ),
+                    ),
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(
+                            sensor="temp_f", operator="gt", profile_ref="temp_mid_f",
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        action=RuleAction(target="plug-cooler", state="on", duration_sec=900),
+        cooldown_seconds=1800,
+        notification=True,
+        log_to_session=True,
+    ),
+
+    # Pre-emptive boost for dry weather. It used to be outdoor RH alone: no
+    # chamber reading, no phase gate, no ceiling — and plugs ignore
+    # duration_sec — so every dry winter day ran the humidifier around the
+    # clock (humidity_max is 100 in colonization, so Humidity Cut never fired).
+    # Now it only tops the chamber up toward its ceiling while fruiting, and the
+    # safety ceiling bounds any single run.
+    AutomationRule(
+        name="Dry Weather Humidity Boost",
+        description=(
+            "Pre-emptively run the humidifier while fruiting when outdoor humidity "
+            "drops below 25% (dry air infiltrates the closet) and the chamber is "
+            "still below its humidity ceiling"
+        ),
+        priority=8,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.COMPOUND,
+            compound=CompoundCondition(
+                op=CompoundOp.AND,
+                conditions=[
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(
+                            sensor="outdoor_humidity", operator="lt", value=25.0,
+                        ),
+                    ),
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(
+                            sensor="humidity", operator="lt", profile_ref="humidity_max",
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        action=RuleAction(target="plug-humidifier", state="on", duration_sec=600),
+        cooldown_seconds=600,
+        safety_max_on_seconds=1800,
+        log_to_session=True,
+    ),
+
+    AutomationRule(
+        name="Heat Wave Warning",
+        description=(
+            "Alert and run the cooler when the forecast high exceeds 95°F and the chamber is "
+            "in the upper half of its band — may not maintain cold-fruiting species targets"
+        ),
+        priority=15,
+        enabled=True,
+        condition=RuleCondition(
+            type=ConditionType.COMPOUND,
+            compound=CompoundCondition(
+                op=CompoundOp.AND,
+                conditions=[
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(
+                            sensor="forecast_high_f", operator="gt", value=95.0,
+                        ),
+                    ),
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(
+                            sensor="temp_f", operator="gt", profile_ref="temp_mid_f",
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        action=RuleAction(target="plug-cooler", state="on", duration_sec=1800),
+        cooldown_seconds=3600,
+        notification=True,
+        log_to_session=True,
+    ),
+]
+
+
+# Built-in rules whose SHIPPED definition was later found unsafe or broken,
+# exactly as they shipped, keyed by name. seed_builtin_rules only seeds an empty
+# table, so an existing install would keep the old copy forever; instead it
+# upgrades a stored rule to the current BUILTIN_RULES entry (priority included)
+# while — and only while — its behaviour and priority still match the legacy
+# form. An operator-edited rule is never overwritten.
+LEGACY_BUILTIN_RULES: dict[str, AutomationRule] = {
+    # Outdoor RH alone: no chamber reading, no phase gate, no safety ceiling.
+    "Dry Weather Humidity Boost": AutomationRule(
+        name="Dry Weather Humidity Boost",
+        description="Increase humidifier when outdoor humidity drops below 25% (dry air infiltrates closet)",
+        priority=8,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="outdoor_humidity", operator="lt", value=25.0),
+        ),
+        action=RuleAction(target="plug-humidifier", state="on", duration_sec=600),
+        cooldown_seconds=600,
+        log_to_session=True,
+    ),
+    # Priority 7 — below the Cooling Cutoff, which switched the cooler back off.
+    "Lion's Mane Night Cool": AutomationRule(
+        name="Lion's Mane Night Cool",
+        description="Cool down for lion's mane temp swing requirement (night cycle 10pm-6am)",
+        priority=7,
+        applies_to_species=["lions_mane"],
+        applies_to_phases=["primordia_induction"],
+        condition=RuleCondition(
+            type=ConditionType.COMPOUND,
+            compound=CompoundCondition(
+                op=CompoundOp.AND,
+                conditions=[
+                    RuleCondition(
+                        type=ConditionType.SCHEDULE,
+                        schedule=ScheduleCondition(time_range=("22:00", "06:00")),
+                    ),
+                    RuleCondition(
+                        type=ConditionType.THRESHOLD,
+                        threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=60),
+                    ),
+                ],
+            ),
+        ),
+        action=RuleAction(target="plug-cooler", state="on", duration_sec=1800),
+        cooldown_seconds=1800,
+        safety_max_on_seconds=7200,
+        log_to_session=True,
+    ),
+    # Blue re-asserted every 60 min around the clock — no dark period.
+    "Cordyceps Blue Light": AutomationRule(
         name="Cordyceps Blue Light",
         description="Enforce blue-only lighting for cordyceps militaris fruiting",
         priority=7,
@@ -415,59 +618,185 @@ BUILTIN_RULES: list[AutomationRule] = [
         cooldown_seconds=3600,
         log_to_session=True,
     ),
-
-    # ─── Weather-Aware Rules ────────────────────────────────────
-    AutomationRule(
+    # Forecast alone, no chamber-temperature gate: now that it outranks the
+    # Cooling Cutoff it would hold the cooler on whatever the chamber reads.
+    "Pre-cool for Hot Forecast": AutomationRule(
         name="Pre-cool for Hot Forecast",
         description="Activate cooler when today's forecast high exceeds 90°F to preempt closet warming",
         priority=11,
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(
-                sensor="forecast_high_f",
-                operator="gt",
-                value=90.0,
-            ),
+            threshold=ThresholdCondition(sensor="forecast_high_f", operator="gt", value=90.0),
         ),
         action=RuleAction(target="plug-cooler", state="on", duration_sec=900),
         cooldown_seconds=1800,
         notification=True,
         log_to_session=True,
     ),
-
-    AutomationRule(
-        name="Dry Weather Humidity Boost",
-        description="Increase humidifier when outdoor humidity drops below 25% (dry air infiltrates closet)",
-        priority=8,
-        condition=RuleCondition(
-            type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(
-                sensor="outdoor_humidity",
-                operator="lt",
-                value=25.0,
-            ),
-        ),
-        action=RuleAction(target="plug-humidifier", state="on", duration_sec=600),
-        cooldown_seconds=600,
-        log_to_session=True,
-    ),
-
-    AutomationRule(
+    "Heat Wave Warning": AutomationRule(
         name="Heat Wave Warning",
         description="Send alert when forecast high exceeds 95°F — may not maintain cold-fruiting species targets",
         priority=15,
         enabled=True,
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(
-                sensor="forecast_high_f",
-                operator="gt",
-                value=95.0,
-            ),
+            threshold=ThresholdCondition(sensor="forecast_high_f", operator="gt", value=95.0),
         ),
         action=RuleAction(target="plug-cooler", state="on", duration_sec=1800),
         cooldown_seconds=3600,
         notification=True,
         log_to_session=True,
     ),
-]
+    # Logged a session event every minute while humidity was in range.
+    "Dehumidify Cutoff": AutomationRule(
+        name="Dehumidify Cutoff",
+        description="Stop the dehumidifier once humidity is back within range",
+        priority=10,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="off"),
+        cooldown_seconds=60,
+        log_to_session=True,
+    ),
+}
+
+
+# The eight rules that gained "browning" in their phase gate (see
+# _OPEN_SUBSTRATE_PHASES), exactly as they shipped before the shiitake browning
+# phase existed. Without these an existing install would keep fruiting-only
+# copies (seed_builtin_rules never re-seeds), leaving a browning block with
+# stage alerts on its humidity / CO2 band but no rule to answer them. Same
+# contract as LEGACY_BUILTIN_RULES: only an unedited copy is upgraded.
+_PRE_BROWNING_PHASES = ["primordia_induction", "fruiting"]
+
+PRE_BROWNING_BUILTIN_RULES: dict[str, AutomationRule] = {
+    "Dehumidify": AutomationRule(
+        name="Dehumidify",
+        description="Run the dehumidifier when humidity exceeds the species maximum",
+        priority=10,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="on", duration_sec=600),
+        cooldown_seconds=300,
+        safety_max_on_seconds=3600,
+        log_to_session=True,
+    ),
+    "Dehumidify Cutoff": AutomationRule(
+        name="Dehumidify Cutoff",
+        description="Stop the dehumidifier once humidity is back within range",
+        priority=10,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="off"),
+        cooldown_seconds=60,
+        log_to_session=False,
+    ),
+    "Humidity Vent (no dehumidifier)": AutomationRule(
+        name="Humidity Vent (no dehumidifier)",
+        description="Vent moist air with the exhaust fan when humidity is high and no dehumidifier is present",
+        priority=9,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        requires_absent_target="plug-dehumidifier",
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="gt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=180, duration_sec=180),
+        cooldown_seconds=600,
+        safety_max_on_seconds=900,
+        log_to_session=True,
+    ),
+    "Mist (no humidifier)": AutomationRule(
+        name="Mist (no humidifier)",
+        description="Brief misting pulse when humidity is low and no humidifier plug is present",
+        priority=9,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        requires_absent_target="plug-humidifier",
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_min"),
+        ),
+        action=RuleAction(target="relay-01", channel="aux", state="on", pwm=255, duration_sec=8),
+        cooldown_seconds=600,
+        safety_max_on_seconds=30,
+        log_to_session=True,
+    ),
+    "CO2 FAE Trigger": AutomationRule(
+        name="CO2 FAE Trigger",
+        description="Vent when CO2 exceeds the species' fruiting/pinning ceiling",
+        priority=8,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", profile_ref="co2_max_ppm"),
+        ),
+        action=RuleAction(target="relay-01", channel="fae", state="on", pwm=200, duration_sec=300),
+        cooldown_seconds=300,
+        safety_max_on_seconds=1800,
+        log_to_session=True,
+    ),
+    "Emergency CO2 Exhaust": AutomationRule(
+        name="Emergency CO2 Exhaust",
+        description="Hard exhaust when CO2 runs above the species' emergency edge",
+        priority=20,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", profile_ref="co2_emergency_ppm"),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
+        cooldown_seconds=120,
+        notification=True,
+        log_to_session=True,
+    ),
+    "Photoperiod — Lights On": AutomationRule(
+        name="Photoperiod — Lights On",
+        description="Lights on during the species' light window for this phase",
+        priority=3,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(photoperiod="on", photoperiod_start="06:00"),
+        ),
+        action=RuleAction(target="light-01", scene="fruiting_standard"),
+        cooldown_seconds=1800,
+        log_to_session=True,
+    ),
+    "Photoperiod — Lights Off": AutomationRule(
+        name="Photoperiod — Lights Off",
+        description="Lights off outside the species' light window (the dark period)",
+        priority=3,
+        applies_to_phases=list(_PRE_BROWNING_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(photoperiod="off", photoperiod_start="06:00"),
+        ),
+        action=RuleAction(target="light-01", scene="colonization_dark", state="off"),
+        cooldown_seconds=1800,
+        log_to_session=True,
+    ),
+}
+
+
+def _superseded_builtin_rules() -> dict[str, tuple[AutomationRule, ...]]:
+    forms: dict[str, list[AutomationRule]] = {}
+    for table in (LEGACY_BUILTIN_RULES, PRE_BROWNING_BUILTIN_RULES):
+        for name, rule in table.items():
+            forms.setdefault(name, []).append(rule)
+    return {name: tuple(rules) for name, rules in forms.items()}
+
+
+# Every superseded shipped form of each built-in, by name — a rule can have been
+# changed more than once (Dehumidify Cutoff: the event-spamming form, then the
+# pre-browning gate). seed_builtin_rules upgrades an unedited copy of ANY of
+# them to the current BUILTIN_RULES entry.
+SUPERSEDED_BUILTIN_RULES: dict[str, tuple[AutomationRule, ...]] = _superseded_builtin_rules()

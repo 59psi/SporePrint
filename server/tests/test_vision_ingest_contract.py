@@ -8,9 +8,13 @@ ingested a frame from real hardware, and contamination detection was analysing
 nothing. Both wire shapes are now accepted; these tests pin both.
 """
 
+import time
+from pathlib import Path
+
 import pytest
 
 JPEG = b"\xff\xd8\xff\xe0" + b"fake-jpeg-body"
+PNG = b"\x89PNG\r\n\x1a\n" + b"fake-png-body"
 
 
 @pytest.fixture(autouse=True)
@@ -71,3 +75,66 @@ def test_traversal_node_id_still_rejected(client):
         headers={"Content-Type": "image/jpeg", "X-Node-Id": "../../etc/passwd"},
     )
     assert r.status_code == 400
+
+
+def _frame_row(client, frame_id: int) -> dict:
+    r = client.get(f"/api/vision/frames/{frame_id}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_unsynced_uptime_timestamp_is_stamped_with_arrival_time(client):
+    """srv-rest#7 / contract #2: a cam without NTP sends uptime seconds (e.g. 900).
+    Anything < 1e9 is unsynced, so the server stamps arrival time instead of
+    filing the frame in 1970."""
+    before = time.time()
+    r = client.post(
+        "/api/vision/frame",
+        content=JPEG,
+        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01", "X-Timestamp": "900"},
+    )
+    assert r.status_code == 200, r.text
+    row = _frame_row(client, r.json()["frame_id"])
+    assert before - 1 <= row["timestamp"] <= time.time() + 1
+
+
+def test_synced_timestamp_is_kept(client):
+    r = client.post(
+        "/api/vision/frame",
+        content=JPEG,
+        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01", "X-Timestamp": "1752300000"},
+    )
+    assert r.status_code == 200, r.text
+    assert _frame_row(client, r.json()["frame_id"])["timestamp"] == 1752300000
+
+
+def test_frames_with_the_same_timestamp_never_overwrite_each_other(client):
+    """srv-rest#7: files were named `{node}_{int(ts)}.jpg`, so uptime values that
+    recur after every reboot (or two uploads in one second) overwrote an older
+    frame's image while its DB row still pointed at the path."""
+    first = b"\xff\xd8\xff\xe0" + b"first-frame"
+    second = b"\xff\xd8\xff\xe0" + b"second-frame"
+    paths = []
+    for body in (first, second):
+        r = client.post(
+            "/api/vision/frame",
+            content=body,
+            headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01", "X-Timestamp": "1752300000"},
+        )
+        assert r.status_code == 200, r.text
+        paths.append(r.json()["file_path"])
+    assert paths[0] != paths[1]
+    assert Path(paths[0]).read_bytes() == first
+    assert Path(paths[1]).read_bytes() == second
+
+
+def test_png_upload_keeps_png_extension(client):
+    """srv-rest#8: PNG/WebP uploads were saved as .jpg (and later declared to
+    Claude as image/jpeg, which the API rejects)."""
+    r = client.post(
+        "/api/vision/frame",
+        files={"file": ("frame.png", PNG, "image/png")},
+        headers={"X-Node-Id": "cam-01"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["file_path"].endswith(".png")

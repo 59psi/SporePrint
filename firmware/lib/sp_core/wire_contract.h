@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hmac_verify.h"  // kMinValidEpoch — the one "clock is synced" floor
+
 namespace sp {
 
 // Round a float to one decimal place — the telemetry wire precision.
@@ -40,9 +42,21 @@ inline float wire_round1(float v) { return roundf(v * 10.0f) / 10.0f; }
 // Every sensor field is optional: the firmware emits only the ones whose
 // sensor is present. `scale_raw` is the uncalibrated HX711 fallback — emitted
 // but NOT in SENSOR_FIELDS (the Pi tolerates-but-drops it), mutually exclusive
-// with `weight_g`.
+// with `weight_g`. `pressure_hpa` (additive) is barometric pressure from a
+// BME280 / BMP280, hPa (= mbar) to one decimal.
+//
+// Envelope keys (not sensor fields, never persisted as readings):
+//   ts      Unix-epoch seconds once NTP has synced; uptime seconds before
+//           that (see telemetry_ts). The Pi treats ts < 1e9 as unsynced and
+//           stamps arrival time.
+//   replay  OPTIONAL, emitted only as `true` — the frame was buffered while
+//           the broker was unreachable and is being replayed late. The Pi
+//           stores it (at its own ts) but never evaluates automation rules
+//           on it and never lets it overwrite a newer latest reading.
+//           Absent on live frames, so pre-replay consumers see no change.
 struct TelemetryInputs {
-    uint32_t ts = 0;  // uptime seconds; the Pi stamps real time
+    uint32_t ts = 0;  // telemetry_ts(): epoch when synced, else uptime
+    bool replay = false;  // buffered frame replayed after an outage
 
     bool have_temp_rh = false;
     float temp_c = 0.0f;   // raw °C — builder derives temp_f + dew_point_f
@@ -55,6 +69,9 @@ struct TelemetryInputs {
     bool have_lux = false;
     float lux = 0.0f;
 
+    bool have_pressure = false;  // BME280 / BMP280 present + fresh
+    float pressure_hpa = 0.0f;
+
     bool have_weight = false;  // HX711 present AND calibrated
     float weight_g = 0.0f;
     bool have_scale_raw = false;  // HX711 present, uncalibrated
@@ -64,8 +81,17 @@ struct TelemetryInputs {
     bool door_open = false;
 };
 
+// The telemetry `ts`: wall-clock epoch seconds when the clock has synced
+// (>= kMinValidEpoch, 2020-01-01), otherwise the uptime seconds the Pi has
+// always accepted (and re-stamps at arrival). The two ranges cannot overlap:
+// uptime would need ~50 years to reach the epoch floor.
+inline uint32_t telemetry_ts(uint64_t epoch_s, uint32_t uptime_s) {
+    return epoch_s >= kMinValidEpoch ? (uint32_t)epoch_s : uptime_s;
+}
+
 inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
     doc["ts"] = in.ts;
+    if (in.replay) doc["replay"] = true;
     if (in.have_temp_rh) {
         float tf = in.temp_c * 9.0f / 5.0f + 32.0f;
         doc["temp_f"] = wire_round1(tf);
@@ -75,6 +101,7 @@ inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
     }
     if (in.have_co2) doc["co2_ppm"] = in.co2_ppm;
     if (in.have_lux) doc["lux"] = wire_round1(in.lux);
+    if (in.have_pressure) doc["pressure_hpa"] = wire_round1(in.pressure_hpa);
     if (in.have_weight) {
         doc["weight_g"] = wire_round1(in.weight_g);
     } else if (in.have_scale_raw) {
@@ -86,6 +113,17 @@ inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
 // ── alert (emit_alert) ─────────────────────────────────────────
 // `sensor` is optional (nullptr ⇒ omitted). The Pi's forward_event lets the
 // payload's own `type` win, so `type` is what reaches the cloud event channel.
+//
+// Types: temperature, humidity, co2, door, sensor_failure (design
+// ALERT_TYPES) plus the firmware-only additions below. The Pi pages an
+// unknown node alert type at WARNING and forwards it unchanged, so each
+// addition is backward compatible.
+//
+// tls_downgrade — Secure MQTT is enabled but no Pi CA could be pinned, so the
+// node is running on plaintext (value = the plaintext port in use). Entry +
+// hourly while it lasts (alert_latch.h). fw-node#2.
+constexpr const char* kAlertTlsDowngrade = "tls_downgrade";
+
 inline void build_alert(const char* type, float value, const char* message,
                         const char* sensor, JsonDocument& doc) {
     doc["type"] = type;
@@ -119,8 +157,25 @@ inline void build_dim_levels(const DimLevel* levels, int n, JsonDocument& doc) {
 
 // ── heartbeat (publish_heartbeat) ──────────────────────────────
 // `type` + `roles` drive the Pi upsert and cloud command routing. The node
-// image emits wifi_reconnects (always 0 — core owns WiFi recovery); the cam
-// image omits it. `migrated_from` is present only post-migration.
+// image emits wifi_reconnects (its app-level WiFi re-begin count — the core's
+// auto-reconnect gives up on some disconnect reasons, so the node's link
+// watchdog retries itself); the cam image omits it. `migrated_from` is
+// present only post-migration.
+//
+// Optional, additive keys (the Pi ignores keys it doesn't know):
+//   tls           bool — the MQTT transport in use is TLS with the pinned Pi
+//                 CA (emitted by current node + cam images; fw-node#2)
+//   tls_fallback  true — only while Secure MQTT is enabled but the node runs
+//                 on plaintext because no CA could be pinned (omitted else)
+//   board         the board profile the image was built for (e.g.
+//                 "esp32-wroom-32", "esp32-s3-devkitc-1-n32r16v") — tells the
+//                 operator which image an OTA push needs
+//   ca_fp         lowercase hex SHA-256 (64 chars) of the exact CA PEM the
+//                 TLS link verifies the broker against — the bytes the Pi
+//                 served from GET /api/provision/ca, i.e. Python
+//                 hashlib.sha256(pem.encode()).hexdigest() of its ca.crt.
+//                 Only while `tls` is true (omitted else). Lets the Pi spot a
+//                 node that trust-on-first-use pinned some other CA.
 struct HeartbeatInputs {
     uint32_t uptime_sec = 0;
     uint32_t free_heap = 0;
@@ -129,12 +184,18 @@ struct HeartbeatInputs {
     const char* ip = "";
     int32_t reset_reason = 0;
     bool emit_wifi_reconnects = true;  // node: true, cam: false
+    uint32_t wifi_reconnects = 0;
     uint32_t mqtt_reconnects = 0;
     const char* type = "";  // node_type_str(personality) | "camera"
     const char* const* roles = nullptr;
     int n_roles = 0;
     const char* fw_image = "";       // "node" | "cam"
     const char* migrated_from = nullptr;  // nullptr/"" ⇒ omitted
+    bool emit_tls = false;           // emit `tls` (current images: true)
+    bool tls = false;
+    bool tls_fallback = false;       // emitted only when true
+    const char* board = nullptr;     // nullptr/"" ⇒ omitted
+    const char* ca_fp = nullptr;     // nullptr/"" ⇒ omitted
 };
 
 inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
@@ -144,7 +205,7 @@ inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
     doc["wifi_rssi"] = in.wifi_rssi;
     doc["ip"] = in.ip;
     doc["reset_reason"] = in.reset_reason;
-    if (in.emit_wifi_reconnects) doc["wifi_reconnects"] = 0;
+    if (in.emit_wifi_reconnects) doc["wifi_reconnects"] = in.wifi_reconnects;
     doc["mqtt_reconnects"] = in.mqtt_reconnects;
     doc["type"] = in.type;
     JsonArray roles = doc["roles"].to<JsonArray>();
@@ -152,11 +213,16 @@ inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
     doc["fw_image"] = in.fw_image;
     if (in.migrated_from != nullptr && in.migrated_from[0] != '\0')
         doc["migrated_from"] = in.migrated_from;
+    if (in.emit_tls) doc["tls"] = in.tls;
+    if (in.tls_fallback) doc["tls_fallback"] = true;
+    if (in.board != nullptr && in.board[0] != '\0') doc["board"] = in.board;
+    if (in.ca_fp != nullptr && in.ca_fp[0] != '\0') doc["ca_fp"] = in.ca_fp;
 }
 
 // ── health (publish_health) ────────────────────────────────────
 // Nested: per-sensor {ok,reads,fails,last_error} keyed by driver name
-// (sht3x/sht4x/scd4x/scd30/bh1750/mhz19/hx711/reed), per-channel
+// (sht3x/sht4x/aht20/bme280/bmp280/scd4x/scd30/bh1750/mhz19/hx711/reed),
+// per-channel
 // {state,pwm,on_time_sec,cycle_count,safety_cutoffs} keyed by channel name,
 // plus an expected_missing[] array.
 struct SensorHealthView {

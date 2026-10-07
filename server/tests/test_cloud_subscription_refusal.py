@@ -1,9 +1,9 @@
 """A lapsed subscription is a standing condition, not a transient fault.
 
 The cloud now refuses a device whose owner has no active subscription
-(`subscription_required` at connect, 402 on REST ingest — sporeprint-cloud
-PR #48). The Pi's connect loop treated every exception identically: exponential
-backoff capped at 5 minutes, retrying forever. Against a refusal that only
+(`subscription_required` at connect, 402 on REST ingest). The Pi's connect
+loop treated every exception identically: exponential backoff capped at
+5 minutes, retrying forever. Against a refusal that only
 clears when the user resubscribes, that means:
 
   * a reconnect every 5 minutes, indefinitely, at a relay that has
@@ -17,8 +17,6 @@ Local control never depended on the cloud, and SQLite still holds every
 reading — the cloud is a mirror, not the record. So: back off far, say why,
 stop buffering, and resume the moment the cloud accepts us again.
 """
-
-import asyncio
 
 import pytest
 

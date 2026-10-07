@@ -1,4 +1,5 @@
-# 8 MB flash layout — ESP32-S3-DevKitC-1 (N8R8/N16R8) node builds.
+# 8 MB flash layout — the ESP32-S3 builds: node_esp32s3 (DevKitC-1 N8R8/N16R8)
+# and the cam_esp32s3, cam_xiao_esp32s3 and cam_waveshare_s3 camera envs.
 #
 # The 4 MB table (partitions.csv) stays byte-identical for esp32dev/esp32cam
 # fleet continuity — OTA cannot repartition. This table is S3-only:

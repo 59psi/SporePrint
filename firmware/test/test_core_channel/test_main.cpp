@@ -282,6 +282,8 @@ void test_channel_name_validation() {
     TEST_ASSERT_FALSE(sp::channel_name_valid("scene"));
     TEST_ASSERT_FALSE(sp::channel_name_valid("telemetry"));
     TEST_ASSERT_FALSE(sp::channel_name_valid("coredump"));
+    TEST_ASSERT_FALSE(sp::channel_name_valid("coredump_ack"));
+    TEST_ASSERT_FALSE(sp::channel_name_valid("ota_manifest"));
     // Length cap.
     TEST_ASSERT_FALSE(sp::channel_name_valid("abcdefghijklmnopqrstuvwxyz"));
 }
@@ -410,8 +412,10 @@ void test_personality_channels_relay_bank_presets() {
     for (int i = 0; i < 4; ++i) {
         TEST_ASSERT_EQUAL_STRING(names[i], out[i].name);
         TEST_ASSERT_EQUAL_INT((int)sp::ChannelMode::Switch, (int)out[i].mode);
-        // Switch channels carry the 30-min max-on backstop.
-        TEST_ASSERT_EQUAL_UINT32(sp::kDefaultMaxOnMs, out[i].max_on_ms);
+        // Switch channels carry the 30-min max-on backstop — except aux,
+        // the documented misting-pump channel, which gets 60 s (docs#9).
+        TEST_ASSERT_EQUAL_UINT32(i == 3 ? sp::kAuxMaxOnMs : sp::kDefaultMaxOnMs,
+                                 out[i].max_on_ms);
         // Preset names must survive channel-name validation (topic-safe, not
         // shadowing a reserved endpoint).
         TEST_ASSERT_TRUE(sp::channel_name_valid(out[i].name));
@@ -534,6 +538,278 @@ void test_scene_table_level_values() {
     TEST_ASSERT_TRUE(s->levels[0] > 0);  // white on for daylight
 }
 
+// ── audit regressions (hardware-audit) ─────────────────────────
+
+void test_switch_explicit_off_wins_over_pwm() {
+    // fw-node#4: {"state":"off","pwm":200} used to turn the channel ON at
+    // 200 (pwm overrode the explicit off) while the Pi recorded it as off
+    // and cleared its safety watchdog. An explicit off always wins.
+    sp::Channel ch;
+    ch.configure(switch_cfg("aux"));
+    sp::ChannelCommand off_pwm;
+    off_pwm.has_state = true;
+    off_pwm.state_on = false;
+    off_pwm.has_pwm = true;
+    off_pwm.pwm = 200;
+
+    // From OFF: stays off.
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)ch.apply(off_pwm, 0));
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT8(0, ch.pwm8());
+    TEST_ASSERT_EQUAL_UINT32(0, ch.health().cycle_count);
+
+    // From ON: turns off.
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    ch.apply(on, 10);
+    TEST_ASSERT_TRUE(ch.is_on());
+    ch.apply(off_pwm, 20);
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT8(0, ch.pwm8());
+
+    // "on" + pwm still honours the pwm (and pwm 0 still means off).
+    sp::ChannelCommand on_pwm;
+    on_pwm.has_state = true;
+    on_pwm.state_on = true;
+    on_pwm.has_pwm = true;
+    on_pwm.pwm = 128;
+    ch.apply(on_pwm, 30);
+    TEST_ASSERT_TRUE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT8(128, ch.pwm8());
+    on_pwm.pwm = 0;
+    ch.apply(on_pwm, 40);
+    TEST_ASSERT_FALSE(ch.is_on());
+}
+
+void test_off_command_never_leaves_a_stale_off_timer() {
+    // An off command carrying duration_sec used to arm the off-timer while
+    // the channel was off; a later plain ON was then cut short by it.
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    sp::ChannelCommand off;
+    off.has_state = true;
+    off.state_on = false;
+    off.has_duration = true;
+    off.duration_sec = 10;
+    ch.apply(off, 0);
+    TEST_ASSERT_FALSE(ch.is_on());
+
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    ch.apply(on, 5000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(10001));
+    TEST_ASSERT_TRUE(ch.is_on());
+
+    // And an explicit off disarms a live timer even if a later ON follows.
+    sp::ChannelCommand timed;
+    timed.has_state = true;
+    timed.state_on = true;
+    timed.has_duration = true;
+    timed.duration_sec = 30;
+    sp::Channel ch2;
+    ch2.configure(switch_cfg());
+    ch2.apply(timed, 0);
+    sp::ChannelCommand plain_off;
+    plain_off.has_state = true;
+    plain_off.state_on = false;
+    ch2.apply(plain_off, 1000);
+    ch2.apply(on, 2000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch2.tick(30001));
+    TEST_ASSERT_TRUE(ch2.is_on());
+}
+
+void test_dim_accepts_pwm_as_level() {
+    // fw-node#6: the Pi automation only has `pwm` (documented 0-1023 for
+    // lighting). A dim channel used to ignore it and jump to 1023 on
+    // {"state":"on","pwm":300}, and reject a bare {"pwm":300}.
+    sp::Channel ch;
+    ch.configure(dim_cfg());
+
+    sp::ChannelCommand bare;
+    bare.has_pwm = true;
+    bare.pwm = 300;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.apply(bare, 0));
+    TEST_ASSERT_TRUE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT16(300, ch.level10());
+
+    sp::ChannelCommand on_pwm;
+    on_pwm.has_state = true;
+    on_pwm.state_on = true;
+    on_pwm.has_pwm = true;
+    on_pwm.pwm = 450;
+    ch.apply(on_pwm, 10);
+    TEST_ASSERT_EQUAL_UINT16(450, ch.level10());
+
+    // Explicit off wins over pwm here too (shared contract rule).
+    sp::ChannelCommand off_pwm;
+    off_pwm.has_state = true;
+    off_pwm.state_on = false;
+    off_pwm.has_pwm = true;
+    off_pwm.pwm = 800;
+    ch.apply(off_pwm, 20);
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT16(0, ch.level10());
+
+    // `level` (the v1 lighting key) wins when both are present.
+    sp::ChannelCommand both;
+    both.has_level = true;
+    both.level = 700;
+    both.has_pwm = true;
+    both.pwm = 100;
+    ch.apply(both, 30);
+    TEST_ASSERT_EQUAL_UINT16(700, ch.level10());
+
+    // Out-of-range pwm clamps to the 10-bit range.
+    bare.pwm = 5000;
+    ch.apply(bare, 40);
+    TEST_ASSERT_EQUAL_UINT16(1023, ch.level10());
+    bare.pwm = 0;
+    ch.apply(bare, 50);
+    TEST_ASSERT_FALSE(ch.is_on());
+
+    // pwm + ramp_sec ramps like level does.
+    bare.pwm = 100;
+    ch.apply(bare, 60);
+    sp::ChannelCommand ramp;
+    ramp.has_pwm = true;
+    ramp.pwm = 900;
+    ramp.has_ramp = true;
+    ramp.ramp_sec = 10;
+    ch.apply(ramp, 1000);
+    TEST_ASSERT_EQUAL_UINT16(100, ch.level10());
+    ch.tick(11001);
+    TEST_ASSERT_EQUAL_UINT16(900, ch.level10());
+
+    // Empty dim payload is still rejected.
+    sp::ChannelCommand empty;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected,
+                          (int)ch.apply(empty, 70));
+}
+
+void test_force_off_is_a_counted_cutoff_and_disarms_timers() {
+    // Safe mode (link lost) and OTA start drive every channel off through
+    // force_off(): counted as a safety cutoff, timers/ramps disarmed.
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    sp::ChannelCommand timed;
+    timed.has_state = true;
+    timed.state_on = true;
+    timed.has_duration = true;
+    timed.duration_sec = 600;
+    ch.apply(timed, 0);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)ch.force_off(1000, "safe mode"));
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_TRUE(ch.last_change_was_cutoff());
+    TEST_ASSERT_EQUAL_STRING("safe mode", ch.reason());
+    TEST_ASSERT_EQUAL_UINT32(1, ch.health().safety_cutoffs);
+    TEST_ASSERT_EQUAL_UINT8(0, ch.pwm8());
+
+    // Already off → no event, no double count.
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                          (int)ch.force_off(2000, "safe mode"));
+    TEST_ASSERT_EQUAL_UINT32(1, ch.health().safety_cutoffs);
+
+    // The old 600 s timer must not cut a later plain ON short.
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    ch.apply(on, 3000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(600001));
+    TEST_ASSERT_TRUE(ch.is_on());
+
+    // Dim channel mid-ramp: force_off stops the ramp for good.
+    sp::Channel dim;
+    dim.configure(dim_cfg());
+    sp::ChannelCommand ramp;
+    ramp.has_level = true;
+    ramp.level = 900;
+    ramp.has_ramp = true;
+    ramp.ramp_sec = 10;
+    dim.apply(ramp, 0);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)dim.force_off(2000, "OTA update"));
+    TEST_ASSERT_FALSE(dim.is_on());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)dim.tick(5000));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)dim.tick(20000));
+    TEST_ASSERT_EQUAL_UINT16(0, dim.level10());
+}
+
+void test_max_on_override_runtime_and_bounds() {
+    // docs#9: per-channel max-on is operator-tunable (cmd/config
+    // {"max_on_sec":{...}}) without resetting channel state.
+    sp::Channel ch;
+    ch.configure(switch_cfg("aux"));
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    ch.apply(on, 0);
+    ch.set_max_on_ms(10000);  // shortened while running
+    TEST_ASSERT_TRUE(ch.is_on());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(9000));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.tick(10001));
+    TEST_ASSERT_EQUAL_STRING("auto-off (max-on exceeded)", ch.reason());
+    // A switch channel can never lose its backstop.
+    ch.set_max_on_ms(0);
+    TEST_ASSERT_EQUAL_UINT32(sp::kDefaultMaxOnMs, ch.config().max_on_ms);
+
+    uint32_t ms = 12345;
+    bool clamped = true;
+    // Switch: 1 s .. 30 min; larger values clamp; <= 0 refused.
+    TEST_ASSERT_TRUE(sp::max_on_override_ms(sp::ChannelMode::Switch, 60, &ms, &clamped));
+    TEST_ASSERT_EQUAL_UINT32(60000, ms);
+    TEST_ASSERT_FALSE(clamped);
+    TEST_ASSERT_TRUE(sp::max_on_override_ms(sp::ChannelMode::Switch, 7200, &ms, &clamped));
+    TEST_ASSERT_EQUAL_UINT32(sp::kDefaultMaxOnMs, ms);
+    TEST_ASSERT_TRUE(clamped);
+    ms = 777;
+    TEST_ASSERT_FALSE(sp::max_on_override_ms(sp::ChannelMode::Switch, 0, &ms, &clamped));
+    TEST_ASSERT_FALSE(sp::max_on_override_ms(sp::ChannelMode::Switch, -5, &ms, &clamped));
+    TEST_ASSERT_EQUAL_UINT32(777, ms);  // untouched on refusal
+    // Dim: 0 (no cutoff) .. 24 h.
+    TEST_ASSERT_TRUE(sp::max_on_override_ms(sp::ChannelMode::Dim, 0, &ms, &clamped));
+    TEST_ASSERT_EQUAL_UINT32(0, ms);
+    TEST_ASSERT_TRUE(sp::max_on_override_ms(sp::ChannelMode::Dim, 200000, &ms, &clamped));
+    TEST_ASSERT_EQUAL_UINT32(24UL * 3600UL * 1000UL, ms);
+    TEST_ASSERT_TRUE(clamped);
+    TEST_ASSERT_FALSE(sp::max_on_override_ms(sp::ChannelMode::Dim, -1, &ms, &clamped));
+}
+
+void test_relay_aux_preset_has_short_pump_backstop() {
+    // docs#9: aux drives the misting pump in every documented build — a
+    // lost off must not run it for 30 min (~3 L). Aux defaults to 60 s.
+    sp::ChannelConfig out[4];
+    sp::personality_channels(sp::Personality::RelayBank, out);
+    TEST_ASSERT_EQUAL_STRING("aux", out[3].name);
+    TEST_ASSERT_EQUAL_UINT32(sp::kAuxMaxOnMs, out[3].max_on_ms);
+    TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, sp::kAuxMaxOnMs);
+    sp::Channel aux;
+    aux.configure(out[3]);
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    aux.apply(on, 0);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)aux.tick(60001));
+    TEST_ASSERT_FALSE(aux.is_on());
+}
+
+void test_co2_calibration_target_range() {
+    // fw-node#19 / fw-drivers-cam#13: FRC targets outside Sensirion's
+    // 400-2000 ppm reference range are refused before any sensor is told.
+    TEST_ASSERT_TRUE(sp::co2_cal_target_valid(400));
+    TEST_ASSERT_TRUE(sp::co2_cal_target_valid(420));
+    TEST_ASSERT_TRUE(sp::co2_cal_target_valid(2000));
+    TEST_ASSERT_FALSE(sp::co2_cal_target_valid(399));
+    TEST_ASSERT_FALSE(sp::co2_cal_target_valid(42));     // typo for 420
+    TEST_ASSERT_FALSE(sp::co2_cal_target_valid(4200));   // typo for 420
+    TEST_ASSERT_FALSE(sp::co2_cal_target_valid(0));
+    TEST_ASSERT_FALSE(sp::co2_cal_target_valid(-420));
+    TEST_ASSERT_FALSE(sp::co2_cal_target_valid(65535));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_switch_empty_payload_rejected);
@@ -562,5 +838,12 @@ int main(int, char**) {
     RUN_TEST(test_channel_duty10_switch_expansion);
     RUN_TEST(test_cmd_suffix_split);
     RUN_TEST(test_scene_table_level_values);
+    RUN_TEST(test_switch_explicit_off_wins_over_pwm);
+    RUN_TEST(test_off_command_never_leaves_a_stale_off_timer);
+    RUN_TEST(test_dim_accepts_pwm_as_level);
+    RUN_TEST(test_force_off_is_a_counted_cutoff_and_disarms_timers);
+    RUN_TEST(test_max_on_override_runtime_and_bounds);
+    RUN_TEST(test_relay_aux_preset_has_short_pump_backstop);
+    RUN_TEST(test_co2_calibration_target_range);
     return UNITY_END();
 }

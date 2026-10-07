@@ -1,6 +1,6 @@
 #include "node_config.h"
 
-#include <WiFi.h>
+#include <esp_mac.h>
 
 #include <math.h>
 
@@ -8,9 +8,14 @@ namespace sp_device {
 
 namespace {
 
+// The factory (eFuse) station MAC — readable before WiFi starts. load() runs
+// before WiFi.mode(), and core 3.x's WiFi.macAddress() returns without
+// filling the buffer until the station interface exists (core 2.x read this
+// same eFuse MAC in that state), so it must not be used here: the default
+// node id would come from uninitialized bytes and change between boots.
 std::string default_node_id() {
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char buf[16];
     snprintf(buf, sizeof(buf), "node-%02x%02x", mac[4], mac[5]);
     return std::string(buf);
@@ -38,6 +43,7 @@ NodeConfig NodeConfig::load(sp::KvStore& kv) {
         c.personality = p;
     }
     c.tls_enabled = kv.get_bool("tls_en", false);
+    c.tls_required = kv.get_bool("tls_req", false);
     c.hx711_enabled = kv.get_bool("hx711_en", false);
     c.hx711_tare = kv.get_int("hx711_tare", 0);
     // KvStore has no float accessor — the scale persists as fixed-point
@@ -45,7 +51,9 @@ NodeConfig NodeConfig::load(sp::KvStore& kv) {
     // below load-cell noise; ±2.1M counts/g of range is far above any cell).
     c.hx711_scale = (float)kv.get_int("hx711_scale_m", 0) / 1000.0f;
     c.reed_enabled = kv.get_bool("reed_en", false);
+    c.reed_invert = kv.get_bool("reed_inv", false);
     c.mhz19_enabled = kv.get_bool("mhz19_en", false);
+    c.wifi_verified = kv.get_bool("wifi_ok", true);
     c.migrated_from = kv.get_string("migrated_from", "");
     return c;
 }
@@ -64,11 +72,14 @@ void NodeConfig::save(sp::KvStore& kv) const {
     kv.set_string("paired_pi_host", paired_pi_host);
     kv.set_string("personality", sp::personality_str(personality));
     kv.set_bool("tls_en", tls_enabled);
+    kv.set_bool("tls_req", tls_required);
     kv.set_bool("hx711_en", hx711_enabled);
     kv.set_int("hx711_tare", hx711_tare);
     kv.set_int("hx711_scale_m", (int32_t)lroundf(hx711_scale * 1000.0f));
     kv.set_bool("reed_en", reed_enabled);
+    kv.set_bool("reed_inv", reed_invert);
     kv.set_bool("mhz19_en", mhz19_enabled);
+    kv.set_bool("wifi_ok", wifi_verified);
 }
 
 std::string migrate_legacy(sp::KvStore& kv) {

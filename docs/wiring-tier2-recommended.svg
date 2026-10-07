@@ -1,416 +1,537 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1000" width="1400" height="1000">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1496" width="1600" height="1496">
 
   <!-- Background -->
-  <rect width="1400" height="1000" fill="#0a0a0f"/>
+  <rect width="1600" height="1496" fill="#0a0a0f"/>
 
   <!-- ═══════════════════════ TITLE ═══════════════════════ -->
-  <text x="700" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700">Tier 2: Recommended Wiring Diagram</text>
-  <text x="700" y="50" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">4 ESP32 nodes, 3 I2C sensors, 4 MOSFET fan channels, 2 LED channels, 1 camera, 2 smart plugs</text>
-
-  <!-- ═══════════════════════ WIRE LEGEND ═══════════════════════ -->
-  <rect x="1160" y="12" width="226" height="116" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-  <text x="1273" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Wire Color Legend</text>
-
-  <line x1="1176" y1="50" x2="1206" y2="50" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
-  <text x="1214" y="54" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10">RED = 3.3V / 12V Power</text>
-
-  <line x1="1176" y1="68" x2="1206" y2="68" stroke="#1e1e1e" stroke-width="3" stroke-linecap="round"/>
-  <rect x="1176" y="66" width="30" height="4" rx="1" fill="none" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="1214" y="72" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">BLACK = Ground</text>
-
-  <line x1="1176" y1="86" x2="1206" y2="86" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
-  <text x="1214" y="90" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10">BLUE = SDA (I2C data)</text>
-
-  <line x1="1176" y1="104" x2="1206" y2="104" stroke="#eab308" stroke-width="3" stroke-linecap="round"/>
-  <text x="1214" y="108" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10">YELLOW = SCL (I2C clock)</text>
-
-  <line x1="1176" y1="122" x2="1206" y2="122" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
-  <text x="1214" y="126" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10">GREEN = Signal / GPIO</text>
-
-
-  <!-- ═══════════════════════ RASPBERRY PI 5 (center top) ═══════════════════════ -->
-  <rect x="500" y="66" width="320" height="58" rx="6" fill="#1e293b" stroke="#34d399" stroke-width="1.5"/>
-  <rect x="500" y="66" width="320" height="4" rx="2" fill="#34d399" opacity="0.6"/>
-  <text x="660" y="90" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600">Raspberry Pi 5</text>
-  <text x="660" y="110" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">SporePrint Server | Mosquitto :1883 (auth&apos;d, v3.3.0+) | Web UI :3001 (bearer)</text>
-
-  <!-- WiFi dashes from Pi to each quadrant -->
-  <path d="M 560 124 L 300 160" fill="none" stroke="#34d399" stroke-width="1.2" stroke-dasharray="5,3"/>
-  <g><rect x="386" y="130" width="60" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="416" y="143" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">MQTT</text></g>
-
-  <path d="M 760 124 L 980 160" fill="none" stroke="#34d399" stroke-width="1.2" stroke-dasharray="5,3"/>
-  <g><rect x="850" y="130" width="60" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="880" y="143" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">MQTT</text></g>
-
-  <path d="M 560 124 L 300 540" fill="none" stroke="#34d399" stroke-width="1.2" stroke-dasharray="5,3"/>
-  <g><rect x="385" y="332" width="60" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="415" y="345" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">MQTT</text></g>
-
-  <path d="M 760 124 L 980 540" fill="none" stroke="#34d399" stroke-width="1.2" stroke-dasharray="5,3"/>
-  <g><rect x="850" y="316" width="60" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="880" y="329" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">MQTT</text></g>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- QUADRANT 1: CLIMATE NODE (top-left, 250x250 area) -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="20" y="156" width="600" height="340" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
-  <text x="44" y="182" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Climate Node</text>
-  <text x="44" y="200" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-WROOM-32 DevKit | micro-USB 5V | 3 I2C sensors on shared bus</text>
-
-  <!-- ESP32 Climate -->
-  <rect x="44" y="216" width="180" height="220" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="134" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
-  <text x="134" y="258" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Climate Hub</text>
-  <rect x="84" y="268" width="100" height="22" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="134" y="283" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB (5V power)</text>
-
-  <!-- Pin header (right side) -->
-  <rect x="210" y="302" width="12" height="124" rx="2" fill="#0f172a" stroke="#334155" stroke-width="0.5"/>
-
-  <circle cx="216" cy="320" r="5" fill="#ef4444" stroke="#fca5a5" stroke-width="0.5"/>
-  <text x="202" y="324" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">3.3V</text>
-  <text x="202" y="340" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">pin 1</text>
-
-  <circle cx="216" cy="356" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="202" y="360" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GND</text>
-
-  <circle cx="216" cy="392" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="0.5"/>
-  <text x="202" y="388" text-anchor="end" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GPIO 21</text>
-  <text x="202" y="404" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">SDA</text>
-
-  <circle cx="216" cy="418" r="5" fill="#eab308" stroke="#fde047" stroke-width="0.5"/>
-  <text x="202" y="414" text-anchor="end" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GPIO 22</text>
-  <text x="202" y="430" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">SCL</text>
-
-
-  <!-- SHT31-D -->
-  <rect x="320" y="216" width="160" height="82" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="400" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">SHT31-D</text>
-  <text x="400" y="258" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Temp + Humidity</text>
-  <text x="400" y="276" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9">I2C: 0x44</text>
-  <!-- Pin dots (left side) -->
-  <circle cx="318" cy="240" r="4" fill="#ef4444"/>
-  <circle cx="318" cy="256" r="4" fill="#1e1e1e" stroke="#6b7280" stroke-width="0.5"/>
-  <circle cx="318" cy="272" r="4" fill="#3b82f6"/>
-  <circle cx="318" cy="288" r="4" fill="#eab308"/>
-
-  <!-- SCD41 -->
-  <rect x="320" y="312" width="160" height="82" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="400" y="336" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">SCD41</text>
-  <text x="400" y="354" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">CO2 Sensor</text>
-  <text x="400" y="372" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9">I2C: 0x62</text>
-  <circle cx="318" cy="336" r="4" fill="#ef4444"/>
-  <circle cx="318" cy="352" r="4" fill="#1e1e1e" stroke="#6b7280" stroke-width="0.5"/>
-  <circle cx="318" cy="368" r="4" fill="#3b82f6"/>
-  <circle cx="318" cy="384" r="4" fill="#eab308"/>
-
-  <!-- BH1750 -->
-  <rect x="320" y="408" width="160" height="76" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="400" y="432" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">BH1750</text>
-  <text x="400" y="450" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Light (lux)</text>
-  <text x="400" y="468" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9">I2C: 0x23</text>
-  <circle cx="318" cy="432" r="4" fill="#ef4444"/>
-  <circle cx="318" cy="448" r="4" fill="#1e1e1e" stroke="#6b7280" stroke-width="0.5"/>
-  <circle cx="318" cy="464" r="4" fill="#3b82f6"/>
-  <circle cx="318" cy="480" r="4" fill="#eab308"/>
-
-
-  <!-- CLIMATE WIRES: 3.3V bus (red) -->
-  <path d="M 221 320 L 260 320 L 260 240 L 314 240" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
-  <path d="M 260 320 L 260 336 L 314 336" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <path d="M 260 336 L 260 432 L 314 432" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <g><rect x="233" y="300" width="54" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="260" y="313" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">3.3V bus</text></g>
-
-  <!-- CLIMATE WIRES: GND bus (black) -->
-  <path d="M 221 356 L 274 356 L 274 256 L 314 256" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round"/>
-  <path d="M 274 356 L 274 352 L 314 352" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <path d="M 274 356 L 274 448 L 314 448" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round" stroke-dasharray="8,4"/>
-  <g><rect x="247" y="370" width="54" height="18" rx="4" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="274" y="383" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GND bus</text></g>
-
-  <!-- CLIMATE WIRES: SDA (blue) -->
-  <path d="M 221 392 L 288 392 L 288 272 L 314 272" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
-  <path d="M 288 392 L 288 368 L 314 368" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="6,3"/>
-  <path d="M 288 392 L 288 464 L 314 464" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="6,3"/>
-
-  <!-- CLIMATE WIRES: SCL (yellow) -->
-  <path d="M 221 418 L 302 418 L 302 288 L 314 288" fill="none" stroke="#eab308" stroke-width="2.5" stroke-linecap="round"/>
-  <path d="M 302 418 L 302 384 L 314 384" fill="none" stroke="#eab308" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="6,3"/>
-  <path d="M 302 418 L 302 480 L 314 480" fill="none" stroke="#eab308" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="6,3"/>
-
-  <!-- Sensor pin labels (right side of sensors) -->
-  <text x="488" y="244" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">VIN</text>
-  <text x="488" y="260" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">GND</text>
-  <text x="488" y="276" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8">SDA</text>
-  <text x="488" y="292" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">SCL</text>
-
-  <text x="488" y="340" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">VIN</text>
-  <text x="488" y="356" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">GND</text>
-  <text x="488" y="372" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8">SDA</text>
-  <text x="488" y="388" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">SCL</text>
-
-  <text x="488" y="436" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">VCC</text>
-  <text x="488" y="452" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">GND</text>
-  <text x="488" y="468" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8">SDA</text>
-  <text x="488" y="484" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">SCL</text>
-
-  <!-- Shared bus note -->
-  <rect x="510" y="408" width="100" height="50" rx="6" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
-  <text x="560" y="428" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Shared I2C Bus</text>
-  <text x="560" y="446" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">3 sensors, different</text>
-  <text x="560" y="458" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">addresses (no conflict)</text>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- QUADRANT 2: RELAY NODE (top-right, 350x300 area) -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="700" y="156" width="680" height="340" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
-  <text x="724" y="182" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Relay Node</text>
-  <text x="724" y="200" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-WROOM-32 DevKit | micro-USB 5V | 4 MOSFET channels driving 12V fans</text>
-
-  <!-- ESP32 Relay -->
-  <rect x="724" y="216" width="130" height="74" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="789" y="240" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
-  <text x="789" y="258" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Relay Node</text>
-  <text x="789" y="278" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB 5V</text>
-
-  <!-- Pin list on right side of ESP32 -->
-  <circle cx="862" cy="236" r="4" fill="#22c55e"/>
-  <text x="872" y="240" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GPIO 25</text>
-  <circle cx="862" cy="256" r="4" fill="#22c55e"/>
-  <text x="872" y="260" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GPIO 26</text>
-  <circle cx="862" cy="276" r="4" fill="#22c55e"/>
-  <text x="872" y="280" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GPIO 27</text>
-  <circle cx="862" cy="296" r="4" fill="#22c55e"/>
-  <text x="872" y="300" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">GPIO 14</text>
-
-
-  <!-- CH0 MOSFET Circuit Detail (FULL) -->
-  <rect x="724" y="316" width="640" height="120" rx="6" fill="#0a0a0f" stroke="#22c55e" stroke-width="1"/>
-  <text x="744" y="338" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700">CH0: FAE Fan -- Full MOSFET Circuit Detail</text>
-
-  <!-- GPIO 25 pin box -->
-  <rect x="744" y="352" width="70" height="24" rx="4" fill="#1e293b" stroke="#22c55e" stroke-width="0.5"/>
-  <text x="779" y="368" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">GPIO 25</text>
-
-  <!-- Wire to gate resistor -->
-  <line x1="814" y1="364" x2="844" y2="364" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
-
-  <!-- 100 ohm gate resistor -->
-  <rect x="844" y="354" width="60" height="20" rx="3" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
-  <text x="874" y="368" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">100R</text>
-  <g><rect x="844" y="336" width="60" height="16" rx="4" fill="#0a0a0f" opacity="0.9"/>
-  <text x="874" y="348" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">gate resistor</text></g>
-
-  <!-- Wire to MOSFET gate -->
-  <line x1="904" y1="364" x2="940" y2="364" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
-
-  <!-- IRLZ44N MOSFET -->
-  <rect x="940" y="348" width="90" height="52" rx="4" fill="#1e293b" stroke="#eab308" stroke-width="1.5"/>
-  <text x="985" y="368" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">IRLZ44N</text>
-  <text x="985" y="386" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Logic-level MOSFET</text>
-  <text x="952" y="396" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">G</text>
-  <text x="982" y="396" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">D</text>
-  <text x="1016" y="396" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">S</text>
-
-  <!-- 10K pull-down: gate to GND -->
-  <line x1="955" y1="400" x2="955" y2="420" stroke="#4b5563" stroke-width="1.5"/>
-  <rect x="938" y="416" width="34" height="16" rx="3" fill="#1e293b" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="955" y="428" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">10K</text>
-  <g><rect x="908" y="412" width="28" height="16" rx="4" fill="#0a0a0f" opacity="0.9"/>
-  <text x="922" y="424" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">pull-dn</text></g>
-
-  <!-- Source to GND -->
-  <line x1="1020" y1="400" x2="1020" y2="420" stroke="#4b5563" stroke-width="1.5"/>
-  <g><rect x="1002" y="420" width="36" height="16" rx="4" fill="#0a0a0f" opacity="0.9"/>
-  <text x="1020" y="432" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">GND</text></g>
-
-  <!-- Drain to Fan(-) -->
-  <line x1="988" y1="400" x2="988" y2="410" stroke="#22c55e" stroke-width="2"/>
-  <line x1="988" y1="410" x2="1084" y2="410" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
-
-  <!-- Fan load -->
-  <rect x="1084" y="354" width="110" height="46" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
-  <text x="1139" y="374" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">FAE Fan</text>
-  <text x="1139" y="392" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Noctua 12V 80mm</text>
-  <line x1="1084" y1="400" x2="1084" y2="410" stroke="#22c55e" stroke-width="1.5"/>
-
-  <!-- Fan(+) to +12V -->
-  <line x1="1194" y1="376" x2="1240" y2="376" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
-  <g><rect x="1240" y="368" width="60" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="1270" y="381" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">+12V PSU</text></g>
-
-  <!-- 1N4007 flyback diode -->
-  <g><rect x="1096" y="408" width="86" height="18" rx="4" fill="#1e293b" stroke="#94a3b8" stroke-width="0.5"/>
-  <text x="1139" y="421" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">1N4007 flyback</text></g>
-
-
-  <!-- CH1-CH3 as compact text list -->
-  <rect x="724" y="444" width="210" height="38" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="740" y="462" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">CH1: Exhaust (GPIO 26)</text>
-  <text x="740" y="478" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">Same circuit as CH0</text>
-
-  <rect x="950" y="444" width="220" height="38" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="966" y="462" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">CH2: Circulation (GPIO 27)</text>
-  <text x="966" y="478" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">Same circuit as CH0</text>
-
-  <rect x="1186" y="444" width="190" height="38" rx="4" fill="#0a0a0f" stroke="#334155" stroke-width="0.5"/>
-  <text x="1202" y="462" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">CH3: Aux (GPIO 14)</text>
-  <text x="1202" y="478" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">Same circuit as CH0</text>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- QUADRANT 3: LIGHTING NODE (bottom-left, 250x200 area) -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="20" y="536" width="600" height="200" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
-  <text x="44" y="562" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Lighting Node</text>
-  <text x="44" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-WROOM-32 DevKit | micro-USB 5V | 2 MOSFET channels, 10-bit PWM dimming</text>
-
-  <!-- ESP32 Lighting -->
-  <rect x="44" y="596" width="130" height="64" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="109" y="620" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600">ESP32</text>
-  <text x="109" y="640" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Lighting Node</text>
-  <text x="109" y="656" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="9">micro-USB 5V</text>
-
-  <!-- Channel 0: White -->
-  <rect x="210" y="596" width="200" height="36" rx="4" fill="#0a0a0f" stroke="#22c55e" stroke-width="0.5"/>
-  <text x="226" y="614" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">CH0: White 6500K (GPIO 25)</text>
-  <text x="226" y="628" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">GPIO25 --> 100R --> IRLZ44N --> LED strip --> +12V</text>
-  <line x1="174" y1="614" x2="210" y2="614" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
-
-  <!-- Channel 1: Blue -->
-  <rect x="210" y="644" width="200" height="36" rx="4" fill="#0a0a0f" stroke="#22c55e" stroke-width="0.5"/>
-  <text x="226" y="662" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">CH1: Blue 450nm (GPIO 26)</text>
-  <text x="226" y="676" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">GPIO26 --> 100R --> IRLZ44N --> LED strip --> +12V</text>
-  <line x1="174" y1="662" x2="210" y2="662" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
-
-  <!-- LED strips -->
-  <rect x="440" y="596" width="100" height="36" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
-  <text x="490" y="618" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">White LEDs</text>
-  <line x1="410" y1="614" x2="440" y2="614" stroke="#22c55e" stroke-width="1.5"/>
-
-  <rect x="440" y="644" width="100" height="36" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
-  <text x="490" y="666" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Blue LEDs</text>
-  <line x1="410" y1="662" x2="440" y2="662" stroke="#22c55e" stroke-width="1.5"/>
-
-  <!-- +12V to LED strips -->
-  <line x1="540" y1="614" x2="576" y2="614" stroke="#ef4444" stroke-width="2"/>
-  <line x1="540" y1="662" x2="576" y2="662" stroke="#ef4444" stroke-width="2"/>
-  <line x1="576" y1="614" x2="576" y2="662" stroke="#ef4444" stroke-width="2"/>
-  <g><rect x="580" y="628" width="34" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="597" y="641" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">12V</text></g>
-
-  <!-- Lighting note -->
-  <rect x="44" y="694" width="560" height="28" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5" stroke-dasharray="3,2"/>
-  <text x="56" y="712" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Same MOSFET circuit as relay node (100R gate, 10K pull-down, 1N4007 flyback). Shares 12V PSU with relay node.</text>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- QUADRANT 4: CAMERA NODE (bottom-right, 200x150 area) -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="700" y="536" width="300" height="120" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
-  <text x="724" y="562" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Camera Node</text>
-  <text x="724" y="580" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">ESP32-CAM | OV2640 | micro-USB 5V</text>
-
-  <rect x="724" y="596" width="260" height="46" rx="4" fill="#0a0a0f" stroke="#475569" stroke-width="0.5"/>
-  <text x="740" y="614" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Standalone module: 5V via ESP32-CAM-MB (micro-USB).</text>
-  <text x="740" y="634" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">No GPIO wiring. Captures every 15min via WiFi.</text>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- 12V POWER SUPPLY -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="700" y="676" width="300" height="60" rx="6" fill="#1e293b" stroke="#ef4444" stroke-width="1.5"/>
-  <text x="850" y="700" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">12V 5A Power Supply (60W)</text>
-  <text x="850" y="720" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Powers all fans + LED strips via MOSFET drain circuits</text>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- TASMOTA PLUGS -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="1060" y="536" width="170" height="100" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="1145" y="562" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Tasmota Plug #1</text>
-  <text x="1145" y="582" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Humidifier</text>
-  <text x="1145" y="600" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">AC on/off via MQTT</text>
-  <rect x="1090" y="612" width="110" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="1145" y="625" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi (no wiring)</text>
-
-  <rect x="1250" y="536" width="170" height="100" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-  <text x="1335" y="562" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Tasmota Plug #2</text>
-  <text x="1335" y="582" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Heater / Cooler</text>
-  <text x="1335" y="600" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">AC on/off via MQTT</text>
-  <rect x="1280" y="612" width="110" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.5"/>
-  <text x="1335" y="625" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">WiFi (no wiring)</text>
-
-
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- WIRING STEP LIST -->
-  <!-- ═══════════════════════════════════════════════════════════ -->
-  <rect x="20" y="760" width="1360" height="220" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
-  <text x="44" y="786" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Wiring Steps</text>
-
-  <!-- Column 1: Climate Node -->
-  <text x="44" y="810" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Climate Node (12 wires):</text>
-
-  <circle cx="56" cy="832" r="5" fill="#ef4444"/>
-  <text x="68" y="836" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">1. ESP32 3.3V --> SHT31 VIN</text>
-  <g><rect x="260" y="824" width="48" height="18" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="0.5"/>
-  <text x="284" y="837" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">red</text></g>
-
-  <circle cx="56" cy="852" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="68" y="856" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">2. ESP32 GND --> SHT31 GND</text>
-  <g><rect x="260" y="844" width="48" height="18" rx="4" fill="#1a1a1a" stroke="#6b7280" stroke-width="0.5"/>
-  <text x="284" y="857" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">black</text></g>
-
-  <circle cx="56" cy="872" r="5" fill="#3b82f6"/>
-  <text x="68" y="876" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">3. GPIO 21 --> SHT31 SDA</text>
-  <g><rect x="260" y="864" width="48" height="18" rx="4" fill="#0c1a33" stroke="#3b82f6" stroke-width="0.5"/>
-  <text x="284" y="877" text-anchor="middle" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8">blue</text></g>
-
-  <circle cx="56" cy="892" r="5" fill="#eab308"/>
-  <text x="68" y="896" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">4. GPIO 22 --> SHT31 SCL</text>
-  <g><rect x="260" y="884" width="56" height="18" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.5"/>
-  <text x="288" y="897" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8">yellow</text></g>
-
-  <text x="44" y="920" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic">5-8: Repeat 1-4 for SCD41 (same bus)</text>
-  <text x="44" y="940" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic">9-12: Repeat 1-4 for BH1750 (same bus)</text>
-
-  <!-- Column 2: Relay Node -->
-  <text x="380" y="810" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Relay Node (per MOSFET channel):</text>
-
-  <circle cx="392" cy="832" r="5" fill="#22c55e"/>
-  <text x="404" y="836" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">13. GPIO --> 100R --> IRLZ44N Gate</text>
-
-  <circle cx="392" cy="852" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="404" y="856" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">14. 10K resistor: Gate --> GND</text>
-
-  <circle cx="392" cy="872" r="5" fill="#22c55e"/>
-  <text x="404" y="876" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">15. IRLZ44N Drain --> Fan(-)</text>
-
-  <circle cx="392" cy="892" r="5" fill="#ef4444"/>
-  <text x="404" y="896" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">16. Fan(+) --> 12V PSU (+)</text>
-
-  <circle cx="392" cy="912" r="5" fill="#1e1e1e" stroke="#6b7280" stroke-width="1"/>
-  <text x="404" y="916" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">17. Source --> GND (shared w/ PSU)</text>
-
-  <text x="404" y="936" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">18. 1N4007 diode across Fan(+) to Fan(-)</text>
-
-  <text x="380" y="958" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic">Repeat 13-18 for CH1 (GPIO 26), CH2 (GPIO 27), CH3 (GPIO 14)</text>
-
-  <!-- Column 3: Lighting + Camera -->
-  <text x="810" y="810" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Lighting Node (per LED channel):</text>
-  <text x="810" y="832" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">Same MOSFET circuit as relay, with LED strip</text>
-  <text x="810" y="852" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">instead of fan. CH0: White (GPIO 25), CH1: Blue (GPIO 26).</text>
-  <text x="810" y="876" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Camera Node:</text>
-  <text x="810" y="898" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">No GPIO wiring -- 5V via ESP32-CAM-MB (micro-USB). Standalone WiFi module.</text>
-  <text x="810" y="922" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Smart Plugs:</text>
-  <text x="810" y="944" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10">No wiring -- WiFi only. Plug in appliance and configure via MQTT.</text>
-
+  <text x="800" y="30" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700">Tier 2: Recommended Wiring Diagram</text>
+  <text x="800" y="50" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">3 ESP32 nodes + 1 camera · power strip → 12V 5A PSU → 14 AWG pigtail → WAGO → fused 18 AWG branches → 2 switch boards · STEMMA QT sensor chain · 2 smart plugs</text>
+
+  <!-- ═══════ OUTSIDE THE CHAMBER (dry side) ═══════ -->
+  <rect x="16" y="64" width="988" height="966" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
+  <text x="32" y="86" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">OUTSIDE THE CHAMBER — the dry side</text>
+
+  <!-- ═══════ CHAMBER WALL ═══════ -->
+  <rect x="1012" y="64" width="26" height="966" rx="4" fill="#1f2937" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="1029" y="540" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" transform="rotate(-90 1029 540)">CHAMBER WALL — 7/8 in. grommet / tent cable port</text>
+
+  <!-- ═══════ INSIDE THE GROW CHAMBER ═══════ -->
+  <rect x="1046" y="64" width="538" height="966" rx="6" fill="#0b1716" stroke="#2dd4bf" stroke-width="1.2" stroke-dasharray="6,4"/>
+  <text x="1062" y="86" fill="#5eead4" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">INSIDE THE GROW CHAMBER (85-95 % RH)</text>
+  <text x="32" y="100" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">power strip, 12 V supply, chargers, Pi, smart plugs and both switch boards</text>
+  <text x="1062" y="100" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">sensors, camera and 12 V loads only — no supplies, chargers or switch boards</text>
+
+  <!-- Power strip (mains, outside the chamber) -->
+  <rect x="28" y="112" width="112" height="908" rx="8" fill="#1e293b" stroke="#f97316" stroke-width="1.5"/>
+  <text x="84.0" y="132" text-anchor="middle" fill="#fdba74" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700">Power strip</text>
+  <text x="84.0" y="146" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">UL-listed surge</text>
+  <text x="84.0" y="158" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">protector</text>
+  <text x="84.0" y="170" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">12</text>
+  <text x="84.0" y="182" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">widely spaced</text>
+  <text x="84.0" y="194" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">outlets</text>
+  <text x="84.0" y="998" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">cord to a</text>
+  <text x="84.0" y="1009" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">wall outlet</text>
+
+  <!-- USB chargers for the two in-chamber boards (6 ft cables) -->
+  <rect x="122" y="123" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="128" x2="130" y2="136" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="128" x2="138" y2="136" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="146" y1="132" x2="160" y2="132" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="160" y="116" width="130" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="221.0" y="129" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">5 V USB charger</text>
+  <text x="221.0" y="142" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">6 ft micro-USB → CAM-MB</text>
+  <rect x="286" y="127" width="8" height="10" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <rect x="122" y="167" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="172" x2="130" y2="180" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="172" x2="138" y2="180" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="146" y1="176" x2="160" y2="176" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="160" y="160" width="130" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="221.0" y="173" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">5 V USB charger</text>
+  <text x="221.0" y="186" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">6 ft USB-C → climate</text>
+  <rect x="286" y="171" width="8" height="10" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <path d="M 294 132 L 1096 132" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 294 176 L 1058 176" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="560" y="126" fill="#67e8f9" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-A → micro-USB, 6 ft (2 m) → the camera's ESP32-CAM-MB</text>
+  <text x="560" y="170" fill="#67e8f9" font-family="system-ui, -apple-system, sans-serif" font-size="9">USB-A → USB-C, 6 ft (2 m) → the climate ESP32 (in the chamber)</text>
+  <rect x="1015" y="120" width="20" height="68" rx="10.0" fill="#0a0a0f" stroke="#94a3b8" stroke-width="1.2"/>
+
+  <!-- ═══════ RELAY NODE (outside) ═══════ -->
+  <rect x="304" y="206" width="692" height="296" rx="6" fill="#0f1623" stroke="#475569" stroke-width="1"/>
+  <text x="318" y="226" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Relay node</text>
+  <text x="392" y="226" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">relay_board_mount, node="relay" — 4 switch channels, a UF4007 on every one</text>
+  <rect x="122" y="267" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="272" x2="130" y2="280" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="272" x2="138" y2="280" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="146" y1="276" x2="160" y2="276" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="160" y="260" width="130" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="221.0" y="273" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">5 V USB charger</text>
+  <text x="221.0" y="286" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">1 ft USB-C → relay</text>
+  <rect x="286" y="271" width="8" height="10" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <rect x="320" y="250" width="120" height="140" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="380.0" y="267" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32</text>
+  <text x="380.0" y="281" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">relay-01</text>
+  <text x="380.0" y="294" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">esp32_case</text>
+  <text x="432" y="309" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 25</text>
+  <circle cx="440" cy="306" r="3.5" fill="#22c55e"/>
+  <text x="432" y="325" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 26</text>
+  <circle cx="440" cy="322" r="3.5" fill="#22c55e"/>
+  <text x="432" y="341" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 27</text>
+  <circle cx="440" cy="338" r="3.5" fill="#22c55e"/>
+  <text x="432" y="357" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 14</text>
+  <circle cx="440" cy="354" r="3.5" fill="#22c55e"/>
+  <text x="432" y="377" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND</text>
+  <circle cx="440" cy="374" r="3.5" fill="#1e1e1e" stroke="#9ca3af" stroke-width="1"/>
+  <rect x="316" y="270" width="8" height="12" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <path d="M 294 276 L 316 276" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="540" y="258" width="440" height="220" rx="4" fill="#16202f" stroke="#64748b" stroke-width="1.2"/>
+  <text x="760.0" y="273" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">IRLZ44N switch board (relay_board_mount)</text>
+  <line x1="590" y1="284" x2="590" y2="478" stroke="#4b5563" stroke-width="3.5"/>
+  <line x1="930" y1="284" x2="930" y2="478" stroke="#ef4444" stroke-width="3.5"/>
+  <rect x="544" y="285" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="296" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="307" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="304" x2="590" y2="304" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="296" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH0 fae — FAE fan (GPIO 25)</text>
+  <text x="598" y="308" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">100R gate · 10K pull-down · IRLZ44N · UF4007 across J2</text>
+  <rect x="938" y="285" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="296" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="307" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="293" x2="938" y2="293" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="544" y="323" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="334" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="345" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="342" x2="590" y2="342" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="334" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH1 exhaust — exhaust fan (GPIO 26)</text>
+  <text x="598" y="346" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">same circuit</text>
+  <rect x="938" y="323" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="334" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="345" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="331" x2="938" y2="331" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="544" y="361" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="372" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="383" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="380" x2="590" y2="380" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="372" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH2 circulation — circulation fan (GPIO 27)</text>
+  <text x="598" y="384" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">same circuit</text>
+  <rect x="938" y="361" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="372" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="383" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="369" x2="938" y2="369" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="544" y="399" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="410" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="421" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="418" x2="590" y2="418" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="410" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH3 aux — spare, 60 s max-on (GPIO 14)</text>
+  <text x="598" y="422" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">the pump channel in All the Things</text>
+  <rect x="938" y="399" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="410" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="421" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="407" x2="938" y2="407" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="596" y="470" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND bus</text>
+  <text x="924" y="470" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">+12 V bus</text>
+  <path d="M 440 306 L 470 306 L 470 294 L 544 294" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 440 322 L 478 322 L 478 332 L 544 332" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 440 338 L 486 338 L 486 370 L 544 370" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 440 354 L 494 354 L 494 408 L 544 408" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 440 374 L 462 374 L 462 446 L 520 446 L 520 418 L 544 418" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="492" y="272" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8">Dupont jumpers</text>
+  <text x="492" y="283" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">(or 22 AWG)</text>
+  <rect x="320" y="454" width="200" height="40" rx="4" fill="#0a0a0f" stroke="#eab308" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="328" y="467" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">COMMON GROUND</text>
+  <text x="328" y="479" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">ESP32 GND → J1 − → GND bus</text>
+  <line x1="976" y1="293" x2="1180" y2="293" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <line x1="976" y1="304" x2="1180" y2="304" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1180" y="282" width="300" height="32" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="1190" y="295" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">FAE fan — Noctua NF-A8 12 V</text>
+  <text x="1190" y="308" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">fresh-air intake at the wall · fan_duct</text>
+  <line x1="976" y1="331" x2="1180" y2="331" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <line x1="976" y1="342" x2="1180" y2="342" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1180" y="320" width="300" height="32" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="1190" y="333" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Exhaust fan — Noctua NF-A8 12 V</text>
+  <text x="1190" y="346" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">exhaust at the wall · fan_duct</text>
+  <line x1="976" y1="369" x2="1180" y2="369" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <line x1="976" y1="380" x2="1180" y2="380" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1180" y="358" width="300" height="32" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="1190" y="371" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Circulation fan — Noctua NF-A8 12 V</text>
+  <text x="1190" y="384" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">inside, away from the sensors</text>
+  <rect x="1015" y="284" width="20" height="108" rx="10.0" fill="#0a0a0f" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="1056" y="432" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Fans: bundled 30 cm extension + Noctua NA-SEC3 4-pin extension (cut its far end): GND → J2 −,</text>
+  <text x="1056" y="444" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">+12 V → J2 + — identify by pin position, not colour; tach + PWM unused (heat-shrink them).</text>
+
+  <!-- ═══════ 12 V DISTRIBUTION: PSU → pigtail → WAGO → fuses ═══════ -->
+  <rect x="122" y="549" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="554" x2="130" y2="562" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="554" x2="138" y2="562" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="146" y1="558" x2="160" y2="558" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="160" y="516" width="130" height="84" rx="6" fill="#1e293b" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="225.0" y="534" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">12V 5A PSU (60W)</text>
+  <text x="225.0" y="548" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Facmogu AL-1250</text>
+  <text x="225.0" y="561" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">power_supply_mount</text>
+  <text x="225.0" y="574" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">5.5 × 2.5 mm barrel</text>
+  <text x="225.0" y="587" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">load ≤ ~4 A</text>
+  <rect x="290" y="546" width="10" height="22" rx="2" fill="#0a0a0f" stroke="#94a3b8" stroke-width="0.8"/>
+  <path d="M 300 562 L 546 562" fill="none" stroke="#4b5563" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 300 552 L 330 552 L 330 520 L 584 520 A 6 6 0 0 1 596 520 L 866 520 L 866 548 L 886 548" fill="none" stroke="#ef4444" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="318" y="584" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">5.5 × 2.5 mm DC barrel pigtail — 14 AWG</text>
+  <rect x="546" y="540" width="88" height="24" rx="3" fill="#1e293b" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="590" y="555" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="700">WAGO 221-415 GND</text>
+  <rect x="886" y="540" width="88" height="24" rx="3" fill="#1e293b" stroke="#ef4444" stroke-width="1.2"/>
+  <text x="930" y="555" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="700">WAGO 221-413 +12V</text>
+  <line x1="590" y1="540" x2="590" y2="478" stroke="#4b5563" stroke-width="3"/>
+  <line x1="930" y1="540" x2="930" y2="478" stroke="#ef4444" stroke-width="3"/>
+  <rect x="923" y="490" width="14" height="28" rx="3" fill="#2a0a0a" stroke="#ef4444" stroke-width="1.2"/>
+  <line x1="930.0" y1="494" x2="930.0" y2="514" stroke="#fca5a5" stroke-width="1"/>
+  <text x="930.0" y="486" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700"></text>
+  <text x="916" y="515" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">3 A fuse</text>
+  <text x="916" y="525" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">relay branch</text>
+  <line x1="590" y1="564" x2="590" y2="652" stroke="#4b5563" stroke-width="3"/>
+  <line x1="930" y1="564" x2="930" y2="652" stroke="#ef4444" stroke-width="3"/>
+  <rect x="923" y="584" width="14" height="28" rx="3" fill="#2a0a0a" stroke="#ef4444" stroke-width="1.2"/>
+  <line x1="930.0" y1="588" x2="930.0" y2="608" stroke="#fca5a5" stroke-width="1"/>
+  <text x="930.0" y="580" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700"></text>
+  <text x="916" y="597" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">5 A fuse</text>
+  <text x="916" y="608" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">lighting branch</text>
+  <text x="604" y="596" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">branches: 18 AWG red (+12 V, fused)</text>
+  <text x="604" y="608" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">and black (GND, not fused)</text>
+
+  <!-- ═══════ LIGHTING NODE (outside) ═══════ -->
+  <rect x="304" y="626" width="692" height="300" rx="6" fill="#0f1623" stroke="#475569" stroke-width="1"/>
+  <text x="318" y="646" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">Lighting node</text>
+  <text x="318" y="660" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">relay_board_mount, node="lighting" (PETG)</text>
+  <text x="318" y="672" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">no diodes — LED strips are resistive</text>
+  <rect x="122" y="701" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="706" x2="130" y2="714" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="706" x2="138" y2="714" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="146" y1="710" x2="160" y2="710" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="160" y="694" width="130" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="221.0" y="707" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">5 V USB charger</text>
+  <text x="221.0" y="720" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">1 ft USB-C → lighting</text>
+  <rect x="286" y="705" width="8" height="10" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <rect x="320" y="684" width="120" height="140" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="380.0" y="701" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32</text>
+  <text x="380.0" y="715" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">lighting-01</text>
+  <text x="380.0" y="728" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">esp32_case</text>
+  <text x="432" y="743" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 25</text>
+  <circle cx="440" cy="740" r="3.5" fill="#22c55e"/>
+  <text x="432" y="759" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 26</text>
+  <circle cx="440" cy="756" r="3.5" fill="#22c55e"/>
+  <text x="432" y="775" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 27 spare</text>
+  <circle cx="440" cy="772" r="3.5" fill="#22c55e"/>
+  <text x="432" y="791" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 14 spare</text>
+  <circle cx="440" cy="788" r="3.5" fill="#22c55e"/>
+  <text x="432" y="811" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND</text>
+  <circle cx="440" cy="808" r="3.5" fill="#1e1e1e" stroke="#9ca3af" stroke-width="1"/>
+  <rect x="316" y="704" width="8" height="12" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <path d="M 294 710 L 316 710" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="540" y="652" width="440" height="196" rx="4" fill="#16202f" stroke="#64748b" stroke-width="1.2"/>
+  <text x="760.0" y="667" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">IRLZ44N switch board (relay_board_mount)</text>
+  <line x1="590" y1="652" x2="590" y2="834" stroke="#4b5563" stroke-width="3.5"/>
+  <line x1="930" y1="652" x2="930" y2="834" stroke="#ef4444" stroke-width="3.5"/>
+  <rect x="544" y="687" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="698" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="709" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="706" x2="590" y2="706" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="698" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH0 white — 6500K strip (GPIO 25)</text>
+  <text x="598" y="710" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">100R gate · 10K pull-down · IRLZ44N · no diode</text>
+  <rect x="938" y="687" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="698" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="709" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="695" x2="938" y2="695" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="544" y="725" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="736" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="747" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="744" x2="590" y2="744" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="736" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH1 blue — tri-spectrum BLUE wire (GPIO 26)</text>
+  <text x="598" y="748" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">same circuit</text>
+  <rect x="938" y="725" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="736" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="747" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="733" x2="938" y2="733" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="544" y="763" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="774" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="785" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="782" x2="590" y2="782" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="774" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH2 red — spare (GPIO 27)</text>
+  <text x="598" y="786" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">the strip's RED wire, later — no re-flash</text>
+  <rect x="938" y="763" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="774" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="785" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="771" x2="938" y2="771" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="544" y="801" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="563" y="812" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 IN</text>
+  <text x="563" y="823" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J1 −</text>
+  <line x1="582" y1="820" x2="590" y2="820" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="598" y="812" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">CH3 far_red — spare (GPIO 14)</text>
+  <text x="598" y="824" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">the strip's GREEN wire (730 nm), later</text>
+  <rect x="938" y="801" width="38" height="26" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="957" y="812" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 +</text>
+  <text x="957" y="823" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">J2 −</text>
+  <line x1="930" y1="809" x2="938" y2="809" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="596" y="844" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND bus</text>
+  <text x="924" y="844" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">+12 V bus</text>
+  <path d="M 440 740 L 470 740 L 470 696 L 544 696" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 440 756 L 478 756 L 478 734 L 544 734" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 440 808 L 500 808 L 500 744 L 544 744" fill="none" stroke="#4b5563" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="320" y="864" width="200" height="40" rx="4" fill="#0a0a0f" stroke="#eab308" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="328" y="877" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">COMMON GROUND</text>
+  <text x="328" y="889" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">ESP32 GND → J1 − → GND bus</text>
+  <line x1="976" y1="695" x2="1180" y2="695" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <line x1="976" y1="706" x2="1180" y2="706" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1180" y="684" width="390" height="32" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="1190" y="697" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">White 6500K LED strip — JOYLIT 5 m roll, cut to closet length</text>
+  <text x="1190" y="710" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">red → J2 +, black → J2 − (18 AWG red/black pair)</text>
+  <line x1="976" y1="733" x2="1180" y2="733" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <line x1="976" y1="744" x2="1180" y2="744" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1180" y="724" width="390" height="100" rx="4" fill="#1e293b" stroke="#93c5fd" stroke-width="1"/>
+  <text x="1192" y="736" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">common wire → +12 V (J2 +)</text>
+  <text x="1192" y="747" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">BLUE wire (450 nm) → J2 − of CH1</text>
+  <line x1="1180" y1="760" x2="1200" y2="760" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1198" y="756" width="6" height="8" rx="1" fill="#6b7280"/>
+  <text x="1210" y="763" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">RED wire (660 nm) — insulated with heat-shrink for now</text>
+  <line x1="1180" y1="774" x2="1200" y2="774" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="1198" y="770" width="6" height="8" rx="1" fill="#6b7280"/>
+  <text x="1210" y="777" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">GREEN wire (730 nm far-red) — insulated for now</text>
+  <text x="1192" y="798" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Tri-spectrum strip, IP67 — one strip, one 4-wire lead</text>
+  <text x="1192" y="812" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">SuperLightingLED p-7120 · cut to length · heat-shrink every joint</text>
+  <rect x="1015" y="688" width="20" height="62" rx="10.0" fill="#0a0a0f" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="1056" y="678" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">18 AWG red/black pairs</text>
+
+  <!-- ═══════ PI + SMART PLUGS ═══════ -->
+  <rect x="122" y="937" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="942" x2="130" y2="950" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="942" x2="138" y2="950" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="146" y1="946" x2="160" y2="946" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="160" y="932" width="130" height="28" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="221.0" y="944" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Pi 27 W USB-C PSU</text>
+  <text x="221.0" y="955" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">official, 5.1 V 5 A</text>
+  <path d="M 290 946 L 330 946" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="330" y="928" width="290" height="40" rx="6" fill="#1e293b" stroke="#34d399" stroke-width="1.5"/>
+  <text x="475" y="945" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">Raspberry Pi 5 + Active Cooler (pi_case)</text>
+  <text x="475" y="960" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Server · Mosquitto :1883 / :8883 TLS · Web UI :3001</text>
+  <g>
+  <rect x="640" y="932" width="340" height="18" rx="4" fill="#0f2418" stroke="#34d399" stroke-width="0.6"/>
+  <text x="810.0" y="943.88" text-anchor="middle" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">MQTT over WiFi — no wires from the Pi to any node or plug</text>
+  </g>
+  <text x="640" y="965" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Plugs: User sp-3p, Topic = role, Full Topic tasmota/%topic%/%prefix%/ (required)</text>
+  <rect x="122" y="967" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="972" x2="130" y2="980" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="972" x2="138" y2="980" stroke="#fdba74" stroke-width="1.4"/>
+  <rect x="146" y="965" width="144" height="22" rx="4" fill="#1e293b" stroke="#eab308" stroke-width="1"/>
+  <text x="218" y="979" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Tasmota plug #1 · humidifier</text>
+  <rect x="122" y="993" width="24" height="18" rx="3" fill="#0a0a0f" stroke="#fdba74" stroke-width="0.8"/>
+  <line x1="130" y1="998" x2="130" y2="1006" stroke="#fdba74" stroke-width="1.4"/>
+  <line x1="138" y1="998" x2="138" y2="1006" stroke="#fdba74" stroke-width="1.4"/>
+  <rect x="146" y="991" width="144" height="22" rx="4" fill="#1e293b" stroke="#eab308" stroke-width="1"/>
+  <text x="218" y="1005" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Tasmota plug #2 · heat / cool</text>
+  <line x1="290" y1="976" x2="1180" y2="976" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="1015" y="966" width="20" height="20" rx="10.0" fill="#0a0a0f" stroke="#94a3b8" stroke-width="1.2"/>
+  <rect x="1180" y="962" width="300" height="30" rx="4" fill="#1e293b" stroke="#fdba74" stroke-width="1"/>
+  <text x="1190" y="975" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">Ultrasonic humidifier (or piped in)</text>
+  <text x="1190" y="987" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">plug-humidifier (Topic humidifier)</text>
+  <line x1="290" y1="1002" x2="690" y2="1002" stroke="#f97316" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="690" y="986" width="300" height="34" rx="4" fill="#1e293b" stroke="#fdba74" stroke-width="1"/>
+  <text x="700" y="999" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">Space heater ≤ 1500 W, outside, aimed at the intake</text>
+  <text x="700" y="1012" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">or a Peltier cooler at the wall (Topic heater / cooler)</text>
+
+  <!-- ═══════ CAMERA + CLIMATE NODE (inside) ═══════ -->
+  <rect x="1100" y="114" width="470" height="36" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1.2"/>
+  <rect x="1096" y="126" width="8" height="12" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <text x="1112" y="129" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">ESP32-CAM on its ESP32-CAM-MB · OV2640 or OV3660 · cam_mount</text>
+  <text x="1112" y="142" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">cam-01 · no GPIO wiring · flash LED (GPIO 4) · 15-30 cm from the substrate</text>
+  <rect x="1062" y="160" width="110" height="110" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="1117.0" y="177" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">ESP32</text>
+  <text x="1117.0" y="191" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">climate-01</text>
+  <text x="1117.0" y="204" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">esp32_case</text>
+  <text x="1164" y="215" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">3V3</text>
+  <circle cx="1172" cy="212" r="3.5" fill="#ef4444"/>
+  <text x="1164" y="231" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GND</text>
+  <circle cx="1172" cy="228" r="3.5" fill="#1e1e1e" stroke="#9ca3af" stroke-width="1"/>
+  <text x="1164" y="247" text-anchor="end" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 21</text>
+  <circle cx="1172" cy="244" r="3.5" fill="#3b82f6"/>
+  <text x="1164" y="263" text-anchor="end" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">GPIO 22</text>
+  <circle cx="1172" cy="260" r="3.5" fill="#eab308"/>
+  <rect x="1058" y="170" width="8" height="12" rx="1" fill="#0a0a0f" stroke="#67e8f9" stroke-width="0.8"/>
+  <path d="M 1172 212 L 1196 212 L 1196 200 L 1250 200" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1172 228 L 1206 228 L 1206 210 L 1250 210" fill="none" stroke="#4b5563" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1172 244 L 1216 244 L 1216 220 L 1250 220" fill="none" stroke="#3b82f6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1172 260 L 1226 260 L 1226 230 L 1250 230" fill="none" stroke="#eab308" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="1250" y="186" width="96" height="56" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="1298" y="204" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SHT31-D</text>
+  <text x="1298" y="218" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Temp + RH · 0x44</text>
+  <text x="1298" y="233" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">STEMMA QT ×2</text>
+  <rect x="1362" y="186" width="96" height="56" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="1410" y="204" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">SCD41</text>
+  <text x="1410" y="218" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">CO2 · 0x62</text>
+  <text x="1410" y="233" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">STEMMA QT ×2</text>
+  <rect x="1474" y="186" width="96" height="56" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="1522" y="204" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">BH1750</text>
+  <text x="1522" y="218" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Light · 0x23</text>
+  <text x="1522" y="233" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">STEMMA QT ×2</text>
+  <line x1="1346" y1="205" x2="1362" y2="205" stroke="#ef4444" stroke-width="2"/>
+  <line x1="1346" y1="211" x2="1362" y2="211" stroke="#4b5563" stroke-width="2"/>
+  <line x1="1346" y1="217" x2="1362" y2="217" stroke="#3b82f6" stroke-width="2"/>
+  <line x1="1346" y1="223" x2="1362" y2="223" stroke="#eab308" stroke-width="2"/>
+  <text x="1354" y="182" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">4210</text>
+  <line x1="1458" y1="205" x2="1474" y2="205" stroke="#ef4444" stroke-width="2"/>
+  <line x1="1458" y1="211" x2="1474" y2="211" stroke="#4b5563" stroke-width="2"/>
+  <line x1="1458" y1="217" x2="1474" y2="217" stroke="#3b82f6" stroke-width="2"/>
+  <line x1="1458" y1="223" x2="1474" y2="223" stroke="#eab308" stroke-width="2"/>
+  <text x="1466" y="182" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">4210</text>
+  <text x="1222" y="194" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">4397</text>
+  <text x="1250" y="254" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">QT chain, not a star: 4397 → SHT31-D, 4210 → SCD41, 4210 → BH1750</text>
+  <text x="1250" y="266" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="8">sensor_mount + sensor_bracket: chamber centre, substrate level</text>
+
+  <!-- ═══════ ONE CHANNEL, END TO END ═══════ -->
+  <rect x="16" y="1044" width="988" height="262" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
+  <text x="30" y="1066" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700">One switch-board channel, end to end — CH0 (FAE fan) on relay_board_mount</text>
+  <text x="30" y="1081" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Every relay and lighting channel is this circuit; the lighting board leaves out the UF4007 and feeds a strip instead of a fan.</text>
+  <rect x="30" y="1096" width="90" height="178" rx="6" fill="#1e293b" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="75" y="1176" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">12V 5A</text>
+  <text x="75" y="1190" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">PSU</text>
+  <text x="112" y="1110" text-anchor="end" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">+</text>
+  <text x="112" y="1266" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">−</text>
+  <line x1="120" y1="1106" x2="180" y2="1106" stroke="#ef4444" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="120" y1="1262" x2="180" y2="1262" stroke="#4b5563" stroke-width="3.5" stroke-linecap="round"/>
+  <text x="150" y="1100" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">14 AWG</text>
+  <text x="150" y="1256" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">14 AWG</text>
+  <rect x="180" y="1096" width="60" height="20" rx="3" fill="#1e293b" stroke="#ef4444" stroke-width="1.2"/>
+  <text x="210" y="1109" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="700">221-413 +12V</text>
+  <rect x="180" y="1252" width="60" height="20" rx="3" fill="#1e293b" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="210" y="1265" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="700">221-415 GND</text>
+  <line x1="240" y1="1106" x2="290" y2="1106" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="265" y="1100" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">18 AWG</text>
+  <rect x="290" y="1098" width="46" height="16" rx="3" fill="#2a0a0a" stroke="#ef4444" stroke-width="1.2"/>
+  <line x1="294" y1="1106.0" x2="332" y2="1106.0" stroke="#fca5a5" stroke-width="1"/>
+  <text x="313.0" y="1094" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700">3 A fuse</text>
+  <line x1="336" y1="1106" x2="690" y2="1106" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="520" y="1100" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">+12 V bus → J2 +</text>
+  <rect x="690" y="1094" width="34" height="90" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="707" y="1090" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">J2</text>
+  <text x="707" y="1110" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">+</text>
+  <text x="707" y="1174" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">−</text>
+  <line x1="724" y1="1106" x2="850" y2="1106" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="724" y1="1170" x2="850" y2="1170" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="787" y="1100" text-anchor="middle" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="8">+12 V wire</text>
+  <text x="787" y="1164" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8">GND wire</text>
+  <text x="787" y="1140" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">4-pin PWM fan</text>
+  <text x="787" y="1151" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">extension lead</text>
+  <text x="787" y="1190" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">tach + PWM wires unused</text>
+  <rect x="850" y="1092" width="140" height="92" rx="4" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="920" y="1126" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">FAE fan</text>
+  <text x="920" y="1141" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">Noctua NF-A8 12 V</text>
+  <text x="920" y="1155" text-anchor="middle" fill="#5eead4" font-family="system-ui, -apple-system, sans-serif" font-size="8">inside the chamber</text>
+  <line x1="676" y1="1106" x2="676" y2="1170" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M 668 1152 L 684 1152 L 676 1138 Z" fill="#94a3b8"/>
+  <line x1="668" y1="1136" x2="684" y2="1136" stroke="#e2e8f0" stroke-width="2"/>
+  <circle cx="676" cy="1106" r="3" fill="#ef4444"/>
+  <circle cx="676" cy="1170" r="3" fill="#22c55e"/>
+  <text x="666" y="1136" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">UF4007</text>
+  <text x="666" y="1147" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">band to +12 V</text>
+  <rect x="560" y="1152" width="70" height="52" rx="4" fill="#1e293b" stroke="#eab308" stroke-width="1.5"/>
+  <text x="595" y="1172" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="700">IRLZ44N</text>
+  <text x="566" y="1190" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">G</text>
+  <text x="620" y="1174" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">D</text>
+  <text x="591" y="1200" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">S</text>
+  <line x1="630" y1="1170" x2="676" y2="1170" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="676" y1="1170" x2="690" y2="1170" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="650" y="1164" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">drain</text>
+  <line x1="595" y1="1204" x2="595" y2="1262" stroke="#4b5563" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="400" y="1166" width="40" height="58" rx="3" fill="#0f172a" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="420" y="1162" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">J1</text>
+  <text x="420" y="1189" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">IN</text>
+  <text x="420" y="1215" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">−</text>
+  <line x1="440" y1="1186" x2="470" y2="1186" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <rect x="470" y="1178" width="50" height="16" rx="3" fill="#1e293b" stroke="#86efac" stroke-width="1"/>
+  <text x="495" y="1189" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="600">100R</text>
+  <text x="495" y="1174" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">gate resistor</text>
+  <line x1="520" y1="1186" x2="560" y2="1186" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="540" cy="1186" r="3" fill="#22c55e"/>
+  <line x1="540" y1="1186" x2="540" y2="1214" stroke="#94a3b8" stroke-width="1.5"/>
+  <rect x="531" y="1214" width="18" height="30" rx="2" fill="#1e293b" stroke="#94a3b8" stroke-width="1"/>
+  <text x="540" y="1232" text-anchor="middle" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600" transform="rotate(-90 540 1232)">10K</text>
+  <line x1="540" y1="1244" x2="540" y2="1262" stroke="#4b5563" stroke-width="1.5" stroke-linecap="round"/>
+  <text x="527" y="1232" text-anchor="end" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="7">pull-down</text>
+  <path d="M 440 1212 L 460 1212 L 460 1262" fill="none" stroke="#4b5563" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="240" y1="1262" x2="600" y2="1262" stroke="#4b5563" stroke-width="3.5" stroke-linecap="round"/>
+  <text x="300" y="1256" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="8">18 AWG black → GND bus</text>
+  <rect x="270" y="1138" width="90" height="88" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="315" y="1155" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600">ESP32</text>
+  <text x="315" y="1168" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="8">relay node</text>
+  <text x="354" y="1189" text-anchor="end" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">GPIO 25</text>
+  <text x="354" y="1215" text-anchor="end" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">GND</text>
+  <circle cx="360" cy="1186" r="3.5" fill="#22c55e"/>
+  <circle cx="360" cy="1212" r="3.5" fill="#1e1e1e" stroke="#9ca3af" stroke-width="1"/>
+  <line x1="360" y1="1186" x2="400" y2="1186" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <line x1="360" y1="1212" x2="400" y2="1212" stroke="#4b5563" stroke-width="3" stroke-linecap="round"/>
+  <text x="380" y="1181" text-anchor="middle" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="7">Dupont</text>
+  <line x1="250" y1="1200" x2="270" y2="1200" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="258" y="1194" text-anchor="middle" fill="#67e8f9" font-family="system-ui, -apple-system, sans-serif" font-size="7">USB</text>
+  <rect x="356" y="1203" width="48" height="18" rx="3" fill="none" stroke="#eab308" stroke-width="1" stroke-dasharray="3,2"/>
+  <g>
+  <rect x="330" y="1228" width="100" height="14" rx="4" fill="#2a1f00" stroke="#eab308" stroke-width="0.6"/>
+  <text x="380.0" y="1237.52" text-anchor="middle" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="7" font-weight="600">COMMON GROUND</text>
+  </g>
+  <text x="30" y="1296" fill="#fde047" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600">COMMON GROUND: ESP32 GND → J1 − → GND bus → WAGO 221-415 → PSU −. Leave it out and the gate has no reference — the channel never switches. Do it on both boards.</text>
+
+  <!-- ═══════ LEGEND ═══════ -->
+  <rect x="1046" y="1044" width="538" height="152" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="1060" y="1064" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600">Legend</text>
+  <line x1="1060" y1="1084" x2="1090" y2="1084" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
+  <text x="1098" y="1088" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="9">RED = +12 V (and 3V3 on the QT cable)</text>
+  <line x1="1060" y1="1102" x2="1090" y2="1102" stroke="#1e1e1e" stroke-width="3" stroke-linecap="round"/>
+  <rect x="1060" y="1100" width="30" height="4" rx="1" fill="none" stroke="#6b7280" stroke-width="0.5"/>
+  <text x="1098" y="1106" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">BLACK = GND / 12 V −</text>
+  <line x1="1060" y1="1120" x2="1090" y2="1120" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  <text x="1098" y="1124" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="9">GREEN = GPIO signal / switched (drain) side</text>
+  <line x1="1060" y1="1138" x2="1090" y2="1138" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <text x="1098" y="1142" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="9">BLUE = SDA, YELLOW = SCL (STEMMA QT)</text>
+  <line x1="1321.0" y1="1084" x2="1351.0" y2="1084" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+  <text x="1359.0" y="1088" fill="#fdba74" font-family="system-ui, -apple-system, sans-serif" font-size="9">ORANGE = 120 V AC cord (power strip)</text>
+  <line x1="1321.0" y1="1102" x2="1351.0" y2="1102" stroke="#22d3ee" stroke-width="3" stroke-linecap="round"/>
+  <text x="1359.0" y="1106" fill="#67e8f9" font-family="system-ui, -apple-system, sans-serif" font-size="9">CYAN = USB 5 V power cable</text>
+  <line x1="1321.0" y1="1120" x2="1351.0" y2="1120" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-dasharray="5,3"/>
+  <text x="1359.0" y="1124" fill="#34d399" font-family="system-ui, -apple-system, sans-serif" font-size="9">dashed = WiFi / MQTT, no wire</text>
+  <rect x="1321.0" y="1132" width="30" height="12" rx="6.0" fill="#0a0a0f" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="1359.0" y="1142" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">= cable through the chamber wall</text>
+  <text x="1060" y="1164" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Wire: 14 AWG pigtail · 18 AWG red/black for every 12 V run · 22 AWG hookup wire or</text>
+  <text x="1060" y="1178" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9">Dupont for GPIO / GND → J1. Adhesive-lined heat-shrink on every splice; zip-tie every run.</text>
+  <rect x="1046" y="1204" width="538" height="102" rx="6" fill="#1e293b" stroke="#ef4444" stroke-width="1"/>
+  <text x="1060" y="1224" fill="#fca5a5" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">12 V branches and fuses (inline blade fuse on each +12 V branch)</text>
+  <text x="1060" y="1242" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Relay board: 3 A — three NF-A8 fans draw ~0.25 A together.</text>
+  <text x="1060" y="1257" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Lighting board: 5 A — the LED strips are the real load.</text>
+  <text x="1060" y="1272" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">12V 5A PSU: keep the total ≤ ~4 A — cut the strips to closet length</text>
+  <text x="1060" y="1287" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">(a full white roll alone is 3.3-4.2 A). GND branches are not fused.</text>
+
+  <!-- ═══════ WIRING STEPS ═══════ -->
+  <rect x="16" y="1316" width="1568" height="154" rx="6" fill="#111827" stroke="#475569" stroke-width="1"/>
+  <text x="30" y="1338" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Wiring Steps</text>
+  <text x="30" y="1360" fill="#fdba74" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">1 · Mains and 12 V (outside)</text>
+  <text x="30" y="1378" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">12-outlet strip outside: Pi PSU, 12 V PSU, 4 chargers, 2 plugs.</text>
+  <text x="30" y="1393" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">PSU barrel → 14 AWG pigtail → WAGO 221-413 (+12V) / 221-415 (GND).</text>
+  <text x="30" y="1408" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">221-413 → inline 3 A fuse → relay +12 V bus (18 AWG red).</text>
+  <text x="30" y="1423" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">221-413 → inline 5 A fuse → lighting +12 V bus (18 AWG red).</text>
+  <text x="30" y="1438" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">221-415 → both boards' GND bus (18 AWG black).</text>
+  <text x="420" y="1360" fill="#86efac" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">2 · Each switch channel (relay_board_mount)</text>
+  <text x="420" y="1378" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">GPIO → Dupont jumper → J1 IN → 100R → IRLZ44N gate.</text>
+  <text x="420" y="1393" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">10K from gate to source; source → GND bus.</text>
+  <text x="420" y="1408" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Drain → J2 −; J2 + → +12 V bus.</text>
+  <text x="420" y="1423" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">UF4007 across J2 on every relay channel, band to +12 V.</text>
+  <text x="420" y="1438" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">ESP32 GND → J1 − on both boards: the COMMON GROUND.</text>
+  <text x="810" y="1360" fill="#5eead4" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">3 · Into the chamber (through the grommet)</text>
+  <text x="810" y="1378" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Fans: NA-SEC3 extension, far end cut — GND → J2 −, +12 V → J2 +.</text>
+  <text x="810" y="1393" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">FAE on CH0 (GPIO 25), exhaust CH1 (26), circulation CH2 (27).</text>
+  <text x="810" y="1408" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Strips: 18 AWG red/black, red → J2 +, black → J2 −.</text>
+  <text x="810" y="1423" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Tri-spectrum: BLUE wire → CH1 J2 −, common wire → +12 V.</text>
+  <text x="810" y="1438" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Insulate its red + green wires; heat-shrink every joint.</text>
+  <text x="1200" y="1360" fill="#93c5fd" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700">4 · Climate, camera, plugs</text>
+  <text x="1200" y="1378" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">4397: red 3V3, black GND, blue GPIO 21, yellow GPIO 22.</text>
+  <text x="1200" y="1393" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">4397 QT plug → SHT31-D; 4210 → SCD41; 4210 → BH1750.</text>
+  <text x="1200" y="1408" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Climate + camera: 6 ft (2 m) USB cables through the grommet.</text>
+  <text x="1200" y="1423" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Relay + lighting ESP32s stay outside on short cables.</text>
+  <text x="1200" y="1438" fill="#d1d5db" font-family="system-ui, -apple-system, sans-serif" font-size="9">Plugs: WiFi only — sp-3p + Full Topic (see the build guide).</text>
+  <text x="1200" y="1462" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic">ESP32-S3 nodes use other pins (build guide §8a); S3 cameras: §8b.</text>
 
   <!-- ═══════════════════════ FOOTER ═══════════════════════ -->
-  <text x="700" y="992" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint v4.0.0  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
+  <text x="800" y="1486" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
 
 </svg>

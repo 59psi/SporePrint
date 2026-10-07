@@ -3,12 +3,21 @@
 Enabled when `SPOREPRINT_API_KEY` is set. When unset (dev mode) all requests
 pass through — the LAN-scoped CORS middleware remains the only gate.
 
-Whitelist of always-public paths:
-- `/api/health`        — the UI's existence probe must work before auth is set up
-- `/api/cloud/pairing-code` (GET) — displayed in the web UI for an operator who is about to pair
-- `/api/cloud/pair`    — pairing handshake (code + lockout is the gate here)
+Requests that pass without the bearer:
+- `/api/health` (any method) — the UI's existence probe must work before auth is set up
+- `POST /api/cloud/pair`      — pairing handshake (code + lockout is the gate here)
+- `GET /api/provision/ca`     — the broker's PUBLIC CA certificate for the node's
+  Secure-MQTT trust-on-first-use fetch (firmware tls_transport.h sends no bearer;
+  a 401 would silently drop the node to plaintext 1883). The handler refuses any
+  file containing key material.
+- `POST /api/vision/frame`    — ESP32-CAM uploads (the camera has no slot for the
+  key), ONLY for an X-Node-Id registered in `hardware_nodes` and with a declared
+  Content-Length within the 20 MB cap (checked before the body is read)
 
-Everything else requires `Authorization: Bearer <SPOREPRINT_API_KEY>`.
+`/api/cloud/pairing-code` (GET and POST) is NOT public: unauthenticated minting
+replaced the operator's code and reset the pairing lockout at will, and the GET
+leaked the live code. Everything else requires
+`Authorization: Bearer <SPOREPRINT_API_KEY>`.
 
 ## LAN-trust model (v3.3.3 documentation)
 
@@ -21,6 +30,9 @@ grower's network can hit the API". Compensating controls:
 
   * CORS regex narrows browser origins to localhost, mDNS, RFC1918, and
     the official Capacitor shells + sporeprint.ai (see main.py).
+  * The Host allow-list (app/host_allow.py, wrapped around main.socket_app)
+    refuses DNS-rebinding requests: a remote page that re-points its own
+    hostname at the Pi still sends its own name as Host and gets a 421.
   * Every connect is logged with `sid`, remote IP, and whether auth is
     present — a spike of connects from one IP is visible in journalctl.
   * Rate-limit on Socket.IO connect (bounded-retry via `_connect_rate_ok`)
@@ -40,6 +52,7 @@ from __future__ import annotations
 import collections
 import hmac
 import logging
+import re
 import time
 
 from fastapi import Request
@@ -47,6 +60,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import settings
+from .db import get_db
 
 log = logging.getLogger(__name__)
 
@@ -71,22 +85,60 @@ def _connect_rate_ok(remote_addr: str | None) -> bool:
     q.append(now)
     return True
 
+# Public for every method.
 _PUBLIC_PATHS = frozenset({
     "/api/health",
-    "/api/cloud/pair",
-    "/api/cloud/pairing-code",
-    # v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
-    # SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
-    # distribution channel from the Pi to each ESP32). The endpoint's
-    # existing defenses already gate abuse:
-    #   * X-Node-Id header must match [a-zA-Z0-9_-]{1,32}
-    #   * node_id must exist in hardware_nodes (registered device only)
-    #   * 20 MB upload cap
-    #   * storage path is resolve()+is_relative_to guarded
-    # A stronger per-node auth is tracked for v3.5 (HMAC over the JPEG
-    # with the same hmac_key we now enforce on MQTT commands).
-    "/api/vision/frame",
 })
+
+# Public only for the listed method (method-aware: the old path-only
+# whitelist also exposed e.g. POST /api/cloud/pairing-code).
+_PUBLIC_ROUTES = frozenset({
+    ("POST", "/api/cloud/pair"),
+    # Serves only the public CA (app/provision.py); nodes fetch it keyless.
+    ("GET", "/api/provision/ca"),
+})
+
+# v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
+# SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
+# distribution channel from the Pi to each ESP32). A keyless upload is
+# accepted only when (enforced in _camera_frame_rejection):
+#   * X-Node-Id matches [a-zA-Z0-9_-]{1,32}
+#   * that node_id exists in hardware_nodes (registered device only — the
+#     camera registers itself over MQTT with its heartbeat)
+#   * Content-Length is declared and within the 20 MB cap, checked BEFORE
+#     the body is read into RAM
+# The route itself keeps its resolve()+is_relative_to storage guard. A
+# stronger per-node auth (HMAC over the JPEG with the node's hmac_key) is
+# still future work.
+_CAMERA_FRAME_ROUTE = ("POST", "/api/vision/frame")
+_MAX_FRAME_UPLOAD_BYTES = 20 * 1024 * 1024
+_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+
+
+async def _node_is_registered(node_id: str) -> bool:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM hardware_nodes WHERE node_id = ? LIMIT 1", (node_id,)
+        )
+        return (await cursor.fetchone()) is not None
+
+
+async def _camera_frame_rejection(request: Request) -> JSONResponse | None:
+    """Gate a keyless camera frame upload; None means let it through."""
+    node_id = request.headers.get("x-node-id") or ""
+    if not _NODE_ID_RE.match(node_id):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    length = request.headers.get("content-length")
+    if length is None:
+        return JSONResponse({"error": "Content-Length required"}, status_code=411)
+    if not length.isdigit():
+        return JSONResponse({"error": "Invalid Content-Length"}, status_code=400)
+    if int(length) > _MAX_FRAME_UPLOAD_BYTES:
+        return JSONResponse({"error": "File too large (max 20MB)"}, status_code=413)
+    if not await _node_is_registered(node_id):
+        log.warning("Rejected frame upload from unregistered node %r", node_id)
+        return JSONResponse({"error": "Unknown camera node"}, status_code=403)
+    return None
 
 
 def _extract_bearer(header_value: str | None) -> str | None:
@@ -98,12 +150,23 @@ def _extract_bearer(header_value: str | None) -> str | None:
     return parts[1].strip()
 
 
-def _valid_token(presented: str | None) -> bool:
+def _valid_token(presented: object) -> bool:
+    """Constant-time check of a presented bearer against SPOREPRINT_API_KEY.
+
+    Compares UTF-8 bytes: compare_digest raises TypeError on non-ASCII str
+    (header values arrive latin-1 decoded) and on mixed types, which turned a
+    wrong token into a 500. Anything that is not a non-empty str — the
+    Socket.IO auth payload is client JSON — is simply wrong. surrogatepass:
+    JSON can carry a lone surrogate ("\\ud800"), which strict UTF-8 refuses.
+    """
     if not settings.api_key:
         return True
-    if not presented:
+    if not isinstance(presented, str) or not presented:
         return False
-    return hmac.compare_digest(presented, settings.api_key)
+    return hmac.compare_digest(
+        presented.encode("utf-8", "surrogatepass"),
+        settings.api_key.encode("utf-8", "surrogatepass"),
+    )
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
@@ -111,7 +174,10 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if not settings.api_key:
             return await call_next(request)
 
-        path = request.url.path
+        # The ASGI scope path is what the router dispatches on. request.url
+        # is rebuilt from the Host header, which older Starlette let a
+        # crafted `Host: x/api/health?` rewrite into a public path.
+        path = request.scope.get("path") or request.url.path
         if not path.startswith("/api/"):
             return await call_next(request)
 
@@ -120,14 +186,41 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if path in _PUBLIC_PATHS:
+        if path in _PUBLIC_PATHS or (request.method, path) in _PUBLIC_ROUTES:
             return await call_next(request)
 
         presented = _extract_bearer(request.headers.get("authorization"))
-        if not _valid_token(presented):
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        if _valid_token(presented):
+            return await call_next(request)
 
-        return await call_next(request)
+        if (request.method, path) == _CAMERA_FRAME_ROUTE:
+            rejection = await _camera_frame_rejection(request)
+            if rejection is not None:
+                return rejection
+            return await call_next(request)
+
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+
+def socketio_client_addr(environ: dict | None) -> str | None:
+    """The connecting Socket.IO client's address, from the ASGI scope.
+
+    python-engineio's ASGI driver hardcodes environ['REMOTE_ADDR'] to
+    '127.0.0.1', so keying on it put every client in one rate-limit bucket.
+    scope['client'] is the real peer — rewritten from nginx's X-Forwarded-For
+    by uvicorn's proxy-headers middleware only when the hop is a trusted
+    proxy (FORWARDED_ALLOW_IPS). The raw X-Forwarded-For header is never
+    read here: a LAN client talking to :8000 directly could forge it.
+    """
+    if not environ:
+        return None
+    client = (environ.get("asgi.scope") or {}).get("client")
+    if client and client[0]:
+        return str(client[0])
+    # Other engineio drivers fill REMOTE_ADDR honestly. Under ASGI with no
+    # peer address (a unix-socket bind) it is the placeholder, which keeps
+    # all such clients in one shared, still rate-limited bucket.
+    return environ.get("REMOTE_ADDR") or None
 
 
 def socketio_auth_ok(auth: dict | None, remote_addr: str | None = None) -> bool:

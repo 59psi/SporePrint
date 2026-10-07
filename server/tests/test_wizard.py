@@ -1,3 +1,7 @@
+import itertools
+
+import pytest
+
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins, get_all_profiles
 from app.species.wizard import recommend
@@ -103,3 +107,82 @@ async def test_medicinal_goal_favors_medicinal_category():
     # At least one medicinal species should appear in the top 5
     categories = [r["category"] for r in results]
     assert "medicinal" in categories
+
+
+_NOT_CULTIVABLE = {p.id for p in BUILTIN_PROFILES if not p.chamber_cultivable}
+
+
+@pytest.mark.parametrize("env", ["indoor_closet", "indoor_tent"])
+def test_indoor_recommendations_exclude_non_chamber_cultivable_species(env):
+    """srv-rest#30: chaga (a ~10-year sclerotium on living birch) was ranked #4
+    for an indoor closet with the reason 'Suitable for closet growing'."""
+    assert "chaga" in _NOT_CULTIVABLE
+    results = recommend(
+        BUILTIN_PROFILES,
+        experience="advanced",
+        environment=env,
+        temp_range="warm",
+        substrates=["all"],
+        goal="research",
+        commitment="dedicated_hobbyist",
+        limit=len(BUILTIN_PROFILES),
+    )
+    assert not _NOT_CULTIVABLE & {r["species_id"] for r in results}
+
+
+def test_outdoor_recommendations_may_include_reference_species():
+    results = recommend(
+        BUILTIN_PROFILES,
+        experience="advanced",
+        environment="outdoor_beds",
+        temp_range="warm",
+        substrates=["all"],
+        goal="research",
+        commitment="dedicated_hobbyist",
+        limit=len(BUILTIN_PROFILES),
+    )
+    assert "giant_puffball" in {r["species_id"] for r in results}
+
+
+# ── Controlled categories are opt-in (as on the cloud's wizard) ─────────
+
+_ACTIVE = {p.id for p in BUILTIN_PROFILES if p.category == "active"}
+_ANSWERS = dict(experience="advanced", environment="indoor_tent", temp_range="warm",
+                substrates=["all"], goal="research", commitment="dedicated_hobbyist")
+
+
+def test_active_species_are_left_out_by_default():
+    assert _ACTIVE, "no active profiles: drop these tests or the category"
+    results = recommend(BUILTIN_PROFILES, **_ANSWERS, limit=len(BUILTIN_PROFILES))
+    assert results and not _ACTIVE & {r["species_id"] for r in results}
+
+
+def test_every_answer_the_dashboard_can_send_leaves_them_out():
+    """The dashboard's five questions map onto these values (WizardPage's
+    *_MAP tables, env fixed at indoor_tent); none ranks an active species
+    unless the operator opts in."""
+    for level, temp, sub, goal, commit in itertools.product(
+        ("first_time", "some_experience", "advanced"), ("cool", "moderate", "warm"),
+        ("sawdust", "straw", "all"), ("culinary", "medicinal", "both"),
+        ("set_and_forget", "daily_attention", "dedicated_hobbyist"),
+    ):
+        results = recommend(BUILTIN_PROFILES, experience=level, environment="indoor_tent", temp_range=temp,
+                            substrates=[sub], goal=goal, commitment=commit)
+        assert not _ACTIVE & {r["species_id"] for r in results}, (level, temp, sub, goal, commit)
+
+
+def test_include_active_opts_them_in():
+    results = recommend(BUILTIN_PROFILES, **_ANSWERS, include_active=True, limit=len(BUILTIN_PROFILES))
+    assert _ACTIVE <= {r["species_id"] for r in results}
+
+
+def test_the_endpoint_takes_the_opt_in(client):
+    query = ("/api/species/recommend?level=advanced&env=indoor_tent&temp_range=warm"
+             "&substrate=all&goal=research&commitment=dedicated_hobbyist")
+    default = client.get(query)
+    assert default.status_code == 200
+    assert default.json() and not _ACTIVE & {r["species_id"] for r in default.json()}
+    opted = client.get(query + "&include_active=true")
+    assert opted.status_code == 200 and len(opted.json()) == 5
+    # For a research goal the opted-in pool ranks an active species in the top 5.
+    assert _ACTIVE & {r["species_id"] for r in opted.json()}

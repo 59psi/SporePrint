@@ -1,0 +1,138 @@
+# Dependabot version updates (security updates follow the repo's
+# Dependabot-alerts setting and ignore the schedule, grouping and cooldown).
+#
+# NO CI RUNS ON THESE PULL REQUESTS. Actions are release-gated in this repo
+# (firmware-ci.yml is manual, firmware-release.yml runs on firmware-v* tags),
+# so a green Dependabot PR has been tested by nobody. Check one out and run
+# AGENTS.md's "Commands and rules for every change" before merging it:
+#   cd server && uv sync --python 3.12 --extra dev && uv run ruff check app/ && uv run pytest
+#   docker compose build server ui && docker compose config --quiet
+# Image PRs also move pins the tests assert: tests/test_docker.py names the
+# ntfy and broker images exactly, and the broker tag must change in install.sh
+# and scripts/lib/broker.sh in the same commit (the test checks), so finish
+# those PRs locally.
+#
+# Not covered, bump by hand: PlatformIO (not a Dependabot ecosystem): the
+# pioarduino platform URL (with firmware/toolchain.lock.json, which pins its
+# SHA-256 and its packages') and the exact lib_deps pins in
+# firmware/platformio.ini (device envs and native together), PlatformIO Core
+# in firmware-ci.yml's `pip install platformio==` lines, the firmware
+# release's hash-pinned firmware/requirements-pio.txt and
+# requirements-penv.txt (regenerate with the command in each header; Dependabot
+# alerts on requirements-penv.txt's starlette and ecdsa are known and accepted
+# as build-only, see its header), the uv pin in
+# server/Dockerfile, the vendored Monocypher (firmware/lib/sp_core/vendor/),
+# and the compiled dashboard in ui/dist (built from its own source tree).
+#
+# Labels: no `labels:` key on purpose. Dependabot then applies its defaults
+# (`dependencies` plus the ecosystem's label: `python:uv`, `docker`,
+# `github_actions`) and creates any the repository lacks. An explicit
+# `labels:` list replaces the defaults and silently drops every label that
+# does not already exist.
+
+version: 2
+
+updates:
+  # Server: pyproject.toml ranges + the hashed uv.lock the image installs.
+  - package-ecosystem: "uv"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    # A new release is not proposed until it has been out this long (supply-
+    # chain buffer; security updates are never delayed).
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(server)"
+      prefix-development: "deps(server-dev)"
+    groups:
+      # One PR for every minor/patch move; each major gets its own PR, since
+      # pyproject caps the next major and the cap is a deliberate change.
+      python-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # Server base image (python:3.12.x-slim, pinned by tag AND digest).
+  - package-ecosystem: "docker"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    # Shorter than the package cooldown: patch tags and digest refreshes carry
+    # the base OS's security fixes.
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "deps(docker)"
+    ignore:
+      # The image tracks the 3.12 line (AGENTS.md, tests/test_dockerfile.py,
+      # the `uv sync --python 3.12` dev command). A newer CPython minor is a
+      # deliberate change across those files, not a base-image bump.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # Dashboard proxy (nginx:<stable>-alpine, pinned by tag AND digest).
+  - package-ecosystem: "docker"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "deps(docker)"
+    ignore:
+      # Odd nginx minors are mainline; the LAN proxy tracks stable (even
+      # minors; tests/test_docker.py). Move to the next stable minor by hand.
+      - dependency-name: "nginx"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # Service images in docker-compose.yml (broker, ntfy, init-perms busybox).
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(compose)"
+    ignore:
+      # BusyBox labels its x.y.0 releases unstable (1.37.0, 1.38.0); the
+      # init-perms container tracks the stable line (busybox:stable = 1.36.1).
+      # Patch releases of the pinned line are still proposed; move to a new
+      # stable line by hand once busybox.net announces one.
+      - dependency-name: "busybox"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # Workflow actions, pinned to commit SHAs with the tag in a comment.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]

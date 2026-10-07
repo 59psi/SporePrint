@@ -34,7 +34,12 @@ bool Scd30::begin() {
 
 bool Scd30::data_ready() {
     uint16_t word = 0;
-    if (!xport_.cmd_read(kCmdDataReady, kCmdGapMs, &word, 1)) return false;
+    if (!xport_.cmd_read(kCmdDataReady, kCmdGapMs, &word, 1)) {
+        // Bus fault (NACK / stretch timeout / CRC) — a health failure, not
+        // "no sample yet" (word == 0 is the healthy not-ready answer).
+        health_.fail("data_ready error");
+        return false;
+    }
     return word == 1;
 }
 
@@ -48,9 +53,11 @@ bool Scd30::read(float* co2_ppm, float* temp_c, float* rh) {
     float temp = words_to_float(words[2], words[3]);
     float hum = words_to_float(words[4], words[5]);
     // Datasheet range checks — a mid-stretch corrupted read that somehow
-    // passed CRC must still not become telemetry.
-    if (co2 < 0.0f || co2 > 40000.0f || temp < -40.0f || temp > 70.0f ||
-        hum < 0.0f || hum > 100.0f) {
+    // passed CRC must still not become telemetry. Written as "inside the
+    // range" so a NaN (every comparison false) FAILS the check instead of
+    // slipping through as telemetry.
+    if (!(co2 >= 0.0f && co2 <= 40000.0f) || !(temp >= -40.0f && temp <= 70.0f) ||
+        !(hum >= 0.0f && hum <= 100.0f)) {
         health_.fail("out-of-range");
         return false;
     }

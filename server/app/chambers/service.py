@@ -53,7 +53,12 @@ async def update_chamber(chamber_id: int, data: ChamberUpdate) -> dict | None:
     name = dumped["name"] if dumped["name"] is not None else existing["name"]
     description = dumped["description"] if dumped["description"] is not None else existing["description"]
     node_ids = json.dumps(dumped["node_ids"]) if dumped["node_ids"] is not None else json.dumps(existing["node_ids"])
-    active_session_id = dumped["active_session_id"] if dumped["active_session_id"] is not None else existing["active_session_id"]
+    # active_session_id is the one nullable link: an explicit `null` in the
+    # request detaches the chamber from its session; omitting the field keeps it.
+    if "active_session_id" in data.model_fields_set:
+        active_session_id = dumped["active_session_id"]
+    else:
+        active_session_id = existing["active_session_id"]
     automation_rule_ids = json.dumps(dumped["automation_rule_ids"]) if dumped["automation_rule_ids"] is not None else json.dumps(existing["automation_rule_ids"])
 
     async with get_db() as db:
@@ -63,12 +68,63 @@ async def update_chamber(chamber_id: int, data: ChamberUpdate) -> dict | None:
                WHERE id = ?""",
             (name, description, node_ids, active_session_id, automation_rule_ids, chamber_id),
         )
+        if active_session_id is not None:
+            # Keep the two chamber↔session links in step: create_session writes
+            # both, a link made here used to set only this one — so telemetry
+            # tagging, chamber stats and transcripts (which read
+            # sessions.chamber_id) never saw the session as this chamber's.
+            # A session already bound to a chamber is never moved.
+            await db.execute(
+                "UPDATE sessions SET chamber_id = ? WHERE id = ? AND chamber_id IS NULL",
+                (chamber_id, active_session_id),
+            )
         await db.commit()
     return await get_chamber(chamber_id)
 
 
-async def delete_chamber(chamber_id: int) -> bool:
+# Chambers listing a node. A chamber whose node_ids isn't valid JSON lists none.
+_NODE_CHAMBERS_SQL = (
+    "SELECT DISTINCT c.id, c.node_ids FROM chambers c, "
+    "json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j "
+    "WHERE j.value = ? ORDER BY c.id"
+)
+
+
+async def chambers_for_node(node_id: str) -> list[dict]:
+    """Every chamber that lists `node_id`, as [{"id": int, "node_ids": [str, ...]}]."""
     async with get_db() as db:
+        cursor = await db.execute(_NODE_CHAMBERS_SQL, (node_id,))
+        rows = await cursor.fetchall()
+    chambers = []
+    for row in rows:
+        try:
+            nodes = [str(n) for n in json.loads(row["node_ids"] or "[]")]
+        except (TypeError, ValueError):
+            nodes = []
+        chambers.append({"id": row["id"], "node_ids": nodes})
+    return chambers
+
+
+async def delete_chamber(chamber_id: int) -> bool:
+    """Delete a chamber, detaching its history first (one transaction).
+
+    sessions / contamination_events / planned_events reference chambers(id)
+    with no ON DELETE action and foreign_keys=ON, so a chamber that ever hosted
+    a grow could not be deleted (IntegrityError → 500). Those records outlive
+    the chamber with chamber_id = NULL; its maintenance log (chamber_id NOT
+    NULL, meaningless without the chamber) goes with it.
+    """
+    async with get_db() as db:
+        cursor = await db.execute("SELECT 1 FROM chambers WHERE id = ?", (chamber_id,))
+        if await cursor.fetchone() is None:
+            return False
+        for sql in (
+            "UPDATE sessions SET chamber_id = NULL WHERE chamber_id = ?",
+            "UPDATE contamination_events SET chamber_id = NULL WHERE chamber_id = ?",
+            "UPDATE planned_events SET chamber_id = NULL WHERE chamber_id = ?",
+            "DELETE FROM chamber_maintenance WHERE chamber_id = ?",
+        ):
+            await db.execute(sql, (chamber_id,))
         cursor = await db.execute("DELETE FROM chambers WHERE id = ?", (chamber_id,))
         await db.commit()
         return cursor.rowcount > 0
@@ -199,6 +255,7 @@ async def get_chamber_photos(chamber_id: int, limit: int = 50) -> list[dict] | N
 
     placeholders = ",".join("?" for _ in node_ids)
     async with get_db() as db:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only "?" placeholders or whitelisted column names are interpolated; every value is a bound parameter
         cursor = await db.execute(
             f"""SELECT id, session_id, node_id, timestamp, file_path, resolution,
                        flash_used, analysis_local, analysis_claude, created_at

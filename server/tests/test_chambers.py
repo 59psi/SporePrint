@@ -112,6 +112,52 @@ async def test_delete_chamber_not_found():
     assert await delete_chamber(9999) is False
 
 
+async def test_delete_chamber_with_history_detaches_it():
+    """srv-auto#25: a chamber that ever hosted a session (or has maintenance,
+    contamination or planned events) used to raise FOREIGN KEY constraint
+    failed. History outlives the chamber with chamber_id = NULL."""
+    c = await create_chamber(_make_chamber())
+    session = await create_session(SessionCreate(
+        name="Grow", species_profile_id="blue_oyster", chamber_id=c["id"],
+    ))
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO chamber_maintenance (chamber_id, kind) VALUES (?, 'clean')", (c["id"],)
+        )
+        await db.execute(
+            "INSERT INTO contamination_events (session_id, chamber_id, source) VALUES (?, ?, 'manual')",
+            (session["id"], c["id"]),
+        )
+        await db.execute(
+            "INSERT INTO planned_events (title, kind, date, chamber_id) VALUES ('Spawn', 'spawn', '2026-10-01', ?)",
+            (c["id"],),
+        )
+        await db.commit()
+
+    assert await delete_chamber(c["id"]) is True
+    assert await get_chamber(c["id"]) is None
+
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT chamber_id FROM sessions WHERE id = ?", (session["id"],))).fetchone()
+        assert row["chamber_id"] is None
+        for table in ("contamination_events", "planned_events"):
+            row = await (await db.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE chamber_id IS NULL")).fetchone()
+            assert row["n"] == 1
+        row = await (await db.execute("SELECT COUNT(*) AS n FROM chamber_maintenance")).fetchone()
+        assert row["n"] == 0
+
+
+def test_delete_chamber_endpoint_with_session_is_not_500(client):
+    chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
+    client.post("/api/sessions", json={
+        "name": "G", "species_profile_id": "blue_oyster", "chamber_id": chamber["id"],
+    })
+    r = client.delete(f"/api/chambers/{chamber['id']}")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": True}
+
+
 # ── Session assignment ─────────────────────────────────────────
 
 

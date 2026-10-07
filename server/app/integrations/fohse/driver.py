@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
+from .._net import path_segment
 from ...telemetry.service import store_reading
 
 
@@ -40,6 +41,9 @@ class FohseDriver(HttpVendorDriver):
     def __init__(self) -> None:
         super().__init__()
         self._token: str | None = None
+
+    def _reset_auth(self) -> None:
+        self._token = None
 
     async def test_connection(self) -> IntegrationHealth:
         cfg: FohseConfig | None = self._cfg  # type: ignore[assignment]
@@ -79,6 +83,7 @@ class FohseDriver(HttpVendorDriver):
     async def set_dim(self, fixture_id: str, percent: int) -> dict[str, Any]:
         if not 0 <= percent <= 100:
             raise ValueError("percent must be in [0, 100]")
+        segment = path_segment(fixture_id, field="fixture_id")
         cfg: FohseConfig = self._cfg  # type: ignore[assignment]
         if not cfg or not cfg.email or not cfg.password:
             raise RuntimeError("fohse not configured")
@@ -88,7 +93,7 @@ class FohseDriver(HttpVendorDriver):
             timeout=cfg.request_timeout_seconds, follow_redirects=False
         ) as client:
             resp = await client.put(
-                f"{_FOHSE_API_BASE}/fixtures/{fixture_id}/intensity",
+                f"{_FOHSE_API_BASE}/fixtures/{segment}/intensity",
                 headers={"Authorization": f"Bearer {self._token}"},
                 json={"intensity_percent": percent},
             )

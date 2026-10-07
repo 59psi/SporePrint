@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from .._base import IntegrationDriver, IntegrationHealth
 from .client import PulseCloudClient, PulseError
 from .config import PulseConfig
-from .poller import poll_loop, run_one_poll
+from .poller import poll_loop
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,23 @@ class PulseDriver(IntegrationDriver):
         self._last_poll_at: float | None = None
         self._last_poll_ok: bool = False
         self._last_error: str | None = None
+        # Long-lived cloud client (holds the session token between polls).
+        self._cloud_client: PulseCloudClient | None = None
+        self._cloud_client_key: tuple | None = None
+
+    def _client_for(self, cfg: PulseConfig) -> PulseCloudClient | None:
+        """Cloud transport: reuse one client (and so one session token)
+        across polls, rebuilding it only when the credentials change.
+        Local transport: None (the poller builds its LAN transport)."""
+        if cfg.transport != "cloud" or not cfg.email or not cfg.password:
+            return None
+        key = (cfg.email, cfg.password, cfg.request_timeout_seconds)
+        if self._cloud_client is None or self._cloud_client_key != key:
+            self._cloud_client = PulseCloudClient(
+                cfg.email, cfg.password, timeout_s=cfg.request_timeout_seconds,
+            )
+            self._cloud_client_key = key
+        return self._cloud_client
 
     async def configure(self, config: BaseModel) -> None:
         assert isinstance(config, PulseConfig)
@@ -52,6 +69,7 @@ class PulseDriver(IntegrationDriver):
             poll_loop(
                 lambda: self._cfg,
                 record_outcome=self._record_outcome,
+                client_provider=self._client_for,
             )
         )
 

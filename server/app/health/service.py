@@ -6,12 +6,14 @@ Socket.IO client tracking via connect/disconnect events.
 Background task status via registry.
 """
 
+import asyncio
 import logging
 import os
 import time
 
 import psutil
 
+from ..auth import socketio_client_addr
 from ..config import settings
 from ..db import get_db
 
@@ -35,7 +37,8 @@ def update_mqtt_stat(key: str, value):
 def track_client_connect(sid: str, environ: dict | None = None):
     _sio_clients[sid] = {
         "connected_at": time.time(),
-        "ip": environ.get("REMOTE_ADDR", "unknown") if environ else "unknown",
+        # The ASGI peer, not engineio's hardcoded REMOTE_ADDR placeholder.
+        "ip": socketio_client_addr(environ) or "unknown",
     }
 
 
@@ -56,7 +59,8 @@ def update_task(name: str, status: str, error: str | None = None):
 
 async def get_system_metrics() -> dict:
     """CPU, memory, disk, temperature, uptime, DB size."""
-    cpu_percent = psutil.cpu_percent(interval=0.1)
+    # cpu_percent(interval=0.1) sleeps 100 ms to sample — keep it off the loop.
+    cpu_percent = await asyncio.to_thread(psutil.cpu_percent, interval=0.1)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     boot_time = psutil.boot_time()

@@ -1,11 +1,68 @@
 import json
+import logging
 
 from ..db import get_db
+from ..species.profiles import canonical_species_id
 from .models import AutomationRule, RuleAction
-from .templates import BUILTIN_RULES
+from .templates import BUILTIN_RULES, SUPERSEDED_BUILTIN_RULES
+
+log = logging.getLogger(__name__)
 
 # Fields stored as top-level columns (not in rule_data JSON blob)
 _RULE_META_FIELDS = {"id", "name", "description", "enabled", "priority"}
+
+# The behaviour-defining fields compared when deciding whether a stored rule is
+# still an unedited copy of a legacy built-in (see LEGACY_BUILTIN_RULES). The
+# priority column is compared too (see _upgrade_legacy_builtin_rules): it
+# decides which rule wins an actuator, so a changed priority is an edit.
+_LEGACY_MATCH_FIELDS = {
+    "applies_to_phases", "applies_to_species", "requires_absent_target",
+    "condition", "action", "cooldown_seconds", "safety_max_on_seconds",
+    "notification", "log_to_session",
+}
+
+
+# Duty-value keys a node command may carry (relay pwm 0-255, lighting level
+# 0-1023 — the lighting bank also takes pwm as a level alias).
+_DUTY_KEYS = ("pwm", "level")
+
+
+def is_off_command(payload: dict) -> bool:
+    """Does this node/plug command switch its actuator OFF?"""
+    return str(payload.get("state", "")).strip().lower() == "off"
+
+
+def drop_duty_from_off(payload: dict) -> dict:
+    """The command to publish: an OFF loses any pwm / level, anything else is unchanged.
+
+    Node firmware released before the hardware audit let a duty value in the
+    same command win over the state, so {"state": "off", "pwm": 180} switched
+    the channel ON at duty 180. Current firmware lets "off" win, but deployed
+    nodes still run the old image, so an OFF must never carry a duty value on
+    the wire. Returns a copy when anything is dropped; the caller's dict is
+    never modified.
+    """
+    if not is_off_command(payload) or not any(k in payload for k in _DUTY_KEYS):
+        return payload
+    return {k: v for k, v in payload.items() if k not in _DUTY_KEYS}
+
+
+def rule_applies_to_species(applies_to_species: list[str] | None, species_id: str | None) -> bool:
+    """Does a rule scoped to `applies_to_species` apply to this session's species?
+
+    Species ids drift between separators: sessions store the hyphenated UI
+    spelling ("lions-mane", see species.profiles.canonical_species_id) while the
+    seeded templates name the underscored table ids ("lions_mane"). An exact
+    `in` check never matched, so every species-scoped rule was dead. Compare
+    both sides canonicalised. An unscoped rule applies to everything; a scoped
+    rule never applies when there is no species.
+    """
+    if not applies_to_species:
+        return True
+    if not species_id:
+        return False
+    wanted = canonical_species_id(species_id)
+    return any(canonical_species_id(s) == wanted for s in applies_to_species)
 
 
 def normalize_rule_id(rule_id) -> int | None:
@@ -48,18 +105,76 @@ def serialize_rule_data(rule: AutomationRule) -> str:
 
 
 async def seed_builtin_rules():
-    """Seed built-in automation rule templates into the database if empty."""
+    """Seed built-in automation rule templates into the database if empty.
+
+    On an already-seeded database, upgrade any built-in whose shipped form was
+    superseded (SUPERSEDED_BUILTIN_RULES: the unsafe LEGACY_BUILTIN_RULES and the
+    pre-browning phase gates) — but only a copy the operator never edited.
+    """
     async with get_db() as db:
         cursor = await db.execute("SELECT COUNT(*) as cnt FROM automation_rules")
         row = await cursor.fetchone()
         if row["cnt"] > 0:
-            return  # Already seeded
+            await _upgrade_legacy_builtin_rules(db)
+            return
 
         for rule in BUILTIN_RULES:
             await db.execute(
                 "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) VALUES (?, ?, ?, ?, ?)",
                 (rule.name, rule.description, int(rule.enabled), rule.priority, serialize_rule_data(rule)),
             )
+        await db.commit()
+
+
+def _same_rule(a: AutomationRule, b: AutomationRule) -> bool:
+    """Same behaviour: priority plus the _LEGACY_MATCH_FIELDS."""
+    return (a.priority == b.priority
+            and a.model_dump(include=_LEGACY_MATCH_FIELDS)
+            == b.model_dump(include=_LEGACY_MATCH_FIELDS))
+
+
+async def _upgrade_legacy_builtin_rules(db) -> None:
+    """Rewrite unedited copies of superseded built-ins to the current template.
+
+    A stored copy matching ANY superseded shipped form of its name is upgraded.
+    Runs inside seed_builtin_rules' connection; commits once if anything changed.
+    """
+    current = {r.name: r for r in BUILTIN_RULES}
+    changed = False
+    for name, forms in SUPERSEDED_BUILTIN_RULES.items():
+        replacement = current.get(name)
+        if replacement is None:
+            continue
+        cursor = await db.execute(
+            "SELECT id, name, description, enabled, priority, rule_data "
+            "FROM automation_rules WHERE name = ?",
+            (name,),
+        )
+        for row in await cursor.fetchall():
+            try:
+                stored = AutomationRule.model_validate(deserialize_rule_row(row))
+            except Exception:
+                continue
+            if not any(_same_rule(stored, form) for form in forms):
+                # Operator-edited (or already upgraded) — leave it. An edited
+                # copy keeps the old logic, which rule arbitration can make
+                # matter (a forecast-only Pre-cool now holds the cooler ON
+                # against the Cooling Cutoff), so say so at every boot.
+                if not _same_rule(stored, replacement):
+                    log.warning(
+                        "Automation rule '%s' (id %s) was edited, so it was not upgraded "
+                        "to the current built-in template — review it against the shipped "
+                        "rule (%s)", name, row["id"], replacement.description,
+                    )
+                continue
+            await db.execute(
+                "UPDATE automation_rules SET description=?, priority=?, rule_data=?, "
+                "updated_at=unixepoch('now') WHERE id=?",
+                (replacement.description, replacement.priority,
+                 serialize_rule_data(replacement), row["id"]),
+            )
+            changed = True
+    if changed:
         await db.commit()
 
 
@@ -98,7 +213,17 @@ async def get_rule(rule_id: int) -> dict | None:
 _PLACEHOLDER_NODE_TYPE = {"relay-01": "relay", "light-01": "lighting"}
 
 
-async def resolve_node_target(target: str) -> str | None:
+# Node ids listed in any chamber (chambers.node_ids is a JSON list; an invalid
+# value lists no nodes).
+_CHAMBER_NODE_IDS_SQL = (
+    "SELECT j.value FROM chambers c, "
+    "json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j"
+)
+
+
+async def resolve_node_target(
+    target: str, chamber_nodes: list[str] | None = None,
+) -> str | None:
     """Map a native-node target to the node_id that should actually receive it.
 
     - A non-placeholder target (a real node id, a `plug-*` id, a `vendor:*`
@@ -106,8 +231,12 @@ async def resolve_node_target(target: str) -> str | None:
     - A seeded placeholder (`relay-01` / `light-01`):
         * if a node is registered under the placeholder id itself (a real
           deployment may literally have named its node relay-01) → that id;
-        * else the chamber's most-recently-seen node whose `node_type` matches
-          the role the placeholder stands for → its node_id;
+        * with ``chamber_nodes`` (the node ids of the chamber the rule is
+          acting for): that chamber's most-recently-seen node of the
+          placeholder's role, else a node of that role listed in NO chamber —
+          never another chamber's node, which would drive the wrong closet;
+        * without: the most-recently-seen node whose `node_type` matches the
+          role the placeholder stands for → its node_id;
         * else ``None`` — no node of that role is paired, so the caller
           (validate_action_channel / coverage / engine) can surface the gap
           instead of publishing into the void.
@@ -121,6 +250,23 @@ async def resolve_node_target(target: str) -> str | None:
         )
         if await cursor.fetchone() is not None:
             return target
+        if chamber_nodes:
+            marks = ",".join("?" for _ in chamber_nodes)
+            cursor = await db.execute(
+                f"SELECT node_id FROM hardware_nodes WHERE node_type = ? "
+                f"AND node_id IN ({marks}) ORDER BY last_seen DESC LIMIT 1",
+                (node_type, *chamber_nodes),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                cursor = await db.execute(
+                    f"SELECT node_id FROM hardware_nodes WHERE node_type = ? "
+                    f"AND node_id NOT IN ({_CHAMBER_NODE_IDS_SQL}) "
+                    f"ORDER BY last_seen DESC LIMIT 1",
+                    (node_type,),
+                )
+                row = await cursor.fetchone()
+            return row["node_id"] if row else None
         cursor = await db.execute(
             "SELECT node_id FROM hardware_nodes WHERE node_type = ? "
             "ORDER BY last_seen DESC LIMIT 1",

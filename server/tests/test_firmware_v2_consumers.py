@@ -205,7 +205,12 @@ async def test_node_logs_endpoint(client):
     assert body["entries"][0]["msg"] == "[SAFETY] fae auto-off"
 
 
-async def test_provision_ca_endpoint_404_without_certs(client):
+async def test_provision_ca_endpoint_404_without_certs(client, tmp_path,
+                                                      monkeypatch):
+    # Hermetic: the real bare-metal path is anchored at the repo root, where
+    # a developer's own setup.sh/install.sh run may have generated a CA.
+    from app import provision
+    monkeypatch.setattr(provision, "_CA_PATHS", (tmp_path / "ca.crt",))
     resp = client.get("/api/provision/ca")
     assert resp.status_code == 404
 

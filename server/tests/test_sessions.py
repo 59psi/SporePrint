@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from app.sessions.models import SessionCreate, PhaseAdvance, NoteCreate, HarvestCreate
 from app.sessions.service import (
     create_session,
@@ -53,6 +57,17 @@ async def test_advance_phase():
     assert updated["phase_history"][0]["exited_at"] is not None
     # New phase should not
     assert updated["phase_history"][1]["exited_at"] is None
+
+
+async def test_phase_change_event_names_the_phase_readably():
+    # 2026-10 audit: the event read "Phase advanced to primordia_induction"
+    # (raw enum) in the timeline, the chamber feed and the transcript, while
+    # the reminder beside it said "Leaving browning".
+    s = await create_session(_make_session_data())
+    await advance_phase(s["id"], PhaseAdvance(phase="primordia_induction"))
+    [ev] = [e for e in await get_events(s["id"]) if e["type"] == "phase_change"]
+    assert ev["description"] == "Phase advanced to primordia induction"
+    assert json.loads(ev["data"]) == {"phase": "primordia_induction"}
 
 
 async def test_add_note():
@@ -118,3 +133,31 @@ async def test_full_lifecycle():
     assert s["status"] == "completed"
     assert s["total_wet_yield_g"] == 200.0
     assert len(s["phase_history"]) == 3
+
+
+def test_create_with_an_unknown_chamber_is_a_422_not_a_500(client):
+    # The Pi UI once posted chamber_id 0; the FOREIGN KEY failure came back as
+    # a bare 500 "Internal Server Error" and left the form saying nothing useful.
+    for bad in (0, 999):
+        resp = client.post("/api/sessions", json={
+            "name": "G", "species_profile_id": "blue-oyster", "chamber_id": bad,
+        })
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == f"chamber {bad} not found"
+    assert client.get("/api/sessions").json() == []
+    chamber = client.post("/api/chambers", json={"name": "Closet A"}).json()
+    created = client.post("/api/sessions", json={
+        "name": "G", "species_profile_id": "blue-oyster", "chamber_id": chamber["id"],
+    })
+    assert created.status_code == 200
+    assert created.json()["chamber_id"] == chamber["id"]
+
+
+async def test_remote_session_start_reports_an_unknown_chamber():
+    from app.sessions.service import UnknownChamberError, handle_remote_command
+
+    with pytest.raises(UnknownChamberError, match="chamber 42 not found"):
+        await handle_remote_command("session_start", {
+            "name": "G", "species_profile_id": "blue_oyster", "chamber_id": 42,
+        })
+    assert await list_sessions() == []
