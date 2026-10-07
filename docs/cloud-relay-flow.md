@@ -103,6 +103,41 @@ disconnect. The caches keep the Supabase load bounded; a
 hard recheck at every command would 4-10× the auth round-trips during a
 busy session.
 
+## Grow sessions and contamination events (Pi → cloud, 5.2)
+
+The cloud's sessions, analytics, planner, chamber tiles and contamination
+history fill from what the Pi sends here. Before 5.2 nothing sent sessions,
+harvests or most contamination events, so those pages stayed empty for a
+real grow.
+
+```
+Pi: server/app/cloud/session_sync.py
+  ├─ session change (create, edit, phase advance, harvest, complete/abort)
+  │    └─ emit "session_sync" { pi_session_id, species_profile_id, species_name,
+  │         substrate, status, current_phase, started_at, completed_at, totals,
+  │         flush_count, quality_rating,
+  │         metadata { name, chamber, species {binomial, common},
+  │                    phase_entered_at, phase_days_expected },
+  │         harvests [{ pi_harvest_id, flush_number, weights, rating, harvested_at }] }
+  ├─ contamination event recorded (vision, identify, manual)
+  │    └─ emit "contamination_event" { pi_event_id, pi_session_id, source,
+  │         classification, confidence, notes, detected_at }
+  └─ every (re)connect: resend what failed, then backfill the active sessions
+       and those from the last year (sessions first), then recent events
+```
+
+- **Idempotent.** The cloud keys each row by the authenticated device and the
+  Pi's local id (`pi_session_id` / `pi_harvest_id` / `pi_event_id`), so a
+  resend updates the same row. It never takes a row id from the Pi.
+- **Sources.** `vision` and `identify` arrive as `claude`, and `manual` as
+  `manual`.
+- **No duplicates.** The vision `contamination_alert` event carries the
+  recorded event's `pi_event_id`, so the cloud stores the detection once.
+- **Premium.** Like every persisting relay handler, both are kept only for a
+  premium owner.
+- **Offline.** A Pi with no cloud configured sends nothing. Its first connect
+  after pairing backfills.
+
 ## OTA progress events (Pi → cloud, v4)
 
 A Pi self-update reports each step upstream so cloud-web can render a real progress bar instead of a "wait 30 s and pray"
