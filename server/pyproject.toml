@@ -8,7 +8,7 @@ dependencies = [
     # major. A future FastAPI 1.x or Pydantic 3.x cannot land silently on
     # `pip install -U` without a deliberate cap bump + test run.
     "fastapi>=0.110,<1.0",
-    "uvicorn[standard]>=0.27,<1.0",
+    "uvicorn[standard]>=0.54.0,<1.0",
     "aiosqlite>=0.20,<1.0",
     "aiomqtt>=2.0,<3.0",
     # Security floors (2026-09 audit): socketio 5.16.2 / engineio 4.13.2
