@@ -1,22 +1,67 @@
-# Cuts a public GitHub Release with per-image firmware .zip artifacts when a
-# tag matching `firmware-v*` is pushed (e.g. firmware-v4.2.0).
+# Publishes SIGNED ESP32 firmware as GitHub Release assets when a release
+# tag `firmware-vX.Y.Z` is pushed (or for an existing such tag, on
+# workflow_dispatch). One `<env>.zip` per image env, each holding:
 #
-# This is the PUBLIC firmware release: it lives in the open-source repo so
-# growers can download the built binaries directly. Firmware is built from
-# this repo's own firmware/ directory — no submodule checkout needed.
+#   firmware.bin, bootloader.bin, partitions.bin
+#   <env>.manifest.json + <env>.manifest.json.sig
 #
-# Untrusted-input safety: the workflow_dispatch `tag` input is moved into an
-# env var before any shell use, never interpolated directly into a run:
-# string. github.ref_name is bounded by the firmware-v* trigger filter and
-# follows the same env-var pattern.
+# Every image is built with the release VERIFY key compiled in
+# (SPOREPRINT_OTA_PUBKEY_B64, read by firmware/scripts/fw_version.py), and
+# its manifest is the Pi's own signed release manifest v1
+# (server/app/cloud/ota_manifest.py) with `artifact` = the env and the
+# sha256 / size of that env's firmware.bin. A Pi push that carries it is
+# checked by the Pi against its pinned key (server/app/hardware/
+# node_manifest.py), and a node running a signed image re-checks it and
+# flashes only that exact image (firmware/lib/sp_core/ota_manifest.h +
+# ota_gate.h). Unsigned pushes still flash: SPOREPRINT_OTA_REQUIRE_MANIFEST
+# is not set for these images.
 #
-# workflow_dispatch builds the REQUESTED tag (checkout ref), not the default
-# branch — the tag must already exist; its version is stamped into the images.
+# Key handling (secret OTA_SIGNING_KEY: base64 of the 32-byte Ed25519
+# private key). It reaches only the two jobs that run no build tooling, no
+# third-party action and no write token, and in each only the one step that
+# needs it:
+#   release-key  derives the PUBLIC verify key and outputs only that.
+#   build        runs PlatformIO, which downloads and executes platform and
+#                library build scripts, so it gets the public key only.
+#   sign         signs each firmware.bin with scripts/sign-ota-bundle.py
+#                (the key in a 0600 temp file, shredded on every exit), packs
+#                one zip per env and checks every zip with
+#                scripts/verify_firmware_release.py as the Pi and the node
+#                will (signature, canonical form, env, version, channel,
+#                sha256, size, embedded key; also with the Pi's own verifier).
+#   release      the only job with a write token, and it never holds the key:
+#                it checks every zip again and creates the GitHub Release.
+# The two key jobs run in the `firmware-release` environment, so the secret
+# can live there as an environment secret, released only to the ref patterns
+# (and reviewers) that environment allows; as a repository secret it works
+# unchanged. The sign, verify and key jobs install only `cryptography` and
+# its dependencies, as wheels, at the versions and hashes server/uv.lock pins.
+# The build installs PlatformIO and its dependencies from
+# firmware/requirements-pio.txt (exact versions, SHA-256 each), then fetches
+# the platform zip and the framework and tool packages it builds with,
+# refusing any whose SHA-256 differs from firmware/toolchain.lock.json
+# (scripts/pin_firmware_toolchain.py); the toolchain binaries come through
+# Espressif's idf_tools.py, which checks them against the SHA-256 in those
+# packages. Two things come from the PlatformIO registry, which checksums
+# them, rather than from the lock: PlatformIO Core's own SCons (the
+# post-build check allows exactly that registry package, the lock's
+# core_registry_packages) and the library dependencies, pinned by version in
+# platformio.ini. The platform's own Python virtualenv is created beforehand from
+# firmware/requirements-penv.txt (exact versions, SHA-256 each) and the
+# build runs uv offline, so nothing else reaches it from PyPI; the post-build
+# check refuses a penv holding anything unpinned. No job restores a cache.
+# The workflow fails closed when OTA_SIGNING_KEY is missing.
 #
-# Supply chain: the token is read-only everywhere except the release job, and
-# checkouts never persist it, so PlatformIO / library build scripts in the
-# build matrix cannot push tags or edit releases. Actions are pinned to commit
-# SHAs (tag in the trailing comment) and PlatformIO to an exact version.
+# Untrusted input: the dispatch `tag` input and github.ref_name reach shell
+# only through env vars, never ${{ }} inside run:, and the tag guard accepts
+# exactly firmware-vX.Y.Z (no pre-release suffix, so every release is on the
+# `stable` channel). Every checkout is that tag (refs/tags/…, never a branch
+# of the same name) without persisted credentials, and every job after
+# release-key stops unless the tag still names the commit release-key
+# recorded: a tag moved mid-run releases nothing. The token is read-only
+# except in the release job. Actions are pinned to commit SHAs (the tag in
+# the trailing comment), PlatformIO and every Python package to exact
+# versions and hashes.
 
 name: Firmware Release
 
@@ -27,136 +72,554 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish (e.g. firmware-v4.2.0)"
+        description: "Existing release tag to build, sign and publish (e.g. firmware-v5.1.0)"
         required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: firmware-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  build:
+  release-key:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Holds the signing key (one step): see the key-handling note above.
+    environment: firmware-release
     permissions:
       contents: read
-    strategy:
-      matrix:
-        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam, cam_esp32s3,
-              cam_xiao_esp32s3, cam_waveshare_s3]
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      sha: ${{ steps.commit.outputs.sha }}
+      pubkey: ${{ steps.derive.outputs.pubkey }}
     steps:
+      - name: Resolve and check the release tag
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            echo "::error::firmware releases are built from tags only."
+            exit 1
+          fi
+          # X.Y.Z only: the manifest version grammar, each part as the node
+          # parses it (at most 9 digits), no leading zeros. [[ =~ ]] matches
+          # the whole string, so a value with a newline never passes.
+          TAG_RE='^firmware-v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+          if ! [[ "$TAG" =~ $TAG_RE ]]; then
+            echo "::error::refusing to release: the tag must be firmware-vX.Y.Z."
+            exit 1
+          fi
+          VERSION="${TAG#firmware-v}"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "channel=stable"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing firmware $VERSION on the stable channel"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Dispatch builds the requested tag; a tag push builds its own ref.
-          ref: ${{ inputs.tag || github.ref }}
+          ref: refs/tags/${{ steps.meta.outputs.tag }}
           persist-credentials: false
+
+      - name: Record the tagged commit
+        id: commit
+        run: |
+          # Every later job checks out the tag again and refuses to go on
+          # unless it still names this commit: a tag moved mid-run never gets
+          # its new commit's signer, verifier or images released.
+          SHA="$(git rev-parse HEAD)"
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not read the tagged commit."
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Releasing commit $SHA"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
-      - name: Cache PlatformIO toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Pin the signing tooling to server/uv.lock
+        run: |
+          # cryptography and its dependency closure, every wheel hash the lock
+          # records for each: pip refuses anything else.
+          python - <<'PY' > "$RUNNER_TEMP/release-requirements.txt"
+          import tomllib
+
+          with open("server/uv.lock", "rb") as f:
+              packages = {p["name"]: p for p in tomllib.load(f)["package"]}
+          todo, closure = ["cryptography"], []
+          while todo:
+              name = todo.pop()
+              if name not in closure:
+                  closure.append(name)
+                  todo.extend(d["name"] for d in packages[name].get("dependencies", []))
+          for name in closure:
+              package = packages[name]
+              hashes = [wheel["hash"] for wheel in package.get("wheels", [])]
+              if not hashes:
+                  raise SystemExit(f"server/uv.lock records no wheels for {name}")
+              print(f"{name}=={package['version']} " + " ".join(f"--hash={h}" for h in hashes))
+          PY
+          cut -d' ' -f1 "$RUNNER_TEMP/release-requirements.txt"
+
+      - name: Install the signing tooling (wheels only, hash-checked)
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps \
+            --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/release-requirements.txt"
+
+      - name: Derive the release verify key (public half only)
+        id: derive
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          if [ -z "${OTA_SIGNING_KEY:-}" ]; then
+            echo "::error::the OTA_SIGNING_KEY secret is not set: refusing to publish unsigned firmware."
+            exit 1
+          fi
+          # The script reads the private key from the environment (never an
+          # argument) and prints only the public key.
+          PUBKEY="$(python scripts/verify_firmware_release.py --print-pubkey)"
+          KEY_RE='^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$'
+          if ! [[ "$PUBKEY" =~ $KEY_RE ]]; then
+            echo "::error::could not derive the release verify key."
+            exit 1
+          fi
+          echo "pubkey=$PUBKEY" >> "$GITHUB_OUTPUT"
+          echo "Release verify key: $PUBKEY"
+
+  build:
+    needs: release-key
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        # Every image env in firmware/platformio.ini (tests check the list).
+        env: [node_esp32, node_esp32s3, node_esp32s3_n32r16v, cam, cam_esp32s3,
+              cam_xiao_esp32s3, cam_waveshare_s3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          ref: refs/tags/${{ needs.release-key.outputs.tag }}
+          persist-credentials: false
 
-      - name: Install PlatformIO
-        run: pip install platformio==6.2.0
+      - name: Check the tag still names the commit being released
+        env:
+          RELEASE_SHA: ${{ needs.release-key.outputs.sha }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ -z "$RELEASE_SHA" ] || [ "$HEAD_SHA" != "$RELEASE_SHA" ]; then
+            echo "::error::the tag now names $HEAD_SHA, not $RELEASE_SHA: it moved during the run. Refusing to continue."
+            exit 1
+          fi
 
-      - name: Build ${{ matrix.env }}
+      - name: Preflight - the tagged tree builds signed images at this version
+        env:
+          VERSION: ${{ needs.release-key.outputs.version }}
+        run: |
+          # fw_version.py compiles the verify key in and sp_core/ota_manifest.h
+          # is the node's check: a tree without them would ship images the
+          # manifests promise but cannot enforce.
+          if ! grep -q 'SPOREPRINT_OTA_PUBKEY_B64' firmware/scripts/fw_version.py \
+             || [ ! -f firmware/lib/sp_core/ota_manifest.h ]; then
+            echo "::error::this tag predates signed node manifests; it cannot be released signed."
+            exit 1
+          fi
+          TREE_VERSION="$(tr -d '[:space:]' < firmware/VERSION.txt)"
+          if [ "$TREE_VERSION" != "$VERSION" ]; then
+            echo "::error::firmware/VERSION.txt says $TREE_VERSION but the tag is $VERSION: bump the version before tagging."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO (every package hash-checked)
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r firmware/requirements-pio.txt
+
+      - name: Fetch the PlatformIO platform and packages (SHA-256 checked)
+        run: |
+          # platformio.ini and the platform name these by release-asset URL,
+          # which PlatformIO never hash-checks. Download each, refuse any
+          # that differs from firmware/toolchain.lock.json, and point the
+          # build at the checked local copies. Also refuses a platform whose
+          # penv wants a package firmware/requirements-penv.txt doesn't pin.
+          python scripts/pin_firmware_toolchain.py prepare --dest "$RUNNER_TEMP/toolchain"
+
+      - name: Create the platform's Python environment (every package hash-checked)
+        run: |
+          # The platform's builder/penv_setup.py installs ~16 PyPI packages
+          # (open version floors) into ~/.platformio/penv on first use.
+          # Create that penv first, from the hashed lock, with the same
+          # interpreter PlatformIO runs on (penv_setup recreates a penv whose
+          # Python differs). It then finds everything installed and installs
+          # nothing; the build below runs uv offline, so it cannot.
+          python -m venv "$HOME/.platformio/penv"
+          "$HOME/.platformio/penv/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --no-deps --only-binary=:all: -r firmware/requirements-penv.txt
+
+      - name: Build ${{ matrix.env }} with the release verify key
         working-directory: firmware
         env:
           BUILD_ENV: ${{ matrix.env }}
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-        # Export SPOREPRINT_FW_VERSION from the firmware-vX.Y.Z tag so the
-        # released binaries heartbeat a real version (nodes built without it
-        # report an empty string and OTA-drift detection is blind).
+          # The released images heartbeat the tag's version.
+          SPOREPRINT_FW_VERSION: ${{ needs.release-key.outputs.version }}
+          # The PUBLIC verify key only: the image then accepts signed
+          # manifests (fw_version.py fails the build on a malformed key).
+          SPOREPRINT_OTA_PUBKEY_B64: ${{ needs.release-key.outputs.pubkey }}
+          # penv_setup.py's uv calls: no index at all, so anything the
+          # hashed penv lacks fails the build instead of coming from PyPI;
+          # esptool's editable install builds with the penv's pinned
+          # setuptools rather than an isolated, freshly downloaded one.
+          UV_OFFLINE: "1"
+          UV_NO_BUILD_ISOLATION: "1"
+          PIP_NO_INDEX: "1"
         run: |
-          TAG="${INPUT_TAG:-$GH_REF_NAME}"
-          export SPOREPRINT_FW_VERSION="${TAG#firmware-v}"
-          echo "Building $BUILD_ENV as firmware version $SPOREPRINT_FW_VERSION"
+          if [ -z "$SPOREPRINT_OTA_PUBKEY_B64" ]; then
+            echo "::error::no release verify key: refusing to build an unsigned release."
+            exit 1
+          fi
+          echo "Building $BUILD_ENV as firmware $SPOREPRINT_FW_VERSION with the release verify key built in"
           pio run -e "$BUILD_ENV"
 
-      - name: Package binaries
-        working-directory: firmware
+      - name: Check the build installed only checked packages
+        run: |
+          # The toolchain binaries come through Espressif's idf_tools.py,
+          # which checks each against the SHA-256 in its (checked) package.
+          # The penv must hold exactly firmware/requirements-penv.txt (plus
+          # esptool from the checked tool-esptoolpy package).
+          python scripts/pin_firmware_toolchain.py check --core-dir "$HOME/.platformio"
+
+      - name: Collect the images
         env:
           BUILD_ENV: ${{ matrix.env }}
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/firmware-dist"
-          cd ".pio/build/${BUILD_ENV}"
-          zip -j "$GITHUB_WORKSPACE/firmware-dist/${BUILD_ENV}.zip" \
-            firmware.bin bootloader.bin partitions.bin 2>/dev/null || \
-            zip -j "$GITHUB_WORKSPACE/firmware-dist/${BUILD_ENV}.zip" firmware.bin
+          mkdir -p firmware-out
+          for f in firmware.bin bootloader.bin partitions.bin; do
+            cp "firmware/.pio/build/$BUILD_ENV/$f" "firmware-out/$f"
+          done
+          ls -l firmware-out
 
-      - name: Upload artifact
+      - name: Upload the unsigned images
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: firmware-${{ matrix.env }}
-          path: firmware-dist/${{ matrix.env }}.zip
-          retention-days: 90
+          path: firmware-out/
+          if-no-files-found: error
+          retention-days: 7
 
-  release:
-    needs: build
+  sign:
+    needs: [release-key, build]
     runs-on: ubuntu-latest
-    # The only job that may write: it creates the release and uploads assets.
-    # No checkout — it needs nothing from the repository.
+    timeout-minutes: 20
+    # Holds the signing key (one step). No write token and only GitHub's own
+    # actions here: the job that publishes is the next one.
+    environment: firmware-release
     permissions:
-      contents: write
+      contents: read
+    env:
+      # The build matrix, once more: one signed zip each, no others.
+      FIRMWARE_ENVS: node_esp32 node_esp32s3 node_esp32s3_n32r16v cam cam_esp32s3 cam_xiao_esp32s3 cam_waveshare_s3
     steps:
-      - name: Download all firmware artifacts
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The signer, the verifier and the Pi's ota_manifest.py come from
+          # the tag being released.
+          ref: refs/tags/${{ needs.release-key.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check the tag still names the commit being released
+        env:
+          RELEASE_SHA: ${{ needs.release-key.outputs.sha }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ -z "$RELEASE_SHA" ] || [ "$HEAD_SHA" != "$RELEASE_SHA" ]; then
+            echo "::error::the tag now names $HEAD_SHA, not $RELEASE_SHA: it moved during the run. Refusing to continue."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Pin the signing tooling to server/uv.lock
+        run: |
+          # cryptography and its dependency closure, every wheel hash the lock
+          # records for each: pip refuses anything else.
+          python - <<'PY' > "$RUNNER_TEMP/release-requirements.txt"
+          import tomllib
+
+          with open("server/uv.lock", "rb") as f:
+              packages = {p["name"]: p for p in tomllib.load(f)["package"]}
+          todo, closure = ["cryptography"], []
+          while todo:
+              name = todo.pop()
+              if name not in closure:
+                  closure.append(name)
+                  todo.extend(d["name"] for d in packages[name].get("dependencies", []))
+          for name in closure:
+              package = packages[name]
+              hashes = [wheel["hash"] for wheel in package.get("wheels", [])]
+              if not hashes:
+                  raise SystemExit(f"server/uv.lock records no wheels for {name}")
+              print(f"{name}=={package['version']} " + " ".join(f"--hash={h}" for h in hashes))
+          PY
+          cut -d' ' -f1 "$RUNNER_TEMP/release-requirements.txt"
+
+      - name: Install the signing tooling (wheels only, hash-checked)
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps \
+            --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/release-requirements.txt"
+
+      - name: Download the unsigned images
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: firmware-*
-          path: firmware-dist
-          merge-multiple: true
+          path: unsigned
+          # One directory per env: unsigned/firmware-<env>/firmware.bin, ...
 
-      - name: Resolve tag
-        id: tag
+      - name: Sign each image's release manifest (Ed25519)
         env:
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.release-key.outputs.version }}
+          CHANNEL: ${{ needs.release-key.outputs.channel }}
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
-          if [ -n "$INPUT_TAG" ]; then
-            printf 'tag=%s\n' "$INPUT_TAG" >> "$GITHUB_OUTPUT"
-          else
-            printf 'tag=%s\n' "$GH_REF_NAME" >> "$GITHUB_OUTPUT"
+          if [ -z "${OTA_SIGNING_KEY:-}" ]; then
+            echo "::error::the OTA_SIGNING_KEY secret is not set: refusing to publish unsigned firmware."
+            exit 1
+          fi
+          umask 077
+          KEYFILE="$(mktemp "$RUNNER_TEMP/ota-signing.XXXXXX")"
+          # Shredded on every exit, a failed signing included.
+          trap 'shred -u "$KEYFILE" 2>/dev/null || rm -f "$KEYFILE"' EXIT
+          chmod 600 "$KEYFILE"
+          # printf is a shell builtin: the key never becomes a process
+          # argument, and it is never echoed.
+          printf '%s' "$OTA_SIGNING_KEY" > "$KEYFILE"
+          for ENV_NAME in $FIRMWARE_ENVS; do
+            DIR="unsigned/firmware-$ENV_NAME"
+            # artifact = the env, so an image for another board refuses it.
+            # The whole-file .sig the script also writes is the Pi-server
+            # bundle's legacy format, unused for node images: discarded.
+            python scripts/sign-ota-bundle.py \
+              --bundle "$DIR/firmware.bin" \
+              --private-key "$KEYFILE" \
+              --out "$RUNNER_TEMP/unused-legacy.sig" \
+              --manifest-out "$DIR/$ENV_NAME.manifest.json" \
+              --artifact "$ENV_NAME" \
+              --version "$VERSION" \
+              --channel "$CHANNEL"
+          done
+          rm -f "$RUNNER_TEMP/unused-legacy.sig"
+
+      - name: Package one zip per env
+        run: |
+          mkdir -p dist
+          for ENV_NAME in $FIRMWARE_ENVS; do
+            DIR="unsigned/firmware-$ENV_NAME"
+            FILES=(firmware.bin bootloader.bin partitions.bin
+                   "$ENV_NAME.manifest.json" "$ENV_NAME.manifest.json.sig")
+            for f in "${FILES[@]}"; do
+              if [ ! -f "$DIR/$f" ]; then
+                echo "::error::$ENV_NAME: $f is missing."
+                exit 1
+              fi
+            done
+            (cd "$DIR" && zip -q -X "$GITHUB_WORKSPACE/dist/$ENV_NAME.zip" "${FILES[@]}")
+          done
+          ls -l dist
+
+      - name: Verify every zip (the checks the Pi and the node run)
+        env:
+          VERSION: ${{ needs.release-key.outputs.version }}
+          CHANNEL: ${{ needs.release-key.outputs.channel }}
+          PUBKEY: ${{ needs.release-key.outputs.pubkey }}
+        run: |
+          # Against the PUBLIC key the images were built with: every manifest
+          # signature, its canonical form, env, version, channel, sha256 and
+          # size, with an independent reader and with the Pi's own verifier;
+          # each image's chip, embedded verify key, env and version; exactly
+          # one zip per env. Nothing ships unless all of it holds.
+          python scripts/verify_firmware_release.py \
+            --pubkey-b64 "$PUBKEY" \
+            --version "$VERSION" \
+            --channel "$CHANNEL" \
+            --pi-verifier server/app/cloud/ota_manifest.py \
+            --expect-envs "$FIRMWARE_ENVS" \
+            dist/*.zip
+
+      - name: Upload the signed zips
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-firmware
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [release-key, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only job that may write: it creates the release and uploads the
+    # assets. It never holds the signing key.
+    permissions:
+      contents: write
+    env:
+      FIRMWARE_ENVS: node_esp32 node_esp32s3 node_esp32s3_n32r16v cam cam_esp32s3 cam_xiao_esp32s3 cam_waveshare_s3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The verifier and the Pi's ota_manifest.py come from the tag
+          # being released.
+          ref: refs/tags/${{ needs.release-key.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check the tag still names the commit being released
+        env:
+          RELEASE_SHA: ${{ needs.release-key.outputs.sha }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ -z "$RELEASE_SHA" ] || [ "$HEAD_SHA" != "$RELEASE_SHA" ]; then
+            echo "::error::the tag now names $HEAD_SHA, not $RELEASE_SHA: it moved during the run. Refusing to continue."
+            exit 1
           fi
 
-      - name: Create GitHub Release
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Pin the verify tooling to server/uv.lock
+        run: |
+          # cryptography and its dependency closure, every wheel hash the lock
+          # records for each: pip refuses anything else.
+          python - <<'PY' > "$RUNNER_TEMP/release-requirements.txt"
+          import tomllib
+
+          with open("server/uv.lock", "rb") as f:
+              packages = {p["name"]: p for p in tomllib.load(f)["package"]}
+          todo, closure = ["cryptography"], []
+          while todo:
+              name = todo.pop()
+              if name not in closure:
+                  closure.append(name)
+                  todo.extend(d["name"] for d in packages[name].get("dependencies", []))
+          for name in closure:
+              package = packages[name]
+              hashes = [wheel["hash"] for wheel in package.get("wheels", [])]
+              if not hashes:
+                  raise SystemExit(f"server/uv.lock records no wheels for {name}")
+              print(f"{name}=={package['version']} " + " ".join(f"--hash={h}" for h in hashes))
+          PY
+          cut -d' ' -f1 "$RUNNER_TEMP/release-requirements.txt"
+
+      - name: Install the verify tooling (wheels only, hash-checked)
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps \
+            --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/release-requirements.txt"
+
+      - name: Download the signed zips
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-firmware
+          path: dist
+          # dist/<env>.zip, exactly as the sign job checked them.
+
+      - name: Verify every zip again (the checks the Pi and the node run)
+        env:
+          VERSION: ${{ needs.release-key.outputs.version }}
+          CHANNEL: ${{ needs.release-key.outputs.channel }}
+          PUBKEY: ${{ needs.release-key.outputs.pubkey }}
+        run: |
+          # Against the PUBLIC key the images were built with: every manifest
+          # signature, its canonical form, env, version, channel, sha256 and
+          # size, with an independent reader and with the Pi's own verifier;
+          # each image's chip, embedded verify key, env and version; exactly
+          # one zip per env. Nothing ships unless all of it holds.
+          python scripts/verify_firmware_release.py \
+            --pubkey-b64 "$PUBKEY" \
+            --version "$VERSION" \
+            --channel "$CHANNEL" \
+            --pi-verifier server/app/cloud/ota_manifest.py \
+            --expect-envs "$FIRMWARE_ENVS" \
+            dist/*.zip
+
+      - name: Create the GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Firmware ${{ steps.tag.outputs.tag }}
-          body: |
-            ESP32 firmware for SporePrint chambers (v2).
-
-            **Two images cover everything** (a node image per board, plus
-            the camera):
-            - `node_esp32.zip` — unified node, ESP32-WROOM-32 (climate /
-              relay / lighting; pick the personality in the setup portal).
-            - `node_esp32s3.zip` — unified node, ESP32-S3-DevKitC-1 with
-              quad flash (N8 / N8R8 / N16R8). Does NOT boot on the N32R16V.
-              (Bench verification pending; WROOM-32 is canonical.)
-            - `node_esp32s3_n32r16v.zip` — unified node,
-              ESP32-S3-DevKitC-1-N32R16V (octal flash + PSRAM). Use this
-              one, not `node_esp32s3.zip`, for the N32R16V board.
-            - `cam.zip` — camera image, AI-Thinker ESP32-CAM (OV2640,
-              OV3660 or OV5640, auto-detected).
-            - `cam_esp32s3.zip`, `cam_xiao_esp32s3.zip`,
-              `cam_waveshare_s3.zip` — the same camera image for the
-              ESP32-S3 camera boards earlier BOMs listed (Freenove
-              ESP32-S3-WROOM CAM, Seeed XIAO ESP32S3 Sense, Waveshare
-              ESP32-S3-CAM-OVxxxx). No flash LED on these boards.
-              (Bench verification pending.)
-
-            Each archive contains the built `.bin` files. Flash with
-            esptool, the PlatformIO `-t upload` flow, or the on-Pi OTA
-            pipeline. On first boot a node opens the `SporePrint-Setup`
-            WiFi portal for provisioning. OTA: push the archive that
-            matches the node's board (its heartbeat `board` field) — an
-            image built for another board may not boot.
-
-            Source + build instructions:
-            https://github.com/59psi/SporePrint/tree/main/firmware
-          files: firmware-dist/*.zip
+          tag_name: ${{ needs.release-key.outputs.tag }}
+          name: SporePrint firmware ${{ needs.release-key.outputs.version }}
+          files: dist/*.zip
           fail_on_unmatched_files: true
+          body: |
+            Signed ESP32 firmware for SporePrint nodes, version ${{ needs.release-key.outputs.version }}, built from this tag by `.github/workflows/firmware-release.yml`.
+
+            ### Which zip
+
+            Pick the zip for the board (a node's heartbeat reports it as `board`). An image built for another board may not boot; a node already running a signed image refuses a manifest signed for another env.
+
+            - `node_esp32.zip`: unified node (climate / relay / lighting; the personality is chosen in the setup portal), ESP32-WROOM-32 DevKit. The board every wiring diagram uses.
+            - `node_esp32s3.zip`: unified node, ESP32-S3-DevKitC-1 with quad flash (N8 / N8R8 / N16R8). It does not boot on the N32R16V.
+            - `node_esp32s3_n32r16v.zip`: unified node, ESP32-S3-DevKitC-1-N32R16V (octal flash + PSRAM).
+            - `cam.zip`: camera, AI-Thinker ESP32-CAM (OV2640, OV3660 or OV5640, auto-detected).
+            - `cam_esp32s3.zip`, `cam_xiao_esp32s3.zip`, `cam_waveshare_s3.zip`: the camera image for the Freenove ESP32-S3-WROOM CAM, the Seeed XIAO ESP32S3 Sense and the Waveshare ESP32-S3-CAM (no flash LED on these).
+
+            The ESP32-S3 node and camera images are pending bench verification; the ESP32-WROOM-32 images are the reference.
+
+            ### What each zip holds
+
+            - `firmware.bin`: the application image. This is what you push over the air.
+            - `bootloader.bin`, `partitions.bin`: needed only for a first flash over USB.
+            - `<env>.manifest.json` + `<env>.manifest.json.sig`: the signed release manifest for that `firmware.bin` (its env, version ${{ needs.release-key.outputs.version }}, channel `stable`, SHA-256 and size), Ed25519-signed with the release key.
+
+            Every image is built with this release verify key compiled in:
+
+            `${{ needs.release-key.outputs.pubkey }}`
+
+            It must equal the key your Pi pins (Settings → OTA verify key, or `SPOREPRINT_OTA_PUBKEY_B64` in `.env`).
+
+            ### Update a node from the Pi (recommended)
+
+            Dashboard → **Firmware** → update firmware: push `firmware.bin` with the node's OTA password and add `<env>.manifest.json` and its `.sig` under **signed release manifest (optional)**. The Pi checks the signature against its pinned key, the manifest against the uploaded file (SHA-256, size) and the node's running version (no downgrade), then sends the manifest to the node. A node already running a signed image re-checks it with its compiled-in key and flashes only that exact image. A push without the manifest still flashes.
+
+            ### First flash over USB
+
+            With esptool v5, from the unzipped folder. `--erase-all` wipes the whole flash first, the node's saved settings included. Do not leave it out: the zips carry no OTA boot-selection data, so a board that has taken an over-the-air update could otherwise go on booting its old image from the other app slot.
+
+            - ESP32 (`node_esp32`, `cam`): `esptool --chip esp32 write-flash --erase-all 0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
+            - ESP32-S3 (every other zip): `esptool --chip esp32s3 write-flash --erase-all 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
+
+            To re-flash a SporePrint node over USB and keep its settings, run `esptool erase-region 0xe000 0x2000` (the OTA boot selection only) and then the same command without `--erase-all`.
+
+            On first boot the node opens the `SporePrint-Setup` WiFi portal for provisioning. Building from source instead: `firmware/README.md`.
+
+            ### Verify a download
+
+            From a checkout of this tag, with `cryptography` installed:
+
+            `python3 scripts/verify_firmware_release.py --pubkey-b64 <the key your Pi pins> --version ${{ needs.release-key.outputs.version }} node_esp32.zip`
+
+            It runs the checks the Pi and the node make (signature, canonical manifest, env, version, SHA-256, size) and confirms the image was built for that board's chip with the verify key, env and version compiled in. It reads the env from the file name; for a renamed download add `--env <env>`.

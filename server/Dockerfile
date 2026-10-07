@@ -3,7 +3,7 @@
 # rebuilding a patch tag once it is superseded, so bump tag + digest together
 # when a new 3.12.x-slim ships (Debian security fixes land that way too):
 #   docker buildx imagetools inspect python:3.12-slim   # "Digest:" line
-FROM python:3.12.14-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12.15-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
 
 # Zone files for TZ: compose passes TZ (install.sh writes the host's zone into
 # .env) so automation schedules run on the operator's clock, and glibc
@@ -26,7 +26,7 @@ WORKDIR /app
 # re-running `uv lock`. uv is only needed for the export and is removed in the
 # same layer.
 COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir --root-user-action=ignore uv==0.12.19 && \
+RUN pip install --no-cache-dir --root-user-action=ignore uv==0.12.23 && \
     uv export --no-cache --locked --no-dev --no-emit-project --format requirements.txt \
         -o /tmp/requirements.txt && \
     pip install --no-cache-dir --root-user-action=ignore --require-hashes \

@@ -203,7 +203,7 @@ async def analyze_frame_local(file_path: Path) -> dict | None:
                 "other_contam": 0.0,
                 "no_change": 0.0,
             },
-            "note": "Local CNN model not loaded — install vision extras and provide model weights",
+            "note": "Local CNN not built yet; Claude analysis is the automatic detector",
         }
     except Exception as e:
         log.error("Local vision analysis failed: %s", e)

@@ -32,6 +32,14 @@ from app.main import app as server_app
 REPO = Path(__file__).resolve().parents[2]
 DIST = REPO / "ui" / "dist"
 FIX = "Run: cd server && uv run python ../scripts/sync_ui_builder_data.py (or rebuild ui/dist)"
+# Any JS string quote. Which one a literal gets is the minifier's choice: esbuild
+# writes "x", Oxc (Vite 8+) writes `x`. Patterns over the bundle accept all three.
+Q = "[\"'`]"
+
+
+def _swap_literal(js: str, old: str, new: str) -> str:
+    """Replace the string literal `old` with `new` in whichever quotes it has."""
+    return re.sub(rf"({Q}){re.escape(old)}\1", lambda m: m[1] + new + m[1], js)
 
 
 def _load_sync():
@@ -103,7 +111,7 @@ def test_dist_ships_only_referenced_assets():
     for name in referenced:
         assert (DIST / "assets" / name).is_file(), f"index.html references missing {name}"
     # Follow references transitively: a lazy chunk (e.g. the wiring SVGs) is
-    # named only inside the main bundle, and its source map only beside it.
+    # named only inside the main bundle.
     assets = {f.name: f for f in (DIST / "assets").iterdir()}
     reachable = set(referenced)
     pending = list(referenced)
@@ -117,8 +125,41 @@ def test_dist_ships_only_referenced_assets():
                 reachable.add(other)
                 pending.append(other)
     for name in assets:
-        is_map = name.endswith(".map") and name.removesuffix(".map") in reachable
-        assert name in reachable or is_map, f"stale asset left in ui/dist: {name}"
+        assert name in reachable, f"stale asset left in ui/dist: {name}"
+
+
+def test_dist_ships_no_source_maps():
+    # The dashboard ships the minified bundle only (pi-ui builds with
+    # sourcemap: false).
+    maps = sorted(p.relative_to(DIST).as_posix() for p in DIST.rglob("*.map"))
+    assert maps == [], f"ui/dist ships source maps: {maps}"
+    for path in DIST.rglob("*"):
+        if path.suffix in {".js", ".css", ".html"}:
+            assert "sourceMappingURL" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_dist_ships_the_bundled_libraries_and_fonts_licences():
+    # The minified bundle carries no legal comments, so the licences of what
+    # it bundles ship beside index.html: THIRD-PARTY-LICENSES.md (pi-ui's
+    # build.license, plus Tailwind CSS for the stylesheet) and
+    # FONT-LICENSES.txt (the SIL Open Font License of every bundled family).
+    notices = DIST / "THIRD-PARTY-LICENSES.md"
+    assert notices.is_file(), "ui/dist ships no THIRD-PARTY-LICENSES.md: rebuild pi-ui (build.license)"
+    text = notices.read_text(encoding="utf-8")
+    for package in ("react", "react-dom", "react-router", "lucide-react", "tailwindcss"):
+        assert re.search(rf"^## {re.escape(package)} - \d", text, re.M), f"no licence for {package}"
+    assert "@sporeprint/" not in text
+    fonts = (DIST / "FONT-LICENSES.txt")
+    assert fonts.is_file(), "ui/dist ships no FONT-LICENSES.txt: rebuild pi-ui"
+    font_text = fonts.read_text(encoding="utf-8")
+    families = {re.match(r"(.+?)-latin-", f.name).group(1)
+                for f in (DIST / "assets").glob("*.woff2")}
+    assert families, "ui/dist bundles no fonts"
+    for family in families:
+        section = font_text.split(f"@fontsource/{family} ", 1)
+        assert len(section) == 2, f"FONT-LICENSES.txt has no section for {family}"
+        assert "SIL OPEN FONT LICENSE Version 1.1" in section[1].split("@fontsource/", 1)[0], family
+        assert "Copyright" in section[1].split("@fontsource/", 1)[0], family
 
 
 # ── the built-in fallback matches this server ─────────────────────────
@@ -246,7 +287,7 @@ def test_fallback_equals_the_live_api(client, fallback, sync, bundle_js):
     for path in fallback["firmware"]:
         image = path.removeprefix("src/")
         assert groups[path].get("bundle_url") == f"/api/builder/firmware/bundle/{image}", path
-        assert f'"/api/builder/firmware/bundle/{image}"' in bundle_js, path
+        assert re.search(rf"({Q})/api/builder/firmware/bundle/{re.escape(image)}\1", bundle_js), path
 
 
 # ── the checker itself catches regressions ────────────────────────────
@@ -260,10 +301,10 @@ def _mutate_block(sync, js: str, name: str, pattern: str, repl: str) -> str:
 
 
 @pytest.mark.parametrize("mutation, problem", [
-    (lambda js: js.replace('"/api/builder/tiers"', '"/api/builder/tierz"'), "/api/builder/tiers"),
+    (lambda js: _swap_literal(js, "/api/builder/tiers", "/api/builder/tierz"), "/api/builder/tiers"),
     (lambda js: js.replace("/api/builder/tiers/${", "/api/builder/tierz/${"), "/api/builder/tiers/{id}"),
-    (lambda js: js.replace('"/api/builder/models"', '"/static/models"'), "/api/builder/models"),
-    (lambda js: js.replace('"/api/builder/diagrams"', '"/static/diagrams"'), "/api/builder/diagrams"),
+    (lambda js: _swap_literal(js, "/api/builder/models", "/static/models"), "/api/builder/models"),
+    (lambda js: _swap_literal(js, "/api/builder/diagrams", "/static/diagrams"), "/api/builder/diagrams"),
     (lambda js: js + ';x="https://github.com/59psi/SporePrint/tree/main/hardware/3d"', "hardware/3d"),
     (lambda js: js + ';x="https://github.com/59psi/SporePrint/blob/main/hardware/wiring/t1.svg"',
      "hardware/wiring"),
@@ -277,11 +318,11 @@ def test_checker_flags_a_stale_static_bundle(sync, bundle_js, mutation, problem)
 
 
 @pytest.mark.parametrize("block, pattern, repl", [
-    ("tiers", r'("?priceApprox"?:\s*")\$', r"\1$1"),
-    ("tiers", r'("?shared"?:\s*)(!0|true)', r"\1!1"),
-    ("models", r'("?title"?:\s*")', r"\1Old "),
-    ("diagrams", r'("?filename"?:\s*"wiring-tier1-)', r"\1old-"),
-    ("firmware:src/node", r',\s*"node_esp32s3_n32r16v"', ""),
+    ("tiers", rf"({Q}?priceApprox{Q}?:\s*{Q})\$", r"\1$1"),
+    ("tiers", rf"({Q}?shared{Q}?:\s*)(!0|true)", r"\1!1"),
+    ("models", rf"({Q}?title{Q}?:\s*{Q})", r"\1Old "),
+    ("diagrams", rf"({Q}?filename{Q}?:\s*{Q}wiring-tier1-)", r"\1old-"),
+    ("firmware:src/node", rf",\s*{Q}node_esp32s3_n32r16v{Q}", ""),
 ])
 def test_checker_flags_stale_fallback_data(sync, bundle_js, block, pattern, repl):
     mutated = _mutate_block(sync, bundle_js, block, pattern, repl)
@@ -304,8 +345,8 @@ def dist_copy(sync, tmp_path, monkeypatch):
 
 def test_refresh_rewrites_stale_data_and_renames_the_bundle(sync, bundle_js, dist_copy):
     old = sync.bundle_path()
-    stale_js = _mutate_block(sync, bundle_js, "tiers", r'("?priceApprox"?:\s*")\$', r"\1$1")
-    stale_js = _mutate_block(sync, stale_js, "firmware:src/cam", r'"cam"', '"cam_old"')
+    stale_js = _mutate_block(sync, bundle_js, "tiers", rf"({Q}?priceApprox{Q}?:\s*{Q})\$", r"\1$1")
+    stale_js = _mutate_block(sync, stale_js, "firmware:src/cam", rf"({Q})cam\1", r"\1cam_old\1")
     old.write_text(stale_js, encoding="utf-8")
     assert sorted(sync.check()[1]) == ["firmware:src/cam", "tiers"]
 
@@ -314,16 +355,17 @@ def test_refresh_rewrites_stale_data_and_renames_the_bundle(sync, bundle_js, dis
     new = sync.bundle_path()
     assert new != old and not old.exists()
     assert sync.check() == ([], [])
-    assert (dist_copy / "assets" / f"{new.name}.map").is_file()
-    assert not (dist_copy / "assets" / f"{old.name}.map").exists()
-    assert new.read_text(encoding="utf-8").rstrip().endswith(f"//# sourceMappingURL={new.name}.map")
+    assert not list((dist_copy / "assets").glob("*.map"))
+    assert "sourceMappingURL" not in new.read_text(encoding="utf-8")
     assert sync.read_fallback(new.read_text(encoding="utf-8"))["tiers"] == sync.expected_tiers()
     assert "already matches" in sync.write()
 
 
 def test_refresh_refuses_a_structurally_stale_bundle(sync, bundle_js, dist_copy):
     path = sync.bundle_path()
-    path.write_text(bundle_js.replace('"/api/builder/tiers"', '"/api/builder/tierz"'), encoding="utf-8")
+    stale_js = _swap_literal(bundle_js, "/api/builder/tiers", "/api/builder/tierz")
+    assert stale_js != bundle_js
+    path.write_text(stale_js, encoding="utf-8")
     with pytest.raises(SystemExit, match="Rebuild it in the private monorepo"):
         sync.write()
     assert path.exists()

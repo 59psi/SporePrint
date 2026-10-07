@@ -1254,8 +1254,9 @@ def test_readme_labels_are_png_qr_codes_not_printer_support():
 
 
 def test_readme_wizard_counts_match_the_scorer():
+    # include_active filters the candidate pool; it is not a scored input.
     inputs = [n for n, prm in inspect.signature(recommend).parameters.items()
-              if prm.kind is inspect.Parameter.KEYWORD_ONLY and n != "limit"]
+              if prm.kind is inspect.Parameter.KEYWORD_ONLY and n not in ("limit", "include_active")]
     assert len(inputs) == 6
     line = next(row for row in _read(README).splitlines() if "**Species Selector Wizard**" in row)
     assert "6-step" not in line
@@ -1462,7 +1463,8 @@ def test_docs_present_no_shipping_mobile_app(doc):
 
 @pytest.mark.parametrize("doc", [DOCS / "cloud-relay-flow.md", DUAL_REPO], ids=_rel)
 def test_cloud_docs_put_fastapi_on_9001(doc):
-    # cloud/start.sh: uvicorn on 127.0.0.1:9001, Next on $PORT (default 9000).
+    # The cloud's FastAPI listens on internal 127.0.0.1:9001; the web app
+    # serves the public port.
     text = _read(doc)
     assert "127.0.0.1:9001" in text, doc.name
     assert "127.0.0.1:9000" not in text and "internal :9000" not in text, doc.name

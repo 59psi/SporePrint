@@ -64,9 +64,14 @@ def test_release_write_token_is_scoped_to_the_release_job():
 
 
 def test_dispatch_release_builds_the_requested_tag():
+    # The release-key job resolves the tag (dispatch input, else the pushed
+    # tag) and checks it; the build checks out exactly that tag.
     wf = _load(RELEASE)
     checkouts = [s for _, s in _steps({"jobs": {"build": wf["jobs"]["build"]}})
                  if str(s.get("uses", "")).startswith("actions/checkout@")]
     assert checkouts, "build job must check out the source"
     ref = checkouts[0].get("with", {}).get("ref", "")
-    assert "inputs.tag" in ref and "github.ref" in ref, ref
+    assert ref == "refs/tags/${{ needs.release-key.outputs.tag }}", ref
+    meta = next(s for s in wf["jobs"]["release-key"]["steps"] if s.get("id") == "meta")
+    assert meta["env"]["INPUT_TAG"] == "${{ inputs.tag }}"
+    assert meta["env"]["REF_NAME"] == "${{ github.ref_name }}"

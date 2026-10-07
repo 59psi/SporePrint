@@ -29,7 +29,7 @@ SECURITY_FLOORS = {
     "anyio": ("4.14.2", "4.13.0"),             # TLS IDNA host-name spoofing
     "pydantic-settings": ("2.14.2", "2.13.1"),  # secrets_dir symlink escape
     "pillow": ("12.3.0", "11.3.0"),            # PSD / paste / ImageCms OOB writes
-    "cryptography": ("50.0.1", "45.0.7"),      # bundled-OpenSSL + 46.x–50.x advisories
+    "cryptography": ("50.0.2", "50.0.1"),      # bundled OpenSSL < 4.0.3 (High) + 46.x–50.x advisories
 }
 
 

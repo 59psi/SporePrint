@@ -131,8 +131,8 @@ restart fails, the next `_restart_unit` attempt resumes from the right
 place rather than re-promoting.
 
 OTA releases are Ed25519-signed (`generate-ota-keypair.py` +
-`sign-ota-bundle.py` in `sporeprint/scripts/`; the private repo's
-`server-release.yml` signs and publishes them). Each release has a signed
+`sign-ota-bundle.py` in `sporeprint/scripts/`; the private release tooling
+signs and publishes them). Each release has a signed
 manifest, `{version}.manifest.json` + `.manifest.json.sig`: canonical JSON
 `{schema, artifact, version, channel, sha256, size, published_at}`, defined in
 `server/app/cloud/ota_manifest.py` and pinned by
@@ -175,6 +175,7 @@ Limits of Pi self-update:
 ## External services referenced in this flow
 
 - **Supabase** — JWT + user↔device mapping
-- **Firebase FCM** — native push for the mobile app once it ships (not shown; nothing receives it today, and browser push is built but not live yet)
+- **Firebase FCM** — native push for the mobile app once it ships (not shown; nothing receives it today)
+- **Browser push services** — browser notifications from `sporeprint.ai` for subscribers (Web Push with VAPID keys, through the browser maker's push service; not shown)
 - **RevenueCat** — tier source (webhook updates `profiles.tier`)
 - **Anthropic** — Claude vision / grow advisor (separate path, not in this sequence)

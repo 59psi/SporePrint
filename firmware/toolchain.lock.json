@@ -1,0 +1,43 @@
+{
+  "_comment": "SHA-256 of the PlatformIO platform zip that platformio.ini names and of the platform packages a release build installs. scripts/pin_firmware_toolchain.py checks every download against these before the release workflow builds; move them together with the platform URL. core_packages_not_in_builds: what PlatformIO Core installs for itself by URL (the PIO Home front end), which no build reads; the post-build check allows exactly these URLs. core_registry_packages: what PlatformIO Core installs for itself from the PlatformIO registry for every build (its own SCons, which takes the packages directory's tool-scons slot, so the platform's pinned tool-scons above is fetched and checked but not the copy that runs); the registry checksums them, this lock does not pin them, and the post-build check allows exactly these names from the registry.",
+  "platform": {
+    "url": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.312-1/platform-espressif32.zip",
+    "sha256": "f147d4ec6d657f451742df497811ebe3377db583ffd2e321e34b3793ff6b20a2"
+  },
+  "packages": {
+    "framework-arduinoespressif32": {
+      "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.12/esp32-core-3.3.12.tar.xz",
+      "sha256": "37defcf84b9ec35668db8f8a9370dc0f232af6d5b4b502f847554cc0fbe2afe4"
+    },
+    "framework-arduinoespressif32-libs": {
+      "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.12/esp32-core-3.3.12-libs.tar.xz",
+      "sha256": "a62b21a0b633ba0277ca64802e873adf82de28e54925cbf2ad45d6f7c3379750"
+    },
+    "toolchain-xtensa-esp-elf": {
+      "url": "https://github.com/pioarduino/registry/releases/download/0.0.1/xtensa-esp-elf-14.2.0_20260121.zip",
+      "sha256": "b9d3638a44744d1ea87c058c429eb5d4b5bbb02cabaadbf3d668bc7246722c31"
+    },
+    "tool-xtensa-esp-elf-gdb": {
+      "url": "https://github.com/pioarduino/registry/releases/download/0.0.1/xtensa-esp-gdb-17.1_20260402.zip",
+      "sha256": "e5fafc7c07ecd212bb4a182b2198fb7aee54f821bd72f81e0a490933e723b50e"
+    },
+    "tool-esptoolpy": {
+      "url": "https://github.com/pioarduino/registry/releases/download/0.0.1/esptoolpy-v5.4.0.zip",
+      "sha256": "cd7c364b0514131070dc017a5284132d387885a0fcd444b475aed58722a2094b"
+    },
+    "tool-esp_install": {
+      "url": "https://github.com/pioarduino/esp_install/releases/download/v5.3.5/esp_install-v5.3.5.zip",
+      "sha256": "2f7dd2ab942af137472ff8dbbe0b2730b77fe920eae815cb0037df64246ebbad"
+    },
+    "tool-scons": {
+      "url": "https://github.com/pioarduino/registry/releases/download/0.0.1/scons-4.11.1.zip",
+      "sha256": "e7dc964fc63455536d37b1bc11b888d6b1cb284bf6f6d4613e33ba64401c726f"
+    }
+  },
+  "core_packages_not_in_builds": {
+    "contrib-piohome": "https://github.com/pioarduino/registry/releases/download/0.0.1/contrib-piohome-3.4.4.tar.gz"
+  },
+  "core_registry_packages": {
+    "tool-scons": "PlatformIO Core's own SCons (platformio/tool-scons, from the PlatformIO registry)"
+  }
+}

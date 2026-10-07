@@ -9,7 +9,11 @@ the species whose automation is special. If it and `profiles.py` ever
 disagree, the code wins; fix this page.
 
 SporePrint ships 74 built-in species profiles: 30 gourmet, 11 medicinal,
-25 active and 8 novelty. Three of them are reference only
+25 active and 8 novelty. The active category is for education and research
+purposes only: some species may be controlled where you live, and you are
+responsible for following local law. Its profiles are not encouragement to
+cultivate, possess or use any controlled organism, and this page does not
+name them. Three profiles are reference only
 (`chamber_cultivable = False`): chaga, *Pestalotiopsis microspora* and giant
 puffball. The wizard never offers them for an indoor chamber, automation
 does not manage a grow on one (only the CO₂ Hard Ceiling still runs), and the

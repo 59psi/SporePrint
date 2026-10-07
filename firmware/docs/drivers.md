@@ -7,8 +7,8 @@ once told an operator to buy keeps working.
 
 Sources scanned: every revision of `server/app/builder/hardware_guides.py`,
 `README.md`, `docs/hardware-build-guide.md`, `docs/*.svg` and `CLAUDE.md` in
-this repo, plus the cloud repo's shopping alternates and
-`frontend/HARDWARE_AUDIT.md`. Last full pass: 2026-10-05.
+this repo, plus the shopping alternates and hardware audit notes kept with
+the dashboard source. Last full pass: 2026-10-05.
 
 Status values:
 

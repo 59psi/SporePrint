@@ -1489,11 +1489,12 @@ UI_DIST = REPO_ROOT / "ui" / "dist" / "assets"
 def _dashboard_names() -> tuple[frozenset[str], frozenset[str]]:
     """(Builder tab ids, sidebar page labels) from the compiled dashboard."""
     js = "\n".join(p.read_text(errors="replace") for p in UI_DIST.glob("*.js"))
-    tabs = re.search(r'\["overview"((?:,"\w+")+)\]', js)
+    # The minifier picks the quote: esbuild writes "x", Oxc (Vite 8+) writes `x`.
+    tabs = re.search(r"""\[(["'`])overview\1((?:,\1\w+\1)+)\]""", js)
     assert tabs, "the Builder tab list is not in ui/dist — rebuilt with other tab ids?"
-    pages = re.findall(r'\{to:"/[\w/-]*",label:"([^"]+)"\}', js)
+    pages = [m[2] for m in re.findall(r"""\{to:(["'`])/[\w/-]*\1,label:(["'`])([^"'`]+)\2\}""", js)]
     assert "Builder" in pages and "Hardware" in pages, pages
-    return frozenset(["overview", *re.findall(r'"(\w+)"', tabs.group(1))]), frozenset(pages)
+    return frozenset(["overview", *re.findall(r"\w+", tabs.group(2))]), frozenset(pages)
 
 
 @pytest.mark.parametrize("tier_id", TIER_IDS)

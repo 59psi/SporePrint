@@ -1,4 +1,4 @@
-const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",title:"Tier 1: Bare Bones Wiring Diagram",summary:"ESP32 + two I2C sensors on one STEMMA QT chain — no soldering, no breadboard. Power strip outside the chamber; the Pi and the smart plug connect over WiFi only.",width:1e3,height:850,bytes:19770,sha256:"d904242832d4c77dc5459573ce4e5b5751d913af6005b59087da7b2c53f91332",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 850" width="1000" height="850">
+var e={bare_bones:{tierId:`bare_bones`,filename:`wiring-tier1-bare-bones.svg`,title:`Tier 1: Bare Bones Wiring Diagram`,summary:`ESP32 + two I2C sensors on one STEMMA QT chain — no soldering, no breadboard. Power strip outside the chamber; the Pi and the smart plug connect over WiFi only.`,width:1e3,height:850,bytes:19770,sha256:`d904242832d4c77dc5459573ce4e5b5751d913af6005b59087da7b2c53f91332`,svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 850" width="1000" height="850">
 
   <!-- Background -->
   <rect width="1000" height="850" fill="#0a0a0f"/>
@@ -168,7 +168,7 @@ const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",
   <text x="500" y="842" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 1: Bare Bones  |  github.com/59psi/SporePrint</text>
 
 </svg>
-`},recommended:{tierId:"recommended",filename:"wiring-tier2-recommended.svg",title:"Tier 2: Recommended Wiring Diagram",summary:"3 ESP32 nodes + 1 camera · power strip → 12V 5A PSU → 14 AWG pigtail → WAGO → fused 18 AWG branches → 2 switch boards · STEMMA QT sensor chain · 2 smart plugs",width:1600,height:1496,bytes:67527,sha256:"ea6bd045b13b38f5a9f57d2183a4929107514a0b7d7dce4c2fdd5f7bdf1ca3e1",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1496" width="1600" height="1496">
+`},recommended:{tierId:`recommended`,filename:`wiring-tier2-recommended.svg`,title:`Tier 2: Recommended Wiring Diagram`,summary:`3 ESP32 nodes + 1 camera · power strip → 12V 5A PSU → 14 AWG pigtail → WAGO → fused 18 AWG branches → 2 switch boards · STEMMA QT sensor chain · 2 smart plugs`,width:1600,height:1496,bytes:67527,sha256:`ea6bd045b13b38f5a9f57d2183a4929107514a0b7d7dce4c2fdd5f7bdf1ca3e1`,svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1496" width="1600" height="1496">
 
   <!-- Background -->
   <rect width="1600" height="1496" fill="#0a0a0f"/>
@@ -705,7 +705,7 @@ const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",
   <text x="800" y="1486" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 2: Recommended  |  github.com/59psi/SporePrint</text>
 
 </svg>
-`},all_the_things:{tierId:"all_the_things",filename:"wiring-tier3-all-the-things.svg",title:"Tier 3: All The Things Wiring Diagram",summary:"Tier 2 + 2nd climate node, 2nd camera, 4 LED channels, HX711 scale, door contact, peristaltic pump, 4 smart plugs · 12V 10A PSU, fused branches (3 A relay, 7.5 A lighting)",width:1600,height:1770,bytes:84583,sha256:"f1ea0c08c691d6d68a1cd9dfbe4bc318ba1e0da126d3d4fe0969d4f046272f24",svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1770" width="1600" height="1770">
+`},all_the_things:{tierId:`all_the_things`,filename:`wiring-tier3-all-the-things.svg`,title:`Tier 3: All The Things Wiring Diagram`,summary:`Tier 2 + 2nd climate node, 2nd camera, 4 LED channels, HX711 scale, door contact, peristaltic pump, 4 smart plugs · 12V 10A PSU, fused branches (3 A relay, 7.5 A lighting)`,width:1600,height:1770,bytes:84583,sha256:`f1ea0c08c691d6d68a1cd9dfbe4bc318ba1e0da126d3d4fe0969d4f046272f24`,svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1770" width="1600" height="1770">
 
   <!-- Background -->
   <rect width="1600" height="1770" fill="#0a0a0f"/>
@@ -1376,5 +1376,4 @@ const t={bare_bones:{tierId:"bare_bones",filename:"wiring-tier1-bare-bones.svg",
   <text x="800" y="1760" text-anchor="middle" fill="#334155" font-family="system-ui, -apple-system, sans-serif" font-size="9">SporePrint  |  Tier 3: All The Things  |  github.com/59psi/SporePrint</text>
 
 </svg>
-`}};export{t as BUILDER_WIRING_SVGS};
-//# sourceMappingURL=builder.wiring.generated-BUxAZAR8.js.map
+`}};export{e as BUILDER_WIRING_SVGS};

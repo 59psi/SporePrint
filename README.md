@@ -71,10 +71,15 @@ phase, coredump acknowledgements, signed OTA manifests).
     Pi by a public DNS name, such as a Tailscale `*.ts.net` name? Add it to
     `SPOREPRINT_ALLOWED_HOSTS` in `.env`, then `docker compose up -d server`.
 - **Node firmware:** push the new image to each node from the dashboard's
-  Firmware page as before. Nodes still on a core 2.x image (every release
-  before this one) take the first core 3.x image over OTA, no USB cable
-  needed; before updating a whole fleet, update one node per board type and
-  check its heartbeat ([firmware/README.md](firmware/README.md#updating-nodes-from-a-core-2x-image)).
+  Firmware page as before. From `firmware-v5.1.0` on, each
+  `firmware-vX.Y.Z` GitHub Release carries a signed zip per board: `firmware.bin` plus its signed manifest, which the
+  push form takes too once the Pi pins the release key the notes print
+  (Settings → OTA verify key); see
+  [firmware/README.md](firmware/README.md#releases). Nodes still on a core
+  2.x image (every release before this one) take the first core 3.x image
+  over OTA, no USB cable needed; before updating a whole fleet, update one
+  node per board type and check its heartbeat
+  ([firmware/README.md](firmware/README.md#updating-nodes-from-a-core-2x-image)).
 - **Pis older than v3.3.0:** the broker has refused anonymous clients since
   v3.3.0, so every node needs its own broker login
   (`./scripts/add-node-mqtt-user.sh <node_id>`) and an OTA password of at
@@ -243,6 +248,11 @@ pio run -t upload -e cam_xiao_esp32s3       #   Seeed XIAO ESP32S3 Sense,
 pio run -t upload -e cam_waveshare_s3       #   Waveshare ESP32-S3-CAM-OV5640 (no flash LED; build guide §8b)
 ```
 
+Prebuilt, signed images for every board are on each `firmware-vX.Y.Z`
+GitHub Release from `firmware-v5.1.0` on, with esptool commands for a USB
+flash; see [firmware/README.md](firmware/README.md#releases). (The older
+`firmware-v4.2.0` release holds unsigned images for three boards only.)
+
 Before provisioning a node, create its broker login on the Pi:
 `./scripts/add-node-mqtt-user.sh <node_id>` (the MQTT username is the node
 id). On first boot each node opens the `SporePrint-Setup` WiFi portal
@@ -302,7 +312,7 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Photo references** -- visual guides for identifying healthy growth stages
 - **Contamination risk data** -- species-specific susceptibilities and prevention strategies
 - **Regional growing notes** -- climate-specific tips
-- **Species Selector Wizard** -- guided five-question questionnaire on the dashboard (the API scores six inputs) with weighted scoring to recommend species for your setup and experience level
+- **Species Selector Wizard** -- guided five-question questionnaire on the dashboard (the API scores six inputs) with weighted scoring to recommend species for your setup and experience level; active species are left out unless you opt in (`include_active=true`, the wizard's "include active species" switch)
 - **Substrate Calculator** -- volume-based recipe scaling for custom container dimensions
 - **Shopping List Generator** -- itemized supply lists with quantities and supplier links
 
@@ -415,7 +425,7 @@ ESP32 Nodes ──MQTT──> Raspberry Pi Backend <──REST──> React UI
 
 **Backend**: FastAPI on Raspberry Pi 5. SQLite with tiered retention. Mosquitto MQTT broker. Declarative automation rules engine with weather-aware virtual sensors. Claude Vision analysis (the local CNN layer is a stub). Predictive model learns weather-to-closet correlation. ntfy push notifications with predictive alerts.
 
-**Frontend**: React 19 + TypeScript + Vite 6 + Tailwind CSS v4, built in the parent monorepo and shipped here as `ui/dist`. Pages load their data over REST; the Chambers page polls the Pi's system metrics every 15 s. The bundled dashboard does not use the Socket.IO server (other clients can), and it is not a PWA. Dark theme with species category accent colors. The weather forecast, grow-impact and planner-recommendation endpoints have no page yet.
+**Frontend**: React 19 + TypeScript + Vite 8 + Tailwind CSS v4, built in the parent monorepo and shipped here as `ui/dist`. Pages load their data over REST; the Chambers page polls the Pi's system metrics every 15 s. The bundled dashboard does not use the Socket.IO server (other clients can), and it is not a PWA. Dark theme with species category accent colors. The weather forecast, grow-impact and planner-recommendation endpoints have no page yet.
 
 ### Project Structure
 
@@ -555,8 +565,10 @@ SporePrint ships with **74 built-in species profiles** across four categories:
 
 - **Gourmet** (30) -- oyster varieties, shiitake, lion's mane, king trumpet, maitake, nameko, pioppino, enoki, and more
 - **Medicinal** (11) -- reishi, turkey tail, chaga, cordyceps, and more
-- **Active** (25) -- various Psilocybe and related species
+- **Active** (25) -- species that are controlled or restricted in many jurisdictions
 - **Novelty** (8) -- bioluminescent and ornamental species
+
+> **Education and research use:** For education and research purposes only. Some species may be controlled where you live; you are responsible for following local law. The active profiles are not encouragement to cultivate, possess or use any controlled organism. The dashboard's species library (which lists the other categories first) and species wizard (which leaves active species out unless you opt in) show the same notice, as do its new-session, new-culture and plan-a-grow species pickers while an active species is chosen.
 
 Each profile includes:
 
@@ -754,7 +766,7 @@ server only if `docker-compose.yml` forwards it, and changes apply with
 ## Development
 
 ```bash
-# Backend environment (3.12 = the Docker image; never a bare `uv sync` or `--all-extras`)
+# Backend environment (3.12 = the Docker image; never a bare `uv sync`: it drops the dev extra and may pick a newer Python)
 cd server && uv sync --python 3.12 --extra dev
 
 # Backend checks + tests
@@ -808,7 +820,7 @@ Exact versions are pinned in `server/uv.lock`; the Docker image installs exactly
 those (hash-checked). After changing `pyproject.toml`, run `cd server && uv lock`.
 
 **Frontend (Node.js, parent monorepo)**:
-- React 19, TypeScript, Vite 6
+- React 19, TypeScript, Vite 8
 - Tailwind CSS v4
 - React Router v7
 - Lucide React (icons)
@@ -842,7 +854,7 @@ SporePrint is designed for a single operator on a trusted home LAN. Defense-in-d
 - **Command signing**: every `sporeprint/<node>/cmd/*` frame the Pi publishes is HMAC-SHA256 signed and carries the topic it was sent on plus a random nonce. Nodes holding the key reject unsigned, forged, replayed or redirected frames. See [docs/firmware-security.md](docs/firmware-security.md).
 - **DNS rebinding**: the API and Socket.IO answer only for Host names an outside web page cannot point at the Pi — private and loopback IP literals, `localhost`, `*.local` and other private-use suffixes, dotless names, the host of `SPOREPRINT_PUBLIC_UI_URL` and anything listed in `SPOREPRINT_ALLOWED_HOSTS`. Any other Host gets 421 (`GET /api/health` and `GET /api/provision/ca` excepted), so a rebinding page cannot drive the API in LAN-trust mode.
 - **Backend API**: set `SPOREPRINT_API_KEY` to require `Authorization: Bearer <key>` on all `/api/*` routes plus the Socket.IO `connect` handshake. Public in that mode: `/api/health`, `POST /api/cloud/pair` and `GET /api/provision/ca` (the broker's public CA). `POST /api/vision/frame` is accepted without a bearer only from a camera registered in `hardware_nodes`, with a declared Content-Length of at most 20 MB. `/metrics` sits outside `/api` and has its own optional bearer (Grafana integration). See [docs/auth.md](docs/auth.md).
-- **OTA**: a node's OTA listener (port 3232, `firmware/lib/sp_device/ota_service.cpp`, the espota handshake the Pi's push speaks) stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s. A Pi-pushed image goes only to the node being flashed: the connect-back listener on TCP 3233 serves that node's address and closes any other peer. Optionally, a push can carry a signed release manifest (`POST /api/hardware/nodes/{id}/ota` with `manifest` + `manifest_sig`): the Pi checks it against its pinned key and the uploaded `.bin`, and a node image built with that key flashes only the exact image the manifest names. The firmware releases cut by the private release pipeline (2026-10 on) are built with the key and ship each image's `<env>.manifest.json` + `.sig`; this repo's own release workflow and local builds carry no key, so their images ignore manifests.
+- **OTA**: a node's OTA listener (port 3232, `firmware/lib/sp_device/ota_service.cpp`, the espota handshake the Pi's push speaks) stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s. A Pi-pushed image goes only to the node being flashed: the connect-back listener on TCP 3233 serves that node's address and closes any other peer. Optionally, a push can carry a signed release manifest (`POST /api/hardware/nodes/{id}/ota` with `manifest` + `manifest_sig`): the Pi checks it against its pinned key and the uploaded `.bin`, and a node image built with that key flashes only the exact image the manifest names. This repo's firmware releases from `firmware-v5.1.0` on are built with the key and ship each image's `<env>.manifest.json` + `.sig`; local builds and Builder ZIPs carry no key, so their images ignore manifests. How the signing key is kept out of the build, and how to verify a download: [docs/firmware-security.md](docs/firmware-security.md#signed-firmware-releases).
 - **Secure MQTT**: a node pins the Pi's CA only after a TLS connection with it succeeds, and reports the pinned CA's SHA-256 as `ca_fp` in its heartbeat. See [docs/firmware-security.md](docs/firmware-security.md#secure-mqtt-tls).
 
 CORS on the backend is LAN-scoped via `allow_origin_regex` (localhost, `*.local`, RFC1918 ranges, `capacitor://localhost`). Settings-mutation routes (`PUT /api/settings/*`) sit behind the same bearer-token gate as every other write path. Vision uploads validate `X-Node-Id` against `^[a-zA-Z0-9_-]{1,32}$` and assert the resolved write path stays inside `vision_storage`.

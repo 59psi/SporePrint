@@ -35,8 +35,9 @@ reads as the old behavior when missing.
 ### Platform: Arduino-ESP32 core 3.3.12 / ESP-IDF 5.5.5
 
 Was core 2.0.17 / ESP-IDF 4.4 on `platformio/espressif32@6.13.0`, both
-end-of-life. The platform is pinned to the immutable pioarduino release URL
-`…/releases/download/55.03.312-1/platform-espressif32.zip`. Same four
+end-of-life. The platform is pinned to the versioned pioarduino release URL
+`…/releases/download/55.03.312-1/platform-espressif32.zip` (not immutable;
+the release workflow checks it against `firmware/toolchain.lock.json`). Same four
 images, same pins, same partition tables, same MQTT payloads and signing
 vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 
@@ -388,6 +389,16 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
   - Unsigned pushes still flash; `SPOREPRINT_OTA_REQUIRE_MANIFEST=1` at
     build time refuses them (ignored when no key is built in). Local builds
     and Builder ZIPs build without a key and ignore manifests.
+  - **Release images are signed.** `firmware-release.yml` builds every env
+    with the release verify key compiled in and ships each
+    `<env>.zip` with `firmware.bin`, `bootloader.bin`, `partitions.bin`,
+    `<env>.manifest.json` and its `.sig`; the release notes print the key
+    to pin on the Pi. `../scripts/verify_firmware_release.py` checks a
+    zip the way the Pi and the node do (the workflow runs it on every zip
+    before publishing). The signing key never reaches the PlatformIO
+    builds. Details: `../docs/firmware-security.md` → *Signed
+    firmware releases*, and `README.md` → *Releases* for flashing (a USB
+    flash erases the whole flash first: the zips carry no `otadata`).
   - `ota_manifest` is a reserved channel name; `sp_core/base64_codec.h`
     (strict RFC 4648 decode + the encoder that moved out of the uploader);
     `sp::Sha256` streaming hash in `sp_core/sha256.h`.

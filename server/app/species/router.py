@@ -23,6 +23,10 @@ async def recommend_species(
     substrate: list[str] = Query(description="Available substrates: straw, sawdust, grain, manure, all"),
     goal: str = Query(description="Goal: culinary | medicinal | both | research"),
     commitment: str = Query(description="Commitment: set_and_forget | daily_attention | dedicated_hobbyist"),
+    include_active: bool = Query(
+        False,
+        description="Also rank species in the controlled 'active' category (left out by default)",
+    ),
 ):
     profiles = await service.get_all_profiles()
     results = recommend(
@@ -33,6 +37,7 @@ async def recommend_species(
         substrates=substrate,
         goal=goal,
         commitment=commitment,
+        include_active=include_active,
     )
     return results
 

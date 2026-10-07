@@ -340,9 +340,9 @@ signing vectors are unchanged. Firmware details are in
   image; a node rejection stops the push; a node without manifest support
   gets a Pi-verified push. `GET .../ota` reports `manifest`
   (`node_verified` | `pi_verified` | null) and the node's refusal text.
-  This repo's own release images do not carry the key; the private release
-  pipeline, which holds it, builds its images with the key and signs one
-  manifest per env (see `docs/firmware-security.md`).
+  This repo's firmware releases, from `firmware-v5.1.0` on, are built with
+  the key and sign one manifest per env (see *Dependencies and CI* and
+  `docs/firmware-security.md`).
 - Pi-pushed node OTA uses fixed TCP port 3233 (published in compose), runs one
   push at a time and retries invitations. The connect-back listener accepts
   only the node being flashed: another LAN host that connects first is logged
@@ -627,8 +627,10 @@ signing vectors are unchanged. Firmware details are in
   default). A malformed non-blank value still fails loudly.
 - Upgrading a database created before v3.3.0 no longer crashes `init_db`.
 - Images pinned: `eclipse-mosquitto:2.1.2-alpine`, `binwiederhier/ntfy:v2.28.0`,
-  `nginx:1.30.5-alpine` and `python:3.12.14-slim` by digest. The server image
-  installs exactly `server/uv.lock` (hash-checked).
+  `busybox:1.36.1` (BusyBox's latest stable release; 1.37 and 1.38 are
+  unstable upstream), and `nginx:1.30.5-alpine` and `python:3.12.15-slim` by
+  digest. The server image installs exactly `server/uv.lock` (hash-checked,
+  exported with uv 0.12.23).
 - The dashboard's nginx passes request bodies up to 21 MiB and gives `/api/`
   a 180 s timeout. Socket.IO rate limiting and client tracking use each
   client's real address (uvicorn `--proxy-headers` behind nginx).
@@ -638,13 +640,46 @@ signing vectors are unchanged. Firmware details are in
   the 2026-10 follow-ups. The first
   rebuild also brought in the other pi-ui and design-package changes made in
   the monorepo since the previous `ui/dist`, from the v5.0.0
-  release work and the fixes after it. The main bundle is 1,133 kB (330 kB
-  gzipped); it was 1,258 kB (340 kB) before the wiring SVGs moved to their
-  own 173 kB chunk, fetched only when the Wiring tab opens (1,112 kB / 323 kB
-  right after the split).
+  release work and the fixes after it. The main bundle is 1,166 kB (338 kB
+  gzipped, built with Vite 8); it was 1,258 kB (340 kB) before the wiring
+  SVGs moved to their own 173 kB chunk, fetched only when the Wiring tab
+  opens (1,112 kB / 323 kB right after the split).
   `tests/test_ui_builder_sync.py` follows references from `index.html`
-  through the bundle, so that chunk and its source map count as shipped
-  assets.
+  through the bundle, so that chunk counts as a shipped asset. `ui/dist`
+  no longer ships source maps (the same test fails on any `*.map` file or
+  `sourceMappingURL` comment in `ui/dist`).
+- **Licence notices ship with the dashboard.** The minified bundle carries no
+  legal comments, so `ui/dist/THIRD-PARTY-LICENSES.md` lists every library
+  the bundle and its stylesheet include (React, React Router, lucide-react,
+  Tailwind CSS and the rest) with its licence text, and
+  `ui/dist/FONT-LICENSES.txt` carries the SIL Open Font License and
+  copyright of each bundled font family. `tests/test_ui_builder_sync.py`
+  checks both are there.
+- **Fonts ship with the dashboard.** Space Grotesk, Cormorant Garamond and
+  JetBrains Mono (latin subset, woff2, SIL Open Font License) are bundled in
+  `ui/dist/assets` instead of loaded from Google Fonts, so opening the LAN
+  dashboard contacts no font service and the fonts work offline.
+- **Species wizard** cards are keyed by species ID: two strains of one
+  species share a binomial, and changing an answer used to leave a stale
+  card behind (four cards, one ranked twice) while the
+  education-and-research notice went away. **Shopping List** shows that
+  notice when a controlled-category species is picked under Add a species
+  or is among the grows. The Builder's **Firmware** tab links the signed
+  `firmware-vX.Y.Z` release images and says a build from its ZIPs has no
+  verify key; the **OTA verify key** row and note in Settings say to pin the
+  key each firmware release's notes print (the keypair script only for
+  signing your own builds: a freshly generated key makes the Pi refuse every
+  official signed update). The **New session** and **New culture** pickers
+  open on the first species outside the controlled category instead of the
+  first library entry.
+- **Built with Vite 8** (React 19.3, Tailwind v4). The bundle's build target
+  is pinned to Chrome/Edge 111, Firefox 114 and Safari/iOS 16.4 (Vite 6
+  targeted Safari 14 / Chrome 87); no browser the dashboard ran on is
+  dropped, since its Tailwind v4 CSS already needed Safari 16.4, Chrome 111
+  and Firefox 128. Vite 8's minifier writes string literals in backticks,
+  so `tests/test_ui_builder_sync.py` and `tests/test_hardware_guides.py` now
+  accept any JS quote in the bundle, as `scripts/sync_ui_builder_data.py`
+  already did.
 - **The Builder page reads this Pi live.** It loads the BOM
   (`/api/builder/tiers` and `/tiers/{id}`), the models, the wiring diagrams
   and the firmware ZIPs from the Pi. If a request fails, that resource falls
@@ -815,6 +850,22 @@ signing vectors are unchanged. Firmware details are in
   Planner's weekday header, the sidebar uptime, "not yet supported on this
   Pi", chamber tile badges, Automation rule stats, contaminant growth speed,
   "not edible", the selected Sessions row and Builder tier card) is brighter.
+- **Education-and-research notice on the species pages.** The dashboard's
+  species library and species wizard show one short note: "For education
+  and research purposes only. Some species may be controlled where you live;
+  you are responsible for following local law." The species library shows it
+  above the list (its category chips can always pick the category) and in an
+  active profile's details; the species wizard shows it when a
+  recommendation is in that category; the species pickers on the new
+  session, new culture and plan-a-grow forms show it while a species in that
+  category is chosen. It names no species.
+- **Active species are opt-in in the wizard and listed last in the library**,
+  as on the cloud. `GET /api/species/recommend` leaves the `active`
+  category out of the ranking unless `include_active=true`; the species
+  wizard's "candidate pool" switch (off on every visit) sends it and shows
+  the notice while it is on. The species library lists the other categories
+  first, A to Z by common name, then the active category; before, it kept
+  the profile file's order, which starts with that category.
 
 ### Docs and diagrams
 - **All three tier wiring diagrams redrawn** to the cabling standard: inside vs
@@ -866,10 +917,10 @@ signing vectors are unchanged. Firmware details are in
   section; the build guide the Gen2 setup, a troubleshooting row and node
   firmware updates; `docs/firmware-security.md`, `docs/data-flow.md` and
   `docs/dual-repo-architecture.md` (React 19 bundle, 74 species, no
-  Capacitor shell) are corrected; the spec (Cordyceps / cubensis-rest FAE,
+  Capacitor shell) are corrected; the spec (Cordyceps / active-category rest FAE,
   the MQTT watchdog, the vision correction mark).
 - **Release docs pass (2026-10).** `docs/architecture-overview.svg` matches
-  the stack: a React 19 / Vite 6 / Tailwind v4 dashboard on REST (it showed
+  the stack: a React 19 / Vite 8 / Tailwind v4 dashboard on REST (it showed
   React 18, a PWA, Zustand and a Socket.IO client), the Compose services,
   every server module, the autodetected sensor set, OV5640 and the S3 camera
   boards, Shelly Gen1 and Gen2+, 25 kHz 10-bit PWM.
@@ -935,18 +986,103 @@ signing vectors are unchanged. Firmware details are in
   guard suites and says never to edit the vendored copy. A
   `.worktreeinclude` copies the operator's git-ignored `CLAUDE.md` into each
   Claude Code worktree.
+- **The active category is described, never named, in public docs.** The
+  README's Species Library lists it as "species that are controlled or
+  restricted in many jurisdictions" (it named the genus) and carries the
+  dashboard's education-and-research notice; `docs/species-reference.md` and
+  `docs/feature-status.md` say the same. `tests/test_active_species_public_docs.py`
+  builds every active profile's common, strain, scientific, genus and
+  epithet names from `profiles.py` and fails if any tracked Markdown file or
+  anything under `docs/` uses one (word-bounded, case-blind), and checks the
+  notice is where the category is described.
+- `docs/cloud-relay-flow.md` and `docs/dual-repo-architecture.md` list
+  browser notifications from `sporeprint.ai` (Web Push) beside the Pi's ntfy
+  for premium accounts (they said browser push was not live yet). README,
+  `docs/architecture-overview.svg` and `docs/dual-repo-architecture.md` name
+  Vite 8, which now builds the dashboard. `docs/dual-repo-architecture.md`
+  also names Next.js 16 for the cloud web app and calls the paid side "the
+  commercial layer" without a repository name.
 
 ### Dependencies and CI
-- anthropic 0.94 → 1.8, fastapi 0.135 → 0.141, starlette 1.0 → 1.7 (Host-header
-  bypass of the API-key gate fixed), cryptography 45 → 50.0.1, pillow 11.3 →
-  12.3, uvicorn 0.54, python-multipart 0.0.32, python-socketio 5.17 /
-  engineio 4.14, pydantic-settings 2.15. `server/uv.lock` regenerated (it was
-  missing four runtime dependencies).
+- anthropic 0.94 → 1.11, fastapi 0.135 → 0.142, starlette 1.0 → 1.7
+  (Host-header bypass of the API-key gate fixed), cryptography 45 → 50.0.2
+  (wheels bundle OpenSSL 4.0.3; now the floor), pillow 11.3 → 12.3, icalendar
+  6.3 → 7.3 (no code change: the calendar feeds use none of 7.0's moved or
+  removed APIs), uvicorn 0.54, python-multipart 0.0.32, python-socketio 5.17 /
+  engineio 4.14, pydantic-settings 2.15, ruff 0.16. `server/uv.lock`
+  regenerated (it was missing four runtime dependencies).
 - GitHub Actions pinned to commit SHAs at current majors; PlatformIO 6.2.0 in
   CI and release; the release job alone gets write access.
+- **Firmware releases are signed.** A `firmware-vX.Y.Z` tag
+  (`.github/workflows/firmware-release.yml`) now publishes, per image env, a
+  zip with `firmware.bin`, `bootloader.bin`, `partitions.bin` and the signed
+  release manifest `<env>.manifest.json` + `.sig`, every image built with the
+  release verify key compiled in (the release notes print it). The signing
+  key (secret `OTA_SIGNING_KEY`) reaches only one step in each of two jobs
+  that run no build tooling, no third-party action and no write token: one
+  derives the public key, the other signs. The PlatformIO builds get the
+  public key only, and the job that creates the release holds a write token
+  but never the key. The two key jobs run in a `firmware-release`
+  environment, so the key can be scoped to release tags there
+  (`docs/firmware-security.md`). The workflow fails closed without the
+  secret, accepts only exact `firmware-vX.Y.Z` tags, refuses a tag whose
+  `firmware/VERSION.txt` differs, and restores no build cache. Its key, sign
+  and release jobs install only the hash-pinned `cryptography` wheels
+  `server/uv.lock` records; the build installs PlatformIO 6.2.0 and its
+  dependencies from the new hash-pinned `firmware/requirements-pio.txt`,
+  creates the platform's own Python virtualenv from the new hash-pinned
+  `firmware/requirements-penv.txt` and builds with uv offline (so the
+  platform's open version floors fetch nothing from PyPI), then fetches the
+  pioarduino platform zip and the framework and tool packages it builds
+  with, and refuses any whose SHA-256 differs from the new
+  `firmware/toolchain.lock.json` (`scripts/pin_firmware_toolchain.py`,
+  which also refuses a platform whose virtualenv wants an unpinned package
+  and fails the build if anything was installed from an unchecked URL or the
+  virtualenv holds an unpinned package). The toolchain binaries come
+  through Espressif's `idf_tools.py`, which checks them against the SHA-256
+  in those packages. The first job records the tagged commit, and every later job
+  stops unless the tag still names it, so a tag moved during a run releases
+  nothing. The new
+  `scripts/verify_firmware_release.py` checks every zip as the Pi and the
+  node will (signature, canonical manifest, env, version, channel, SHA-256,
+  size, cross-checked with the Pi's own verifier) and that each image is for
+  its env's chip with the verify key, env and version compiled in; the
+  workflow runs it after signing and again just before publishing, and
+  anyone can run it on a downloaded zip. The release notes' USB flash
+  commands erase the flash first, since the zips carry no OTA boot
+  selection. Tests: the script against the committed manifest vectors and
+  tampered zips; the workflow's triggers, permissions, key scoping,
+  environment, SHA pins, tag guard and env list; and its sign, zip and
+  verify scripts run under bash (`tests/test_verify_firmware_release.py`,
+  `tests/test_firmware_release_workflow.py`); the toolchain lock and its
+  checks (`tests/test_pin_firmware_toolchain.py`).
 - `ruff check app/` passes again (unused imports and placeholder-less
   f-strings removed; E402 is ignored by design for `app/main.py` and the
   vendor `__init__.py` files) and `tests/test_lint.py` keeps it green.
+- Every dependency checked against its latest stable release on 2026-10-06:
+  the Python packages, base and service images, PlatformIO libraries
+  (PubSubClient 2.8, ArduinoJson 7.4.3, Monocypher 4.0.3: already current)
+  and workflow actions (already current). The Python base image stays on the
+  3.12 line.
+- The lint gate's rule set is pinned in `server/pyproject.toml`
+  (`select = ["E4", "E7", "E9", "F"]`, the rules it has always checked): ruff
+  0.16 widened its implicit default from 59 rules to 413, and a ruff upgrade
+  must not change the gate by itself.
+- The unused `vision` extra is gone from `server/pyproject.toml`: nothing
+  imported its runtimes (the local CNN pass is still a stub), and its
+  `tflite-runtime` has had no release since 2023 and no wheel for Python 3.12.
+  The runtime the CNN loads comes back with the change that builds it. The
+  stub result's `note` no longer tells you to install the extra.
+- FastAPI 0.142 brings `opentelemetry-api`. It stays a no-op: the image
+  installs no OpenTelemetry SDK or exporter, and compose forwards no `OTEL_*`
+  variable, so no traces, metrics or logs leave the Pi.
+- **Dependabot** (`.github/dependabot.yml`): weekly version updates for the
+  server's uv lock, the server and ui base images, the compose service images
+  and the workflow actions, with a release-age cooldown. uv and Actions
+  minor/patch updates are grouped; image updates come one PR each. No CI
+  runs on its pull requests (Actions are release-gated), so each one is
+  verified locally before merging; PlatformIO pins and the firmware
+  release's hash-pinned Python requirements stay manual.
 
 ## [5.0.0] - 2026-07-16
 
@@ -1197,7 +1333,7 @@ First cut of the v4.1 third-party-integration grid on the Pi. Drivers run locall
 
 ## [4.0.7] - 2026-05-02
 
-Lockstep version bump in step with the cloud parent (Stripe price-ID build-arg fix on the cloud side) — no Pi-side server, UI, or firmware code changes in this release.
+Lockstep version bump — no Pi-side server, UI, or firmware code changes in this release.
 
 ## [4.0.6] - 2026-05-02
 
@@ -1217,7 +1353,7 @@ Lockstep version bump in step with the cloud parent — no Pi-side server, UI, o
 
 ## [4.0.2] - 2026-05-01
 
-Lockstep version bump only — no Pi-side, server, UI, or firmware changes. v4.0.2 fixes a cloud-web middleware short-circuit that was 5xx-ing Railway's healthcheck on the v4.0.1 deploy.
+Lockstep version bump only — no Pi-side, server, UI, or firmware changes.
 
 ## [4.0.1] - 2026-05-01
 
@@ -1246,11 +1382,11 @@ Major version bump in lockstep with the cloud parent repo's v4 migration (Vite S
 
 ## [3.4.10] - 2026-04-24
 
-Lockstep version bump — no Pi or firmware changes. Cloud-side parent repo introduced a `KVCache` protocol for ephemeral in-pod state so a future Redis migration is drop-in. Firmware build unchanged.
+Lockstep version bump — no Pi or firmware changes. Firmware build unchanged.
 
 ## [3.4.9] - 2026-04-24
 
-Fresh archaeology sweep of v3.4.8 (`analysis/02-security.md` in the parent repo). All Critical, High, Medium, Low + operator-feedback items closed in one pass. Firmware grew real defense-in-depth at the MQTT layer; the cloud relay gained tier/ownership re-checks + rate limiting + `cmd_id` correlation; the Pi server got structured logs + split MQTT ACL + synced dependency pins. Firmware-specific narrative in `firmware/CHANGELOG.md#349`.
+Fresh archaeology sweep of v3.4.8. All Critical, High, Medium, Low + operator-feedback items closed in one pass. Firmware grew real defense-in-depth at the MQTT layer; the cloud relay gained tier/ownership re-checks + rate limiting + `cmd_id` correlation; the Pi server got structured logs + split MQTT ACL + synced dependency pins. Firmware-specific narrative in `firmware/CHANGELOG.md#349`.
 
 ### Added
 
@@ -1332,23 +1468,23 @@ Independent code-archaeology sweep. 12 fixes across firmware safety, server conc
 
 ## [3.4.6] - 2026-04-23
 
-No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.6 release-tooling fix — the parent repo added `scripts/sync-after-merge.sh` and a bump preflight to prevent submodule-pointer drift after rebase/squash merges on GitHub. See the parent repo's `CHANGELOG.md` for the full context.
+No Pi protocol or code changes. Lockstep version bump.
 
 ## [3.4.5] - 2026-04-22
 
-No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.5 `/simplify` pass over the v3.3.10 → v3.4.4 window (batched `metric_active_alerts` reads on every telemetry ingest, parallelized daily-summary fan-out, bounded caches, routed `alerts/escalation.py` through its persistence layer, extracted RevenueCat REST helper, narrative-ID comment sweep). See the parent repo's `CHANGELOG.md` for the full list.
+No Pi protocol or code changes. Lockstep version bump.
 
 ## [3.4.4] - 2026-04-22
 
-No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.4 `/simplify` cleanup pass (code-reuse consolidation, event-loop offloading for DNS, parallelized tier reconcile, dead-import/dead-comment sweep). See the parent repo's `CHANGELOG.md` for the full list.
+No Pi protocol or code changes. Lockstep version bump.
 
 ## [3.4.3] - 2026-04-22
 
-No Pi protocol or code changes. Version bumped in lockstep with the cloud-side v3.4.3 (`@xmldom/xmldom` CVE override in the mobile app's dependency tree).
+No Pi protocol or code changes. Lockstep version bump.
 
 ## [3.4.2] - 2026-04-22
 
-No Pi protocol changes. Version bumped in lockstep with the cloud-side v3.4.2 release (catch-up bump covering the gap-close + no-deferrals work that landed between v3.4.1 and this version).
+No Pi protocol changes. Lockstep version bump.
 
 ### Changed
 
@@ -1356,13 +1492,13 @@ No Pi protocol changes. Version bumped in lockstep with the cloud-side v3.4.2 re
 
 ## [3.4.1] - 2026-04-21
 
-No Pi-side functional changes. Version bumped in lockstep with the cloud repo's fifth-archaeology close-out — see the cloud CHANGELOG for v3.4.1 for the commercial-side fixes (SSRF guard on `/devices/pair`, tier-cache invalidation on downgrade, `_device_sids` race fix, Pi-emit event pass-through handlers, CSP tightening, AI quota race lock, and 20 new regression tests).
+No Pi-side functional changes. Lockstep version bump.
 
 All Pi protocols (HMAC signing, pair-verify, MQTT auth, bearer API-key gate) remain byte-compatible with v3.3.3+ / v3.4.x clouds.
 
 ## [3.4.0] - 2026-04-21
 
-No Pi-side functional changes. Version bump to stay in lockstep with the commercial cloud release (tier-model clarification on the cloud side — see the cloud repo's CHANGELOG for details).
+No Pi-side functional changes. Lockstep version bump.
 
 ### Changed
 
@@ -1371,7 +1507,7 @@ No Pi-side functional changes. Version bump to stay in lockstep with the commerc
 ### Documentation
 
 - README banner rewritten to explain the new commercial/OSS split: the Pi repo stays AGPL-3.0 free software; cloud-relay/mobile/web-app are paid. Pi-standalone users are unaffected.
-- Added historical release callouts for v3.3.3 / v3.3.4 that were previously only in the cloud repo's CHANGELOG.
+- Added historical release callouts for v3.3.3 / v3.3.4.
 
 ## [3.3.4] - 2026-04-20
 

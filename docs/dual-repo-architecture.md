@@ -4,20 +4,20 @@ Open-source Pi-side core + private commercial cloud layer. The commercial repo c
 
 **v3.4 business-model clarification**: this public repo (the Pi side) is free, open-source AGPL-3.0. The private repo (cloud + cloud-web, and the mobile app once it ships) is entirely a paid commercial product — `require_premium` (402 `subscription_required`) gates every cloud data endpoint, the cloud relay refuses free Socket.IO clients, and the cloud-web edge middleware redirects free users to `/pricing?upsell=1`. That doesn't change anything about the Pi's behavior or the git-submodule coupling documented below. It does mean that if you're running the Pi standalone without a commercial subscription, the "commercial layer" half of this diagram is invisible to you — and that's a supported configuration.
 
-**v4 layout shift on the private side**: the private browser surfaces and the Pi dashboard source now live in a pnpm monorepo at `frontend/packages/{cloud-web,pi-ui,design}/`. The Capacitor mobile package was removed (2026-07); a React Native mobile client (`mobile-rn`) is being built and is not yet a workspace package. The cloud-web package is a Next.js 15 App Router app that ships **inside the same Railway service and Docker image** as the FastAPI cloud (`cloud/`). There is no `api.sporeprint.ai` subdomain and no separate Railway service — Next.js binds to `$PORT` and proxies `/api/*`, `/socket.io/*`, `/health/*`, `/docs/*`, `/firmware/*`, `/subscriptions/*`, `/webhooks/*` to FastAPI on internal `127.0.0.1:9001`. From this Pi-side repo's perspective, none of that matters: the cloud connector still talks to `https://sporeprint.ai`.
+**v4 layout shift on the private side**: the private browser surfaces and the Pi dashboard source now live in one pnpm monorepo. There is no released mobile app. The cloud web app is a Next.js 16 App Router app that ships **inside the same Railway service and Docker image** as the FastAPI cloud (`cloud/`). There is no `api.sporeprint.ai` subdomain and no separate Railway service — Next.js binds to `$PORT` and proxies `/api/*`, `/socket.io/*`, `/health/*`, `/docs/*`, `/firmware/*`, `/subscriptions/*`, `/webhooks/*` to FastAPI on internal `127.0.0.1:9001`. From this Pi-side repo's perspective, none of that matters: the cloud connector still talks to `https://sporeprint.ai`.
 
 ```mermaid
 flowchart TB
     subgraph Public["PUBLIC · sporeprint · AGPL-3.0 · github.com/59psi/SporePrint"]
         Server["Pi Server<br/>Python 3.11+ · FastAPI<br/>20 modules · 150 endpoints<br/>SQLite · aiomqtt · Socket.IO<br/>Bearer-token gate (v3.3.0)"]
         Firmware["Firmware<br/>C++ · PlatformIO · Arduino-ESP32 core 3.3<br/>Unified node (climate · relay · lighting) + camera<br/>(AI-Thinker + 3 ESP32-S3 camera boards)<br/>Auth'd MQTT · signed commands · OTA pwd + rollback<br/>signed OTA manifests · offline buffer · health · coredump ack"]
-        WebUI["Web UI (compiled bundle in ui/dist)<br/>React 19 · Vite 6 · Tailwind v4<br/>21 pages · @sporeprint/design · REST<br/>Chambers · Sessions · Species<br/>Automation · Vision · Builder"]
+        WebUI["Web UI (compiled bundle in ui/dist)<br/>React 19 · Vite 8 · Tailwind v4<br/>21 pages · @sporeprint/design · REST<br/>Chambers · Sessions · Species<br/>Automation · Vision · Builder"]
     end
 
-    subgraph Private["PRIVATE · sporeprint-cloud · Commercial Layer · Paid"]
+    subgraph Private["PRIVATE · Commercial Layer · Paid"]
         Cloud["Cloud Backend (FastAPI + Socket.IO)<br/>Relay · Auth · Push · AI<br/>Metrics · Subscriptions<br/>HMAC-signed commands (v3.3.1)<br/>FastAPI on internal 127.0.0.1:9001<br/>(Next on $PORT, same Railway image)"]
-        CloudWeb["Cloud-Web (Next.js 15 App Router)<br/>Server-rendered React<br/>Edge tier middleware<br/>Stripe Checkout · Web push (VAPID)<br/>Same Railway image, public on $PORT"]
-        Mobile["Mobile App (React Native)<br/>being rebuilt · not released<br/>mobile-rn — replaces the removed<br/>Capacitor shell"]
+        CloudWeb["Cloud-Web (Next.js 16 App Router)<br/>Server-rendered React<br/>Edge tier middleware<br/>Stripe Checkout · Web push (VAPID)<br/>Same Railway image, public on $PORT"]
+        Mobile["Mobile App (React Native)<br/>being rebuilt · not released"]
     end
 
     Private -.->|git submodule · generated species, phase + Builder data| Public
@@ -46,7 +46,7 @@ flowchart TB
 | Mobile app | Not available: the React Native app is being rebuilt | Not available yet |
 | Cloud-web (`sporeprint.ai`) | ✗ Edge middleware redirects to `/pricing?upsell=1` | ✓ Full |
 | Pair Pi to commercial cloud | ✗ (`/devices/pair` → 402) | ✓ |
-| Push notifications | ntfy on the Pi (LAN) | ntfy on the Pi; browser push is built but not live yet |
+| Push notifications | ntfy on the Pi (LAN) | ntfy on the Pi, plus browser notifications from `sporeprint.ai` (Web Push) |
 | AI vision + advisor on the Pi | ✓ BYOK (your own Anthropic key, stored on the Pi) | ✓ BYOK on-Pi OR cloud-managed |
 | Cloud AI (`/ai/*`) | ✗ (`require_premium` returns 402) | ✓ rate-limited or BYOK for unlimited |
 | Cultures / Experiments / Planner (cloud) | ✗ | ✓ (added in v4) |
@@ -65,19 +65,19 @@ Key boundary: the Pi itself has **no paygate**. All paywalling lives in the comm
 
 ## What lives where (v4)
 
-| Concern | Public (sporeprint) | Private (sporeprint-cloud) |
+| Concern | Public (sporeprint) | Private (commercial cloud) |
 |---|---|---|
 | Telemetry ingest | ✅ mqtt.py + aiosqlite | — |
 | Automation engine | ✅ (safety watchdog, overrides, rules) | — |
-| Pi local UI source code | — | ✅ `frontend/packages/pi-ui/` (parent monorepo) |
+| Pi local UI source code | — | ✅ (parent monorepo) |
 | Pi local UI compiled bundle | ✅ `sporeprint/ui/dist/` (git-tracked via `!ui/dist/` exception) | builds into the submodule |
 | Vision stub + Claude via Pi | ✅ | — |
-| Mobile client | — | ✅ React Native rebuild in progress (`mobile-rn`; the Capacitor shell was removed) |
-| Cloud-web shell (Next.js 15) | — | ✅ `frontend/packages/cloud-web/` |
-| Cloud relay + Socket.IO rooms | — | ✅ `cloud/app/relay/` |
+| Mobile client | — | ✅ rebuild in progress, not released |
+| Cloud-web shell (Next.js 16) | — | ✅ |
+| Cloud relay + Socket.IO rooms | — | ✅ |
 | Auth (Supabase JWT verify) | — | ✅ |
 | Subscriptions (RevenueCat mobile + Stripe web) | — | ✅ |
 | Admin (overrides, promos, broadcasts) | — | ✅ |
 | ESP32 firmware | ✅ | — |
 | Cloud HMAC command signing | verify side | sign side (both at v3.3.1+) |
-| OTA bundle signing (Ed25519) | verify on Pi (signed release manifest, `server/app/cloud/ota_manifest.py`); optional manifest check on nodes built with the key | sign-side helpers in `sporeprint/scripts/`, run by the private release workflow |
+| OTA bundle signing (Ed25519) | verify on Pi (signed release manifest, `server/app/cloud/ota_manifest.py`); optional manifest check on nodes built with the key; node images signed by this repo's `firmware-release.yml` | Pi-server bundle: signed by the commercial release workflow with `sporeprint/scripts/` |

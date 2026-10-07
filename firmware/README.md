@@ -16,10 +16,19 @@ platform and the reasons for each setting are documented inline in
 ## Platform
 
 - **Arduino-ESP32 core 3.3.12 on ESP-IDF 5.5.5**: the pioarduino platform
-  release `55.03.312-1`, pinned by its immutable release URL in the
-  `[esp32_base]` section (never the moving "stable" one). Core 2.0.17 /
-  ESP-IDF 4.4 (`platformio/espressif32@6.13.0`) is end-of-life and no longer
-  used.
+  release `55.03.312-1`, pinned by its versioned release URL in the
+  `[esp32_base]` section (never the moving "stable" one). PlatformIO doesn't
+  hash-check that zip or the framework and tool packages it names, and a
+  release asset can be replaced, so the release workflow checks each against
+  the SHA-256 in `toolchain.lock.json` before it builds
+  (`scripts/pin_firmware_toolchain.py`); move the URL and the lock together.
+  The release build's Python packages are pinned the same way:
+  PlatformIO Core and its dependencies by `requirements-pio.txt`, and the
+  platform's own virtualenv (penv) by `requirements-penv.txt`, every package
+  with its SHA-256 (each file's header has the command that regenerates
+  it).
+  Core 2.0.17 / ESP-IDF 4.4 (`platformio/espressif32@6.13.0`) is end-of-life
+  and no longer used.
 - **PlatformIO Core 6.2.0 or newer, and git**, are required
   (`pip install -U platformio`). The first build downloads the platform and
   toolchains, about 1 GB.
@@ -93,9 +102,9 @@ Wiring, flashing and provisioning are in the
   the image that manifest names (its env, size and SHA-256, never older than
   the running image). `SPOREPRINT_OTA_REQUIRE_MANIFEST=1` additionally
   refuses unsigned pushes. Images built without the key (local builds,
-  Builder ZIPs, this repo's own release workflow) ignore manifests. The
-  firmware releases cut by the private release pipeline (2026-10 on) are
-  built with the key and ship `<env>.manifest.json` + `.sig` in each zip.
+  Builder ZIPs) ignore manifests. This repo's firmware releases from
+  `firmware-v5.1.0` on are built with the key and ship
+  `<env>.manifest.json` + `.sig` in each zip (see [Releases](#releases)).
 
 ### Updating nodes from a core 2.x image
 
@@ -117,6 +126,64 @@ hardware. Before updating a whole fleet, do one bench check per board type:
 update one node from 2.x and confirm its heartbeat reports the new version,
 then update a second node and cut its power before 60 s have passed; it
 must come back on the 2.x image.
+
+## Releases
+
+Pushing a `firmware-vX.Y.Z` tag runs
+[`.github/workflows/firmware-release.yml`](../.github/workflows/firmware-release.yml),
+which publishes a GitHub Release with one **signed** `<env>.zip` per env in
+the table above (from `firmware-v5.1.0` on; the older `firmware-v4.2.0`
+release holds unsigned images for three boards). Each zip holds:
+
+| File | What it is for |
+|---|---|
+| `firmware.bin` | The application image: what the Pi pushes over the air |
+| `bootloader.bin`, `partitions.bin` | Only for a first flash over USB |
+| `<env>.manifest.json` | The signed release manifest for that `firmware.bin`: env, version, channel `stable`, SHA-256, size (the format of `server/app/cloud/ota_manifest.py`) |
+| `<env>.manifest.json.sig` | Its raw 64-byte Ed25519 signature |
+
+Every image is built with the release verify key compiled in
+(`SPOREPRINT_OTA_PUBKEY_B64`); the release notes print it. Pin the same key
+on the Pi (Settings → OTA verify key) so it can check the manifests.
+
+- **Update a node:** dashboard → **Firmware** → update firmware: push
+  `firmware.bin` with the node's OTA password and add the manifest and its
+  `.sig` under **signed release manifest (optional)**. The Pi checks the
+  signature, the file's SHA-256 and size and the node's running version
+  (no downgrade); a node already running a signed image re-checks the
+  manifest with its own key and flashes only that exact image. Pick the zip
+  for the node's board (its heartbeat `board` field).
+- **First flash over USB** (esptool v5, from the unzipped folder).
+  `--erase-all` wipes the whole flash first, the node's saved settings
+  included. Keep it: the zips carry no OTA boot selection (`otadata`), so a
+  board that has taken an over-the-air update could otherwise go on booting
+  its old image from the other app slot.
+  - ESP32 (`node_esp32`, `cam`): `esptool --chip esp32 write-flash --erase-all 0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
+  - ESP32-S3 (the other envs): `esptool --chip esp32s3 write-flash --erase-all 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
+
+  To re-flash a SporePrint node over USB and keep its settings, run
+  `esptool erase-region 0xe000 0x2000` (only `otadata`, at the same offset
+  in every partition table here) and then the same command without
+  `--erase-all`.
+- **Verify a download** from a checkout of the release tag (needs Python
+  3.11+ and `cryptography`):
+
+  ```bash
+  python3 scripts/verify_firmware_release.py --pubkey-b64 <the key your Pi pins> \
+      --version 5.1.0 node_esp32.zip
+  ```
+
+  It makes the checks the Pi and the node make (signature, canonical
+  manifest, env, version, SHA-256, size) and confirms that the image was
+  built for that board's chip with the verify key, env and version compiled
+  in. It takes the env from the file name; for a download the browser
+  renamed (`node_esp32 (1).zip`) add `--env node_esp32`. The release
+  workflow runs the same script on every zip, once after signing and again
+  just before it publishes.
+
+How the key is kept away from the build (the PlatformIO jobs only ever see
+the public key) is in
+[`../docs/firmware-security.md`](../docs/firmware-security.md#signed-firmware-releases).
 
 ## Coredumps
 

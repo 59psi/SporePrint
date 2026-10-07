@@ -44,7 +44,9 @@ services:
   # server's data volumes to appuser before it boots, otherwise SQLite cannot
   # create the database file. mqtt/ntfy run as root, so their volumes are fine.
   init-perms:
-    image: busybox:1.36
+    # BusyBox's latest *stable* release (1.37.0 and 1.38.0 are labeled
+    # unstable upstream; Docker Hub's busybox:stable is this same digest).
+    image: busybox:1.36.1
     command: ["sh", "-c", "mkdir -p /data/db /data/vision && chown -R 1000:1000 /data/db /data/vision"]
     volumes:
       - sporeprint_db:/data/db

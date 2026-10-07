@@ -182,7 +182,117 @@ uses, to compare with the Pi's own `ca.crt`
   `manifest` + `manifest_sig`). Unsigned pushes still flash unless the image
   was built with `SPOREPRINT_OTA_REQUIRE_MANIFEST=1`; images built without
   the key (local builds, Builder ZIPs) ignore manifests. The key is a build
-  input, never a setting the command channel could change.
+  input, never a setting the command channel could change. This repo's
+  firmware releases from `firmware-v5.1.0` on are built with it (next
+  section); the older `firmware-v4.2.0` release is unsigned.
+
+## Signed firmware releases
+
+A `firmware-vX.Y.Z` tag runs `.github/workflows/firmware-release.yml`, which
+publishes one `<env>.zip` per image env: `firmware.bin`, `bootloader.bin`,
+`partitions.bin`, and `<env>.manifest.json` + `<env>.manifest.json.sig` (the
+manifest above, `artifact` = the env, channel `stable`, signed with the
+release key). Every image is built with the release verify key compiled in,
+and the release notes print that key: it must equal the key the Pi pins.
+
+The private key is the secret `OTA_SIGNING_KEY` (base64 of the 32-byte
+Ed25519 key, the format `scripts/generate-ota-keypair.py` writes). The build
+is the exposed part of a release (PlatformIO downloads and runs platform and
+library build scripts), so the key never reaches it, and the job that holds
+a write token never holds the key:
+
+| Job | Gets | Does |
+|---|---|---|
+| `release-key` | the private key, in one step | checks the tag (exactly `firmware-vX.Y.Z`), derives the **public** key and outputs only that; fails if the secret is missing |
+| `build` (one per env) | the public key and the tag's version | checks out the tag, refuses a tree whose `firmware/VERSION.txt` differs from the tag, installs PlatformIO and the platform's Python environment from hash-pinned requirements, fetches the PlatformIO platform and packages checked against `firmware/toolchain.lock.json`, builds with `SPOREPRINT_OTA_PUBKEY_B64` and `SPOREPRINT_FW_VERSION` with uv offline; no cache is restored |
+| `sign` | the private key, in one step; a read-only token | signs each `firmware.bin` with `scripts/sign-ota-bundle.py` (key in a `0600` temp file, shredded on exit), zips, runs `scripts/verify_firmware_release.py` on every zip **without** the secret, and hands the zips on |
+| `release` | a write token; never the key | runs the same check on the zips it received, then creates the release |
+
+The two jobs that hold the key run no build tooling and only GitHub's own
+actions (the one third-party action, which creates the release, runs in the
+`release` job). `release-key`, `sign` and `release` install only
+`cryptography` and its dependencies, as wheels, at the versions and hashes
+`server/uv.lock` pins. The workflow runs only for a pushed `firmware-v*` tag
+or a manual dispatch naming one (never for pull requests); every checkout
+is `refs/tags/<tag>` without persisted credentials, and `release-key`
+records the commit the tag names: `build`, `sign` and `release` each stop
+unless the tag still names that commit, so a tag moved mid-run (between two
+environment approvals, say) releases nothing; the token is read-only except
+in the `release` job; actions are pinned to commit SHAs.
+`server/tests/test_firmware_release_workflow.py` holds the workflow to all
+of this, and runs the sign, zip and verify scripts themselves.
+
+The platform and its packages: `firmware/platformio.ini` names the
+pioarduino platform by a release-asset URL, and the platform names its
+framework and tool packages the same way. PlatformIO checks none of them
+against a hash, and a release asset can be replaced, so the `build` job
+runs `scripts/pin_firmware_toolchain.py` before PlatformIO: it downloads the
+platform zip and every package `firmware/toolchain.lock.json` lists, refuses
+any whose SHA-256 differs from the lock, and points the build at the checked
+copies. After the build it fails the job if anything was installed from an
+unchecked URL or from the PlatformIO registry, with two exceptions the lock
+names: PlatformIO Core's own PIO Home front end, which no build reads, at its
+exact URL, and PlatformIO Core's own SCons, which Core installs from the
+PlatformIO registry for every build (the registry checksums it; the lock does
+not pin it). The library dependencies also come from the PlatformIO registry,
+pinned by version in `platformio.ini`. The compilers and tools themselves come
+through Espressif's `idf_tools.py`, which checks each download against the
+SHA-256 in its (checked) package. The Python side is pinned the same way:
+PlatformIO Core and its dependencies install from
+`firmware/requirements-pio.txt`, and the platform's own virtualenv
+(`~/.platformio/penv`) is created before the build from
+`firmware/requirements-penv.txt`, both with `pip --require-hashes` (exact
+versions, SHA-256 each). The platform's `penv_setup.py` then finds every
+package it wants already installed, and the build runs with `UV_OFFLINE=1`,
+so it cannot fetch another; `prepare` refuses a platform whose penv wants a
+package the lock lacks, and the post-build check refuses a penv holding
+anything unpinned. `requirements-penv.txt` pins two packages with known
+advisories, accepted because that environment exists only on the ephemeral
+release runner and serves nothing: starlette, which the platform's
+pioarduino package caps below 1.0 and which only serves PIO Home (never
+started by `pio run`), and ecdsa, which has no fixed release and backs
+esptool's secure-boot signing, which the release build does not call.
+Dependabot alerts on that file are expected; its header says how to treat
+them. A signature says the release
+workflow built the image; it does not vouch for the toolchain beyond these
+checks. To move to a new platform release, change the URL in
+`platformio.ini` and the lock together
+(`python scripts/pin_firmware_toolchain.py hash <file>` prints a SHA-256).
+
+`release-key` and `sign` run in the `firmware-release` environment. As a
+repository secret the key works as it is, but anyone who can push a tag or
+dispatch the workflow from a branch could then reach it. To close that, in
+the repository settings: make `OTA_SIGNING_KEY` an environment secret of
+`firmware-release` (and delete the repository secret), limit the
+environment's deployment branches and tags to the `firmware-v*` tag pattern
+only, optionally add required reviewers, and protect `firmware-v*` tags
+with a tag ruleset that blocks updates and deletion. The environment checks
+the ref the workflow runs from, not the `tag` input, so start a manual
+re-run with **Use workflow from** set to the tag itself; allowing the
+default branch instead would let any dispatch from it reach the key.
+
+`scripts/verify_firmware_release.py` reads the manifest independently of
+`server/app/cloud/ota_manifest.py` and, in the workflow, cross-checks it
+with that file; both are pinned to the committed vectors
+(`server/tests/fixtures/ota_manifest_vectors.json`). Per zip it requires
+exactly the five files, a valid signature, the canonical v1 bytes, the env,
+version, channel and the `firmware.bin` SHA-256 and size, a manifest small
+enough for the node's command frame, ESP images for the env's chip, and the
+verify key and version compiled into `firmware.bin` as whole strings (so
+`15.1.0` does not pass for `5.1.0`). The env name is checked as present and
+no other image env named: the linker may store a short name as the tail of a
+longer string (`cam` is the end of the camera driver's `esp32 ll_cam`). To
+check a download yourself, from a checkout of the release tag (add
+`--env <env>` if the browser renamed the file):
+
+```bash
+python3 scripts/verify_firmware_release.py --pubkey-b64 <the key your Pi pins> \
+    --version 5.1.0 node_esp32.zip
+```
+
+The signature covers `firmware.bin` only. `bootloader.bin` and
+`partitions.bin` are never pushed over the air, so they carry no manifest;
+the script checks only their chip and format.
 
 ## Secure boot v2 + flash encryption — not supported
 
@@ -233,12 +343,8 @@ per-user `ota_pubkey`).
 ## What's still open
 
 - A secure-boot / flash-encryption build (the ESP-IDF component route above).
-- Signed node images from this repo's own release workflow: the signing
-  key never enters this repo, so `.github/workflows/firmware-release.yml`
-  here builds without `SPOREPRINT_OTA_PUBKEY_B64` and its zips carry no
-  manifest. The private release pipeline, which holds the key, builds every
-  image with the public half and ships `<env>.manifest.json` + `.sig` in
-  each zip (2026-10 on); the key reaches only its signing job, never the
-  PlatformIO builds.
+- Requiring manifests: release images still accept unsigned pushes
+  (`SPOREPRINT_OTA_REQUIRE_MANIFEST` is not set) so that Pis without a pinned
+  key keep updating nodes.
 - Per-node HMAC keys (currently a single shared key across all nodes
   paired to one Pi).

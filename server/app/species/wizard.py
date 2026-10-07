@@ -36,6 +36,12 @@ EXPERIENCE_TAGS: dict[str, list[str]] = {
 # Environments with no chamber; every other choice is an indoor chamber.
 _OUTDOOR_ENVIRONMENTS = ("outdoor_beds", "logs")
 
+# Categories of species that are controlled or restricted in many
+# jurisdictions. The wizard leaves them out unless the caller opts in
+# (include_active), as the cloud's wizard does; the dashboard's species
+# library and pickers show the education-and-research notice for them.
+CONTROLLED_CATEGORIES = frozenset({"active"})
+
 # ── Commitment thresholds (total grow days) ─────────────────────────
 # Maps commitment level to a maximum number of total expected grow days
 # that the user is comfortable with.  Species whose total cycle exceeds
@@ -286,9 +292,15 @@ def recommend(
     substrates: list[str],
     goal: str,
     commitment: str,
+    include_active: bool = False,
     limit: int = 5,
 ) -> list[dict]:
-    """Score all profiles and return the top *limit* results, sorted descending."""
+    """Score all profiles and return the top *limit* results, sorted descending.
+
+    Controlled categories (CONTROLLED_CATEGORIES) are ranked only with
+    ``include_active``; by default the candidate pool leaves them out."""
+    if not include_active:
+        profiles = [p for p in profiles if p.category.lower() not in CONTROLLED_CATEGORIES]
     if environment not in _OUTDOOR_ENVIRONMENTS:
         # Reference-only species (chaga: a decade-long sclerotium on a living
         # birch; an endophyte with no fruit body) can't be grown in a closet or

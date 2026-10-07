@@ -1,0 +1,2 @@
+# PlatformIO Core for the firmware release build: see requirements-pio.txt.
+platformio==6.2.0

@@ -42,7 +42,7 @@
   <!-- Web UI main box -->
   <rect x="80" y="116" width="640" height="76" rx="6" fill="#1a1a2e" stroke="#334155" stroke-width="1"/>
   <text x="400" y="138" text-anchor="middle" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600">SporePrint Web UI</text>
-  <text x="400" y="156" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">React 19  /  TypeScript  /  Vite 6  /  Tailwind CSS v4  /  @sporeprint/design</text>
+  <text x="400" y="156" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="11">React 19  /  TypeScript  /  Vite 8  /  Tailwind CSS v4  /  @sporeprint/design</text>
   <text x="400" y="178" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="10">Pre-built in ui/dist (source: parent monorepo), served by nginx :3001  |  REST page loads  |  not a PWA</text>
 
   <!-- Arrow: Web UI → Server -->

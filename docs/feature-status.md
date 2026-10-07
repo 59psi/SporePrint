@@ -20,7 +20,7 @@ retired; this is where each section's subject lives.
 |---|---|
 | §1 summary, §2 architecture and principles | README → Architecture, Security; [AGENTS.md](../AGENTS.md) |
 | §3 Builder's Assistant | README → Hardware Builder; `server/app/builder/`; [its example hardware](#hardware-the-specs-builder-examples) |
-| §4a–§4c species model, setpoints, custom profiles | [Species reference](species-reference.md) (the active species' tables stay out of public docs) |
+| §4a–§4c species model, setpoints, custom profiles | [Species reference](species-reference.md) (the active species' tables stay out of public docs; those profiles are for education and research purposes only: some species may be controlled where you live, and you are responsible for following local law) |
 | §5a–§5e firmware | [firmware README](../firmware/README.md), [firmware security](firmware-security.md), [drivers](../firmware/docs/drivers.md); the node wire contract (channels, scenes, `cmd/*` payloads, reserved GPIOs) is `_HARDWARE_CONTRACT` in `server/app/builder/service.py`, checked by `server/tests/test_cross_cluster_builder.py` |
 | §6 automation rules engine | [Automation rules](automation-rules.md) |
 | §6 telemetry, sessions, vision, notifications | README → Features, API Reference, MQTT Topics |
@@ -45,7 +45,7 @@ retired; this is where each section's subject lives.
 
 | Spec item | Status | Today |
 |---|---|---|
-| Local CNN first pass (TFLite MobileNetV2, SSIM frame differencing, escalation to Claude) | Not built | `vision/service.py` `analyze_frame_local()` is a stub. Claude auto-analysis is the only automatic contamination detector. The `vision` extra in `server/pyproject.toml` installs runtimes nothing uses yet |
+| Local CNN first pass (TFLite MobileNetV2, SSIM frame differencing, escalation to Claude) | Not built | `vision/service.py` `analyze_frame_local()` is a stub. Claude auto-analysis is the only automatic contamination detector. No model runtime is installed; it is added to `server/pyproject.toml` with the code that loads it |
 | Claude vision context: previous frame, telemetry snapshot, session timeline | Not built | Claude gets the current frame, the species and session context and the camera sensor |
 | Active-learning retraining | Partial | Labels are stored (`POST /api/vision/frames/{id}/label`); nothing trains on them. `models/` holds only the enclosures |
 | Vision metrics per species: etiolation alert (oysters), coral-growth alert (lion's mane), orange saturation (cordyceps), colour banding (turkey tail) | Not built | Claude's morphology notes and recommendations. Shiitake browning is tracked (`browning_percent`) |
