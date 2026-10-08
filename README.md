@@ -29,7 +29,7 @@
 
 ## Release notes
 
-**Version:** 5.2.1
+**Version:** 5.2.2
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Pi server, install,
 enclosures) and [firmware/CHANGELOG.md](firmware/CHANGELOG.md) (ESP32 images).
