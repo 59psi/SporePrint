@@ -259,7 +259,7 @@ services:
     restart: unless-stopped
 
   ntfy:
-    image: binwiederhier/ntfy:v2.28.0
+    image: binwiederhier/ntfy:v2.29.0
     command: serve
     ports:
       - "8080:80"
