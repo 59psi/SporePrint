@@ -252,6 +252,15 @@ void test_buffered_uptime_ts_is_rebased_once_the_clock_syncs() {
     // An age the buffer could never hold: left alone.
     TEST_ASSERT_EQUAL_UINT32(10u, sp::rebase_uptime_ts(
                                       10u, now, 10u + sp::kMaxRebaseAgeS + 1u));
+    // A ts no uptime can reach, or an uptime past the wrap: left alone.
+    TEST_ASSERT_EQUAL_UINT32(sp::kUptimeWrapS + 1u,
+                             sp::rebase_uptime_ts(sp::kUptimeWrapS + 1u, now, 3700u));
+    TEST_ASSERT_EQUAL_UINT32(100u,
+                             sp::rebase_uptime_ts(100u, now, sp::kUptimeWrapS + 1u));
+    // Dated before the epoch floor (2020-01-01): left alone, never sent as a
+    // pre-2020 reading.
+    TEST_ASSERT_EQUAL_UINT32(100u, sp::rebase_uptime_ts(100u, 1577836800ULL + 5u,
+                                                       3700u));
 
     // The flush step on a real buffered frame.
     sp::TelemetryInputs in;
@@ -294,7 +303,7 @@ void test_buffered_uptime_ts_is_rebased_once_the_clock_syncs() {
 
 // ── alert ──────────────────────────────────────────────────────
 
-void test_alert_keys_and_types() {
+void test_alert_contract() {
     JsonDocument doc;
     sp::build_alert("co2", 4200.0f, "CO2 dangerously high!", nullptr, doc);
     const char* expected[] = {"type", "value", "message"};
@@ -309,31 +318,12 @@ void test_alert_keys_and_types() {
     const char* expected2[] = {"type", "value", "message", "sensor"};
     assert_exact_keys(doc2.as<JsonObject>(), expected2, 4, "alert (sensor)");
     TEST_ASSERT_EQUAL_STRING("SHT3x", doc2["sensor"]);
-}
 
-void test_alert_every_firmware_type_is_a_known_alert_type() {
-    // Each `type` the firmware's check_alerts/reed/TLS paths publish must be a
-    // declared ALERT_TYPE the cloud understands.
-    const char* fw_types[] = {"temperature", "humidity", "co2",
-                              "door", "sensor_failure", sp::kAlertTlsDowngrade};
-    for (const char* t : fw_types) {
-        JsonDocument doc;
-        sp::build_alert(t, 1.0f, "m", nullptr, doc);
-        TEST_ASSERT_TRUE_MESSAGE(
-            in_list(kAlertTypes, kNAlertTypes, doc["type"].as<const char*>()), t);
-    }
-}
-
-void test_tls_downgrade_alert_shape() {
-    // Secure MQTT on, no Pi CA pinned, running on plaintext. The value is the
-    // plaintext port in use; no `sensor` (dedup is per type).
-    JsonDocument doc;
-    sp::build_alert(sp::kAlertTlsDowngrade, 1883.0f,
-                    "Secure MQTT is on but no Pi CA is pinned", nullptr, doc);
-    const char* expected[] = {"type", "value", "message"};
-    assert_exact_keys(doc.as<JsonObject>(), expected, 3, "tls_downgrade alert");
-    TEST_ASSERT_EQUAL_STRING("tls_downgrade", doc["type"]);
-    TEST_ASSERT_TRUE(in_list(kAlertTypes, kNAlertTypes, doc["type"].as<const char*>()));
+    // tls_downgrade (Secure MQTT on, no Pi CA pinned, running on plaintext;
+    // value = the plaintext port) is the type the firmware names as a
+    // constant: its literal must be a declared ALERT_TYPE.
+    TEST_ASSERT_EQUAL_STRING("tls_downgrade", sp::kAlertTlsDowngrade);
+    TEST_ASSERT_TRUE(in_list(kAlertTypes, kNAlertTypes, sp::kAlertTlsDowngrade));
 }
 
 // ── switch-channel report ──────────────────────────────────────
@@ -414,22 +404,26 @@ static sp::HeartbeatInputs node_hb_inputs(const char** roles, int n_roles) {
     return in;
 }
 
+static const char* const kNodeHeartbeatKeys[] = {
+    "uptime_sec",      "free_heap",       "firmware_version", "wifi_rssi",
+    "ip",              "reset_reason",    "wifi_reconnects",  "mqtt_reconnects",
+    "type",            "roles",           "fw_image"};
+
 void test_node_heartbeat_contract() {
     const char* roles[] = {"climate", "relay"};
     sp::HeartbeatInputs in = node_hb_inputs(roles, 2);
     JsonDocument doc;
     sp::build_heartbeat(in, doc);
-    const char* expected[] = {"uptime_sec",      "free_heap",
-                              "firmware_version", "wifi_rssi",
-                              "ip",              "reset_reason",
-                              "wifi_reconnects", "mqtt_reconnects",
-                              "type",            "roles",
-                              "fw_image"};
+    const char* const* expected = kNodeHeartbeatKeys;
     assert_exact_keys(doc.as<JsonObject>(), expected, 11,
                       "node heartbeat (no migration)");
     TEST_ASSERT_EQUAL_STRING("node", doc["fw_image"]);
-    TEST_ASSERT_TRUE_MESSAGE(in_list(kComponentTypes, 4, doc["type"].as<const char*>()),
-                             "heartbeat type must be a COMPONENT_TYPE");
+    // The node reports node_type_str(personality) as `type`: every value it
+    // can produce must be a COMPONENT_TYPE the cloud routes on.
+    for (int p = 0; p <= (int)sp::Personality::LightingBank; ++p) {
+        const char* t = sp::node_type_str((sp::Personality)p);
+        TEST_ASSERT_TRUE_MESSAGE(in_list(kComponentTypes, 4, t), t);
+    }
     TEST_ASSERT_EQUAL_INT(0, doc["wifi_reconnects"].as<int>());
     TEST_ASSERT_EQUAL_INT(3, doc["mqtt_reconnects"].as<int>());
     // wifi_reconnects now carries the node's app-level WiFi re-begin count
@@ -447,23 +441,7 @@ void test_node_heartbeat_contract() {
     TEST_ASSERT_EQUAL_STRING("relay", r[1]);
 }
 
-void test_node_heartbeat_migrated_from_appears_only_when_set() {
-    const char* roles[] = {"lighting"};
-    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
-    in.migrated_from = "lighting";
-    JsonDocument doc;
-    sp::build_heartbeat(in, doc);
-    TEST_ASSERT_TRUE(keys_of(doc.as<JsonObject>()).count("migrated_from") == 1);
-    TEST_ASSERT_EQUAL_STRING("lighting", doc["migrated_from"]);
-
-    // Empty string must be treated as unset (omitted).
-    in.migrated_from = "";
-    JsonDocument doc2;
-    sp::build_heartbeat(in, doc2);
-    TEST_ASSERT_FALSE(keys_of(doc2.as<JsonObject>()).count("migrated_from") == 1);
-}
-
-void test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals() {
+void test_cam_heartbeat_contract_has_no_wifi_reconnects() {
     const char* roles[] = {"camera"};
     sp::HeartbeatInputs in;
     in.uptime_sec = 10;
@@ -473,6 +451,7 @@ void test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals() {
     in.ip = "10.0.0.9";
     in.reset_reason = 0;
     in.emit_wifi_reconnects = false;  // cam distinction
+    in.wifi_reconnects = 4;           // ...even when there were some
     in.mqtt_reconnects = 0;
     in.type = "camera";
     in.roles = roles;
@@ -481,88 +460,82 @@ void test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals() {
 
     JsonDocument doc;
     sp::build_heartbeat(in, doc);
-    std::set<std::string> k = keys_of(doc.as<JsonObject>());
-    TEST_ASSERT_FALSE_MESSAGE(k.count("wifi_reconnects") == 1,
-                              "cam heartbeat must NOT emit wifi_reconnects");
-    TEST_ASSERT_EQUAL_STRING("camera", doc["type"]);
-    TEST_ASSERT_EQUAL_STRING("cam", doc["fw_image"]);
-    TEST_ASSERT_TRUE(in_list(kComponentTypes, 4, "camera"));
+    const char* expected[] = {"uptime_sec",   "free_heap",       "firmware_version",
+                              "wifi_rssi",    "ip",              "reset_reason",
+                              "mqtt_reconnects", "type",         "roles",
+                              "fw_image"};
+    assert_exact_keys(doc.as<JsonObject>(), expected, 10, "cam heartbeat");
+    TEST_ASSERT_TRUE(in_list(kComponentTypes, 4, doc["type"].as<const char*>()));
 }
 
-void test_heartbeat_transport_and_board_keys_are_optional_additions() {
-    // `tls` (the MQTT transport actually in
-    // use), `tls_fallback` (only while Secure MQTT is on but the node runs
-    // plaintext) and `board` (which image a node needs for OTA). All are
-    // additive: an input set that doesn't ask for them yields exactly the
-    // pre-existing key set (asserted above), and the Pi ignores unknown keys.
-    const char* roles[] = {"relay"};
-    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
+// The heartbeat's optional keys, each additive (the Pi ignores unknown keys):
+// emitted exactly when set, with their wire types, and an empty string is
+// unset. `migrated_from` (the v1 role a migrated node came from), `tls` (the
+// MQTT transport in use), `tls_fallback` (only while Secure MQTT is on but
+// the node runs plaintext), `board` (which image a node needs for OTA) and
+// `ca_fp` (lowercase hex SHA-256 of the CA PEM the TLS link trusts, so the
+// Pi can spot a node that trust-on-first-use pinned some other CA).
+static void hb_none(sp::HeartbeatInputs&) {}
+static void hb_migrated(sp::HeartbeatInputs& in) { in.migrated_from = "lighting"; }
+static void hb_migrated_empty(sp::HeartbeatInputs& in) { in.migrated_from = ""; }
+static void hb_tls(sp::HeartbeatInputs& in) {
     in.emit_tls = true;
     in.tls = true;
-    in.board = "esp32-s3-devkitc-1-n32r16v";
-    JsonDocument doc;
-    sp::build_heartbeat(in, doc);
-    std::set<std::string> k = keys_of(doc.as<JsonObject>());
-    TEST_ASSERT_EQUAL_INT(13, (int)k.size());  // 11 + tls + board
-    TEST_ASSERT_TRUE(doc["tls"].is<bool>());
-    TEST_ASSERT_TRUE(doc["tls"].as<bool>());
-    TEST_ASSERT_EQUAL_STRING("esp32-s3-devkitc-1-n32r16v", doc["board"]);
-    TEST_ASSERT_FALSE(k.count("tls_fallback") == 1);  // only when true
-
+}
+static void hb_tls_fallback(sp::HeartbeatInputs& in) {
+    in.emit_tls = true;
     in.tls = false;
     in.tls_fallback = true;
-    JsonDocument fb;
-    sp::build_heartbeat(in, fb);
-    TEST_ASSERT_FALSE(fb["tls"].as<bool>());
-    TEST_ASSERT_TRUE(fb["tls_fallback"].is<bool>());
-    TEST_ASSERT_TRUE(fb["tls_fallback"].as<bool>());
-
-    // Defaults: none of the three keys.
-    sp::HeartbeatInputs plain = node_hb_inputs(roles, 1);
-    JsonDocument d0;
-    sp::build_heartbeat(plain, d0);
-    std::set<std::string> k0 = keys_of(d0.as<JsonObject>());
-    TEST_ASSERT_FALSE(k0.count("tls") == 1);
-    TEST_ASSERT_FALSE(k0.count("tls_fallback") == 1);
-    TEST_ASSERT_FALSE(k0.count("board") == 1);
-    // An empty board string is treated as unset.
-    plain.board = "";
-    JsonDocument d1;
-    sp::build_heartbeat(plain, d1);
-    TEST_ASSERT_FALSE(keys_of(d1.as<JsonObject>()).count("board") == 1);
+}
+static void hb_board(sp::HeartbeatInputs& in) { in.board = "esp32-s3-devkitc-1-n32r16v"; }
+static void hb_board_empty(sp::HeartbeatInputs& in) { in.board = ""; }
+static void hb_ca_fp(sp::HeartbeatInputs& in) {
+    hb_tls(in);
+    in.ca_fp = "cab3b27e4135403fdb3b368802d2b1bce67d4b8c1ab4c73245961524ceab0ef4";
+}
+static void hb_ca_fp_empty(sp::HeartbeatInputs& in) {
+    in.emit_tls = true;
+    in.ca_fp = "";
 }
 
-void test_heartbeat_ca_fp_is_an_optional_addition() {
-    // Security review: `ca_fp` = lowercase hex SHA-256 of the CA PEM the TLS
-    // link trusts, so the Pi can spot a node that trust-on-first-use pinned
-    // some other CA. Additive: emitted only when set (the images set it only
-    // while `tls` is true); older Pis ignore it.
+void test_heartbeat_optional_keys_appear_only_when_set() {
+    struct {
+        const char* label;
+        void (*set)(sp::HeartbeatInputs&);
+        const char* extra;  // the keys beyond the base 11, as JSON
+    } cases[] = {
+        {"defaults", hb_none, "{}"},
+        {"migrated_from", hb_migrated, "{\"migrated_from\":\"lighting\"}"},
+        {"migrated_from empty", hb_migrated_empty, "{}"},
+        {"tls", hb_tls, "{\"tls\":true}"},
+        {"tls_fallback", hb_tls_fallback, "{\"tls\":false,\"tls_fallback\":true}"},
+        {"board", hb_board, "{\"board\":\"esp32-s3-devkitc-1-n32r16v\"}"},
+        {"board empty", hb_board_empty, "{}"},
+        {"ca_fp", hb_ca_fp,
+         "{\"tls\":true,\"ca_fp\":"
+         "\"cab3b27e4135403fdb3b368802d2b1bce67d4b8c1ab4c73245961524ceab0ef4\"}"},
+        {"ca_fp empty", hb_ca_fp_empty, "{\"tls\":false}"},
+    };
     const char* roles[] = {"relay"};
-    const char* fp =
-        "cab3b27e4135403fdb3b368802d2b1bce67d4b8c1ab4c73245961524ceab0ef4";
-    sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
-    in.emit_tls = true;
-    in.tls = true;
-    in.board = "esp32-wroom-32";
-    in.ca_fp = fp;
-    JsonDocument doc;
-    sp::build_heartbeat(in, doc);
-    std::set<std::string> k = keys_of(doc.as<JsonObject>());
-    TEST_ASSERT_EQUAL_INT(14, (int)k.size());  // 11 + tls + board + ca_fp
-    TEST_ASSERT_TRUE(doc["ca_fp"].is<const char*>());
-    TEST_ASSERT_EQUAL_STRING(fp, doc["ca_fp"]);
-    TEST_ASSERT_EQUAL_size_t(64, strlen(doc["ca_fp"].as<const char*>()));
-
-    // Unset or empty (plaintext link): omitted — the key set is unchanged.
-    in.tls = false;
-    in.ca_fp = "";
-    JsonDocument off;
-    sp::build_heartbeat(in, off);
-    TEST_ASSERT_FALSE(keys_of(off.as<JsonObject>()).count("ca_fp") == 1);
-    sp::HeartbeatInputs plain = node_hb_inputs(roles, 1);
-    JsonDocument d0;
-    sp::build_heartbeat(plain, d0);
-    TEST_ASSERT_FALSE(keys_of(d0.as<JsonObject>()).count("ca_fp") == 1);
+    for (auto& c : cases) {
+        sp::HeartbeatInputs in = node_hb_inputs(roles, 1);
+        c.set(in);
+        JsonDocument doc;
+        sp::build_heartbeat(in, doc);
+        JsonDocument want;
+        TEST_ASSERT_FALSE_MESSAGE(deserializeJson(want, c.extra), c.label);
+        std::set<std::string> k = keys_of(doc.as<JsonObject>());
+        TEST_ASSERT_EQUAL_INT_MESSAGE(11 + (int)want.size(), (int)k.size(), c.label);
+        for (const char* base : kNodeHeartbeatKeys)
+            TEST_ASSERT_TRUE_MESSAGE(k.count(base) == 1, c.label);
+        for (JsonPair kv : want.as<JsonObject>()) {
+            TEST_ASSERT_TRUE_MESSAGE(k.count(kv.key().c_str()) == 1, c.label);
+            std::string got, exp;
+            serializeJson(doc[kv.key()], got);  // the value AND its JSON type
+            serializeJson(kv.value(), exp);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(exp.c_str(), got.c_str(), c.label);
+        }
+    }
 }
 
 // ── health ─────────────────────────────────────────────────────
@@ -731,16 +704,12 @@ int main(int, char**) {
     RUN_TEST(test_telemetry_ts_epoch_when_synced_else_uptime);
     RUN_TEST(test_telemetry_omits_a_non_finite_dew_point);
     RUN_TEST(test_buffered_uptime_ts_is_rebased_once_the_clock_syncs);
-    RUN_TEST(test_alert_keys_and_types);
-    RUN_TEST(test_alert_every_firmware_type_is_a_known_alert_type);
-    RUN_TEST(test_tls_downgrade_alert_shape);
+    RUN_TEST(test_alert_contract);
     RUN_TEST(test_switch_report_contract);
     RUN_TEST(test_dim_levels_keyed_by_channel_name_and_not_persisted);
     RUN_TEST(test_node_heartbeat_contract);
-    RUN_TEST(test_node_heartbeat_migrated_from_appears_only_when_set);
-    RUN_TEST(test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals);
-    RUN_TEST(test_heartbeat_transport_and_board_keys_are_optional_additions);
-    RUN_TEST(test_heartbeat_ca_fp_is_an_optional_addition);
+    RUN_TEST(test_cam_heartbeat_contract_has_no_wifi_reconnects);
+    RUN_TEST(test_heartbeat_optional_keys_appear_only_when_set);
     RUN_TEST(test_node_health_contract_with_sensors_and_channels);
     RUN_TEST(test_climate_health_omits_channels_object);
     RUN_TEST(test_channel_fault_is_an_optional_health_key);

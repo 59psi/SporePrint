@@ -29,13 +29,11 @@
 void setUp() {}
 void tearDown() {}
 
-static const uint32_t kSafe = sp::LinkWatchdog::kSafeModeAfterMs;
-static const uint32_t kRetry = sp::LinkWatchdog::kWifiRetryMs;
-
-void test_constants_match_spec() {
-    TEST_ASSERT_EQUAL_UINT32(10UL * 60UL * 1000UL, kSafe);
-    TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, kRetry);
-}
+// The spec's values as literals, not the policy's constants: every test
+// below fails if safe mode stops coming at 10 min or the WiFi re-begin at
+// 60 s.
+static const uint32_t kSafe = 10UL * 60UL * 1000UL;
+static const uint32_t kRetry = 60UL * 1000UL;
 
 void test_healthy_link_takes_no_action() {
     sp::LinkWatchdog w;
@@ -421,7 +419,6 @@ void test_chunked_writer_stops_at_the_first_short_write() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_constants_match_spec);
     RUN_TEST(test_healthy_link_takes_no_action);
     RUN_TEST(test_mqtt_loss_enters_safe_mode_once_after_ten_minutes);
     RUN_TEST(test_reconnect_exits_safe_mode_once);

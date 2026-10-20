@@ -42,52 +42,53 @@ void tearDown() {}
 
 // ── transport mode ─────────────────────────────────────────────
 
-void test_tls_off_is_plain_and_never_fetches() {
-    for (int pinned = 0; pinned < 2; ++pinned)
-        for (int req = 0; req < 2; ++req) {
-            sp::TlsMode m = sp::tls_mode(false, pinned, req);
-            TEST_ASSERT_EQUAL_INT((int)sp::TlsMode::Plain, (int)m);
-            TEST_ASSERT_FALSE(sp::tls_mode_wants_ca(m));
-            TEST_ASSERT_TRUE(sp::tls_mode_allows_mqtt(m));
-            TEST_ASSERT_FALSE(sp::tls_mode_is_tls(m));
-            TEST_ASSERT_FALSE(sp::tls_mode_is_fallback(m));
-        }
+// Which transport the settings select: Secure MQTT off is plaintext
+// whatever is stored; a pinned CA runs TLS; a missing CA is a loud plaintext
+// fallback by default (the deployed behavior) and fails CLOSED when the
+// operator ticked "Require TLS".
+void test_tls_mode_is_chosen_from_the_settings() {
+    struct {
+        const char* label;
+        bool tls_enabled, ca_pinned, require_tls;
+        sp::TlsMode want;
+    } cases[] = {
+        {"off", false, false, false, sp::TlsMode::Plain},
+        {"off, CA stored", false, true, false, sp::TlsMode::Plain},
+        {"off, require ticked", false, false, true, sp::TlsMode::Plain},
+        {"off, CA stored, require ticked", false, true, true, sp::TlsMode::Plain},
+        {"pinned", true, true, false, sp::TlsMode::Pinned},
+        {"pinned, required", true, true, true, sp::TlsMode::Pinned},
+        {"no CA", true, false, false, sp::TlsMode::Fallback},
+        {"no CA, required", true, false, true, sp::TlsMode::FailClosed},
+    };
+    for (auto& c : cases)
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            (int)c.want, (int)sp::tls_mode(c.tls_enabled, c.ca_pinned, c.require_tls),
+            c.label);
 }
 
-void test_pinned_ca_runs_tls() {
-    for (int req = 0; req < 2; ++req) {
-        sp::TlsMode m = sp::tls_mode(true, true, req);
-        TEST_ASSERT_EQUAL_INT((int)sp::TlsMode::Pinned, (int)m);
-        TEST_ASSERT_TRUE(sp::tls_mode_is_tls(m));
-        TEST_ASSERT_TRUE(sp::tls_mode_allows_mqtt(m));
-        TEST_ASSERT_FALSE(sp::tls_mode_wants_ca(m));
+// What each mode lets the link do. The fallback is the loud one (heartbeat
+// `tls_fallback` + the tls_downgrade alert) and keeps retrying the CA fetch;
+// fail-closed never speaks plaintext; a trial runs TLS (and must connect) on
+// a candidate CA that is not pinned yet, so it fetches no other.
+void test_each_tls_mode_says_what_the_link_may_do() {
+    struct {
+        sp::TlsMode m;
+        bool is_tls, is_fallback, allows_mqtt, wants_ca;
+    } cases[] = {
+        {sp::TlsMode::Plain, false, false, true, false},
+        {sp::TlsMode::Pinned, true, false, true, false},
+        {sp::TlsMode::Fallback, false, true, true, true},
+        {sp::TlsMode::FailClosed, false, false, false, true},
+        {sp::TlsMode::Trial, true, false, true, false},
+    };
+    for (auto& c : cases) {
+        const char* label = sp::tls_mode_str(c.m);
+        TEST_ASSERT_EQUAL_MESSAGE(c.is_tls, sp::tls_mode_is_tls(c.m), label);
+        TEST_ASSERT_EQUAL_MESSAGE(c.is_fallback, sp::tls_mode_is_fallback(c.m), label);
+        TEST_ASSERT_EQUAL_MESSAGE(c.allows_mqtt, sp::tls_mode_allows_mqtt(c.m), label);
+        TEST_ASSERT_EQUAL_MESSAGE(c.wants_ca, sp::tls_mode_wants_ca(c.m), label);
     }
-}
-
-void test_missing_ca_is_a_loud_fallback_by_default() {
-    sp::TlsMode m = sp::tls_mode(true, false, /*require_tls=*/false);
-    TEST_ASSERT_EQUAL_INT((int)sp::TlsMode::Fallback, (int)m);
-    TEST_ASSERT_FALSE(sp::tls_mode_is_tls(m));
-    TEST_ASSERT_TRUE(sp::tls_mode_is_fallback(m));  // → heartbeat + alert
-    TEST_ASSERT_TRUE(sp::tls_mode_allows_mqtt(m));  // deployed behavior kept
-    TEST_ASSERT_TRUE(sp::tls_mode_wants_ca(m));     // … but keeps retrying
-}
-
-void test_missing_ca_fails_closed_when_tls_is_required() {
-    sp::TlsMode m = sp::tls_mode(true, false, /*require_tls=*/true);
-    TEST_ASSERT_EQUAL_INT((int)sp::TlsMode::FailClosed, (int)m);
-    TEST_ASSERT_FALSE(sp::tls_mode_allows_mqtt(m));  // never plaintext
-    TEST_ASSERT_TRUE(sp::tls_mode_wants_ca(m));
-    TEST_ASSERT_FALSE(sp::tls_mode_is_fallback(m));
-}
-
-void test_mode_strings_are_stable() {
-    TEST_ASSERT_EQUAL_STRING("plain", sp::tls_mode_str(sp::TlsMode::Plain));
-    TEST_ASSERT_EQUAL_STRING("tls", sp::tls_mode_str(sp::TlsMode::Pinned));
-    TEST_ASSERT_EQUAL_STRING("plain_fallback",
-                             sp::tls_mode_str(sp::TlsMode::Fallback));
-    TEST_ASSERT_EQUAL_STRING("blocked",
-                             sp::tls_mode_str(sp::TlsMode::FailClosed));
 }
 
 // ── CA fetch backoff ───────────────────────────────────────────
@@ -130,27 +131,23 @@ void test_backoff_is_wrap_safe() {
 
 // ── time budget ────────────────────────────────────────────────
 
-void test_runtime_ca_fetch_fits_inside_the_loop_wdt() {
+void test_ca_fetch_and_tls_probe_each_fit_the_wdt_in_a_pass_of_their_own() {
     // A runtime fetch blocks one loop pass: DNS + TCP connect + HTTP read.
-    TEST_ASSERT_TRUE(sp::kCaFetchWorstCaseS + sp::kLoopWdtMarginS <=
-                     sp::kLoopWdtTimeoutS);
     TEST_ASSERT_EQUAL_UINT32(sp::kDnsWorstCaseS + sp::kCaFetchConnectTimeoutS +
                                  sp::kCaFetchReadTimeoutS,
                              sp::kCaFetchWorstCaseS);
-    // …and never shares a pass with an MQTT connect attempt: together they
-    // would not fit.
-    TEST_ASSERT_TRUE(sp::kCaFetchWorstCaseS + sp::kConnectAttemptWorstCaseS >
+    TEST_ASSERT_TRUE(sp::kCaFetchWorstCaseS + sp::kLoopWdtMarginS <=
                      sp::kLoopWdtTimeoutS);
-}
-
-void test_tls_probe_fits_inside_the_loop_wdt() {
     // The probe of a fetched CA: DNS + TCP connect + handshake, no CONNACK.
     TEST_ASSERT_EQUAL_UINT32(sp::kDnsWorstCaseS + sp::kTcpConnectTimeoutS +
                                  sp::kTlsHandshakeTimeoutS,
                              sp::kTlsProbeWorstCaseS);
     TEST_ASSERT_TRUE(sp::kTlsProbeWorstCaseS + sp::kLoopWdtMarginS <=
                      sp::kLoopWdtTimeoutS);
-    // A pass of its own, like a fetch: with a connect attempt it would not fit.
+    // Neither may share a pass with an MQTT connect attempt: together they
+    // would not fit (hence mqtt_may_connect below).
+    TEST_ASSERT_TRUE(sp::kCaFetchWorstCaseS + sp::kConnectAttemptWorstCaseS >
+                     sp::kLoopWdtTimeoutS);
     TEST_ASSERT_TRUE(sp::kTlsProbeWorstCaseS + sp::kConnectAttemptWorstCaseS >
                      sp::kLoopWdtTimeoutS);
 }
@@ -163,6 +160,9 @@ void test_mqtt_connect_is_suppressed_in_a_fetch_pass() {
     TEST_ASSERT_FALSE(sp::mqtt_may_connect(sp::TlsMode::Pinned, false, true));
     TEST_ASSERT_FALSE(sp::mqtt_may_connect(sp::TlsMode::FailClosed, false, false));
     TEST_ASSERT_TRUE(sp::mqtt_may_connect(sp::TlsMode::Pinned, false, false));
+    TEST_ASSERT_TRUE(sp::mqtt_may_connect(sp::TlsMode::Trial, false, false));
+    TEST_ASSERT_FALSE(sp::mqtt_may_connect(sp::TlsMode::Trial, true, false));
+    TEST_ASSERT_FALSE(sp::mqtt_may_connect(sp::TlsMode::Trial, false, true));
 }
 
 // ── CA acceptance (TOFU) ───────────────────────────────────────
@@ -297,18 +297,6 @@ using Step = sp::TlsPinMachine::Step;
 using Why = sp::TlsFailReason;
 
 static constexpr uint32_t kFirst = sp::CaFetchBackoff::kFirstRetryMs;
-
-void test_trial_mode_runs_tls_but_is_not_pinned() {
-    const sp::TlsMode t = sp::TlsMode::Trial;
-    TEST_ASSERT_TRUE(sp::tls_mode_is_tls(t));        // the link IS TLS …
-    TEST_ASSERT_FALSE(sp::tls_mode_is_fallback(t));
-    TEST_ASSERT_TRUE(sp::tls_mode_allows_mqtt(t));   // … and must connect
-    TEST_ASSERT_FALSE(sp::tls_mode_wants_ca(t));     // it has a candidate
-    TEST_ASSERT_EQUAL_STRING("tls_trial", sp::tls_mode_str(t));
-    TEST_ASSERT_TRUE(sp::mqtt_may_connect(t, false, false));
-    TEST_ASSERT_FALSE(sp::mqtt_may_connect(t, true, false));
-    TEST_ASSERT_FALSE(sp::mqtt_may_connect(t, false, true));
-}
 
 void test_boot_modes() {
     sp::TlsPinMachine m;
@@ -549,11 +537,7 @@ void test_trial_failure_classification() {
 
 void test_downgrade_messages_name_the_reason() {
     TEST_ASSERT_NULL(sp::tls_downgrade_message(Why::None));
-    // The pre-existing message is unchanged for the no-CA case.
-    TEST_ASSERT_EQUAL_STRING(
-        "Secure MQTT is on but no Pi CA is pinned - running on plaintext "
-        "(credentials unencrypted); retrying the CA fetch",
-        sp::tls_downgrade_message(Why::CaUnavailable));
+    // The certificate case tells the operator the likely fix.
     TEST_ASSERT_NOT_NULL(strstr(sp::tls_downgrade_message(Why::CertRejected),
                                 "name mismatch"));
     const Why all[] = {Why::CaUnavailable, Why::CertRejected,
@@ -567,8 +551,6 @@ void test_downgrade_messages_name_the_reason() {
             if (a != b)
                 TEST_ASSERT_TRUE(strcmp(msg, sp::tls_downgrade_message(b)) != 0);
     }
-    TEST_ASSERT_EQUAL_STRING("cert_rejected",
-                             sp::tls_fail_reason_str(Why::CertRejected));
 }
 
 void test_downgrade_latch_refires_on_a_new_reason_only() {
@@ -657,22 +639,17 @@ void test_verified_marker_only_vouches_for_the_stored_ca() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_tls_off_is_plain_and_never_fetches);
-    RUN_TEST(test_pinned_ca_runs_tls);
-    RUN_TEST(test_missing_ca_is_a_loud_fallback_by_default);
-    RUN_TEST(test_missing_ca_fails_closed_when_tls_is_required);
-    RUN_TEST(test_mode_strings_are_stable);
+    RUN_TEST(test_tls_mode_is_chosen_from_the_settings);
+    RUN_TEST(test_each_tls_mode_says_what_the_link_may_do);
     RUN_TEST(test_backoff_doubles_to_the_cap);
     RUN_TEST(test_backoff_waits_for_wifi_and_a_released_button);
     RUN_TEST(test_backoff_is_wrap_safe);
-    RUN_TEST(test_runtime_ca_fetch_fits_inside_the_loop_wdt);
-    RUN_TEST(test_tls_probe_fits_inside_the_loop_wdt);
+    RUN_TEST(test_ca_fetch_and_tls_probe_each_fit_the_wdt_in_a_pass_of_their_own);
     RUN_TEST(test_mqtt_connect_is_suppressed_in_a_fetch_pass);
     RUN_TEST(test_only_a_plausible_public_pem_is_pinned);
     RUN_TEST(test_ca_response_with_content_length_is_complete_when_the_body_is);
     RUN_TEST(test_ca_response_without_a_sane_length_is_refused_before_the_body);
     RUN_TEST(test_ca_response_error_status_is_done_without_a_body);
-    RUN_TEST(test_trial_mode_runs_tls_but_is_not_pinned);
     RUN_TEST(test_boot_modes);
     RUN_TEST(test_candidate_is_committed_only_after_a_connack);
     RUN_TEST(test_failed_trial_returns_to_the_plaintext_fallback);

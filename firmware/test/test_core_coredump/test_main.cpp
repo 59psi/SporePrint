@@ -168,14 +168,7 @@ void test_base64_rfc4648_vectors() {
     TEST_ASSERT_EQUAL(8, sp::base64_encode((const uint8_t*)"foobar", 6, buf, 9));
 }
 
-void test_full_chunk_encodes_to_684_chars() {
-    uint8_t raw[sp::kCoredumpChunkBytes];
-    for (size_t i = 0; i < sizeof(raw); ++i) raw[i] = (uint8_t)i;
-    char b64[((sp::kCoredumpChunkBytes + 2) / 3) * 4 + 1];
-    TEST_ASSERT_EQUAL(684, sp::base64_encode(raw, sizeof(raw), b64, sizeof(b64)));
-}
-
-void test_chunk_document_key_set() {
+void test_chunk_document_has_the_exact_keys_and_stays_under_1kb() {
     JsonDocument doc;
     sp::build_coredump_chunk(2, 3, 276, "QUJD", kId, doc);
     JsonObject o = doc.as<JsonObject>();
@@ -198,6 +191,17 @@ void test_chunk_document_key_set() {
     char out[200];
     serializeJson(doc, out, sizeof(out));
     TEST_ASSERT_NOT_NULL(strstr(out, "\"seq\":2,\"total\":3,\"size\":276"));
+
+    // A full chunk: 512 raw bytes are 684 base64 characters, and the whole
+    // document (the last chunk of the largest, 128 KB partition) stays under
+    // 1 KB.
+    uint8_t raw[sp::kCoredumpChunkBytes];
+    for (size_t i = 0; i < sizeof(raw); ++i) raw[i] = (uint8_t)i;
+    char b64[((sp::kCoredumpChunkBytes + 2) / 3) * 4 + 1];
+    TEST_ASSERT_EQUAL(684, sp::base64_encode(raw, sizeof(raw), b64, sizeof(b64)));
+    JsonDocument full;
+    sp::build_coredump_chunk(255, 256, 128 * 1024, b64, kId, full);
+    TEST_ASSERT_TRUE(measureJson(full) < 1024);
 }
 
 void test_ack_id_parsing() {
@@ -503,8 +507,7 @@ int main(int, char**) {
     RUN_TEST(test_sha256_stream_equals_one_shot_at_every_split);
     RUN_TEST(test_coredump_id_validation);
     RUN_TEST(test_base64_rfc4648_vectors);
-    RUN_TEST(test_full_chunk_encodes_to_684_chars);
-    RUN_TEST(test_chunk_document_key_set);
+    RUN_TEST(test_chunk_document_has_the_exact_keys_and_stays_under_1kb);
     RUN_TEST(test_ack_id_parsing);
     RUN_TEST(test_no_dump_stays_idle);
     RUN_TEST(test_chunk_geometry);

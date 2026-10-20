@@ -72,12 +72,24 @@ static std::vector<uint8_t> float_word_bytes(uint16_t hi, uint16_t lo) {
     return v;
 }
 
+// An SCD30 float as its two CRC'd big-endian words.
+static std::vector<uint8_t> float_bytes(float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return float_word_bytes((uint16_t)(bits >> 16), (uint16_t)(bits & 0xFFFF));
+}
+
 // ── transport ──────────────────────────────────────────────────
 
-void test_crc8_datasheet_vector() {
+void test_crc8_matches_the_datasheet_and_catalogue_vectors() {
     // Sensirion's published check vector: 0xBEEF → 0x92.
-    const uint8_t data[2] = {0xBE, 0xEF};
-    TEST_ASSERT_EQUAL_UINT8(0x92, sp::crc8_sensirion(data, 2));
+    const uint8_t beef[2] = {0xBE, 0xEF};
+    TEST_ASSERT_EQUAL_UINT8(0x92, sp::crc8_sensirion(beef, 2));
+    // poly 0x31 / init 0xFF / no reflection / no xorout is CRC-8/NRSC-5 in
+    // the CRC catalogue: check("123456789") = 0xF7. Pins the CRC the AHT2x
+    // shares with the Sensirion family independently of the 0xBEEF vector.
+    const uint8_t digits[9] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    TEST_ASSERT_EQUAL_UINT8(0xF7, sp::crc8_sensirion(digits, 9));
 }
 
 void test_transport_rejects_bad_crc() {
@@ -165,15 +177,6 @@ void test_sht3x_probe_waits_out_soft_reset_before_serial_read() {
     const uint32_t serial_at = bus.at(0x44, {0x37, 0x80});
     TEST_ASSERT_NOT_EQUAL(UINT32_MAX, serial_at);
     TEST_ASSERT_TRUE(serial_at - reset_at >= 2);
-}
-
-void test_sht3x_probe_reset_nack_is_absent() {
-    MockI2cBus bus;
-    MockClock clock;
-    sp::Sht3x sht(bus, clock);
-    bus.expect_write_nack(0x44);  // nothing at the address
-    TEST_ASSERT_FALSE(sht.probe());
-    TEST_ASSERT_TRUE(bus.script_consumed());
 }
 
 // ── SHT4x ──────────────────────────────────────────────────────
@@ -291,18 +294,6 @@ void test_scd4x_probe_stops_stale_periodic_mode_first() {
     const uint32_t serial_at = bus.at(0x62, {0x36, 0x82});
     TEST_ASSERT_NOT_EQUAL(UINT32_MAX, serial_at);
     TEST_ASSERT_TRUE(serial_at - stop_at >= 500);
-}
-
-void test_scd4x_probe_absent() {
-    MockI2cBus bus;
-    MockClock clock;
-    sp::Scd4x scd(bus, clock);
-    bus.expect_write_nack(0x62);  // stop_periodic
-    bus.expect_write_nack(0x62);  // get_serial
-    TEST_ASSERT_FALSE(scd.probe());
-    TEST_ASSERT_TRUE(bus.script_consumed());
-    // No 500 ms stall for a part that isn't there.
-    TEST_ASSERT_EQUAL_UINT32(0, clock.total_delayed_ms);
 }
 
 void test_scd4x_data_ready_and_read() {
@@ -457,34 +448,17 @@ void test_scd4x_restart_periodic_recovers_an_idle_sensor() {
 
 // ── SCD30 ──────────────────────────────────────────────────────
 
-void test_scd30_float_decode() {
-    // 439.09 ppm encodes as 0x43DB8B85-ish; build the exact bits for 439.09f
-    // and assert the decode reproduces it.
-    float ref = 439.09f;
-    uint32_t bits;
-    memcpy(&bits, &ref, sizeof(bits));
-    float decoded = sp::Scd30::words_to_float((uint16_t)(bits >> 16),
-                                              (uint16_t)(bits & 0xFFFF));
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, ref, decoded);
-}
-
 void test_scd30_read_measurement_floats() {
     MockI2cBus bus;
     MockClock clock;
     sp::Scd30 scd(bus, clock);
 
-    auto float_words = [](float f, std::vector<uint8_t>& v) {
-        uint32_t bits;
-        memcpy(&bits, &f, sizeof(bits));
-        push_word(v, (uint16_t)(bits >> 16));
-        push_word(v, (uint16_t)(bits & 0xFFFF));
-    };
-
     bus.expect_write(0x61, {0x03, 0x00});
     std::vector<uint8_t> meas;
-    float_words(812.5f, meas);  // CO₂
-    float_words(21.4f, meas);   // temp
-    float_words(88.2f, meas);   // RH
+    for (float f : {812.5f, 21.4f, 88.2f}) {  // CO₂, temp, RH as IEEE-754 words
+        std::vector<uint8_t> w = float_bytes(f);
+        meas.insert(meas.end(), w.begin(), w.end());
+    }
     bus.expect_read(0x61, meas);
 
     float co2, t, rh;
@@ -563,35 +537,23 @@ void test_scd30_frc_success_and_failure() {
     TEST_ASSERT_EQUAL_STRING("frc failed", scd.health().last_error);
 }
 
-void test_scd30_out_of_range_rejected() {
-    MockI2cBus bus;
-    MockClock clock;
-    sp::Scd30 scd(bus, clock);
-    auto float_words = [](float f, std::vector<uint8_t>& v) {
-        uint32_t bits;
-        memcpy(&bits, &f, sizeof(bits));
-        push_word(v, (uint16_t)(bits >> 16));
-        push_word(v, (uint16_t)(bits & 0xFFFF));
-    };
-    bus.expect_write(0x61, {0x03, 0x00});
-    std::vector<uint8_t> meas;
-    float_words(-12.0f, meas);  // negative CO₂ — corrupt
-    float_words(21.0f, meas);
-    float_words(50.0f, meas);
-    bus.expect_read(0x61, meas);
-    float co2, t, rh;
-    TEST_ASSERT_FALSE(scd.read(&co2, &t, &rh));
-    TEST_ASSERT_EQUAL_STRING("out-of-range", scd.health().last_error);
-}
-
-void test_scd30_nan_rejected() {
-    // A CRC-valid quiet-NaN word pair (0x7FC0 0x0000) makes every "<"/">"
-    // comparison false — it must still fail the range check, in each slot.
-    const uint16_t kNanHi = 0x7FC0, kNanLo = 0x0000;
-    uint32_t ok_bits[3];
+// A reading outside the sensor's range is corrupt, and a CRC-valid quiet
+// NaN (0x7FC0 0x0000) makes every "<" / ">" comparison false: both must
+// still fail the range check, in each of the three slots.
+void test_scd30_out_of_range_or_nan_reading_is_rejected() {
     const float ok[3] = {812.5f, 21.4f, 88.2f};
-    memcpy(ok_bits, ok, sizeof(ok_bits));
-    for (int slot = 0; slot < 3; ++slot) {
+    struct {
+        const char* label;
+        int slot;
+        bool nan;
+        float value;
+    } cases[] = {
+        {"negative CO2", 0, false, -12.0f},
+        {"NaN CO2", 0, true, 0},
+        {"NaN temperature", 1, true, 0},
+        {"NaN RH", 2, true, 0},
+    };
+    for (auto& c : cases) {
         MockI2cBus bus;
         MockClock clock;
         sp::Scd30 scd(bus, clock);
@@ -599,17 +561,38 @@ void test_scd30_nan_rejected() {
         std::vector<uint8_t> meas;
         for (int i = 0; i < 3; ++i) {
             std::vector<uint8_t> w =
-                (i == slot) ? float_word_bytes(kNanHi, kNanLo)
-                            : float_word_bytes((uint16_t)(ok_bits[i] >> 16),
-                                               (uint16_t)(ok_bits[i] & 0xFFFF));
+                i != c.slot ? float_bytes(ok[i])
+                            : (c.nan ? float_word_bytes(0x7FC0, 0x0000)
+                                     : float_bytes(c.value));
             meas.insert(meas.end(), w.begin(), w.end());
         }
         bus.expect_read(0x61, meas);
         float co2 = 1, t = 1, rh = 1;
-        TEST_ASSERT_FALSE(scd.read(&co2, &t, &rh));
-        TEST_ASSERT_EQUAL_STRING("out-of-range", scd.health().last_error);
-        TEST_ASSERT_EQUAL_UINT32(1, scd.health().fails);
+        TEST_ASSERT_FALSE_MESSAGE(scd.read(&co2, &t, &rh), c.label);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("out-of-range", scd.health().last_error, c.label);
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, scd.health().fails, c.label);
+        TEST_ASSERT_EQUAL_FLOAT_MESSAGE(1.0f, co2, c.label);  // outputs untouched
     }
+}
+
+// Like the SCD4x, the SCD30 ships with automatic self-calibration ON, which
+// assumes it sees fresh air every week and drags a chamber that never does
+// toward 400 ppm. begin() switches it off before starting continuous mode;
+// if the ASC write is refused, measuring is not started on that setting.
+void test_scd30_begin_turns_asc_off_before_continuous_mode() {
+    MockI2cBus bus;
+    MockClock clock;
+    sp::Scd30 scd(bus, clock);
+    bus.expect_write(0x61, {0x53, 0x06, 0x00, 0x00, 0x81});  // ASC 0
+    bus.expect_write(0x61, {0x00, 0x10, 0x00, 0x00, 0x81});  // start, no pressure
+    TEST_ASSERT_TRUE(scd.begin());
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+
+    bus.expect_write_nack(0x61);
+    TEST_ASSERT_FALSE(scd.begin());
+    TEST_ASSERT_TRUE(bus.script_consumed());  // no start command after it
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
 }
 
 // ── BH1750 ─────────────────────────────────────────────────────
@@ -768,7 +751,60 @@ void test_autodetect_nothing_attached() {
     TEST_ASSERT_FALSE(d.bh1750);
     TEST_ASSERT_FALSE(d.aht20);
     TEST_ASSERT_EQUAL_INT((int)sp::BaroKind::None, (int)d.baro);
+    // Each absent part costs exactly its one NACKed probe write (two for the
+    // SCD4x) — no further transaction — and no settle time: no 500 ms
+    // stop-periodic stall, no soft-reset wait for a part that isn't there.
     TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+    TEST_ASSERT_EQUAL_UINT32(0, clock.total_delayed_ms);
+}
+
+// The second choice of each slot: an SHT3x strapped to 0x45, an SCD30 when
+// no SCD4x answers, a BH1750 with ADDR high (0x5C). The kind names are what
+// the node reports: the health document's sensor keys, and the
+// expected_missing entry of a remembered CO2 sensor that is gone.
+void test_autodetect_takes_the_alternates_and_names_them() {
+    MockI2cBus bus;
+    MockClock clock;
+    bus.expect_write_nack(0x44);  // SHT4x
+    bus.expect_write_nack(0x44);  // SHT3x soft reset
+    bus.expect_write_nack(0x45);  // SHT4x
+    bus.expect_write(0x45, {0x30, 0xA2});
+    bus.expect_write(0x45, {0x37, 0x80});
+    std::vector<uint8_t> serial;
+    push_word(serial, 0xBEEF);
+    push_word(serial, 0xCAFE);
+    bus.expect_read(0x45, serial);
+    bus.expect_write_nack(0x62);  // SCD4x stop_periodic
+    bus.expect_write_nack(0x62);  // SCD4x get_serial
+    bus.expect_write(0x61, {0xD1, 0x00});  // SCD30 firmware version
+    std::vector<uint8_t> version;
+    push_word(version, 0x0342);
+    bus.expect_read(0x61, version);
+    bus.expect_write_nack(0x23);
+    bus.expect_write(0x5C, {0x01});
+    bus.expect_write_nack(0x38);
+    bus.expect_write_nack(0x76);
+    bus.expect_write_nack(0x77);
+
+    sp::DetectedSensors d = sp::autodetect_i2c(bus, clock);
+    TEST_ASSERT_EQUAL_INT((int)sp::TempRhKind::Sht3x, (int)d.temp_rh);
+    TEST_ASSERT_EQUAL_UINT8(0x45, d.temp_rh_addr);
+    TEST_ASSERT_EQUAL_INT((int)sp::Co2Kind::Scd30, (int)d.co2);
+    TEST_ASSERT_TRUE(d.bh1750);
+    TEST_ASSERT_EQUAL_UINT8(0x5C, d.bh1750_addr);
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+
+    TEST_ASSERT_EQUAL_STRING("none", sp::temp_rh_kind_str(sp::TempRhKind::None));
+    TEST_ASSERT_EQUAL_STRING("sht3x", sp::temp_rh_kind_str(sp::TempRhKind::Sht3x));
+    TEST_ASSERT_EQUAL_STRING("sht4x", sp::temp_rh_kind_str(sp::TempRhKind::Sht4x));
+    TEST_ASSERT_EQUAL_STRING("none", sp::co2_kind_str(sp::Co2Kind::None));
+    TEST_ASSERT_EQUAL_STRING("scd4x", sp::co2_kind_str(sp::Co2Kind::Scd4x));
+    TEST_ASSERT_EQUAL_STRING("scd30", sp::co2_kind_str(sp::Co2Kind::Scd30));
+    TEST_ASSERT_EQUAL_STRING("none", sp::baro_kind_str(sp::BaroKind::None));
+    TEST_ASSERT_EQUAL_STRING("bme280", sp::baro_kind_str(sp::BaroKind::Bme280));
+    TEST_ASSERT_EQUAL_STRING("bmp280", sp::baro_kind_str(sp::BaroKind::Bmp280));
 }
 
 // ── Waveshare ESP32-S3-CAM I/O expander ────────────────────────
@@ -799,16 +835,6 @@ void test_ws_cam_exio_absent_expander_reports_false() {
     bus.expect_write_nack(0x24);
     TEST_ASSERT_FALSE(exio.camera_power_on());
     TEST_ASSERT_TRUE(bus.script_consumed());
-}
-
-// ── CRC-8 catalogue check value ────────────────────────────────
-
-void test_crc8_catalogue_check_value() {
-    // poly 0x31 / init 0xFF / no reflection / no xorout is CRC-8/NRSC-5 in
-    // the CRC catalogue: check("123456789") = 0xF7. Pins the CRC the AHT2x
-    // shares with the Sensirion family independently of the 0xBEEF vector.
-    const uint8_t data[9] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
-    TEST_ASSERT_EQUAL_UINT8(0xF7, sp::crc8_sensirion(data, 9));
 }
 
 // ── AHT20 ──────────────────────────────────────────────────────
@@ -960,15 +986,6 @@ void test_aht20_probe_rejects_ack_without_valid_frame() {
     bus.expect_read(0x38, {0x18});
     bus.expect_write(0x38, {0xAC, 0x33, 0x00});
     bus.expect_read(0x38, {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
-    sp::Aht20 aht(bus, clock);
-    TEST_ASSERT_FALSE(aht.probe());
-    TEST_ASSERT_TRUE(bus.script_consumed());
-}
-
-void test_aht20_probe_absent() {
-    MockI2cBus bus;
-    MockClock clock;
-    bus.expect_write_nack(0x38);
     sp::Aht20 aht(bus, clock);
     TEST_ASSERT_FALSE(aht.probe());
     TEST_ASSERT_TRUE(bus.script_consumed());
@@ -1384,11 +1401,81 @@ void test_bme280_measure_retries_begin_until_it_succeeds() {
     MockI2cBus bus;
     MockClock clock;
     sp::Bme280 bme(bus, clock, 0x76, sp::BaroKind::Bme280);
-    float t, p, rh;
+    float t = 0, p = 0, rh = 0;
     bus.expect_write_nack(0x76);  // reset NACK — begin fails
     TEST_ASSERT_FALSE(bme.measure(&t, &p, &rh));
     TEST_ASSERT_EQUAL_STRING("reset failed", bme.health().last_error);
     TEST_ASSERT_TRUE(bus.script_consumed());
+    // The next pass runs begin() again, and this time measures.
+    script_bme_begin(bus, 0x76, true);
+    bus.expect_write(0x76, {0xF2, 0x01});
+    bus.expect_write(0x76, {0xF4, 0x25});
+    bus.expect_write(0x76, {0xF3});
+    bus.expect_read(0x76, {0x00});
+    bus.expect_write(0x76, {0xF7});
+    bus.expect_read(0x76, {0x65, 0x5A, 0xC0, 0x7E, 0xED, 0x00, 0x8C, 0xA0});
+    TEST_ASSERT_TRUE(bme.measure(&t, &p, &rh));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.08f, t);
+    TEST_ASSERT_NULL(bme.health().last_error);
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+}
+
+// A part that cannot be brought up, or a conversion outside the datasheet's
+// operating range (-40..85 °C, 300..1100 hPa), is a health failure and never
+// a published value (a BME280 can be the node's only temp/RH source).
+void test_bme280_failures_never_become_a_reading() {
+    {
+        // Trim registers read back blank: not a calibrated sensor.
+        MockI2cBus bus;
+        MockClock clock;
+        sp::Bme280 bme(bus, clock, 0x76, sp::BaroKind::Bme280);
+        bus.expect_write(0x76, {0xE0, 0xB6});
+        bus.expect_write(0x76, {0xF3});
+        bus.expect_read(0x76, {0x00});
+        bus.expect_write(0x76, {0x88});
+        bus.expect_read(0x76, std::vector<uint8_t>(26, 0x00));
+        bus.expect_write(0x76, {0xE1});
+        bus.expect_read(0x76, kBmeCalibE1);
+        TEST_ASSERT_FALSE(bme.begin());
+        TEST_ASSERT_EQUAL_STRING("bad calibration", bme.health().last_error);
+        TEST_ASSERT_TRUE(bus.script_consumed());
+    }
+    {
+        // The NVM copy after the reset never finishes: the trim is never read.
+        MockI2cBus bus;
+        MockClock clock;
+        sp::Bme280 bme(bus, clock, 0x76, sp::BaroKind::Bme280);
+        bus.expect_write(0x76, {0xE0, 0xB6});
+        for (int i = 0; i < 5; ++i) {
+            bus.expect_write(0x76, {0xF3});
+            bus.expect_read(0x76, {0x01});
+        }
+        TEST_ASSERT_FALSE(bme.begin());
+        TEST_ASSERT_EQUAL_STRING("nvm copy timeout", bme.health().last_error);
+        TEST_ASSERT_TRUE(bus.script_consumed());
+    }
+    {
+        // adc_T 0xFFFF0 compensates to ~188 °C.
+        MockI2cBus bus;
+        MockClock clock;
+        sp::Bme280 bme(bus, clock, 0x76, sp::BaroKind::Bme280);
+        script_bme_begin(bus, 0x76, true);
+        TEST_ASSERT_TRUE(bme.begin());
+        bus.expect_write(0x76, {0xF2, 0x01});
+        bus.expect_write(0x76, {0xF4, 0x25});
+        bus.expect_write(0x76, {0xF3});
+        bus.expect_read(0x76, {0x00});
+        bus.expect_write(0x76, {0xF7});
+        bus.expect_read(0x76, {0x65, 0x5A, 0xC0, 0xFF, 0xFF, 0x00, 0x8C, 0xA0});
+        float t = 1, p = 1, rh = 1;
+        TEST_ASSERT_FALSE(bme.measure(&t, &p, &rh));
+        TEST_ASSERT_EQUAL_STRING("out-of-range", bme.health().last_error);
+        TEST_ASSERT_EQUAL_FLOAT(1.0f, t);
+        TEST_ASSERT_EQUAL_FLOAT(1.0f, p);
+        TEST_ASSERT_EQUAL_FLOAT(1.0f, rh);
+        TEST_ASSERT_TRUE(bus.script_consumed());
+    }
 }
 
 void test_autodetect_finds_aht20_and_bmp280_combo_board() {
@@ -1425,37 +1512,34 @@ void test_autodetect_finds_aht20_and_bmp280_combo_board() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_crc8_datasheet_vector);
+    RUN_TEST(test_crc8_matches_the_datasheet_and_catalogue_vectors);
     RUN_TEST(test_transport_rejects_bad_crc);
     RUN_TEST(test_transport_cmd_arg_frames_crc);
     RUN_TEST(test_sht3x_measure_conversion);
     RUN_TEST(test_sht3x_read_fail_counts);
     RUN_TEST(test_sht3x_probe_waits_out_soft_reset_before_serial_read);
-    RUN_TEST(test_sht3x_probe_reset_nack_is_absent);
     RUN_TEST(test_sht4x_single_byte_protocol_and_rh_formula);
     RUN_TEST(test_scd4x_begin_disables_asc_and_persists_once);
     RUN_TEST(test_scd4x_begin_skips_persist_when_asc_already_off);
     RUN_TEST(test_scd4x_begin_forces_asc_off_when_asc_read_fails);
     RUN_TEST(test_scd4x_begin_asc_write_failure_is_reported);
     RUN_TEST(test_scd4x_probe_stops_stale_periodic_mode_first);
-    RUN_TEST(test_scd4x_probe_absent);
     RUN_TEST(test_scd4x_data_ready_and_read);
     RUN_TEST(test_scd4x_data_ready_bus_failure_is_a_health_fail);
     RUN_TEST(test_scd4x_frc_success_and_failure);
     RUN_TEST(test_scd4x_restart_periodic_recovers_an_idle_sensor);
-    RUN_TEST(test_scd30_float_decode);
     RUN_TEST(test_scd30_read_measurement_floats);
     RUN_TEST(test_scd30_stretch_timeout_is_read_fail);
     RUN_TEST(test_scd30_data_ready_bus_failure_is_a_health_fail);
     RUN_TEST(test_scd30_frc_success_and_failure);
-    RUN_TEST(test_scd30_out_of_range_rejected);
-    RUN_TEST(test_scd30_nan_rejected);
+    RUN_TEST(test_scd30_out_of_range_or_nan_reading_is_rejected);
+    RUN_TEST(test_scd30_begin_turns_asc_off_before_continuous_mode);
     RUN_TEST(test_bh1750_lux_conversion);
     RUN_TEST(test_bh1750_rearms_every_read_so_a_power_cycled_sensor_recovers);
     RUN_TEST(test_autodetect_sht4x_wins_at_0x44);
     RUN_TEST(test_autodetect_sht3x_after_sht4x_miss);
     RUN_TEST(test_autodetect_nothing_attached);
-    RUN_TEST(test_crc8_catalogue_check_value);
+    RUN_TEST(test_autodetect_takes_the_alternates_and_names_them);
     RUN_TEST(test_ws_cam_exio_powers_the_camera);
     RUN_TEST(test_ws_cam_exio_absent_expander_reports_false);
     RUN_TEST(test_aht20_decode_datasheet_formulas);
@@ -1465,7 +1549,6 @@ int main(int, char**) {
     RUN_TEST(test_aht20_probe_initialised_part_skips_init);
     RUN_TEST(test_aht20_probe_register_init_nack_is_absent);
     RUN_TEST(test_aht20_probe_rejects_ack_without_valid_frame);
-    RUN_TEST(test_aht20_probe_absent);
     RUN_TEST(test_aht20_async_measurement_state_machine);
     RUN_TEST(test_aht20_respects_self_heating_interval);
     RUN_TEST(test_aht20_stuck_busy_past_grace_is_a_failure);
@@ -1480,6 +1563,7 @@ int main(int, char**) {
     RUN_TEST(test_bmp280_has_no_humidity);
     RUN_TEST(test_bme280_skipped_sample_and_busy_are_failures);
     RUN_TEST(test_bme280_measure_retries_begin_until_it_succeeds);
+    RUN_TEST(test_bme280_failures_never_become_a_reading);
     RUN_TEST(test_autodetect_finds_aht20_and_bmp280_combo_board);
     return UNITY_END();
 }

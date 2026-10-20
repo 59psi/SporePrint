@@ -205,8 +205,10 @@ static std::string wire_with_signature(const Vector& v) {
     return wire;
 }
 
-void test_golden_vectors_signatures() {
+void test_golden_vectors_verify_frame() {
     for (const Vector& v : load_vectors()) {
+        // The HMAC of the expected canonical body first, so a failure says
+        // whether the MAC or the canonicalizer diverged.
         uint8_t mac[32];
         sp::hmac_sha256_host((const uint8_t*)kKey, strlen(kKey),
                              (const uint8_t*)v.canonical.data(),
@@ -216,17 +218,12 @@ void test_golden_vectors_signatures() {
         char msg[96];
         snprintf(msg, sizeof(msg), "vector '%s': HMAC diverges", v.id.c_str());
         TEST_ASSERT_EQUAL_STRING_MESSAGE(v.signature.c_str(), hex, msg);
-    }
-}
 
-void test_golden_vectors_verify_frame() {
-    for (const Vector& v : load_vectors()) {
         std::string wire = wire_with_signature(v);
         uint64_t now = (uint64_t)v.ts + 10;  // inside the window
         sp::VerifyStatus st =
             sp::verify_frame(wire.data(), wire.size(), kKey, strlen(kKey), now,
                              sp::hmac_sha256_host);
-        char msg[96];
         snprintf(msg, sizeof(msg), "vector '%s': %s", v.id.c_str(),
                  sp::verify_status_str(st));
         TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::VerifyStatus::Ok, (int)st, msg);
@@ -271,38 +268,47 @@ void test_rejection_paths() {
     const Vector& v = vectors[0];
     std::string wire = wire_with_signature(v);
     uint64_t now = (uint64_t)v.ts;
+    const std::string sig = "\"" + v.signature + "\"";  // well-formed
 
-    // Empty key.
-    TEST_ASSERT_EQUAL_INT(
-        (int)sp::VerifyStatus::NoKey,
-        (int)sp::verify_frame(wire.data(), wire.size(), "", 0, now,
-                              sp::hmac_sha256_host));
-    // Missing signature.
-    TEST_ASSERT_EQUAL_INT(
-        (int)sp::VerifyStatus::NoSignature,
-        (int)sp::verify_frame(v.canonical.data(), v.canonical.size(), kKey,
-                              strlen(kKey), now, sp::hmac_sha256_host));
-    // Wrong signature length.
-    std::string short_sig = "{\"signature\":\"abc123\",\"ts\":1700000000}";
-    TEST_ASSERT_EQUAL_INT(
-        (int)sp::VerifyStatus::BadSignatureLen,
-        (int)sp::verify_frame(short_sig.data(), short_sig.size(), kKey,
-                              strlen(kKey), now, sp::hmac_sha256_host));
-    // Missing ts.
-    std::string no_ts =
-        "{\"signature\":\"" + vectors[0].signature + "\",\"id\":\"x\"}";
-    TEST_ASSERT_EQUAL_INT(
-        (int)sp::VerifyStatus::NoTimestamp,
-        (int)sp::verify_frame(no_ts.data(), no_ts.size(), kKey, strlen(kKey),
-                              now, sp::hmac_sha256_host));
-    // Unparseable frame (raw UTF-8) — fail closed even with a valid-shaped sig.
-    std::string bad = wire;
-    size_t pos = bad.find("relay-01");
-    if (pos != std::string::npos) bad[pos] = (char)0xE2;
-    TEST_ASSERT_EQUAL_INT(
-        (int)sp::VerifyStatus::BadFrame,
-        (int)sp::verify_frame(bad.data(), bad.size(), kKey, strlen(kKey), now,
-                              sp::hmac_sha256_host));
+    // Unparseable frame (raw UTF-8): fail closed even with a valid-shaped sig.
+    std::string raw_utf8 = wire;
+    size_t pos = raw_utf8.find("relay-01");
+    TEST_ASSERT_TRUE(pos != std::string::npos);
+    raw_utf8[pos] = (char)0xE2;
+
+    // Every malformed frame is refused, with the reason the log line gives,
+    // before any MAC is trusted.
+    struct {
+        const char* label;
+        std::string frame;
+        const char* key;
+        sp::VerifyStatus want;
+    } cases[] = {
+        {"empty key", wire, "", sp::VerifyStatus::NoKey},
+        {"no signature", v.canonical, kKey, sp::VerifyStatus::NoSignature},
+        {"non-string signature", "{\"signature\":12345,\"ts\":1700000000}", kKey,
+         sp::VerifyStatus::NoSignature},
+        {"short signature", "{\"signature\":\"abc123\",\"ts\":1700000000}", kKey,
+         sp::VerifyStatus::BadSignatureLen},
+        {"64 non-hex chars",
+         "{\"signature\":\"" + std::string(63, 'a') + "g\",\"ts\":1700000000}", kKey,
+         sp::VerifyStatus::BadSignatureLen},
+        {"no ts", "{\"signature\":" + sig + ",\"id\":\"x\"}", kKey,
+         sp::VerifyStatus::NoTimestamp},
+        {"string ts", "{\"signature\":" + sig + ",\"ts\":\"1700000000\"}", kKey,
+         sp::VerifyStatus::NoTimestamp},
+        {"bool ts", "{\"signature\":" + sig + ",\"ts\":true}", kKey,
+         sp::VerifyStatus::NoTimestamp},
+        {"overlong ts", "{\"signature\":" + sig + ",\"ts\":" + std::string(40, '1') + "}",
+         kKey, sp::VerifyStatus::NoTimestamp},
+        {"raw UTF-8", raw_utf8, kKey, sp::VerifyStatus::BadFrame},
+    };
+    for (auto& c : cases) {
+        sp::VerifyStatus st =
+            sp::verify_frame(c.frame.data(), c.frame.size(), c.key, strlen(c.key),
+                             now, sp::hmac_sha256_host);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)c.want, (int)st, c.label);
+    }
 
     // Uppercase hex signature accepted (normalized before compare).
     std::string upper = wire;
@@ -329,69 +335,52 @@ void test_const_time_eq() {
 // early-return (accept-everything for keyed nodes, or reject for
 // unprovisioned ones) must fail here — it can't in the two Arduino main.cpp
 // copies, which are host-untestable.
-void test_command_auth_unprovisioned_key_fails_open() {
-    // No key ⇒ AcceptUnsigned regardless of payload or clock (the migration
-    // posture). Even total garbage and an unsynced clock accept.
-    sp::CmdAuthResult r = sp::command_auth_decision(
-        "not even json", 13, "", 0, 0 /*unsynced*/, sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::AcceptUnsigned,
-                          (int)r.decision);
-    // nullptr key is also treated as unprovisioned.
-    r = sp::command_auth_decision("{}", 2, nullptr, 0, 1700000000ULL,
-                                  sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::AcceptUnsigned,
-                          (int)r.decision);
-}
-
-void test_command_auth_provisioned_key_accepts_valid_frame() {
+void test_command_auth_decision_by_key_clock_and_signature() {
     auto vectors = load_vectors();
     const Vector& v = vectors[0];
-    std::string wire = wire_with_signature(v);
-    uint64_t now = (uint64_t)v.ts + 5;  // in window AND > kMinValidEpoch
-    TEST_ASSERT_TRUE(now >= sp::kMinValidEpoch);
-    sp::CmdAuthResult r = sp::command_auth_decision(
-        wire.data(), wire.size(), kKey, strlen(kKey), now, sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
-    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok, (int)r.status);
-}
-
-void test_command_auth_provisioned_key_rejects_bad_signature() {
-    auto vectors = load_vectors();
-    const Vector& v = vectors[0];
-    std::string wire = wire_with_signature(v);
-    uint64_t now = (uint64_t)v.ts;
-    // A DIFFERENT key ⇒ the golden signature no longer matches ⇒ Reject. Using
-    // a distinct key (not a tampered byte) avoids any canonical-id masking.
-    sp::CmdAuthResult r = sp::command_auth_decision(
-        wire.data(), wire.size(), "some-other-key", 14, now,
-        sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
-    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Mismatch, (int)r.status);
-}
-
-void test_command_auth_rejects_unsynced_clock_before_verifying() {
-    auto vectors = load_vectors();
-    const Vector& v = vectors[0];
-    std::string wire = wire_with_signature(v);
-    // Key IS provisioned and the frame is perfectly valid, but the clock has
-    // not synced (now < 2020) ⇒ refuse without even reaching verify_frame.
-    sp::CmdAuthResult r = sp::command_auth_decision(
-        wire.data(), wire.size(), kKey, strlen(kKey),
-        sp::kMinValidEpoch - 1, sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::RejectClockUnsynced,
-                          (int)r.decision);
-    // A now of 0 (boot, no NTP) is the real-world case.
-    r = sp::command_auth_decision(wire.data(), wire.size(), kKey, strlen(kKey),
-                                  0, sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::RejectClockUnsynced,
-                          (int)r.decision);
-    // At exactly kMinValidEpoch the clock gate opens (boundary is <, not <=):
-    // the golden ts (~1.7e9) is now far outside the window ⇒ falls through to a
-    // verify-level Reject, NOT a clock reject.
-    r = sp::command_auth_decision(wire.data(), wire.size(), kKey, strlen(kKey),
-                                  sp::kMinValidEpoch, sp::hmac_sha256_host);
-    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
-    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::StaleTimestamp, (int)r.status);
+    const std::string wire = wire_with_signature(v);
+    const std::string garbage = "not even json";
+    const uint64_t in_window = (uint64_t)v.ts + 5;
+    TEST_ASSERT_TRUE(in_window >= sp::kMinValidEpoch);
+    struct {
+        const char* label;
+        const std::string* frame;
+        const char* key;  // nullptr: unprovisioned
+        uint64_t now;
+        sp::CmdAuthDecision want;
+        sp::VerifyStatus want_status;
+    } cases[] = {
+        // No key: AcceptUnsigned whatever the payload or clock (the
+        // migration posture), even garbage on an unsynced clock.
+        {"no key, garbage, clock 0", &garbage, "", 0,
+         sp::CmdAuthDecision::AcceptUnsigned, sp::VerifyStatus::NoKey},
+        {"null key", &wire, nullptr, in_window,
+         sp::CmdAuthDecision::AcceptUnsigned, sp::VerifyStatus::NoKey},
+        // Keyed: a valid frame in its window is accepted...
+        {"valid", &wire, kKey, in_window, sp::CmdAuthDecision::Accept,
+         sp::VerifyStatus::Ok},
+        // ...one another key signed is not (a distinct key, not a tampered
+        // byte, so no canonical-id masking)...
+        {"other key", &wire, "some-other-key", in_window,
+         sp::CmdAuthDecision::Reject, sp::VerifyStatus::Mismatch},
+        // ...and before the clock syncs (now < 2020) nothing is verified at
+        // all: a perfect frame is refused (0 = boot without NTP).
+        {"clock 0", &wire, kKey, 0, sp::CmdAuthDecision::RejectClockUnsynced,
+         sp::VerifyStatus::StaleTimestamp},
+        {"clock 2019", &wire, kKey, sp::kMinValidEpoch - 1,
+         sp::CmdAuthDecision::RejectClockUnsynced, sp::VerifyStatus::StaleTimestamp},
+        // At exactly kMinValidEpoch the gate opens (< not <=): the golden ts
+        // is then far outside the window, a verify-level Reject.
+        {"clock at the floor", &wire, kKey, sp::kMinValidEpoch,
+         sp::CmdAuthDecision::Reject, sp::VerifyStatus::StaleTimestamp},
+    };
+    for (auto& c : cases) {
+        sp::CmdAuthResult r = sp::command_auth_decision(
+            c.frame->data(), c.frame->size(), c.key,
+            c.key != nullptr ? strlen(c.key) : 0, c.now, sp::hmac_sha256_host);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)c.want, (int)r.decision, c.label);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)c.want_status, (int)r.status, c.label);
+    }
 }
 
 // ── destination binding + replay guard ─────────────────────────
@@ -454,13 +443,12 @@ void test_topic_member_binds_frame_to_its_destination() {
         (int)sp::VerifyStatus::TopicMismatch,
         (int)verify_at(wire, "sporeprint/relay-01/cmd/exhaus", nullptr));
     TEST_ASSERT_NOT_NULL(sp::verify_status_str(sp::VerifyStatus::TopicMismatch));
-}
 
-void test_non_string_topic_member_is_a_mismatch() {
-    std::string wire = sign_body(
+    // A signed topic member that is not a string binds to nowhere.
+    std::string null_topic = sign_body(
         "{\"state\":\"on\",\"topic\":null,\"ts\":1700000000}");
     TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::TopicMismatch,
-                          (int)verify_at(wire, kExhaust, nullptr));
+                          (int)verify_at(null_topic, kExhaust, nullptr));
 }
 
 void test_frames_without_topic_member_still_verify() {
@@ -806,17 +794,12 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_sha256_standard_vectors);
     RUN_TEST(test_hmac_standard_vectors);
-    RUN_TEST(test_golden_vectors_signatures);
     RUN_TEST(test_golden_vectors_verify_frame);
     RUN_TEST(test_replay_window_edges);
     RUN_TEST(test_rejection_paths);
     RUN_TEST(test_const_time_eq);
-    RUN_TEST(test_command_auth_unprovisioned_key_fails_open);
-    RUN_TEST(test_command_auth_provisioned_key_accepts_valid_frame);
-    RUN_TEST(test_command_auth_provisioned_key_rejects_bad_signature);
-    RUN_TEST(test_command_auth_rejects_unsynced_clock_before_verifying);
+    RUN_TEST(test_command_auth_decision_by_key_clock_and_signature);
     RUN_TEST(test_topic_member_binds_frame_to_its_destination);
-    RUN_TEST(test_non_string_topic_member_is_a_mismatch);
     RUN_TEST(test_frames_without_topic_member_still_verify);
     RUN_TEST(test_no_topic_argument_skips_binding);
     RUN_TEST(test_replay_guard_rejects_second_delivery);

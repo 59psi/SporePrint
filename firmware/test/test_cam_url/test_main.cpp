@@ -17,132 +17,132 @@
 void setUp() {}
 void tearDown() {}
 
-void test_allowed_hosts() {
-    TEST_ASSERT_TRUE(sp::server_url_allowed("http://sporeprint.local:8000", ""));
-    TEST_ASSERT_TRUE(sp::server_url_allowed("https://sporeprint.ai", ""));
-    TEST_ASSERT_TRUE(sp::server_url_allowed("http://sporeprint.local/api", ""));
-    TEST_ASSERT_TRUE(
-        sp::server_url_allowed("http://mypi.lan:8000", "mypi.lan"));
-}
-
-void test_rfc1918_literals() {
-    TEST_ASSERT_TRUE(sp::server_url_allowed("http://10.0.0.5:8000", ""));
-    TEST_ASSERT_TRUE(sp::server_url_allowed("http://192.168.1.7", ""));
-    TEST_ASSERT_TRUE(sp::server_url_allowed("http://172.16.0.1", ""));
-    TEST_ASSERT_TRUE(sp::server_url_allowed("http://172.31.255.254:8000", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://172.32.0.1", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://172.15.0.1", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://8.8.8.8", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://11.0.0.1", ""));
-}
-
-void test_v1_hole_closed() {
-    // The exact v1 bypass: a HOSTNAME starting with "10.".
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.attacker.com/x", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://192.168.evil.io", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0.5.evil.com", ""));
-    // Malformed quads are hostnames, not IPs.
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0.999", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0.5.6", ""));
-}
-
-void test_structure_rules() {
-    TEST_ASSERT_FALSE(sp::server_url_allowed("ftp://10.0.0.5", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://user@10.0.0.5/", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0.5/?q=1", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0.5/#frag", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://10.0.0.5:80x", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("", ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed(nullptr, ""));
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://", ""));
-    // Length cap.
-    char big[160];
-    memset(big, 'a', sizeof(big));
-    memcpy(big, "http://10.0.0.5/", 16);
-    big[sizeof(big) - 1] = '\0';
-    TEST_ASSERT_FALSE(sp::server_url_allowed(big, ""));
-    // Empty paired host must not match an empty-host comparison trick.
-    TEST_ASSERT_FALSE(sp::server_url_allowed("http://evil.com", ""));
+// Where a camera may send its frames. Accepted: the Pi's names, the paired
+// Pi host, RFC 1918 IPv4 literals. Everything else is refused, including the
+// v1 hole: "10.attacker.com" passed the private-range check through
+// startsWith("10.").
+void test_server_url_allow_list() {
+    const std::string at_cap = "http://10.0.0.5/" + std::string(128 - 16, 'a');
+    const std::string over_cap = at_cap + "a";
+    const std::string long_host = "http://" + std::string(64, 'a') + "/";
+    struct {
+        const char* label;
+        const char* url;
+        const char* paired;
+        bool want;
+    } cases[] = {
+        {"sporeprint.local", "http://sporeprint.local:8000", "", true},
+        {"sporeprint.ai over https", "https://sporeprint.ai", "", true},
+        {"with a path", "http://sporeprint.local/api", "", true},
+        {"the paired Pi host", "http://mypi.lan:8000", "mypi.lan", true},
+        {"128 characters", at_cap.c_str(), "", true},
+        // RFC 1918 literals, edge to edge.
+        {"10/8", "http://10.0.0.5:8000", "", true},
+        {"192.168/16", "http://192.168.1.7", "", true},
+        {"172.16/12 low", "http://172.16.0.1", "", true},
+        {"172.16/12 high", "http://172.31.255.254:8000", "", true},
+        {"172.32 is public", "http://172.32.0.1", "", false},
+        {"172.15 is public", "http://172.15.0.1", "", false},
+        {"192.169 is public", "http://192.169.0.1", "", false},
+        {"8.8.8.8", "http://8.8.8.8", "", false},
+        {"11/8", "http://11.0.0.1", "", false},
+        // The v1 hole: hostnames that only look private.
+        {"10.attacker.com", "http://10.attacker.com/x", "", false},
+        {"192.168.evil.io", "http://192.168.evil.io", "", false},
+        {"10.0.0.5.evil.com", "http://10.0.0.5.evil.com", "", false},
+        // Malformed quads are hostnames, not IPs.
+        {"octet > 255", "http://10.0.0.999", "", false},
+        {"three octets", "http://10.0.0", "", false},
+        {"five octets", "http://10.0.0.5.6", "", false},
+        {"four-digit octet", "http://10.0.0.0005", "", false},
+        {"empty octet", "http://10..0.5", "", false},
+        // Structure.
+        {"ftp scheme", "ftp://10.0.0.5", "", false},
+        {"userinfo", "http://user@10.0.0.5/", "", false},
+        {"query", "http://10.0.0.5/?q=1", "", false},
+        {"fragment", "http://10.0.0.5/#frag", "", false},
+        {"letter in port", "http://10.0.0.5:80x", "", false},
+        {"sign in port", "http://10.0.0.5:8-0", "", false},
+        {"empty", "", "", false},
+        {"null", nullptr, "", false},
+        {"no host", "http://", "", false},
+        {"port only", "http://:8000", "", false},
+        {"64-character host", long_host.c_str(), "", false},
+        {"129 characters", over_cap.c_str(), "", false},
+        // An empty or missing paired host never matches anything.
+        {"empty paired host", "http://evil.com", "", false},
+        {"null paired host", "http://evil.com", nullptr, false},
+    };
+    for (auto& c : cases)
+        TEST_ASSERT_EQUAL_MESSAGE(c.want, sp::server_url_allowed(c.url, c.paired),
+                                  c.label);
 }
 
 // ── default upload URL ─────────────────────────────────────────
 
-void test_default_server_url_follows_portal_pi_address() {
-    // The portal's "Pi address" (cfg.broker_host) is the Pi — the same host
-    // tls_transport already fetches http://<host>:8000/api/provision/ca from.
-    TEST_ASSERT_EQUAL_STRING(
-        "http://192.168.1.50:8000",
-        sp_cam::resolve_server_url("", "192.168.1.50").c_str());
-    TEST_ASSERT_EQUAL_STRING(
-        "http://mypi.lan:8000",
-        sp_cam::resolve_server_url("", "MyPi.LAN").c_str());
-    // The untouched portal default reproduces the old hardcoded URL exactly.
-    TEST_ASSERT_EQUAL_STRING(
-        "http://sporeprint.local:8000",
-        sp_cam::resolve_server_url("", "sporeprint.local").c_str());
+// The upload URL: a stored server_url (an MQTT command, a v1 migration) is
+// never overridden; otherwise the portal's "Pi address" (cfg.broker_host,
+// the host tls_transport already fetches the CA from) on :8000; an empty or
+// structurally bad Pi address falls back to the old default rather than
+// building a URL the allow-list would never accept.
+void test_resolve_server_url() {
+    struct {
+        const char* stored;
+        const char* pi_host;
+        const char* want;
+    } cases[] = {
+        {"", "192.168.1.50", "http://192.168.1.50:8000"},
+        {"", "MyPi.LAN", "http://mypi.lan:8000"},
+        // The untouched portal default reproduces the old hardcoded URL.
+        {"", "sporeprint.local", "http://sporeprint.local:8000"},
+        {"http://10.0.0.9:8080", "192.168.1.50", "http://10.0.0.9:8080"},
+        {"", "", "http://sporeprint.local:8000"},
+        {"", "192.168.1.5:1883", "http://sporeprint.local:8000"},
+        {"", "pi/evil", "http://sporeprint.local:8000"},
+        {"", "user@pi", "http://sporeprint.local:8000"},
+    };
+    for (auto& c : cases)
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(
+            c.want, sp_cam::resolve_server_url(c.stored, c.pi_host).c_str(),
+            c.pi_host);
 }
 
-void test_stored_server_url_still_wins() {
-    // An explicit server_url (MQTT cmd or v1 migration) is never overridden.
-    TEST_ASSERT_EQUAL_STRING(
-        "http://10.0.0.9:8080",
-        sp_cam::resolve_server_url("http://10.0.0.9:8080", "192.168.1.50").c_str());
-}
-
-void test_default_server_url_rejects_malformed_pi_address() {
-    // Empty or structurally bad portal values fall back to the old default
-    // rather than building a URL the allow-list would never accept.
-    TEST_ASSERT_EQUAL_STRING("http://sporeprint.local:8000",
-                             sp_cam::resolve_server_url("", "").c_str());
-    TEST_ASSERT_EQUAL_STRING(
-        "http://sporeprint.local:8000",
-        sp_cam::resolve_server_url("", "192.168.1.5:1883").c_str());
-    TEST_ASSERT_EQUAL_STRING(
-        "http://sporeprint.local:8000",
-        sp_cam::resolve_server_url("", "pi/evil").c_str());
-    TEST_ASSERT_EQUAL_STRING(
-        "http://sporeprint.local:8000",
-        sp_cam::resolve_server_url("", "user@pi").c_str());
-}
-
-void test_cmd_allowlist_accepts_portal_pi_address() {
-    // The operator-provisioned Pi address is trusted like paired_pi_host.
-    TEST_ASSERT_TRUE(sp_cam::server_url_cmd_allowed("http://mypi.lan:8000", "",
-                                                    "MyPi.lan"));
-    TEST_ASSERT_TRUE(sp_cam::server_url_cmd_allowed("http://mypi.lan:8000",
-                                                    "mypi.lan", ""));
-    // Neither host matches → still the strict allow-list.
-    TEST_ASSERT_FALSE(sp_cam::server_url_cmd_allowed("http://evil.com", "",
-                                                     "mypi.lan"));
-    TEST_ASSERT_FALSE(sp_cam::server_url_cmd_allowed("http://10.attacker.com",
-                                                     "", "mypi.lan"));
-    // RFC1918 literals + sporeprint.local keep working with empty hosts.
-    TEST_ASSERT_TRUE(sp_cam::server_url_cmd_allowed("http://10.0.0.5:8000", "", ""));
-    TEST_ASSERT_TRUE(
-        sp_cam::server_url_cmd_allowed("http://sporeprint.local:8000", "", ""));
-}
-
-// A stored server_url could only be replaced, never removed: an empty URL was
-// refused by the allow-list, so a stale one (a v1 migration, an old command)
-// stayed in force until a factory reset. {"server_url": ""} now resets the
-// cam to the portal default; every other value still goes through the
-// allow-list.
-void test_empty_server_url_cmd_resets_to_the_portal_default() {
+// {"server_url": <url>}. A stored URL could only be replaced, never removed:
+// an empty URL was refused by the allow-list, so a stale one (a v1
+// migration, an old command) stayed in force until a factory reset. "" now
+// resets the cam to the portal default; every other value goes through the
+// allow-list, with the operator-provisioned Pi address trusted like
+// paired_pi_host (both come from physical-access provisioning, never MQTT).
+void test_server_url_cmd_sets_resets_or_rejects() {
     using sp_cam::ServerUrlCmd;
-    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Reset,
-                          (int)sp_cam::server_url_cmd("", "", "192.168.1.60"));
+    struct {
+        const char* label;
+        const char* url;
+        const char* paired;
+        const char* pi_host;
+        ServerUrlCmd want;
+    } cases[] = {
+        {"empty resets", "", "", "192.168.1.60", ServerUrlCmd::Reset},
+        {"the portal Pi address", "http://mypi.lan:8000", "", "MyPi.lan",
+         ServerUrlCmd::Set},
+        {"the paired Pi host", "http://mypi.lan:8000", "mypi.lan", "",
+         ServerUrlCmd::Set},
+        {"RFC 1918, no hosts", "http://10.0.0.5:8000", "", "", ServerUrlCmd::Set},
+        {"sporeprint.local, no hosts", "http://sporeprint.local:8000", "", "",
+         ServerUrlCmd::Set},
+        {"neither host", "http://evil.com", "", "mypi.lan", ServerUrlCmd::Reject},
+        {"the v1 hole", "http://10.attacker.com", "", "mypi.lan",
+         ServerUrlCmd::Reject},
+        {"null", nullptr, "", "mypi.lan", ServerUrlCmd::Reject},
+    };
+    for (auto& c : cases)
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            (int)c.want, (int)sp_cam::server_url_cmd(c.url, c.paired, c.pi_host),
+            c.label);
+    // A reset uploads to the portal default from then on.
     TEST_ASSERT_EQUAL_STRING(
         "http://192.168.1.60:8000",
         sp_cam::resolve_server_url("", "192.168.1.60").c_str());
-    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Set,
-                          (int)sp_cam::server_url_cmd("http://mypi.lan:8000", "",
-                                                      "mypi.lan"));
-    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Reject,
-                          (int)sp_cam::server_url_cmd("http://evil.com", "",
-                                                      "mypi.lan"));
-    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Reject,
-                          (int)sp_cam::server_url_cmd(nullptr, "", "mypi.lan"));
 }
 
 // The upload used HTTPClient's own clients: an unbounded DNS lookup (up to
@@ -291,15 +291,9 @@ void test_jpeg_quality_backoff_is_bounded() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_allowed_hosts);
-    RUN_TEST(test_rfc1918_literals);
-    RUN_TEST(test_v1_hole_closed);
-    RUN_TEST(test_structure_rules);
-    RUN_TEST(test_default_server_url_follows_portal_pi_address);
-    RUN_TEST(test_stored_server_url_still_wins);
-    RUN_TEST(test_default_server_url_rejects_malformed_pi_address);
-    RUN_TEST(test_cmd_allowlist_accepts_portal_pi_address);
-    RUN_TEST(test_empty_server_url_cmd_resets_to_the_portal_default);
+    RUN_TEST(test_server_url_allow_list);
+    RUN_TEST(test_resolve_server_url);
+    RUN_TEST(test_server_url_cmd_sets_resets_or_rejects);
     RUN_TEST(test_capture_and_upload_fit_inside_the_cam_wdt);
     RUN_TEST(test_timestamp_header_only_when_epoch_synced);
     RUN_TEST(test_https_upload_requires_pinned_ca);

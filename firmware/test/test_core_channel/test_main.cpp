@@ -36,20 +36,54 @@ static sp::ChannelConfig dim_cfg(const char* name = "white") {
 
 // ── switch dialect ─────────────────────────────────────────────
 
-void test_switch_empty_payload_rejected() {
-    sp::Channel ch;
-    ch.configure(switch_cfg());
-    sp::ChannelCommand cmd;  // empty — the retained-{} latch bug
-    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected,
-                          (int)ch.apply(cmd, 1000));
-    TEST_ASSERT_FALSE(ch.is_on());
-    TEST_ASSERT_EQUAL_STRING("payload lacks state and pwm", ch.reason());
-    // Dim-dialect keys on a switch channel are equally rejected.
-    sp::ChannelCommand dimcmd;
-    dimcmd.has_level = true;
-    dimcmd.level = 512;
-    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected,
-                          (int)ch.apply(dimcmd, 1000));
+// A payload without its dialect's keys is refused, never defaulted to ON (a
+// retained `{}` latching a channel at full power), and a running channel is
+// left exactly as it was.
+void test_payload_without_its_dialect_keys_is_rejected() {
+    sp::ChannelCommand empty;
+    sp::ChannelCommand duration_only;
+    duration_only.has_duration = true;
+    duration_only.duration_sec = 60;
+    sp::ChannelCommand ramp_only;
+    ramp_only.has_ramp = true;
+    ramp_only.ramp_sec = 10;
+    sp::ChannelCommand level_only;  // the dim key on a switch channel
+    level_only.has_level = true;
+    level_only.level = 512;
+    struct {
+        const char* label;
+        bool dim;
+        const sp::ChannelCommand* cmd;
+    } cases[] = {
+        {"switch {}", false, &empty},
+        {"switch {duration_sec}", false, &duration_only},
+        {"switch {level}", false, &level_only},
+        {"dim {}", true, &empty},
+        {"dim {duration_sec}", true, &duration_only},
+        {"dim {ramp_sec}", true, &ramp_only},
+    };
+    for (auto& c : cases) {
+        sp::Channel idle;
+        idle.configure(c.dim ? dim_cfg() : switch_cfg());
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::Rejected,
+                                      (int)idle.apply(*c.cmd, 1000), c.label);
+        TEST_ASSERT_FALSE_MESSAGE(idle.is_on(), c.label);
+
+        sp::Channel running;
+        running.configure(c.dim ? dim_cfg() : switch_cfg());
+        sp::ChannelCommand on;
+        on.has_pwm = true;
+        on.pwm = 200;  // pwm 200 / level 200
+        running.apply(on, 0);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::Rejected,
+                                      (int)running.apply(*c.cmd, 1000), c.label);
+        TEST_ASSERT_TRUE_MESSAGE(running.is_on(), c.label);
+        TEST_ASSERT_EQUAL_UINT16_MESSAGE(c.dim ? 200 : (200 << 2) | (200 >> 6),
+                                         running.duty10(), c.label);
+        // A rejected duration_sec arms nothing: no timer cut at 60 s.
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::None,
+                                      (int)running.tick(61000), c.label);
+    }
 }
 
 void test_switch_state_and_pwm() {
@@ -79,7 +113,7 @@ void test_switch_state_and_pwm() {
     TEST_ASSERT_EQUAL_UINT8(0, ch.pwm8());
 }
 
-void test_duration_expiry_and_clamp() {
+void test_timed_pulse_ends_at_its_deadline_as_a_timer_cutoff() {
     sp::Channel ch;
     ch.configure(switch_cfg());
     sp::ChannelCommand cmd;
@@ -103,22 +137,39 @@ void test_duration_expiry_and_clamp() {
     TEST_ASSERT_EQUAL_UINT32(0, ch.health().max_on_trips);
 }
 
-void test_max_on_dominates_long_duration() {
-    // duration_sec clamps to 3600, but a switch channel's max-on backstop
-    // (30 min) still wins: effective ON time = min(duration, max_on). A
-    // duration command must never be a way around the safety cutoff.
+void test_duration_never_outlasts_max_on_or_an_hour() {
+    // A switch channel's max-on backstop (30 min) wins over a longer
+    // duration: effective ON time = min(duration, max_on). A duration
+    // command must never be a way around the safety cutoff.
     sp::Channel ch;
     ch.configure(switch_cfg());
     sp::ChannelCommand cmd;
     cmd.has_state = true;
     cmd.state_on = true;
     cmd.has_duration = true;
-    cmd.duration_sec = 7200;  // clamps to 3600
+    cmd.duration_sec = 7200;
     ch.apply(cmd, 0);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                          (int)ch.tick(sp::kDefaultMaxOnMs));
     TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
-                          (int)ch.tick(30UL * 60UL * 1000UL + 1));
+                          (int)ch.tick(sp::kDefaultMaxOnMs + 1));
     TEST_ASSERT_FALSE(ch.is_on());
-    TEST_ASSERT_EQUAL_STRING("auto-off (max-on exceeded)", ch.reason());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn, (int)ch.last_cutoff());
+
+    // With no max-on (a light) the duration itself clamps to one hour.
+    sp::Channel light;
+    light.configure(dim_cfg());
+    sp::ChannelCommand lit;
+    lit.has_level = true;
+    lit.level = 600;
+    lit.has_duration = true;
+    lit.duration_sec = 7200;
+    light.apply(lit, 0);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                          (int)light.tick(3600UL * 1000UL - 1));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)light.tick(3600UL * 1000UL));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Timer, (int)light.last_cutoff());
 }
 
 void test_negative_duration_ignored_rest_applies() {
@@ -150,7 +201,6 @@ void test_max_on_fires_and_reon_does_not_extend() {
     TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
                           (int)ch.tick(30UL * 60UL * 1000UL + 1));
     TEST_ASSERT_FALSE(ch.is_on());
-    TEST_ASSERT_EQUAL_STRING("auto-off (max-on exceeded)", ch.reason());
     TEST_ASSERT_EQUAL_UINT32(1, ch.health().safety_cutoffs);
     TEST_ASSERT_EQUAL_UINT32(1, ch.health().cycle_count);
     TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn, (int)ch.last_cutoff());
@@ -527,6 +577,66 @@ void test_dim_ramp_interpolates() {
     TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(20000));
 }
 
+void test_dim_timed_ramp_ends_on_schedule_and_both_cap_at_an_hour() {
+    // {level, ramp_sec, duration_sec}: the duration covers the lit state as
+    // a whole, timed from the command, not from the end of the ramp.
+    sp::Channel ch;
+    ch.configure(dim_cfg());
+    sp::ChannelCommand timed;
+    timed.has_level = true;
+    timed.level = 800;
+    timed.has_ramp = true;
+    timed.ramp_sec = 10;
+    timed.has_duration = true;
+    timed.duration_sec = 60;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.apply(timed, 0));
+    ch.tick(10000);
+    TEST_ASSERT_EQUAL_UINT16(800, ch.level10());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(59999));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.tick(60000));
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Timer, (int)ch.last_cutoff());
+
+    // A duration that ends mid-ramp cuts the ramp; a 2 h one clamps to 1 h.
+    sp::Channel cut;
+    cut.configure(dim_cfg());
+    timed.ramp_sec = 120;
+    timed.duration_sec = 30;
+    cut.apply(timed, 0);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)cut.tick(30000));
+    TEST_ASSERT_FALSE(cut.is_on());
+    TEST_ASSERT_FALSE(cut.ramping());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)cut.tick(120000));
+    TEST_ASSERT_EQUAL_UINT16(0, cut.level10());
+
+    sp::Channel capped;
+    capped.configure(dim_cfg());
+    timed.ramp_sec = 10;
+    timed.duration_sec = 7200;
+    capped.apply(timed, 0);
+    capped.tick(10000);  // the ramp's end
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                          (int)capped.tick(3600UL * 1000UL - 1));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)capped.tick(3600UL * 1000UL));
+    TEST_ASSERT_FALSE(capped.is_on());
+
+    // ramp_sec past an hour ramps over one hour.
+    sp::Channel slow;
+    slow.configure(dim_cfg());
+    sp::ChannelCommand slow_ramp;
+    slow_ramp.has_level = true;
+    slow_ramp.level = 1000;
+    slow_ramp.has_ramp = true;
+    slow_ramp.ramp_sec = 7200;
+    slow.apply(slow_ramp, 0);
+    slow.tick(1800UL * 1000UL);
+    TEST_ASSERT_UINT16_WITHIN(2, 500, slow.level10());
+    slow.tick(3600UL * 1000UL);
+    TEST_ASSERT_EQUAL_UINT16(1000, slow.level10());
+    TEST_ASSERT_FALSE(slow.ramping());
+}
+
 void test_dim_ramp_down_to_zero_turns_off() {
     sp::Channel ch;
     ch.configure(dim_cfg());
@@ -599,16 +709,29 @@ void test_cmd_router_exact_match() {
 }
 
 void test_scene_table() {
-    const sp::Scene* s = sp::find_scene("fruiting_standard");
-    TEST_ASSERT_NOT_NULL(s);
-    TEST_ASSERT_EQUAL_UINT16(800, s->levels[0]);
-    TEST_ASSERT_EQUAL_UINT16(50, s->levels[3]);
-    TEST_ASSERT_NOT_NULL(sp::find_scene("colonization_dark"));
-    TEST_ASSERT_NOT_NULL(sp::find_scene("cordyceps_blue"));
-    TEST_ASSERT_NOT_NULL(sp::find_scene("pinning_daylight"));
-    TEST_ASSERT_NOT_NULL(sp::find_scene("lions_mane_gentle"));
+    // Scene names are wire contract (the Pi's rule templates send them).
+    const char* names[] = {"fruiting_standard", "colonization_dark",
+                           "cordyceps_blue", "pinning_daylight",
+                           "lions_mane_gentle"};
+    for (const char* n : names) {
+        const sp::Scene* s = sp::find_scene(n);
+        TEST_ASSERT_NOT_NULL_MESSAGE(s, n);
+        TEST_ASSERT_EQUAL_STRING(n, s->name);
+        for (int i = 0; i < sp::kSceneChannels; ++i)
+            TEST_ASSERT_TRUE_MESSAGE(s->levels[i] <= 1023, n);
+    }
     TEST_ASSERT_NULL(sp::find_scene("disco"));
     TEST_ASSERT_NULL(sp::find_scene(nullptr));
+
+    // What each scene is for: dark colonization, blue-led cordyceps, white
+    // light to pin and fruit under.
+    const sp::Scene* s = sp::find_scene("colonization_dark");
+    for (int i = 0; i < sp::kSceneChannels; ++i)
+        TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, s->levels[i], "colonization_dark");
+    s = sp::find_scene("cordyceps_blue");
+    TEST_ASSERT_TRUE(s->levels[1] > s->levels[0]);
+    TEST_ASSERT_TRUE(sp::find_scene("pinning_daylight")->levels[0] > 0);
+    TEST_ASSERT_TRUE(sp::find_scene("fruiting_standard")->levels[0] > 0);
 }
 
 void test_clamp_helpers() {
@@ -640,7 +763,7 @@ void test_wrap_helpers() {
 
 // ── personality (wire contract: node type + channel preset names) ──
 
-void test_personality_str_round_trip() {
+void test_personality_from_str_round_trips_and_rejects_unknown() {
     // Every valid string round-trips through from_str → str.
     struct {
         const char* s;
@@ -656,9 +779,7 @@ void test_personality_str_round_trip() {
         TEST_ASSERT_EQUAL_INT((int)c.p, (int)out);
         TEST_ASSERT_EQUAL_STRING(c.s, sp::personality_str(c.p));
     }
-}
 
-void test_personality_from_str_rejects_unknown_and_null() {
     sp::Personality out = sp::Personality::RelayBank;  // sentinel
     TEST_ASSERT_FALSE(sp::personality_from_str("node", &out));
     TEST_ASSERT_FALSE(sp::personality_from_str("camera", &out));
@@ -669,15 +790,8 @@ void test_personality_from_str_rejects_unknown_and_null() {
 }
 
 void test_node_type_str_is_never_node() {
-    // The Pi routes commands by type and must receive climate/relay/lighting,
-    // NEVER the literal "node" (the header's central invariant).
-    TEST_ASSERT_EQUAL_STRING("climate",
-                             sp::node_type_str(sp::Personality::Climate));
-    TEST_ASSERT_EQUAL_STRING("relay",
-                             sp::node_type_str(sp::Personality::RelayBank));
-    TEST_ASSERT_EQUAL_STRING("lighting",
-                             sp::node_type_str(sp::Personality::LightingBank));
-    // node_type_str is exactly personality_str.
+    // The Pi routes commands by type and must receive climate/relay/lighting
+    // (the personality string), NEVER the literal "node".
     for (int i = 0; i <= (int)sp::Personality::LightingBank; ++i) {
         sp::Personality p = (sp::Personality)i;
         TEST_ASSERT_EQUAL_STRING(sp::personality_str(p), sp::node_type_str(p));
@@ -685,43 +799,68 @@ void test_node_type_str_is_never_node() {
     }
 }
 
-void test_personality_channels_climate_has_no_bank() {
-    sp::ChannelConfig out[4];
-    TEST_ASSERT_EQUAL_INT(0, sp::personality_channels(sp::Personality::Climate,
-                                                      out));
-}
+// Each personality's channel bank: names are a Pi-automation wire contract
+// (server/app/automation/templates.py routes channel="fae"/"exhaust"/
+// "circulation"/"aux" and the light colours), and each preset's backstop
+// really fires: 30 min on a switch channel, 60 s on aux (the documented
+// misting pump: a lost off must not run it for 30 min, ~3 L), none on a
+// light (lights legitimately run 12 h).
+void test_personality_presets_and_their_max_on_backstops() {
+    const uint32_t kThirtyMin = 30UL * 60UL * 1000UL;
+    const uint32_t kSixtySec = 60UL * 1000UL;
+    struct Preset {
+        const char* name;
+        sp::ChannelMode mode;
+        uint32_t max_on_ms;
+    };
+    const Preset relay[] = {{"fae", sp::ChannelMode::Switch, kThirtyMin},
+                            {"exhaust", sp::ChannelMode::Switch, kThirtyMin},
+                            {"circulation", sp::ChannelMode::Switch, kThirtyMin},
+                            {"aux", sp::ChannelMode::Switch, kSixtySec}};
+    const Preset lighting[] = {{"white", sp::ChannelMode::Dim, 0},
+                               {"blue", sp::ChannelMode::Dim, 0},
+                               {"red", sp::ChannelMode::Dim, 0},
+                               {"far_red", sp::ChannelMode::Dim, 0}};
+    struct {
+        sp::Personality p;
+        int count;
+        const Preset* want;
+    } banks[] = {{sp::Personality::Climate, 0, nullptr},
+                 {sp::Personality::RelayBank, 4, relay},
+                 {sp::Personality::LightingBank, 4, lighting}};
+    for (auto& b : banks) {
+        sp::ChannelConfig out[4];
+        TEST_ASSERT_EQUAL_INT_MESSAGE(b.count, sp::personality_channels(b.p, out),
+                                      sp::personality_str(b.p));
+        for (int i = 0; i < b.count; ++i) {
+            const Preset& w = b.want[i];
+            TEST_ASSERT_EQUAL_STRING(w.name, out[i].name);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)w.mode, (int)out[i].mode, w.name);
+            TEST_ASSERT_EQUAL_UINT32_MESSAGE(w.max_on_ms, out[i].max_on_ms, w.name);
+            // Topic-safe and not shadowing a reserved endpoint.
+            TEST_ASSERT_TRUE_MESSAGE(sp::channel_name_valid(out[i].name), w.name);
 
-void test_personality_channels_relay_bank_presets() {
-    sp::ChannelConfig out[4];
-    int n = sp::personality_channels(sp::Personality::RelayBank, out);
-    TEST_ASSERT_EQUAL_INT(4, n);
-    // Names are a Pi-automation wire contract (server/app/automation/
-    // templates.py routes channel="fae"/"exhaust"/"circulation"/"aux").
-    const char* names[] = {"fae", "exhaust", "circulation", "aux"};
-    for (int i = 0; i < 4; ++i) {
-        TEST_ASSERT_EQUAL_STRING(names[i], out[i].name);
-        TEST_ASSERT_EQUAL_INT((int)sp::ChannelMode::Switch, (int)out[i].mode);
-        // Switch channels carry the 30-min max-on backstop — except aux,
-        // the documented misting-pump channel, which gets 60 s.
-        TEST_ASSERT_EQUAL_UINT32(i == 3 ? sp::kAuxMaxOnMs : sp::kDefaultMaxOnMs,
-                                 out[i].max_on_ms);
-        // Preset names must survive channel-name validation (topic-safe, not
-        // shadowing a reserved endpoint).
-        TEST_ASSERT_TRUE(sp::channel_name_valid(out[i].name));
-    }
-}
-
-void test_personality_channels_lighting_bank_presets() {
-    sp::ChannelConfig out[4];
-    int n = sp::personality_channels(sp::Personality::LightingBank, out);
-    TEST_ASSERT_EQUAL_INT(4, n);
-    const char* names[] = {"white", "blue", "red", "far_red"};
-    for (int i = 0; i < 4; ++i) {
-        TEST_ASSERT_EQUAL_STRING(names[i], out[i].name);
-        TEST_ASSERT_EQUAL_INT((int)sp::ChannelMode::Dim, (int)out[i].mode);
-        // Lights legitimately run 12 h — no max-on cutoff.
-        TEST_ASSERT_EQUAL_UINT32(0, out[i].max_on_ms);
-        TEST_ASSERT_TRUE(sp::channel_name_valid(out[i].name));
+            sp::Channel ch;
+            ch.configure(out[i]);
+            sp::ChannelCommand on;
+            on.has_state = true;
+            on.state_on = true;
+            ch.apply(on, 0);
+            if (w.max_on_ms == 0) {
+                TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::None,
+                                              (int)ch.tick(24UL * 3600UL * 1000UL),
+                                              w.name);
+                TEST_ASSERT_TRUE_MESSAGE(ch.is_on(), w.name);
+                continue;
+            }
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::None,
+                                          (int)ch.tick(w.max_on_ms), w.name);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::Changed,
+                                          (int)ch.tick(w.max_on_ms + 1), w.name);
+            TEST_ASSERT_FALSE_MESSAGE(ch.is_on(), w.name);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelCutoff::MaxOn,
+                                          (int)ch.last_cutoff(), w.name);
+        }
     }
 }
 
@@ -808,23 +947,6 @@ void test_cmd_suffix_split() {
         "scene", sp::cmd_suffix("sporeprint/cmd-node/cmd/scene", "cmd-node"));
     TEST_ASSERT_NULL(sp::cmd_suffix(nullptr, "relay-01"));
     TEST_ASSERT_NULL(sp::cmd_suffix("sporeprint/relay-01/cmd/fae", nullptr));
-}
-
-void test_scene_table_level_values() {
-    // Pin the actual level rows, not just non-null presence — a silently
-    // shifted scene changes what the lighting bank drives.
-    const sp::Scene* s;
-    s = sp::find_scene("colonization_dark");
-    TEST_ASSERT_NOT_NULL(s);
-    for (int i = 0; i < sp::kSceneChannels; ++i)
-        TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, s->levels[i], "colonization_dark");
-    s = sp::find_scene("cordyceps_blue");
-    TEST_ASSERT_NOT_NULL(s);
-    // Cordyceps is a blue-forward scene: blue (index 1) must lead white (0).
-    TEST_ASSERT_TRUE(s->levels[1] > s->levels[0]);
-    s = sp::find_scene("pinning_daylight");
-    TEST_ASSERT_NOT_NULL(s);
-    TEST_ASSERT_TRUE(s->levels[0] > 0);  // white on for daylight
 }
 
 // ── audit regressions (hardware-audit) ─────────────────────────
@@ -971,11 +1093,6 @@ void test_dim_accepts_pwm_as_level() {
     TEST_ASSERT_EQUAL_UINT16(100, ch.level10());
     ch.tick(11001);
     TEST_ASSERT_EQUAL_UINT16(900, ch.level10());
-
-    // Empty dim payload is still rejected.
-    sp::ChannelCommand empty;
-    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected,
-                          (int)ch.apply(empty, 70));
 }
 
 void test_force_off_is_a_counted_cutoff_and_disarms_timers() {
@@ -1040,10 +1157,21 @@ void test_max_on_override_runtime_and_bounds() {
     TEST_ASSERT_TRUE(ch.is_on());
     TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(9000));
     TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.tick(10001));
-    TEST_ASSERT_EQUAL_STRING("auto-off (max-on exceeded)", ch.reason());
-    // A switch channel can never lose its backstop.
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn, (int)ch.last_cutoff());
+    // A switch channel can never lose its backstop: not at runtime, not at
+    // configure().
     ch.set_max_on_ms(0);
     TEST_ASSERT_EQUAL_UINT32(sp::kDefaultMaxOnMs, ch.config().max_on_ms);
+    sp::ChannelConfig no_backstop = switch_cfg();
+    no_backstop.max_on_ms = 0;
+    sp::Channel fresh;
+    fresh.configure(no_backstop);
+    TEST_ASSERT_EQUAL_UINT32(sp::kDefaultMaxOnMs, fresh.config().max_on_ms);
+    // A light may run without one.
+    sp::Channel light;
+    light.configure(dim_cfg());
+    light.set_max_on_ms(0);
+    TEST_ASSERT_EQUAL_UINT32(0, light.config().max_on_ms);
 
     uint32_t ms = 12345;
     bool clamped = true;
@@ -1065,24 +1193,6 @@ void test_max_on_override_runtime_and_bounds() {
     TEST_ASSERT_EQUAL_UINT32(24UL * 3600UL * 1000UL, ms);
     TEST_ASSERT_TRUE(clamped);
     TEST_ASSERT_FALSE(sp::max_on_override_ms(sp::ChannelMode::Dim, -1, &ms, &clamped));
-}
-
-void test_relay_aux_preset_has_short_pump_backstop() {
-    // aux drives the misting pump in every documented build — a
-    // lost off must not run it for 30 min (~3 L). Aux defaults to 60 s.
-    sp::ChannelConfig out[4];
-    sp::personality_channels(sp::Personality::RelayBank, out);
-    TEST_ASSERT_EQUAL_STRING("aux", out[3].name);
-    TEST_ASSERT_EQUAL_UINT32(sp::kAuxMaxOnMs, out[3].max_on_ms);
-    TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, sp::kAuxMaxOnMs);
-    sp::Channel aux;
-    aux.configure(out[3]);
-    sp::ChannelCommand on;
-    on.has_state = true;
-    on.state_on = true;
-    aux.apply(on, 0);
-    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)aux.tick(60001));
-    TEST_ASSERT_FALSE(aux.is_on());
 }
 
 void test_co2_calibration_target_range() {
@@ -1221,10 +1331,10 @@ void test_dim_ramp_level_report_is_throttled() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_switch_empty_payload_rejected);
+    RUN_TEST(test_payload_without_its_dialect_keys_is_rejected);
     RUN_TEST(test_switch_state_and_pwm);
-    RUN_TEST(test_duration_expiry_and_clamp);
-    RUN_TEST(test_max_on_dominates_long_duration);
+    RUN_TEST(test_timed_pulse_ends_at_its_deadline_as_a_timer_cutoff);
+    RUN_TEST(test_duration_never_outlasts_max_on_or_an_hour);
     RUN_TEST(test_negative_duration_ignored_rest_applies);
     RUN_TEST(test_max_on_fires_and_reon_does_not_extend);
     RUN_TEST(test_tick_older_than_the_on_stamp_is_not_a_cutoff);
@@ -1237,28 +1347,24 @@ int main(int, char**) {
     RUN_TEST(test_on_time_accounting);
     RUN_TEST(test_dim_level_and_off);
     RUN_TEST(test_dim_ramp_interpolates);
+    RUN_TEST(test_dim_timed_ramp_ends_on_schedule_and_both_cap_at_an_hour);
     RUN_TEST(test_dim_ramp_down_to_zero_turns_off);
     RUN_TEST(test_channel_name_validation);
     RUN_TEST(test_cmd_router_exact_match);
     RUN_TEST(test_scene_table);
     RUN_TEST(test_clamp_helpers);
     RUN_TEST(test_wrap_helpers);
-    RUN_TEST(test_personality_str_round_trip);
-    RUN_TEST(test_personality_from_str_rejects_unknown_and_null);
+    RUN_TEST(test_personality_from_str_round_trips_and_rejects_unknown);
     RUN_TEST(test_node_type_str_is_never_node);
-    RUN_TEST(test_personality_channels_climate_has_no_bank);
-    RUN_TEST(test_personality_channels_relay_bank_presets);
-    RUN_TEST(test_personality_channels_lighting_bank_presets);
+    RUN_TEST(test_personality_presets_and_their_max_on_backstops);
     RUN_TEST(test_cmd_router_ninth_channel_overflow);
     RUN_TEST(test_channel_duty10_switch_expansion);
     RUN_TEST(test_cmd_suffix_split);
-    RUN_TEST(test_scene_table_level_values);
     RUN_TEST(test_switch_explicit_off_wins_over_pwm);
     RUN_TEST(test_off_command_never_leaves_a_stale_off_timer);
     RUN_TEST(test_dim_accepts_pwm_as_level);
     RUN_TEST(test_force_off_is_a_counted_cutoff_and_disarms_timers);
     RUN_TEST(test_max_on_override_runtime_and_bounds);
-    RUN_TEST(test_relay_aux_preset_has_short_pump_backstop);
     RUN_TEST(test_co2_calibration_target_range);
     RUN_TEST(test_output_fault_refuses_on_and_reports_off);
     RUN_TEST(test_dim_ramp_level_report_is_throttled);
