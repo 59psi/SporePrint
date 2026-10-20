@@ -3,7 +3,7 @@
 # rebuilding a patch tag once it is superseded, so bump tag + digest together
 # when a new 3.12.x-slim ships (Debian security fixes land that way too):
 #   docker buildx imagetools inspect python:3.12-slim   # "Digest:" line
-FROM python:3.12.15-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
+FROM python:3.12.15-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 # Zone files for TZ: compose passes TZ (install.sh writes the host's zone into
 # .env) so automation schedules run on the operator's clock, and glibc
