@@ -12,12 +12,14 @@ with "auto" enforcement keyed off whether the Pi is cloud-configured.
 import hashlib
 import hmac
 import json
+import logging
 import re
 
 import pytest
 
 from app import mqtt
 from app.config import settings
+from app.health.router import mqtt_health
 
 
 class _FakeClient:
@@ -49,64 +51,46 @@ CMD_TOPIC = "sporeprint/climate-01/cmd/aux"
 
 # ── command_signing_status() ────────────────────────────────────────────
 
-def test_status_active_when_key_set(monkeypatch):
-    _set(monkeypatch, key="deadbeef")
-    assert mqtt.command_signing_status()["mode"] == "active"
-
-
-def test_status_auto_enforces_when_cloud_configured(monkeypatch):
-    _set(monkeypatch, key="", policy="auto", cloud_url="https://sporeprint.ai")
-    s = mqtt.command_signing_status()
-    assert s["mode"] == "enforced_blocking"
-    assert s["cloud_configured"] is True
-
-
-def test_status_auto_permissive_on_pure_lan(monkeypatch):
-    _set(monkeypatch, key="", policy="auto", cloud_url="")
-    assert mqtt.command_signing_status()["mode"] == "permissive_unsigned"
-
-
-def test_status_always_enforces_regardless_of_cloud(monkeypatch):
-    _set(monkeypatch, key="", policy="always", cloud_url="")
-    assert mqtt.command_signing_status()["mode"] == "enforced_blocking"
-
-
-def test_status_never_permissive_even_when_cloud_configured(monkeypatch):
-    _set(monkeypatch, key="", policy="never", cloud_url="https://sporeprint.ai")
-    assert mqtt.command_signing_status()["mode"] == "permissive_unsigned"
+@pytest.mark.parametrize("key,policy,cloud_url,mode", [
+    ("deadbeef", "auto", "", "active"),
+    ("", "auto", "https://sporeprint.ai", "enforced_blocking"),
+    ("", "auto", "", "permissive_unsigned"),
+    ("", "always", "", "enforced_blocking"),
+    ("", "never", "https://sporeprint.ai", "permissive_unsigned"),
+], ids=["key-set", "auto-cloud-paired", "auto-lan-only", "always", "never"])
+def test_signing_posture(monkeypatch, key, policy, cloud_url, mode):
+    # "auto" enforces on a cloud-configured Pi, from config, not the live
+    # connection: a cloud outage must not downgrade signing.
+    _set(monkeypatch, key=key, policy=policy, cloud_url=cloud_url)
+    status = mqtt.command_signing_status()
+    assert status["mode"] == mode
+    assert status["cloud_configured"] is bool(cloud_url)
 
 
 # ── mqtt_publish enforcement ────────────────────────────────────────────
 
-async def test_signed_when_key_set(monkeypatch, fake_client):
-    _set(monkeypatch, key="deadbeef")
-    ok = await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
-    assert ok is True
-    topic, body = fake_client.published[0]
-    assert "signature" in body and "ts" in body
-
-
-async def test_refused_when_unset_and_enforced(monkeypatch, fake_client):
-    _set(monkeypatch, key="", policy="always")
-    ok = await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
-    assert ok is False
+@pytest.mark.parametrize("policy,cloud_url", [("always", ""), ("auto", "https://sporeprint.ai")])
+async def test_an_unsigned_command_is_refused_when_signing_is_enforced(
+        monkeypatch, fake_client, caplog, policy, cloud_url):
+    _set(monkeypatch, key="", policy=policy, cloud_url=cloud_url)
+    with caplog.at_level(logging.WARNING, logger="app.mqtt"):
+        for _ in range(2):
+            assert await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"}) is False
     assert fake_client.published == []          # nothing shipped
-    assert mqtt._signing_block_logged is True    # CRITICAL logged once
+    # Loud, once: a command every few seconds must not flood the log.
+    assert [r.levelno for r in caplog.records] == [logging.CRITICAL]
 
 
-async def test_auto_refused_when_cloud_configured(monkeypatch, fake_client):
-    _set(monkeypatch, key="", policy="auto", cloud_url="https://sporeprint.ai")
-    ok = await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
-    assert ok is False and fake_client.published == []
-
-
-async def test_ships_unsigned_when_unset_and_permissive(monkeypatch, fake_client):
+async def test_trusted_lan_mode_ships_stamped_unsigned_unbound_frames(
+        monkeypatch, fake_client, caplog):
+    # Trusted-LAN (no key, not enforced) frames keep their pre-binding shape.
     _set(monkeypatch, key="", policy="never")
-    ok = await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
-    assert ok is True
-    topic, body = fake_client.published[0]
-    assert "signature" not in body and "ts" in body   # unsigned, but stamped
-    assert mqtt._unsigned_ship_logged is True          # WARNING logged once
+    with caplog.at_level(logging.WARNING, logger="app.mqtt"):
+        for _ in range(2):
+            assert await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"}) is True
+    _, body = fake_client.published[0]
+    assert set(body) == {"state", "ts"}            # stamped; no signature, topic or nonce
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]  # warned once
 
 
 async def test_non_cmd_topic_never_blocked(monkeypatch, fake_client):
@@ -142,6 +126,7 @@ async def test_signed_cmd_binds_the_topic_and_a_nonce(monkeypatch, fake_client):
     assert body["topic"] == CMD_TOPIC
     assert re.fullmatch(r"[0-9a-f]{16}", body["nonce"])
     assert body["state"] == "on" and body["pwm"] == 200
+    assert isinstance(body["ts"], int)  # the firmware's replay window reads it
     # Both members are inside the MAC, exactly as the firmware recomputes it.
     assert body["signature"] == _expected_sig("deadbeef", body)
 
@@ -171,14 +156,6 @@ async def test_payload_cannot_choose_the_bound_topic(monkeypatch, fake_client):
     assert body["topic"] == CMD_TOPIC
     assert body["nonce"] != "x"
     assert body["signature"] == _expected_sig("deadbeef", body)
-
-
-async def test_unsigned_frames_carry_no_binding_members(monkeypatch, fake_client):
-    # Trusted-LAN (no key) frames keep their pre-binding shape.
-    _set(monkeypatch, key="", policy="never")
-    await mqtt.mqtt_publish(CMD_TOPIC, {"state": "on"})
-    _, body = fake_client.published[0]
-    assert "topic" not in body and "nonce" not in body
 
 
 async def test_binding_is_dropped_rather_than_overflow_the_node_buffer(monkeypatch, fake_client):
@@ -223,7 +200,6 @@ async def test_frame_the_node_would_drop_is_reported_unsent(monkeypatch, fake_cl
 # ── health surfacing ────────────────────────────────────────────────────
 
 async def test_health_detail_mqtt_surfaces_signing(monkeypatch):
-    from app.health.router import mqtt_health
     _set(monkeypatch, key="", policy="auto", cloud_url="https://sporeprint.ai")
     body = await mqtt_health()
     assert body["command_signing"]["mode"] == "enforced_blocking"

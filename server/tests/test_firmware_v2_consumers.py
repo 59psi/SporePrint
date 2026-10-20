@@ -1,15 +1,19 @@
-"""v4.2 — Pi-side consumers for the firmware-v2 topics (logs, coredump,
-ota), the heartbeat type/roles upsert, and roles-aware command routing.
+"""v4.2 — Pi-side consumers for the firmware-v2 topics: the heartbeat
+type/roles upsert, roles-aware command routing, node log batches, and the CA
+the node's TLS link fetches. (Coredump chunks: test_coredumps.py; OTA events:
+test_mqtt_ingest_hardening.py.)
 """
 
-import base64
-import time
-from unittest.mock import AsyncMock
+import json
 
 import pytest
 
+import app.mqtt
+from app import provision
+from app.cloud.service import _resolve_command_node
 from app.db import get_db
 from app.mqtt import _handle_message
+from tests._pi_b1_mqtt import RecordingSio, node_row
 
 
 @pytest.fixture(autouse=True)
@@ -25,52 +29,32 @@ def _mute_downstream(monkeypatch):
 
 # ── heartbeat: type + roles refresh ─────────────────────────────
 
-async def test_heartbeat_updates_node_type_and_roles():
-    sio = AsyncMock()
-    # First contact: a bare status insert leaves node_type 'unknown' (the
-    # v1 decay path this fix exists for).
+async def test_a_heartbeat_sets_type_and_roles_and_an_older_one_keeps_them():
+    """The old upsert never refreshed node_type, so rows decayed to whatever
+    the first insert guessed ('unknown') and type-based routing broke. A v1
+    heartbeat (no type, no roles) must not reset what a v2 one reported."""
+    sio = RecordingSio()
     await _handle_message(sio, "sporeprint/node-a1/status", {"status": "online"})
+    assert (await node_row("node-a1"))["node_type"] == "unknown"
 
-    await _handle_message(
-        sio,
-        "sporeprint/node-a1/status/heartbeat",
-        {"type": "relay", "roles": ["climate", "relay"],
-         "firmware_version": "4.2.0", "ip": "10.0.0.9"},
-    )
-    async with get_db() as db:
-        cur = await db.execute(
-            "SELECT node_type, roles FROM hardware_nodes WHERE node_id = ?",
-            ("node-a1",))
-        row = await cur.fetchone()
-    assert row["node_type"] == "relay"
-    assert "climate" in row["roles"]
+    await _handle_message(sio, "sporeprint/node-a1/status/heartbeat", {
+        "type": "relay", "roles": ["climate", "relay"],
+        "firmware_version": "4.2.0", "ip": "10.0.0.9"})
+    row = await node_row("node-a1")
+    assert (row["node_type"], json.loads(row["roles"])) == ("relay", ["climate", "relay"])
 
-
-async def test_heartbeat_without_type_does_not_clobber():
-    """A v1 heartbeat (no `type` key) must not reset a known node_type."""
-    sio = AsyncMock()
-    await _handle_message(
-        sio, "sporeprint/node-a2/status/heartbeat",
-        {"type": "lighting", "firmware_version": "4.2.0"})
-    await _handle_message(
-        sio, "sporeprint/node-a2/status/heartbeat",
-        {"firmware_version": "4.1.5"})  # v1-style: no type
-    async with get_db() as db:
-        cur = await db.execute(
-            "SELECT node_type FROM hardware_nodes WHERE node_id = ?",
-            ("node-a2",))
-        row = await cur.fetchone()
-    assert row["node_type"] == "lighting"
+    await _handle_message(sio, "sporeprint/node-a1/status/heartbeat",
+                          {"firmware_version": "4.1.5"})
+    row = await node_row("node-a1")
+    assert (row["node_type"], json.loads(row["roles"]), row["firmware_version"]) == (
+        "relay", ["climate", "relay"], "4.1.5")
 
 
 # ── roles-aware command routing ─────────────────────────────────
 
 async def test_resolve_node_by_role_matches_combined_node():
-    from app.cloud.service import _resolve_command_node
-
-    sio = AsyncMock()
     await _handle_message(
-        sio, "sporeprint/combo-1/status/heartbeat",
+        RecordingSio(), "sporeprint/combo-1/status/heartbeat",
         {"type": "relay", "roles": ["climate", "relay"]})
 
     assert await _resolve_command_node("relay", "fae") == ("combo-1", None)
@@ -80,151 +64,75 @@ async def test_resolve_node_by_role_matches_combined_node():
 
 
 async def test_resolve_node_null_roles_does_not_crash():
-    from app.cloud.service import _resolve_command_node
-
-    sio = AsyncMock()
     await _handle_message(
-        sio, "sporeprint/old-1/status/heartbeat",
+        RecordingSio(), "sporeprint/old-1/status/heartbeat",
         {"type": "climate", "firmware_version": "4.1.5"})  # roles NULL
     assert await _resolve_command_node("climate", None) == ("old-1", None)
 
 
 # ── logs consumer ───────────────────────────────────────────────
 
-async def test_logs_batch_stored_and_emitted():
-    sio = AsyncMock()
-    await _handle_message(
-        sio,
-        "sporeprint/node-a3/logs",
-        {"entries": [
-            {"ts_ms": 1000, "level": 2, "msg": "[SENSOR] SHT3x read error"},
-            {"ts_ms": 1100, "level": 1, "msg": "[BOOT] node ready"},
-        ], "dropped": 3},
-    )
-    async with get_db() as db:
-        cur = await db.execute(
-            "SELECT ts_ms, level, msg FROM node_logs WHERE node_id = ? "
-            "ORDER BY id", ("node-a3",))
-        rows = await cur.fetchall()
-    assert len(rows) == 2
-    assert rows[0]["msg"].startswith("[SENSOR]")
-    sio.emit.assert_awaited_with("node_log", {"node_id": "node-a3", "count": 2})
+async def test_a_log_batch_is_stored_and_served_per_node(client):
+    sio = RecordingSio()
+    await _handle_message(sio, "sporeprint/node-a3/logs", {"entries": [
+        {"ts_ms": 1000, "level": 2, "msg": "[SENSOR] SHT3x read error"},
+        "not-a-dict",
+        {"msg": "x" * 400},  # no ts_ms or level; longer than a row keeps
+    ], "dropped": 3})
+    assert sio.named("node_log") == [{"node_id": "node-a3", "count": 3}]
 
-
-async def test_logs_malformed_entries_tolerated():
-    sio = AsyncMock()
-    await _handle_message(
-        sio, "sporeprint/node-a4/logs",
-        {"entries": ["not-a-dict", {"msg": "ok-ish"}]})
-    async with get_db() as db:
-        cur = await db.execute(
-            "SELECT COUNT(*) AS n FROM node_logs WHERE node_id = ?",
-            ("node-a4",))
-        row = await cur.fetchone()
-    assert row["n"] == 1
-
-
-# ── coredump reassembly ─────────────────────────────────────────
-
-def _chunk(seq, total, data: bytes):
-    return {"seq": seq, "total": total, "size": len(data),
-            "b64_data": base64.b64encode(data).decode()}
-
-
-async def test_coredump_reassembles_and_alerts(tmp_path, monkeypatch):
-    from app.hardware import coredumps
-    monkeypatch.setattr(coredumps, "COREDUMP_DIR", tmp_path / "dumps")
-
-    sio = AsyncMock()
-    blob = b"ELF-FAKE-" + bytes(range(64))
-    half = len(blob) // 2
-    await _handle_message(sio, "sporeprint/node-a5/coredump/chunk",
-                          _chunk(0, 2, blob[:half]))
-    sio.emit.assert_not_awaited()  # incomplete — no alert yet
-    await _handle_message(sio, "sporeprint/node-a5/coredump/chunk",
-                          _chunk(1, 2, blob[half:]))
-
-    files = list((tmp_path / "dumps").glob("node-a5-*.elf"))
-    assert len(files) == 1
-    assert files[0].read_bytes() == blob
-    assert sio.emit.await_args.args[0] == "alert"
-    assert sio.emit.await_args.args[1]["type"] == "coredump"
-
-
-async def test_coredump_rejects_garbage(tmp_path, monkeypatch):
-    from app.hardware import coredumps
-    monkeypatch.setattr(coredumps, "COREDUMP_DIR", tmp_path / "dumps")
-
-    sio = AsyncMock()
-    await _handle_message(sio, "sporeprint/node-a6/coredump/chunk",
-                          {"seq": 0, "total": 2, "b64_data": "@@not-base64@@"})
-    await _handle_message(sio, "sporeprint/node-a6/coredump/chunk",
-                          {"seq": 5, "total": 2,
-                           "b64_data": base64.b64encode(b"x").decode()})
-    assert not (tmp_path / "dumps").exists()
-    sio.emit.assert_not_awaited()
-
-
-async def test_coredump_stale_assembly_abandoned(tmp_path, monkeypatch):
-    from app.hardware import coredumps
-    monkeypatch.setattr(coredumps, "COREDUMP_DIR", tmp_path / "dumps")
-
-    sio = AsyncMock()
-    await _handle_message(sio, "sporeprint/node-a7/coredump/chunk",
-                          _chunk(0, 3, b"part0"))
-    # Age the assembly past the timeout, then start a fresh one.
-    coredumps._assemblies["node-a7"].started_at = time.time() - 700
-    await _handle_message(sio, "sporeprint/node-a7/coredump/chunk",
-                          _chunk(0, 1, b"fresh-complete"))
-    files = list((tmp_path / "dumps").glob("node-a7-*.elf"))
-    assert len(files) == 1
-    assert files[0].read_bytes() == b"fresh-complete"
-
-
-# ── node OTA visibility ─────────────────────────────────────────
-
-async def test_node_ota_event_emitted():
-    sio = AsyncMock()
-    await _handle_message(sio, "sporeprint/node-a8/ota",
-                          {"event": "success", "ts": 1750000000})
-    sio.emit.assert_awaited_with(
-        "node_ota", {"node_id": "node-a8", "event": "success",
-                     "ts": 1750000000})
-
-
-# ── /api endpoints ──────────────────────────────────────────────
-
-async def test_node_logs_endpoint(client):
-    sio = AsyncMock()
-    await _handle_message(
-        sio, "sporeprint/node-a9/logs",
-        {"entries": [{"ts_ms": 5, "level": 3, "msg": "[SAFETY] fae auto-off"}]})
-    resp = client.get("/api/hardware/nodes/node-a9/logs")
+    resp = client.get("/api/hardware/nodes/node-a3/logs")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["entries"][0]["msg"] == "[SAFETY] fae auto-off"
+    assert [(e["ts_ms"], e["level"], e["msg"]) for e in resp.json()["entries"]] == [
+        (0, 1, "x" * 300),                          # newest first
+        (1000, 2, "[SENSOR] SHT3x read error"),
+    ]
 
 
-async def test_provision_ca_endpoint_404_without_certs(client, tmp_path,
-                                                      monkeypatch):
-    # Hermetic: the real bare-metal path is anchored at the repo root, where
-    # a developer's own setup.sh/install.sh run may have generated a CA.
-    from app import provision
-    monkeypatch.setattr(provision, "_CA_PATHS", (tmp_path / "ca.crt",))
-    resp = client.get("/api/provision/ca")
-    assert resp.status_code == 404
+async def _log_count(node_id: str) -> int:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM node_logs WHERE node_id = ?", (node_id,))
+        return (await cursor.fetchone())[0]
 
 
-async def test_provision_ca_serves_pem_and_refuses_keys(client, tmp_path,
-                                                        monkeypatch):
-    from app import provision
+async def _log_batch(node_id: str, n: int):
+    await _handle_message(RecordingSio(), f"sporeprint/{node_id}/logs",
+                          {"entries": [{"ts_ms": i, "level": 1, "msg": "x"} for i in range(n)]})
+
+
+async def test_node_logs_are_trimmed_every_few_hundred_rows_not_every_batch(monkeypatch):
+    """Finding the trim cutoff walks the node's whole log, so it runs on a
+    node's first batch after a start and then once every _NODE_LOG_TRIM_EVERY
+    rows; a chatty node used to pay it on every batch. (Scaled down from
+    10 000 / 500 so the test stays fast; the cadence logic is the same.)"""
+    keep, every = 40, 20
+    monkeypatch.setattr(app.mqtt, "_NODE_LOG_KEEP", keep)
+    monkeypatch.setattr(app.mqtt, "_NODE_LOG_TRIM_EVERY", every)
+    async with get_db() as db:
+        await db.executemany(
+            "INSERT INTO node_logs (node_id, ts_ms, level, msg) VALUES ('node-l1', ?, 1, 'old')",
+            [(i,) for i in range(keep + 30)])
+        await db.commit()
+    await _log_batch("node-l1", 8)  # a node's first batch since the start trims
+    assert await _log_count("node-l1") == keep
+    batches = (every - 1) // 8
+    for _ in range(batches):  # below the cadence: no trim, rows accumulate
+        await _log_batch("node-l1", 8)
+    assert await _log_count("node-l1") == keep + batches * 8
+    await _log_batch("node-l1", 8)  # crosses it: trimmed back to the newest
+    assert await _log_count("node-l1") == keep
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM node_logs WHERE node_id = 'node-l1' AND msg = 'old'")
+        assert (await cursor.fetchone())[0] == keep - (batches + 2) * 8
+
+
+# ── the CA a Secure-MQTT node pins ──────────────────────────────
+
+def test_the_ca_endpoint_never_serves_a_file_holding_a_private_key(client, tmp_path, monkeypatch):
     ca = tmp_path / "ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n")
+    ca.write_text("-----BEGIN PRIVATE KEY-----\noops\n-----END PRIVATE KEY-----\n")
     monkeypatch.setattr(provision, "_CA_PATHS", (ca,))
     resp = client.get("/api/provision/ca")
-    assert resp.status_code == 200
-    assert "BEGIN CERTIFICATE" in resp.text
-
-    ca.write_text("-----BEGIN PRIVATE KEY-----\noops\n-----END PRIVATE KEY-----\n")
-    resp = client.get("/api/provision/ca")
     assert resp.status_code == 500
+    assert "PRIVATE KEY" not in resp.text

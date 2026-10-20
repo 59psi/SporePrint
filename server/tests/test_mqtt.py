@@ -1,87 +1,104 @@
-"""Regression tests for the MQTT message handler.
+"""The MQTT supervisor loop (start_mqtt) and the publish primitive.
 
-Covers the timestamp-clamp fix for firmware uptime-seconds and the
-bare-exception catchall that prevents consumer death.
+The loop is the Pi's only ingest: everything one frame does stays inside it,
+a broker drop reconnects, and an unexpected error restarts the session. A
+frame that escaped it ended the session (and its subscriptions), and a
+retained frame that raised again on every redelivery kept ingest down for
+good. Frames are driven through the real loop by tests/_pi_b1_mqtt.FakeBroker.
 """
 
 import time
-from unittest.mock import AsyncMock, patch
 
+import aiomqtt
 import pytest
 
-from app.mqtt import _handle_message, get_reliability_counters
+import app.health.service
+import app.mqtt
+from app.config import settings
+from app.mqtt import mqtt_publish
+from tests._pi_b1_mqtt import FakeBroker, Message, insert_node, node_row, run_mqtt_loop
 
 
-@pytest.fixture(autouse=True)
-def _mute_automation_and_weather(monkeypatch):
-    """Isolate the MQTT handler from everything downstream for these tests."""
-    async def _noop_evaluate(*args, **kwargs):
-        return None
-
-    async def _noop_forward(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.automation.engine.evaluate_rules", _noop_evaluate)
-    monkeypatch.setattr("app.mqtt.forward_telemetry", _noop_forward)
-    monkeypatch.setattr("app.weather.service.get_current_weather", lambda: None)
+async def test_the_loop_logs_in_with_the_configured_broker_account(monkeypatch):
+    # The broker refuses anonymous clients (config/mosquitto/mosquitto.conf).
+    monkeypatch.setattr(settings, "mqtt_username", "server")
+    monkeypatch.setattr(settings, "mqtt_password", "s3cret")
+    broker = FakeBroker([])
+    await run_mqtt_loop(monkeypatch, broker)
+    assert broker.connects == [{"username": "server", "password": "s3cret"}]
 
 
-async def test_uptime_timestamp_is_clamped_to_server_time():
-    """A firmware-offline-drain payload with ts=1234 must not land as 1970."""
-    sio = AsyncMock()
-    before = get_reliability_counters()["uptime_ts_clamps"]
+async def test_a_frame_that_breaks_its_handler_does_not_end_the_session(monkeypatch):
+    """A poison retained frame (JSON Python cannot build) and a frame whose
+    handler raises are each dropped; the frame after them is handled in the
+    same session, with no supervisor restart."""
+    real_handler = app.mqtt._handle_message
 
-    await _handle_message(
-        sio,
-        "sporeprint/climate-01/telemetry",
-        {"temp_f": 72.0, "humidity": 85.0, "ts": 1234},
+    async def _handler(sio, topic, payload, **kwargs):
+        if topic == "sporeprint/node-x/telemetry":
+            raise RuntimeError("synthetic handler failure")
+        await real_handler(sio, topic, payload, **kwargs)
+
+    monkeypatch.setattr(app.mqtt, "_handle_message", _handler)
+    restarts = app.mqtt._mqtt_restart_count
+    broker = FakeBroker([
+        Message("tasmota/x/stat/POWER", b"[" * 20_000, retain=True),
+        Message("sporeprint/node-x/telemetry", b'{"temp_f": 70}'),
+        Message("sporeprint/node-b2/status", b'{"status": "online"}'),
+    ])
+    await run_mqtt_loop(monkeypatch, broker)
+    assert len(broker.connects) == 1
+    assert app.mqtt._mqtt_restart_count == restarts
+    assert (await node_row("node-b2"))["status"] == "online"
+
+
+async def test_the_retained_flag_reaches_the_status_handler(monkeypatch):
+    """A retained 'online' is the broker replaying a stored frame on
+    (re)subscribe, not the node talking: last_seen keeps its value."""
+    stale = time.time() - 3 * 86400
+    await insert_node("node-c3", status="online", last_seen=stale)
+    await run_mqtt_loop(monkeypatch, FakeBroker([
+        Message("sporeprint/node-c3/status", b'{"status": "online"}', retain=True),
+    ]))
+    assert (await node_row("node-c3"))["last_seen"] == stale
+
+
+async def test_the_supervisor_keeps_ingest_alive_through_failures(monkeypatch):
+    """Boot housekeeping that fails, a broker that drops the connection and
+    an unexpected session error each cost a pause, never the ingest."""
+    async def _purge_fails():
+        raise OSError("database is locked")
+
+    states = []
+    monkeypatch.setattr(app.mqtt, "purge_reserved_nodes", _purge_fails)
+    monkeypatch.setattr(app.health.service, "update_task",
+                        lambda name, status, error=None: states.append((name, status)))
+    restarts = app.mqtt._mqtt_restart_count
+    broker = FakeBroker(
+        aiomqtt.MqttError("connection refused"),
+        RuntimeError("unexpected"),
+        [Message("sporeprint/node-r1/status", b'{"status": "online"}')],
     )
 
-    after = get_reliability_counters()["uptime_ts_clamps"]
-    assert after == before + 1
+    pauses = await run_mqtt_loop(monkeypatch, broker)
 
-    # The emitted payload should carry a real epoch, not the uptime seconds.
-    sio.emit.assert_awaited()
-    emitted = sio.emit.await_args.args[1]
-    assert emitted["ts"] > 1_577_836_800
-
-
-async def test_real_epoch_timestamp_is_passed_through():
-    """Do not clamp legitimate timestamps."""
-    sio = AsyncMock()
-    now = time.time()
-    await _handle_message(
-        sio,
-        "sporeprint/climate-01/telemetry",
-        {"temp_f": 72.0, "humidity": 85.0, "ts": now},
-    )
-    emitted = sio.emit.await_args.args[1]
-    assert abs(emitted["ts"] - now) < 0.1
+    assert pauses == [5, 5]
+    assert len(broker.connects) == 3
+    assert app.mqtt._mqtt_restart_count == restarts + 1  # the broker drop is not a restart
+    assert [s for _, s in states] == [
+        "connecting", "disconnected", "connecting", "error", "connecting", "running", "stopped"]
+    assert (await node_row("node-r1"))["status"] == "online"
+    assert app.mqtt._client is None
 
 
-async def test_handle_message_bad_json_is_contained(caplog):
-    """A downstream exception must not bubble up and kill the consumer."""
-    sio = AsyncMock()
+@pytest.mark.parametrize("broker_state", ["not connected", "publish raises"])
+async def test_a_frame_the_broker_did_not_take_is_reported_unsent(monkeypatch, broker_state):
+    # Callers act on the bool: a rule firing is recorded 'failed', a command
+    # route answers 503.
+    class _Failing:
+        async def publish(self, topic, payload):
+            raise aiomqtt.MqttError("not connected")
 
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("synthetic store failure")
-
-    # Calling _handle_message directly with a raising dependency — the
-    # containment happens inside `async for message` in start_mqtt, but
-    # _handle_message itself doesn't raise on these paths.
-    with patch("app.mqtt.insert_readings", _boom):
-        with caplog.at_level("ERROR"):
-            try:
-                await _handle_message(
-                    sio,
-                    "sporeprint/climate-01/telemetry",
-                    {"temp_f": 70.0, "ts": time.time()},
-                )
-            except RuntimeError:
-                # The fix deliberately does NOT swallow unknown failures inside
-                # _handle_message itself — the catchall lives in start_mqtt's
-                # loop. So raising here is expected; the real assertion is
-                # that start_mqtt would catch it. We only assert the log
-                # surface so a regression (bare-except in telemetry branch)
-                # shows up.
-                pass
+    client = None if broker_state == "not connected" else _Failing()
+    monkeypatch.setattr(app.mqtt, "_client", client)
+    assert await mqtt_publish("sporeprint/relay-01/state", {"fae": "on"}) is False

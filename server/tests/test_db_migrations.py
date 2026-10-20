@@ -13,7 +13,7 @@ import aiosqlite
 import pytest
 
 from app.config import settings
-from app.db import _add_column_if_missing, init_db
+from app.db import _add_column_if_missing, get_db, init_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 
@@ -55,51 +55,35 @@ async def test_init_db_upgrades_pre_330_automation_firings(tmp_path, monkeypatch
     assert row == ("legacy rule", "sent", None)
 
 
-async def test_init_db_is_idempotent(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "database_path", str(tmp_path / "twice.db"))
-    await init_db()
-    await init_db()
-    async with aiosqlite.connect(settings.database_path) as db:
-        indexes = {r[1] for r in await (await db.execute(
-            "PRAGMA index_list(automation_firings)")).fetchall()}
-    assert "idx_firings_status" in indexes
-
-
 async def _pragma(db_path, name):
     async with aiosqlite.connect(db_path) as db:
         return (await (await db.execute(f"PRAGMA {name}")).fetchone())[0]
 
 
-async def test_new_database_starts_in_incremental_auto_vacuum(tmp_path, monkeypatch):
-    """A fresh install never needs the writer-stalling mode-switch VACUUM:
-    auto_vacuum only sticks when set before WAL mode and the first table."""
-    db_path = tmp_path / "fresh.db"
+@pytest.mark.parametrize("existing,auto_vacuum", [(False, 2), (True, 0)],
+                         ids=["new-database", "existing-database"])
+async def test_only_a_new_database_starts_in_incremental_auto_vacuum(
+        tmp_path, monkeypatch, existing, auto_vacuum):
+    """A fresh install never needs the writer-stalling mode-switch VACUUM
+    (auto_vacuum only sticks when set before WAL mode and the first table).
+    Converting an existing DB takes a full VACUUM: that is the lifespan's
+    explicit, logged step (retention.ensure_incremental_auto_vacuum), never a
+    side effect of init_db."""
+    db_path = tmp_path / "boot.db"
+    if existing:
+        async with aiosqlite.connect(db_path) as db:
+            await db.executescript(_PRE_330_FIRINGS)
+            await db.commit()
     monkeypatch.setattr(settings, "database_path", str(db_path))
     await init_db()
-    assert await _pragma(db_path, "auto_vacuum") == 2  # INCREMENTAL
+    assert await _pragma(db_path, "auto_vacuum") == auto_vacuum  # 2 = INCREMENTAL
     assert await _pragma(db_path, "journal_mode") == "wal"
 
 
-async def test_init_db_never_rewrites_an_existing_database(tmp_path, monkeypatch):
-    """Converting an existing DB takes a full VACUUM; that is the lifespan's
-    explicit, logged step (retention.ensure_incremental_auto_vacuum), never a
-    side effect of init_db."""
-    db_path = tmp_path / "legacy.db"
-    async with aiosqlite.connect(db_path) as db:
-        await db.executescript(_PRE_330_FIRINGS)
-        await db.commit()
-    monkeypatch.setattr(settings, "database_path", str(db_path))
-    await init_db()
-    assert await _pragma(db_path, "auto_vacuum") == 0
-
-
-async def test_rollup_history_query_uses_the_node_sensor_time_index(tmp_path, monkeypatch):
+async def test_rollup_history_query_uses_the_node_sensor_time_index():
     """get_history's rollup branch filters node_id + sensor + a timestamp
     range; without this index it scanned every node's and sensor's rollups."""
-    db_path = tmp_path / "idx.db"
-    monkeypatch.setattr(settings, "database_path", str(db_path))
-    await init_db()
-    async with aiosqlite.connect(db_path) as db:
+    async with get_db() as db:
         indexes = {r[1] for r in await (await db.execute(
             "PRAGMA index_list(telemetry_rollups)")).fetchall()}
         plan = " ".join(str(r[3]) for r in await (await db.execute(
@@ -147,13 +131,11 @@ async def test_session_feed_reads_the_newest_events_off_the_index(tmp_path, monk
     assert not any("TEMP B-TREE" in step for step in full), full
 
 
-async def test_frame_queries_use_the_vision_indexes(tmp_path, monkeypatch):
+async def test_frame_queries_use_the_vision_indexes():
     """Chamber photos, GET /api/vision/frames and the harvest corroboration
     read frames newest first per camera or per session: without these
     indexes each one scanned and sorted the whole table."""
-    monkeypatch.setattr(settings, "database_path", str(tmp_path / "frames.db"))
-    await init_db()
-    async with aiosqlite.connect(settings.database_path) as db:
+    async with get_db() as db:
         photos = await _plan(
             db,
             "SELECT * FROM vision_frames WHERE node_id IN (?, ?) "

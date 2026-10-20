@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -85,17 +86,40 @@ async def test_dumps_are_stored_next_to_the_database(tmp_path, monkeypatch):
     assert coredumps.dump_path(out.name) == out
 
 
-async def test_unwritable_dump_dir_is_logged_not_raised(tmp_path, monkeypatch, caplog):
-    blocker = tmp_path / "not-a-dir"
-    blocker.write_text("x")
-    monkeypatch.setattr(coredumps, "COREDUMP_DIR", blocker / "dumps")
+@pytest.mark.parametrize("chunk", [
+    {"seq": 0, "total": 2, "b64_data": "@@not-base64@@"},
+    {"seq": 5, "total": 2, "b64_data": "eA=="},             # seq past total
+    {"seq": -1, "total": 2, "b64_data": "eA=="},
+    {"seq": 0, "total": 0, "b64_data": "eA=="},
+    {"total": 1, "b64_data": "eA=="},                       # no seq
+    {"seq": 1, "total": 2, "b64_data": "eA=="},             # no upload in flight (seq 0 lost)
+], ids=["bad-base64", "seq-past-total", "negative-seq", "zero-total", "no-seq", "orphan"])
+async def test_a_chunk_that_cannot_be_placed_is_rejected(dumps_dir, mock_mqtt, quiet_cloud, chunk):
+    sio = AsyncMock()
+    await _handle_message(sio, NODE_TOPIC.format(node="node-g1"), chunk)
+    assert "node-g1" not in coredumps._assemblies
+    assert not dumps_dir.exists()
+    assert mock_mqtt == []
+    sio.emit.assert_not_awaited()
 
-    with caplog.at_level(logging.ERROR, logger=coredumps.__name__):
-        out = await coredumps.ingest_chunk("node-x2", _chunk(0, 1, b"ELF"))
 
-    assert out is None
-    assert "node-x2" not in coredumps._assemblies
-    assert any("could not be written" in r.getMessage() for r in caplog.records)
+async def test_a_stalled_upload_is_abandoned_for_a_fresh_one(dumps_dir):
+    """In-flight assemblies are dropped after ASSEMBLY_TIMEOUT_S; the node
+    keeps its dump until acknowledged, so its next upload starts over."""
+    await coredumps.ingest_chunk("node-a7", _chunk(0, 3, b"part0"))
+    coredumps._assemblies["node-a7"].started_at = time.time() - coredumps.ASSEMBLY_TIMEOUT_S - 1
+    stored = await coredumps.ingest_chunk("node-a7", _chunk(0, 1, b"fresh-complete"))
+    assert stored is not None and stored.path.read_bytes() == b"fresh-complete"
+    assert "node-a7" not in coredumps._assemblies
+
+
+async def test_a_dump_past_the_size_cap_is_dropped(dumps_dir, monkeypatch):
+    monkeypatch.setattr(coredumps, "MAX_DUMP_BYTES", 1000)
+    chunks = _chunks(b"D" * 1200)
+    assert await coredumps.ingest_chunk("node-a8", chunks[0]) is None
+    assert await coredumps.ingest_chunk("node-a8", chunks[1]) is None
+    assert "node-a8" not in coredumps._assemblies
+    assert not dumps_dir.exists()
 
 
 async def test_chunks_from_a_new_upload_never_merge_into_an_old_assembly(dumps_dir):
@@ -170,6 +194,7 @@ async def test_a_failed_write_leaves_neither_file_nor_temp(dumps_dir, monkeypatc
 
 
 async def test_partial_writes_are_discarded_and_never_served(dumps_dir):
+    assert coredumps.list_dumps() == [] and coredumps.discard_partial_writes() == 0  # no dir yet
     dumps_dir.mkdir()
     (dumps_dir / "node-x8-20261005T000000Z.elf.part").write_bytes(b"half")
     (dumps_dir / "node-x8-20261005T000001Z.elf").write_bytes(b"whole")
@@ -179,6 +204,22 @@ async def test_partial_writes_are_discarded_and_never_served(dumps_dir):
     assert coredumps.discard_partial_writes() == 1
     assert sorted(p.name for p in dumps_dir.iterdir()) == [
         "node-x8-20261005T000001Z.elf"]
+
+
+@pytest.mark.parametrize("name", [
+    "../outside.elf", "sub/nested.elf", "..\\outside.elf", "node-x9.bin", "node-x9-missing.elf",
+], ids=["parent-dir", "subdir", "backslash", "not-elf", "missing"])
+def test_only_a_stored_dump_resolves_to_a_path(dumps_dir, name):
+    """GET /api/hardware/coredumps/<name> serves dump_path(name): nothing
+    outside the directory, nothing but a completed .elf. Each refused name
+    points at a real file, so only the guard refuses it."""
+    (dumps_dir / "sub").mkdir(parents=True)
+    for planted in ("../outside.elf", "sub/nested.elf", "..\\outside.elf", "node-x9.bin"):
+        (dumps_dir / planted).write_bytes(b"X")
+    stored = dumps_dir / "node-x9-20261005T000001Z.elf"
+    stored.write_bytes(b"ELF")
+    assert coredumps.dump_path(stored.name) == stored
+    assert coredumps.dump_path(name) is None
 
 
 # ── store-then-ack ──────────────────────────────────────────────
@@ -222,19 +263,24 @@ async def test_no_ack_until_the_last_chunk(dumps_dir, mock_mqtt, quiet_cloud):
         await _handle_message(sio, NODE_TOPIC.format(node="node-k2"), c)
     assert mock_mqtt == []
     assert not dumps_dir.exists()
+    sio.emit.assert_not_awaited()  # no panic alert for an incomplete upload
     await _handle_message(sio, NODE_TOPIC.format(node="node-k2"), chunks[-1])
     assert [t for t, _ in mock_mqtt] == ["sporeprint/node-k2/cmd/coredump_ack"]
 
 
-async def test_no_ack_when_the_store_fails(tmp_path, monkeypatch, mock_mqtt, quiet_cloud):
+async def test_an_unwritable_dump_dir_is_logged_and_never_acked(
+        tmp_path, monkeypatch, mock_mqtt, quiet_cloud, caplog):
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x")
     monkeypatch.setattr(coredumps, "COREDUMP_DIR", blocker / "dumps")
     sio = AsyncMock()
-    for c in _chunks(b"ELF" * 100):
-        await _handle_message(sio, NODE_TOPIC.format(node="node-k3"), c)
+    with caplog.at_level(logging.ERROR, logger=coredumps.__name__):
+        for c in _chunks(b"ELF" * 100):
+            await _handle_message(sio, NODE_TOPIC.format(node="node-k3"), c)
     assert mock_mqtt == []  # the node keeps its copy and uploads again
     sio.emit.assert_not_awaited()
+    assert "node-k3" not in coredumps._assemblies
+    assert [r.levelno for r in caplog.records] == [logging.ERROR]
 
 
 async def test_no_store_and_no_ack_when_bytes_do_not_match_the_id(dumps_dir, mock_mqtt, quiet_cloud, caplog):

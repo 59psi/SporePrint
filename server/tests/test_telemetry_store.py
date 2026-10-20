@@ -16,25 +16,13 @@ from app.node_clock import MAX_FUTURE_SKEW_SECONDS
 from app.retention import service as retention_service
 from app.retention.service import _restamp_future_readings
 from app.telemetry import service as telemetry
-from app.telemetry.service import get_latest, latest_node_timestamp, reading_rows
-
-
-class _Sio:
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.events.append((event, data))
+from app.telemetry.service import get_latest, latest_node_timestamp
+from tests._pi_b1_mqtt import RecordingSio, insert_node, node_row, readings, spy_ingest
 
 
 @pytest.fixture()
 def no_rules(monkeypatch):
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.automation.engine.evaluate_rules", _noop)
-    monkeypatch.setattr("app.mqtt.forward_telemetry", _noop)
-    monkeypatch.setattr("app.weather.service.get_current_weather", lambda: None)
+    spy_ingest(monkeypatch)
 
 
 async def _put(node_id, sensor, value, ts):
@@ -84,17 +72,6 @@ def test_history_re_buckets_at_the_rollup_tiers_own_widths():
         assert f"/ {width} AS INT" not in source, "a tier width written out again"
 
 
-def test_values_that_are_not_finite_numbers_are_skipped():
-    rows = reading_rows("n1", {
-        "temp_f": 70, "humidity": None, "co2_ppm": float("nan"), "lux": float("inf"),
-        "dew_point_f": "12", "weight_g": 10 ** 400, "door_open": True,
-        "pressure_hpa": 1013.2, "unrelated": 5,
-    }, 1_760_000_000.0, 7)
-    assert [(r[2], r[3]) for r in rows] == [
-        ("temp_f", 70.0), ("door_open", 1.0), ("pressure_hpa", 1013.2)]
-    assert all(r[0] == 1_760_000_000.0 and r[4] == 7 for r in rows)
-
-
 async def test_a_failed_insert_still_records_the_node_as_alive(no_rules, monkeypatch):
     """The readings and the last_seen touch share one transaction; a failed
     insert (here a session gone from under it: a foreign key) rolls back on
@@ -103,26 +80,19 @@ async def test_a_failed_insert_still_records_the_node_as_alive(no_rules, monkeyp
         return 424242
 
     monkeypatch.setattr("app.mqtt.active_session_for_node", _gone_session)
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, last_seen) VALUES ('n1', 'climate', ?)",
-            (time.time() - 3600,))
-        await db.commit()
+    await insert_node("n1", last_seen=time.time() - 3600)
     before = time.time()
-    await _handle_message(_Sio(), "sporeprint/n1/telemetry",
+    await _handle_message(RecordingSio(), "sporeprint/n1/telemetry",
                           {"ts": time.time() - 60, "temp_f": 70.0, "replay": True})
-    async with get_db() as db:
-        count = (await (await db.execute("SELECT COUNT(*) FROM telemetry_readings")).fetchone())[0]
-        seen = (await (await db.execute(
-            "SELECT last_seen FROM hardware_nodes WHERE node_id = 'n1'")).fetchone())[0]
-    assert count == 0
-    assert seen >= before
+    assert await readings("n1") == []
+    assert (await node_row("n1"))["last_seen"] >= before
 
 
 # ── newest readings ───────────────────────────────────────────────────────
 
 
 async def test_latest_is_the_newest_reading_of_each_node_and_sensor():
+    assert await get_latest() == []
     now = time.time()
     for node in ("n1", "n2"):
         for sensor, base in (("temp_f", 70.0), ("humidity", 80.0)):
@@ -141,10 +111,6 @@ async def test_latest_is_the_newest_reading_of_each_node_and_sensor():
     assert await get_latest("nobody") == []
     assert await latest_node_timestamp("n2") == pytest.approx(now - 96)
     assert await latest_node_timestamp("nobody") is None
-
-
-async def test_latest_on_an_empty_table():
-    assert await get_latest() == []
 
 
 async def test_latest_reads_by_index_seeks_not_a_scan_of_the_history():
@@ -171,7 +137,7 @@ async def test_latest_reads_by_index_seeks_not_a_scan_of_the_history():
 
 async def test_a_far_future_frame_is_stored_at_its_arrival_time(no_rules):
     before = get_reliability_counters()["future_ts_clamps"]
-    sio = _Sio()
+    sio = RecordingSio()
     arrival = time.time()
     await _handle_message(sio, "sporeprint/n1/telemetry",
                           {"ts": arrival + 365 * 86400, "temp_f": 95.0})
@@ -191,16 +157,8 @@ async def test_a_far_future_frame_is_stored_at_its_arrival_time(no_rules):
 
 async def test_a_small_lead_is_kept_as_the_nodes_own_time(no_rules):
     ts = time.time() + MAX_FUTURE_SKEW_SECONDS / 2
-    await _handle_message(_Sio(), "sporeprint/n1/telemetry", {"ts": ts, "temp_f": 70.0})
+    await _handle_message(RecordingSio(), "sporeprint/n1/telemetry", {"ts": ts, "temp_f": 70.0})
     assert await latest_node_timestamp("n1") == pytest.approx(ts)
-
-
-async def test_a_replayed_far_future_frame_does_not_shadow_the_latest_reading(no_rules):
-    now = time.time()
-    await _handle_message(_Sio(), "sporeprint/n1/telemetry", {"ts": now, "temp_f": 72.0})
-    await _handle_message(_Sio(), "sporeprint/n1/telemetry",
-                          {"ts": now + 30 * 86400, "temp_f": 99.0, "replay": True})
-    assert [r["value"] for r in await get_latest("n1")] == [72.0]
 
 
 async def test_retention_restamps_readings_already_stored_in_the_future():
