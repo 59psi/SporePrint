@@ -31,7 +31,7 @@ from app.db import get_db
 # the seeded placeholders relay-01 / light-01. The engine resolves the
 # placeholder a seeded rule names to the chamber's real node of that role at
 # fire time, so the command reaches the topic the node is actually subscribed
-# to. Registering nodes the way provisioning does is what proves that. (V3-2)
+# to. Registering nodes the way provisioning does is what proves that.
 RELAY_NODE = "node-relay-7a3f1c"
 LIGHT_NODE = "node-light-9b2c4d"
 
@@ -152,7 +152,7 @@ async def test_tasmota_plug_rule_reaches_the_tasmota_topic(mock_mqtt, mock_mqtt_
 async def test_unregistered_plug_is_an_honest_no_op(mock_mqtt, mock_mqtt_raw):
     """plug-<id> with no DB row is NOT paired: no actuator can receive the
     command, so it must be a reported no-op — not a speculative publish that
-    logs status='sent' for hardware that was never there. (V2-3)"""
+    logs status='sent' for hardware that was never there."""
     await _fire_rule(
         _rule(RuleAction(target="plug-cooler", state="on"), "plug"),
         {"humidity": 70},

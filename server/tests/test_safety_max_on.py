@@ -105,7 +105,7 @@ async def test_off_action_cancels_pending_watchdog(monkeypatch, mock_mqtt):
 
 async def test_manual_override_keeps_watchdog_armed(monkeypatch, mock_mqtt):
     """A hold stops automation sending NEW commands; it must not remove the
-    fire-risk ceiling on an actuator automation already switched ON (srv-auto#2).
+    fire-risk ceiling on an actuator automation already switched ON.
     The in-process task keeps running and its persisted row survives a reboot."""
     async def never_finishes(_delay):
         await asyncio.Event().wait()

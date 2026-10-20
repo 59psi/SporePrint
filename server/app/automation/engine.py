@@ -2,24 +2,35 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import time
+from dataclasses import dataclass
 
-from pydantic import TypeAdapter, ValidationError
-
-from ..chambers.service import chambers_for_node
+from ..chambers.service import chamber_contexts, chambers_for_node
 from ..db import get_db
 from ..integrations import _actions as _vendor_actions
 from ..mqtt import mqtt_publish
 from ..notifications.service import co2_alert, notify_warning, notify_critical
+from ..sessions.models import BAG_CONTAINERS, CULTURE_CONTAINERS
 from ..sessions.service import (
-    PHASE_PARAM_FALLBACKS,
     add_actuator_off_listener,
     get_active_session_for_chambers,
+    phase_params_for,
+    phase_params_source,
 )
+from ..species.models import FRUITING_PHASES
 from ..species.service import get_profile
-from .service import validate_action_channel
-from .smart_plugs import is_plug_target, plug_aliases, send_plug_command, target_is_present
+from .service import node_channel_error, node_command_topic, node_off_command, validate_action_channel
+from .smart_plugs import (
+    chamber_plug,
+    is_plug_target,
+    paired_plug,
+    plug_aliases,
+    send_plug_command,
+    target_is_present,
+)
 from .models import (
+    PHOTOPERIOD_VALUES,
     AutomationRule,
     ConditionType,
     RuleCondition,
@@ -30,18 +41,29 @@ from .service import (
     deserialize_rule_row,
     drop_duty_from_off,
     get_rule,
+    hold_applies,
+    node_command_state,
+    normalize_node_command,
     resolve_node_target,
     rule_applies_to_species,
+    rules_generation,
+    valid_rules,
 )
 
 log = logging.getLogger(__name__)
 
 # In-memory caches populated from the DB. The manual_overrides table is the
 # source of truth — this dict is a hot-path read cache kept coherent with it.
-_last_fired: dict[int, float] = {}  # rule_id -> last fire timestamp
+# (rule id, actuator) -> when the rule last fired on that actuator: per
+# physical actuator, so one chamber's firing never cools the rule down for
+# another chamber's (see evaluate_rules).
+_last_fired: dict[tuple, float] = {}
 _overrides: dict[str, ManualOverride] = {}
 _rule_cache: list[AutomationRule] = []
 _cache_ts: float = 0
+# service.rules_generation() when _rule_cache was read: a rule write since
+# then (create, edit, toggle, delete) makes load_rules read the table again.
+_cache_generation: int = -1
 _overrides_loaded: bool = False
 
 # Whole-engine pause. When True, evaluate_rules short-circuits before any rule
@@ -72,6 +94,16 @@ _safety_deadlines: dict[str, float] = {}
 # after that — an ON that went out later keeps its ceiling.
 _safety_last_on: dict[str, float] = {}
 
+# Keys that may have a row in safety_watchdogs: loaded from the table once,
+# then kept in step by every write here (an exhausted trip keeps its row, and
+# its key). An OFF deletes a row only for a listed key.
+_persisted_watchdogs: set[str] = set()
+_persisted_watchdogs_loaded: bool = False
+
+# A rehydrated watchdog re-checks the wall clock this often while it waits
+# (see _sleep_until_due).
+_REHYDRATED_SLICE_SECONDS = 30.0
+
 # One lock per actuator (same key as _safety_tasks). _fire_rule holds it from
 # its override re-check through the transport and the watchdog arm; a tripping
 # ceiling holds it while it deregisters and locks automation out, before its
@@ -92,24 +124,12 @@ _SAFETY_OFF_RETRY_DELAYS: tuple[int, ...] = (2, 4, 8, 16, 30) + (30,) * 18
 # the very next telemetry frame cannot switch it straight back on.
 _SAFETY_LOCKOUT_SECONDS = 15 * 60
 
-# How a vendor device is turned OFF by the safety watchdog. Vendor rules reach
+# How a vendor device is turned OFF by the safety watchdog: vendor rules reach
 # their device through the integrations dispatcher, not MQTT, so the auto-OFF
-# must go the same way. slug → (OFF action, device-id param, OFF params).
-# Setpoint-only vendors (trane/quest/anden) have no OFF and are not armed.
-_VENDOR_SAFETY_OFF: dict[str, tuple[str, str, dict]] = {
-    "kasa": ("set_power", "ip", {"on": False}),
-    "tapo": ("set_power", "ip", {"on": False}),
-    "wemo": ("set_power", "ip", {"on": False}),
-    "fluence": ("set_dim", "fixture_id", {"percent": 0}),
-    "fohse": ("set_dim", "fixture_id", {"percent": 0}),
-    "bios": ("set_dim", "fixture_id", {"percent": 0}),
-    "agrowtek": ("set_output", "output_id", {"value": False}),
-}
-
-# Lax bool, exactly as the integrations dispatcher coerces a bool kwarg
-# ("false"/"off"/"0" → False), so the watchdog reads a vendor rule's on/off
-# the same way the device does.
-_LAX_BOOL = TypeAdapter(bool)
+# goes the same way. The table lives beside the dispatcher's VENDOR_ACTIONS
+# (integrations._actions.VENDOR_SAFETY_OFF), so a new on/off vendor is added to
+# both in one place.
+_VENDOR_SAFETY_OFF = _vendor_actions.VENDOR_SAFETY_OFF
 
 # Guards the read-modify-write spans on the shared dicts above. Concurrent
 # telemetry frames can hit evaluate_rules while the override CRUD endpoints
@@ -119,12 +139,17 @@ _LAX_BOOL = TypeAdapter(bool)
 _state_lock = asyncio.Lock()
 _safety_tasks_lock = asyncio.Lock()
 
-# rule_id -> when evaluate_rules last looked at the rule. A cron schedule
-# matches any minute since then (capped), not just the minute a telemetry frame
-# happens to land in — frames arrive every ~60 s with jitter, or every 300 s if
-# the operator slows the node down, so exact-minute matching skipped cycles.
-_rule_seen: dict[int, float] = {}
+# (rule id, actuator) -> when evaluate_rules last looked at the rule for that
+# actuator. A cron schedule matches any minute since then (capped), not just
+# the minute a telemetry frame happens to land in — frames arrive every ~60 s
+# with jitter, or every 300 s if the operator slows the node down, so
+# exact-minute matching skipped cycles.
+_rule_seen: dict[tuple, float] = {}
 _CRON_CATCHUP_SECONDS = 15 * 60
+
+# (rule id, chamber node ids) whose "no node of this role" was logged; cleared
+# when the rule's target resolves again.
+_no_node_logged: set[tuple] = set()
 
 # Alert dedup: "<node>:<param>:<direction>:<severity>" -> when it last went out.
 # A persisting excursion is re-detected on every telemetry frame; without this
@@ -160,13 +185,12 @@ _HUMIDITY_EMERG_MARGIN = 8.0
 _CO2_WARN_MARGIN_PPM = 500
 _CO2_EMERG_MARGIN_PPM = 1000
 
-# Back-compat: the old single-tier names, still referenced by tests.
-_TEMP_SAFETY_MARGIN_F = _TEMP_EMERG_MARGIN_F
-_CO2_SAFETY_MARGIN_PPM = _CO2_EMERG_MARGIN_PPM
-
 # Life-safety CO2 level (OSHA IDLH, and the seeded CO2 Hard Ceiling's trigger):
 # far above any cultivation band, so it pages whatever the session, phase,
-# container or fae_mode — including when there is no session at all.
+# container or fae_mode — including when there is no session at all. Reached
+# AT this level: it is also the full scale of the SCD30 / SCD4x, which report a
+# saturated reading as exactly 40000 (an MH-Z19C, 5000 ppm full scale, never
+# gets here).
 _CO2_LIFE_SAFETY_PPM = 40000
 
 # A rule at or above this priority whose condition only compares readings to
@@ -194,6 +218,9 @@ def _band_severity(value, lo, hi, warn_margin, emerg_margin):
 
 
 def _override_key(target: str, channel: str | None) -> str:
+    """"<target>:<channel>" ("*" for the whole target): the one key for an
+    actuator — its manual hold, safety ceiling, actuator lock and redundant-OFF
+    entry all use it."""
     return f"{target}:{channel or '*'}"
 
 
@@ -203,8 +230,12 @@ def _override_key(target: str, channel: str | None) -> str:
 _AIR_EXCHANGE_CHANNELS = {"fae", "exhaust"}
 
 
-def _is_air_exchange_action(action) -> bool:
-    return action.channel in _AIR_EXCHANGE_CHANNELS
+def _is_air_exchange_action(action, tgt=None) -> bool:
+    """Does the action exchange chamber air with ambient? ``tgt`` (the
+    action's _Target) identifies a plug-driven fan by its role."""
+    if action.channel in _AIR_EXCHANGE_CHANNELS:
+        return True
+    return tgt is not None and tgt.plug and tgt.role in _AIR_EXCHANGE_PLUG_ROLES
 
 
 # fae_mode values under which a timed FAE cycle is wanted. "passive" means no
@@ -236,71 +267,35 @@ def _is_life_safety_rule(rule: AutomationRule) -> bool:
     )
 
 
-# A phase its species profile does not define borrows another phase's
-# setpoints (sessions.service.PHASE_PARAM_FALLBACKS — the phase-advance
-# validation reads the same table): with no params every profile-driven rule
-# AND every stage safety alert went silent. Rest runs with the lights off.
-_REST_LIGHTS_OFF = {"light_hours_on": 0, "light_hours_off": 24, "light_spectrum": "none"}
-
-# Phases whose params a session's growth_form re-selects (reishi: the profile's
-# primordia phase is the elevated-CO2 ANTLER form, its fruiting phase the
-# low-CO2 CONK form). See _apply_growth_form.
-_FORM_PHASES = ("primordia_induction", "fruiting")
-
-
-def _apply_growth_form(params, phase: str, form: str | None, by_phase: dict):
-    """Pick the phase params the session's growth_form asks for.
-
-    CO2 controls the morphology: an ANTLER session wants the phase whose
-    profile holds CO2 up (co2_min_ppm set) for as long as it fruits, a CONK
-    session wants the low-CO2 phase with FAE — even while pinning. The setting
-    used to be stored and never read, so an antler reishi advanced to fruiting
-    got the conk ceiling (800 ppm, scheduled FAE) and a conk session in
-    primordia got the antler CO2 floor. Profiles without a CO2-floor phase are
-    untouched.
-    """
-    form = (form or "").strip().lower()
-    if form not in ("antler", "conk") or phase not in _FORM_PHASES:
-        return params
-    candidates = [by_phase[p] for p in _FORM_PHASES if p in by_phase]
-    antler = next((p for p in candidates if getattr(p, "co2_min_ppm", None)), None)
-    if antler is None:
-        return params
-    if form == "antler":
-        return antler
-    conk = next((p for p in reversed(candidates) if not getattr(p, "co2_min_ppm", None)), None)
-    return conk if conk is not None else params
-
-
 def _resolve_phase_params(session: dict, species_profile):
-    """PhaseParams the session's current phase runs under, or None."""
+    """PhaseParams the session's current phase runs under, or None.
+
+    The species setpoints come from sessions.service.phase_params_for, which
+    every other reader of the setpoints in force shares: a phase the profile
+    does not define borrows its PHASE_PARAM_FALLBACKS stand-in's (rest with the
+    lights off), with the session's growth_form applied; with no params every
+    profile-driven rule AND every stage safety alert would go silent. Cold
+    storage is the engine's own: a fixed fridge band, whatever the species.
+    """
     phase = session.get("current_phase")
     if phase == "cold_storage":
         # Species-agnostic: hold the fridge cold, drive nothing else.
         return _cold_storage_params()
     if species_profile is None:
         return None
-    by_phase = {p.value: params for p, params in species_profile.phases.items()}
-    params = by_phase.get(phase)
-    if params is None:
-        key = (session.get("id"), phase)
-        for alt in PHASE_PARAM_FALLBACKS.get(phase, ()):
-            if alt in by_phase:
-                params = by_phase[alt]
-                if phase == "rest":
-                    params = params.model_copy(update=_REST_LIGHTS_OFF)
-                if key not in _phase_fallback_logged:
-                    _phase_fallback_logged.add(key)
-                    log.warning("Profile %r has no %r phase — running it on its %r setpoints",
-                                species_profile.id, phase, alt)
-                break
+    params = phase_params_for(species_profile, phase, session.get("growth_form"))
+    defined = {p.value for p in species_profile.phases}
+    key = (session.get("id"), phase)
+    if phase not in defined and key not in _phase_fallback_logged:
+        _phase_fallback_logged.add(key)
+        source = phase_params_source(defined, phase)
+        if params is not None and source is not None:
+            log.warning("Profile %r has no %r phase — running it on its %r setpoints",
+                        species_profile.id, phase, source)
         else:
-            if key not in _phase_fallback_logged:
-                _phase_fallback_logged.add(key)
-                log.warning("Profile %r has no %r phase — no setpoints, profile-driven "
-                            "rules and stage alerts are inactive", species_profile.id, phase)
-            return None
-    return _apply_growth_form(params, phase, session.get("growth_form"), by_phase)
+            log.warning("Profile %r has no %r phase — no setpoints, profile-driven "
+                        "rules and stage alerts are inactive", species_profile.id, phase)
+    return params
 
 
 # Cold storage is preservation, not cultivation: hold the fridge cold, and do
@@ -331,13 +326,15 @@ def _cold_storage_params():
 # CO2/humidity the chamber's actuators cannot change. Running a CO2 or humidity
 # rule against the chamber does nothing for a sealed vessel — the sensor reads
 # room air, the fan moves room air, the substrate stays sealed. Grow bags are
-# sealed during colonization and OPENED to fruit; jars/agar stay sealed (they
-# go to cold storage, they don't fruit in-chamber).
-_ALWAYS_SEALED_CONTAINERS = {"jar", "grain_jar", "agar_plate", "agar"}
+# sealed during colonization and OPENED to fruit; culture vessels (jars, agar,
+# liquid culture) stay sealed (they go to cold storage, they don't fruit
+# in-chamber). The classes are sessions.models', which the phase-advance
+# suggestion reads too; liquid culture was missing from the copy kept here.
+_ALWAYS_SEALED_CONTAINERS = CULTURE_CONTAINERS
 # bulk_bag: an all-in-one bag, sealed under its filter patch until it is opened
 # to fruit — the session flow already treats it as a fruiting container.
-_SEALED_UNTIL_FRUITING = {"grow_bag", "bag", "bulk_bag"}
-_FRUITING_PHASES = {"primordia_induction", "fruiting"}
+_SEALED_UNTIL_FRUITING = BAG_CONTAINERS
+_FRUITING_PHASES = FRUITING_PHASES
 # A shiitake block comes OUT of its bag to brown (light and air drive the
 # skin), so its chamber band is the block's from browning on.
 _BAG_OPEN_PHASES = _FRUITING_PHASES | {"browning"}
@@ -357,40 +354,81 @@ def _container_is_sealed(container_type: str | None, phase: str) -> bool:
 # Rules whose actuation only makes sense when the substrate is in the sensed
 # volume. If the container is sealed, these are no-ops that just churn actuators.
 _CHAMBER_ENV_CHANNELS = {"fae", "exhaust", "circulation", "aux"}
+# Smart-plug roles (smart_plugs.device_role) whose device acts on the chamber
+# air the same way. Judged by the plug's role, not by the name the rule uses:
+# a rule naming the humidifier by its id (plug-a1b2c3) escaped the gate.
+_CHAMBER_ENV_PLUG_ROLES = {"humidifier", "dehumidifier", "fan", "fae", "exhaust", "circulation"}
+# Of those, the roles that exchange chamber air with ambient.
+_AIR_EXCHANGE_PLUG_ROLES = {"fae", "exhaust"}
 
 
-def _acts_on_chamber_environment(action) -> bool:
+def _acts_on_chamber_environment(action, tgt=None) -> bool:
+    """Does the action act on the chamber air (see _CHAMBER_ENV_CHANNELS)?
+    ``tgt`` (the action's _Target) identifies a plug by its role."""
     if action.channel in _CHAMBER_ENV_CHANNELS:
         return True
     # humidifier / dehumidifier plugs also act on chamber air, not the vessel
-    return action.target in ("plug-humidifier", "plug-dehumidifier")
+    names = tgt.names if tgt is not None else {action.target}
+    if names & {"plug-humidifier", "plug-dehumidifier"}:
+        return True
+    return tgt is not None and tgt.plug and tgt.role in _CHAMBER_ENV_PLUG_ROLES
 
 
 async def _load_overrides_from_db():
-    """Populate _overrides from the manual_overrides table; drop expired rows."""
+    """Populate _overrides from the manual_overrides table; drop expired rows.
+
+    The table holds one hold per actuator (set_override replaces). Rows from
+    releases that appended a row per hold collapse to the newest, and the
+    older ones are deleted, so the table and the cache hold the same hold. A
+    row whose expiry the 24 h ceiling clamps (an "until cancelled" hold with
+    no expiry, or one past the ceiling) gets the clamped expiry written back:
+    clamped in memory only, it was re-clamped on every boot and never ended.
+    """
     global _overrides_loaded
     now = time.time()
     # Fetch under DB lock only; swap the in-memory dict atomically afterward
     # under _state_lock so concurrent evaluators never see a half-loaded cache.
     fresh: dict[str, ManualOverride] = {}
+    newest: dict[str, int] = {}
+    clamped: dict[int, float] = {}
     async with get_db() as db:
         await db.execute(
             "DELETE FROM manual_overrides WHERE expires_at IS NOT NULL AND expires_at < ?",
             (now,),
         )
-        await db.commit()
         cursor = await db.execute(
-            "SELECT target, channel, locked, reason, expires_at FROM manual_overrides WHERE locked = 1"
+            "SELECT id, target, channel, locked, reason, expires_at, held_state "
+            "FROM manual_overrides WHERE locked = 1 ORDER BY id"
         )
-        for row in await cursor.fetchall():
+        rows = await cursor.fetchall()
+        for row in rows:
             ov = ManualOverride(
                 target=row["target"],
                 channel=row["channel"],
                 locked=bool(row["locked"]),
                 reason=row["reason"] or "",
                 expires_at=row["expires_at"],
+                held_state=row["held_state"],
             )
-            fresh[_override_key(ov.target, ov.channel)] = ov
+            key = _override_key(ov.target, ov.channel)
+            fresh[key] = ov  # ORDER BY id: the newest hold wins
+            newest[key] = row["id"]
+            if ov.expires_at != row["expires_at"]:
+                clamped[row["id"]] = ov.expires_at
+        superseded = [row["id"] for row in rows
+                      if newest[_override_key(row["target"], row["channel"])] != row["id"]]
+        if superseded:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only "?" placeholders are interpolated; every value is a bound parameter
+            await db.execute(
+                f"DELETE FROM manual_overrides WHERE id IN ({','.join('?' * len(superseded))})",
+                superseded,
+            )
+        for row_id, expires_at in clamped.items():
+            if row_id not in superseded:
+                await db.execute(
+                    "UPDATE manual_overrides SET expires_at = ? WHERE id = ?", (expires_at, row_id),
+                )
+        await db.commit()
     async with _state_lock:
         _overrides.clear()
         _overrides.update(fresh)
@@ -447,9 +485,12 @@ async def set_paused(paused: bool) -> None:
 
 
 async def load_rules() -> list[AutomationRule]:
-    global _rule_cache, _cache_ts
+    global _rule_cache, _cache_ts, _cache_generation
     now = time.time()
-    if now - _cache_ts < 5:  # cache for 5s
+    # Read before the query: a write landing while it runs leaves the cache
+    # one generation behind, so the next call reads the table again.
+    generation = rules_generation()
+    if now - _cache_ts < 5 and generation == _cache_generation:  # cache for 5s
         return _rule_cache
 
     async with get_db() as db:
@@ -457,17 +498,28 @@ async def load_rules() -> list[AutomationRule]:
             "SELECT id, name, description, enabled, priority, rule_data FROM automation_rules WHERE enabled = 1 ORDER BY priority DESC"
         )
         rows = await cursor.fetchall()
-        rules = [AutomationRule.model_validate(deserialize_rule_row(row)) for row in rows]
+    # Row by row: one stored rule that no longer validates is skipped (and
+    # logged), not the reason no rule runs — the CO2 Hard Ceiling included.
+    rules = valid_rules(rows)
     # Update the cache outside the DB scope under the state lock so concurrent
     # callers can't observe a torn _rule_cache / _cache_ts pair.
     async with _state_lock:
         _rule_cache = rules
         _cache_ts = now
+        _cache_generation = generation
     return rules
 
 
 async def set_override(override: ManualOverride):
-    """Persist the override to the DB and refresh the in-memory cache."""
+    """Persist the override to the DB and refresh the in-memory cache.
+
+    A hold replaces the hold already on the same actuator (target and
+    channel), in the table as in the cache: the latest hold is the one in
+    force. Each hold used to add a row while the cache kept only the newest,
+    so a short hold over a long one released the actuator early, the long
+    row stayed behind (session-end safing still treated it as held) and came
+    back after a restart.
+    """
     await ensure_overrides_loaded()
     key = _override_key(override.target, override.channel)
     # A lock stops automation from sending NEW commands to this actuator. It
@@ -477,10 +529,17 @@ async def set_override(override: ManualOverride):
     # automation had just switched on with no cutoff at all.
     async with get_db() as db:
         if override.locked:
+            # Same key as the cache: an empty channel is the whole target.
             await db.execute(
-                """INSERT INTO manual_overrides (target, channel, locked, reason, expires_at)
-                   VALUES (?, ?, 1, ?, ?)""",
-                (override.target, override.channel, override.reason, override.expires_at),
+                "DELETE FROM manual_overrides "
+                "WHERE target = ? AND COALESCE(NULLIF(channel, ''), '*') = ?",
+                (override.target, override.channel or "*"),
+            )
+            await db.execute(
+                """INSERT INTO manual_overrides (target, channel, locked, reason, expires_at, held_state)
+                   VALUES (?, ?, 1, ?, ?, ?)""",
+                (override.target, override.channel, override.reason, override.expires_at,
+                 override.held_state),
             )
             await db.commit()
             async with _state_lock:
@@ -502,6 +561,26 @@ async def clear_override(target: str, channel: str | None):
     await set_override(
         ManualOverride(target=target, channel=channel, locked=False, reason="")
     )
+
+
+async def end_on_hold_after_cutoff(node_id: str, channel: str) -> bool:
+    """End a manual ON hold on a channel the node's own safety cutoff switched
+    off (its max-on backstop, safe mode, an OTA start). True if one ended.
+
+    The hold pinned the channel ON; the hardware has ended that, so a hold
+    left in place would go on showing the channel as held on and keep
+    automation off it until it expired. Only a hold placed with an ON
+    command is ended (held_state "on"): a hold that only keeps automation off
+    (a rule suspension, a safety lockout, an OFF pin) stays.
+    """
+    await ensure_overrides_loaded()
+    held = _overrides.get(_override_key(node_id, channel))
+    if held is None or held.held_state != "on":
+        return False
+    await clear_override(node_id, channel)
+    log.info("Manual ON hold on %s:%s ended: the node's safety cutoff switched it off",
+             node_id, channel)
+    return True
 
 
 async def suspend_rule(rule_id: str | int, minutes: int = 30) -> None:
@@ -541,8 +620,10 @@ async def get_overrides() -> list[ManualOverride]:
     await ensure_overrides_loaded()
     now = time.time()
     # Snapshot expired keys under the lock so we don't race with set_override.
+    # `is not None`, not truthiness: an expiry of 0 is long past, not "never".
     async with _state_lock:
-        expired = [k for k, v in _overrides.items() if v.expires_at and v.expires_at < now]
+        expired = [k for k, v in _overrides.items()
+                   if v.expires_at is not None and v.expires_at < now]
     if expired:
         async with get_db() as db:
             await db.execute(
@@ -570,7 +651,7 @@ def is_overridden(target: str, channel: str | None) -> bool:
         ov = _overrides.get(key)
         if ov is None:
             continue
-        if ov.expires_at and ov.expires_at < now:
+        if ov.expires_at is not None and ov.expires_at < now:
             stale_keys.append(key)
             continue
         # Before declaring the channel overridden, sweep any expired entries
@@ -590,9 +671,9 @@ async def _session_for_node(node_id: str) -> tuple[dict | None, list[str] | None
     another chamber's (two chambers can run side by side, and the newest session
     anywhere used to be applied to every node's readings, and its commands sent
     to whichever relay heartbeated last). A node in no chamber keeps the
-    single-closet behaviour — the newest session bound to no chamber, else the
-    grow of the only chamber with active sessions — with chamber node ids
-    None; with grows in two chambers it drives neither (life-safety still runs).
+    single-closet behaviour — the newest session bound to no chamber — with
+    chamber node ids None; with none such it drives no grow (life-safety
+    still runs), never a chamber's.
 
     The session comes from sessions.service get_active_session_for_chambers:
     bound by sessions.chamber_id, else linked by chambers.active_session_id,
@@ -604,6 +685,156 @@ async def _session_for_node(node_id: str) -> tuple[dict | None, list[str] | None
     if not chambers:
         return session, None
     return session, [n for c in chambers for n in c["node_ids"]]
+
+
+@dataclass(frozen=True)
+class _Target:
+    """Where a rule's action lands for the chamber being evaluated.
+
+    ``node`` is the canonical name: the resolved node id, the paired plug's own
+    id (whether the rule names it by id or by role), or a vendor key; None for
+    a placeholder (relay-01 / light-01) no node of its role answers for a
+    chamber. ``names`` is every name a hold or a safety ceiling on this
+    actuator may be stored under (the rule's own target, the resolved node,
+    the plug's id and role). A plug's ``role`` is its device_role; ``paired``
+    is False for a plug target no paired plug answers (for this chamber).
+    """
+    node: str | None
+    names: frozenset[str]
+    plug: bool = False
+    role: str | None = None
+    paired: bool = True
+
+
+async def _resolve_target(
+    action, chamber_nodes: list[str] | None, *, grow_id: int | None = None,
+) -> _Target:
+    """The action's _Target for a chamber's nodes (``chamber_nodes``) or for
+    nodes in no chamber running grow ``grow_id`` (smart_plugs.chamber_plug).
+    A plug named by role and by id is one actuator: two rules naming it the
+    two ways both owned it, and an OFF through one name left a ceiling armed
+    through the other running (a false trip and a 15-minute lockout of a
+    heater that was already off)."""
+    target = action.target
+    if action.vendor_slug:
+        return _Target(target, frozenset({target}))
+    # A placeholder resolves to the chamber's node of its role (or None);
+    # anything else resolves to itself.
+    node = await resolve_node_target(target, chamber_nodes)
+    if node is None:
+        # In a chamber: nothing of the role answers for it, nothing to drive.
+        # With no chamber the placeholder keeps its own name, and the channel
+        # check's warning names the missing node.
+        return _Target(None if chamber_nodes else target, frozenset({target}))
+    if node == target and await is_plug_target(target):
+        row = await chamber_plug(target, chamber_nodes, grow_id=grow_id)
+        if row is None:  # not paired (for this chamber): its own name only
+            return _Target(target, frozenset({target}), plug=True, paired=False)
+        role = row.get("device_role")
+        names = {target, row["plug_id"]} | ({f"plug-{role}"} if role else set())
+        return _Target(row["plug_id"], frozenset(names), plug=True, role=role)
+    return _Target(node, frozenset({target, node}))
+
+
+def _target_holds(action, tgt: _Target) -> list[ManualOverride]:
+    """The holds in force that keep the action's actuator out of automation
+    (manual holds, safety lockouts), under any of its names.
+
+    A hold is stored under the name it was placed on: a cloud override pins
+    the chamber's REAL node (a MAC-derived id resolved from the role) while a
+    seeded rule names the placeholder, and a plug is held by id or by role.
+    A hold on the action's channel or on the whole target (no channel)
+    counts, as in is_overridden. A scene sets every dim channel of its node
+    (firmware handle_scene_cmd), so a hold on any one channel of the node
+    holds a scene rule too: the photoperiod rules used to rewrite the light
+    during an operator's white channel hold. Which hold counts is
+    service.hold_applies, the rule session-end safing reads holds by too.
+    An expired hold met here is dropped from the cache, as is_overridden
+    drops it.
+    """
+    now = time.time()
+    holds: list[ManualOverride] = []
+    for key, ov in list(_overrides.items()):
+        if not hold_applies(ov.target, ov.channel, tgt.names, channel=action.channel,
+                            scene=action.scene, vendor_slug=action.vendor_slug):
+            continue
+        if ov.expires_at is not None and ov.expires_at < now:
+            _overrides.pop(key, None)
+            continue
+        holds.append(ov)
+    return holds
+
+
+def _target_held(action, tgt: _Target) -> bool:
+    """Is the action's actuator held out of automation (a manual hold or a
+    safety lockout) under any of its names? See _target_holds."""
+    return bool(_target_holds(action, tgt))
+
+
+async def _chamber_contexts() -> list[list[str] | None]:
+    """Every chamber node list evaluate_rules can act with (_session_for_node):
+    None, for a node in no chamber, and for each node a chamber lists, the
+    node ids of every chamber that lists it (chambers.service.chamber_contexts)."""
+    return [None, *(nodes for _chambers, nodes in await chamber_contexts())]
+
+
+async def rule_holds(rules: list[dict]) -> dict[int, list[ManualOverride]]:
+    """The holds in force on each rule's actuator, by rule id (`rules` are
+    deserialized automation_rules rows; a rule nothing holds maps to []).
+
+    Found the way evaluate_rules finds them (_target_holds), under every name
+    the rule's target resolves to (_resolve_target) for each chamber the rule
+    can act for, and for nodes in no chamber (with the grow they run): a hold
+    placed on the node a relay-01 / light-01 placeholder stands for, or on a
+    plug's id or role, holds the rule as surely as one on its own target. A
+    stored rule that no longer validates never runs, so nothing holds it.
+    """
+    await ensure_overrides_loaded()
+    out: dict[int, list[ManualOverride]] = {rule["id"]: [] for rule in rules}
+    if not _overrides:
+        return out
+    contexts = await _chamber_contexts()
+    unlisted_grow = await get_active_session_for_chambers([])
+    resolved: dict[tuple, _Target] = {}
+    for rule in rules:
+        try:
+            action = AutomationRule.model_validate(rule).action
+        except Exception:
+            continue
+        holds: dict[str, ManualOverride] = {}
+        for nodes in contexts:
+            key = (action.target, bool(action.vendor_slug), tuple(nodes) if nodes is not None else None)
+            tgt = resolved.get(key)
+            if tgt is None:
+                grow_id = unlisted_grow["id"] if unlisted_grow and nodes is None else None
+                tgt = resolved[key] = await _resolve_target(action, nodes, grow_id=grow_id)
+            if tgt.node is None:
+                continue  # nothing of the role in this chamber: the rule does not run there
+            for ov in _target_holds(action, tgt):
+                holds.setdefault(_override_key(ov.target, ov.channel), ov)
+        out[rule["id"]] = list(holds.values())
+    return out
+
+
+async def add_held_by(rules: list[dict]) -> list[dict]:
+    """`rules` (deserialized automation_rules rows), each given ``held_by``:
+    the holds in force on its actuator (rule_holds), as GET /overrides lists
+    them. GET /api/automation/rules and the cloud's rule list send it."""
+    holds = await rule_holds(rules)
+    for rule in rules:
+        rule["held_by"] = [h.model_dump() for h in holds[rule["id"]]]
+    return rules
+
+
+async def _present_for_chamber(
+    target: str, chamber_nodes: list[str] | None, grow_id: int | None = None,
+) -> bool:
+    """target_is_present, with a plug resolved for the nodes the rule runs on
+    (chamber_plug, as _resolve_target resolves it): another chamber's
+    dehumidifier does not make this chamber's fallback vent go quiet."""
+    if target.startswith("plug-"):
+        return await chamber_plug(target, chamber_nodes, grow_id=grow_id) is not None
+    return await target_is_present(target)
 
 
 def _arbitration_key(action, resolved: str) -> tuple[str, str | None]:
@@ -628,8 +859,15 @@ async def evaluate_rules(
     node_id: str,
     readings: dict,
     sio=None,
+    *,
+    node_session: tuple[dict | None, list[str] | None] | None = None,
 ):
-    """Evaluate all automation rules against new telemetry readings."""
+    """Evaluate all automation rules against new telemetry readings.
+
+    ``node_session`` is the node's _session_for_node result when the caller
+    has already resolved it for this frame (the MQTT ingest, which tags the
+    frame's readings with the same grow); otherwise it is resolved here.
+    """
     await ensure_pause_loaded()
     now = time.time()
 
@@ -640,7 +878,8 @@ async def evaluate_rules(
     # up front: a paused engine (or one with every rule disabled) still pages the
     # operator when a reading drifts outside the active stage range but under the
     # firmware absolute limit.
-    session, chamber_nodes = await _session_for_node(node_id)
+    session, chamber_nodes = (node_session if node_session is not None
+                              else await _session_for_node(node_id))
     # Life-safety detection needs no session, phase, species or container.
     await _check_life_safety(node_id, readings, session.get("id") if session else None)
 
@@ -698,20 +937,56 @@ async def evaluate_rules(
     # humidity vent. Rules of equal priority don't block each other.
     claims: dict[tuple[str, str | None], int] = {}
 
+    # Each distinct target is resolved once per frame (placeholder → the
+    # chamber's node, plug name → the paired plug), not once per rule: twelve
+    # seeded rules share two placeholders, and every lookup opens a
+    # connection on the telemetry path.
+    targets: dict[tuple[str, bool], _Target] = {}
+    present: dict[str, bool] = {}
+    scope = tuple(chamber_nodes or ())
+    # The grow these nodes run: nodes in no chamber borrow a plug of a role
+    # they lack only from a chamber that runs the same grow (chamber_plug).
+    grow_id = session["id"] if session else None
+
     for rule in rules:
         try:
-            prev_seen = _rule_seen.get(rule.id)
-            _rule_seen[rule.id] = now
+            action = rule.action
+            in_scope = (
+                (not rule.applies_to_phases or current_phase in rule.applies_to_phases)
+                and (not rule.applies_to_species or bool(
+                    session and rule_applies_to_species(
+                        rule.applies_to_species, session["species_profile_id"])))
+            )
+            tkey = (action.target, bool(action.vendor_slug))
+            tgt = targets.get(tkey)
+            if tgt is None:
+                tgt = targets[tkey] = await _resolve_target(action, chamber_nodes, grow_id=grow_id)
+
+            if tgt.node is None:
+                # A placeholder with no node of its role for this chamber: a
+                # publish to the placeholder reaches nothing and used to log
+                # 'sent' (another chamber's node satisfied the global channel
+                # check). Nothing to drive: say so once, until one is paired.
+                if in_scope and (rule.id, scope) not in _no_node_logged:
+                    _no_node_logged.add((rule.id, scope))
+                    log.warning("Rule '%s' skipped: no %r node for this chamber (nodes %s)",
+                                rule.name, action.target, list(scope))
+                continue
+            _no_node_logged.discard((rule.id, scope))
+
+            # Cooldown, hold and cron bookkeeping are per physical actuator:
+            # keyed by the rule alone, one chamber's firing put the rule in
+            # cooldown for every other chamber, whose own fan never ran.
+            key = _arbitration_key(action, tgt.node)
+            fire_key = (rule.id, key)
+            prev_seen = _rule_seen.get(fire_key)
+            _rule_seen[fire_key] = now
             cron_since = (max(prev_seen, now - _CRON_CATCHUP_SECONDS)
                           if prev_seen is not None else None)
             life_safety = _is_life_safety_rule(rule)
 
-            if rule.applies_to_phases and current_phase not in rule.applies_to_phases:
-                continue
-
-            if rule.applies_to_species and not (
-                session and rule_applies_to_species(
-                    rule.applies_to_species, session["species_profile_id"])):
+            # Phase and species scope.
+            if not in_scope:
                 continue
 
             # Sealed vessel: the chamber can't reach the substrate, so
@@ -719,7 +994,7 @@ async def evaluate_rules(
             # a fridge/heater warms the whole chamber including the vessel.)
             # Life-safety rules protect the room, not the grow, and are exempt
             # from this and the fae_mode gates below.
-            if not life_safety and container_sealed and _acts_on_chamber_environment(rule.action):
+            if not life_safety and container_sealed and _acts_on_chamber_environment(action, tgt):
                 continue
 
             # Honour the species profile's fae_mode. A phase declaring
@@ -728,7 +1003,7 @@ async def evaluate_rules(
             # the mycelium needs. A timed FAE schedule additionally needs a phase
             # that schedules FAE — in a "passive" phase (CO2 held high on
             # purpose) the Scheduled FAE Cycle fell back to a 20-min/300-s burst.
-            if not life_safety and _is_air_exchange_action(rule.action) and phase_params is not None:
+            if not life_safety and _is_air_exchange_action(action, tgt) and phase_params is not None:
                 fae_mode = getattr(phase_params, "fae_mode", None)
                 if fae_mode == "none":
                     continue
@@ -739,33 +1014,35 @@ async def evaluate_rules(
             # Capability-aware fallback: a rule that should only run when a
             # preferred actuator is ABSENT (e.g. vent with fans only if there's
             # no dehumidifier). Goes silent the moment the real device is paired.
-            if rule.requires_absent_target and await target_is_present(rule.requires_absent_target):
+            absent = rule.requires_absent_target
+            if absent:
+                if absent not in present:
+                    present[absent] = await _present_for_chamber(absent, chamber_nodes, grow_id)
+                if present[absent]:
+                    continue
+
+            # Held (a manual hold or a safety lockout) under any of the
+            # actuator's names: otherwise the rule re-fires on the next
+            # telemetry tick and claws back the operator's hold.
+            if _target_held(action, tgt):
                 continue
 
-            # A manual hold is stored under the target it was placed on. A cloud
-            # override pins the chamber's REAL node (a MAC-derived id resolved
-            # from the role), while a seeded rule still names the placeholder
-            # (relay-01 / light-01). Resolve the rule's target the same way
-            # _fire_rule does and treat the rule as held if EITHER the resolved
-            # node or the placeholder is overridden — otherwise the rule re-fires
-            # on the next telemetry tick and claws back the operator's hold. (V4-1)
-            resolved = (await resolve_node_target(rule.action.target, chamber_nodes)
-                        or rule.action.target)
-            if (is_overridden(resolved, rule.action.channel)
-                    or is_overridden(rule.action.target, rule.action.channel)):
-                continue
-
-            key = _arbitration_key(rule.action, resolved)
             owner = claims.get(key)
             if owner is not None and owner > rule.priority:
                 continue
 
-            last = _last_fired.get(rule.id, 0)
+            last = _last_fired.get(fire_key, 0)
             if now - last < rule.cooldown_seconds:
-                # Still in force? Then it keeps the actuator from lower rules.
-                hold = _resolved_duration(rule.action, phase_params) or rule.cooldown_seconds
-                if now - last < hold and _evaluate_condition(
-                        rule.condition, readings, phase_params, last or None, cron_since):
+                # Still in force? Then it keeps the actuator from lower rules —
+                # unless this frame shows its condition false. A frame that
+                # cannot say (a relay or lighting node's frame carries no
+                # climate readings) keeps the claim: it used to drop it, and
+                # the Scheduled FAE Cycle overrode the CO2 FAE Trigger's
+                # in-force command on every relay heartbeat.
+                hold = _resolved_duration(action, phase_params) or rule.cooldown_seconds
+                if now - last < hold and _condition_state(
+                        rule.condition, readings, phase_params, last or None,
+                        cron_since) is not False:
                     claims.setdefault(key, rule.priority)
                 continue
 
@@ -773,9 +1050,9 @@ async def evaluate_rules(
                                    last if last else None, cron_since):
                 claims.setdefault(key, rule.priority)
                 await _fire_rule(rule, readings, session, sio, phase_params,
-                                 chamber_nodes=chamber_nodes, node_id=node_id)
+                                 chamber_nodes=chamber_nodes, node_id=node_id, target=tgt)
                 async with _state_lock:
-                    _last_fired[rule.id] = now
+                    _last_fired[fire_key] = now
 
         except Exception as e:
             log.error("Error evaluating rule '%s': %s", rule.name, e)
@@ -810,18 +1087,56 @@ async def _forward_event(event_type: str, data: dict) -> None:
         log.warning("forward_event(%s) failed: %s", event_type, e)
 
 
-async def _emit_co2_emergency(node_id: str, co2: float, threshold: float, sid) -> None:
-    """The CO2 emergency page (local ntfy + cloud `co2_alert`), deduplicated.
+def _co2_page_slot(node_id: str, life_safety: bool) -> str:
+    """The node's dedup slot for one kind of CO2 emergency page.
 
-    Shared by the stage band check and the life-safety check, so a reading
-    that trips both pages once.
+    The stage band (the species' ceiling plus the emergency margin) and the
+    life-safety level page under separate slots: with one shared slot, a stage
+    page held back the page for a later climb to a level dangerous to people
+    for 15 minutes. The slot is also the page's ntfy dedup key.
     """
-    if not _alert_due(f"{node_id}:co2:high:emergency", "emergency"):
-        return
+    return f"{node_id}:co2:high:{'life_safety' if life_safety else 'emergency'}"
+
+
+# CO2 page slots whose local page did not go out (ntfy down or unreachable).
+# While the excursion lasts, each frame retries the local page — without
+# forwarding to the cloud again — until it is delivered or the slot's window
+# ends; the slot used to sit claimed for the whole 15 minutes.
+_co2_page_undelivered: set[str] = set()
+
+
+async def _send_co2_page(node_id: str, co2: float, slot: str, life_safety: bool) -> None:
     try:
-        await co2_alert(int(co2))
+        delivered = await co2_alert(int(co2), node_id=node_id, dedup_key=slot,
+                                    life_safety=life_safety)
     except Exception as e:
         log.warning("co2_alert failed: %s", e)
+        delivered = False
+    if delivered is False:
+        _co2_page_undelivered.add(slot)
+    else:
+        _co2_page_undelivered.discard(slot)
+
+
+async def _emit_co2_emergency(
+    node_id: str, co2: float, threshold: float, sid, *, life_safety: bool = False,
+) -> None:
+    """The CO2 emergency page (local ntfy + cloud `co2_alert`), deduplicated
+    per node and per kind (see _co2_page_slot).
+
+    A life-safety page also claims the node's stage slot: the reading that
+    trips it trips the stage band too, and pages once.
+    """
+    slot = _co2_page_slot(node_id, life_safety)
+    if not _alert_due(slot, "emergency"):
+        if slot in _co2_page_undelivered:
+            await _send_co2_page(node_id, co2, slot, life_safety)
+        return
+    if life_safety:
+        stage = _co2_page_slot(node_id, False)
+        _alert_last_sent[stage] = _alert_last_sent[slot]
+        _co2_page_undelivered.discard(stage)  # this page supersedes a stage retry
+    await _send_co2_page(node_id, co2, slot, life_safety)
     await _forward_event("co2_alert", {
         "node_id": node_id, "co2_ppm": int(co2), "value": float(co2),
         "threshold_ppm": threshold, "severity": "emergency", "session_id": sid,
@@ -833,12 +1148,17 @@ async def _check_life_safety(node_id: str, readings: dict, sid) -> None:
 
     The stage alerts need an active session and a phase that manages CO2, and
     skip sealed containers — none of which matter when the room itself is at
-    an IDLH CO2 level. (The firmware's own >4000 ppm alert is a colonization-
-    normal level and is not forwarded to local ntfy.)
+    an IDLH CO2 level. (The firmware's own >4000 ppm alert reaches local ntfy
+    only when the node's grow does not expect such a level: colonization
+    holds 5000-15000 ppm on purpose. See mqtt._reading_normal_for_grow.)
+
+    At or above the level, not only above it: 40000 ppm is the full scale of
+    the SCD30 and SCD4x, so a saturated sensor reports exactly that and never
+    more.
     """
     co2 = readings.get("co2_ppm")
-    if isinstance(co2, (int, float)) and not isinstance(co2, bool) and co2 > _CO2_LIFE_SAFETY_PPM:
-        await _emit_co2_emergency(node_id, co2, _CO2_LIFE_SAFETY_PPM, sid)
+    if isinstance(co2, (int, float)) and not isinstance(co2, bool) and co2 >= _CO2_LIFE_SAFETY_PPM:
+        await _emit_co2_emergency(node_id, co2, _CO2_LIFE_SAFETY_PPM, sid, life_safety=True)
 
 
 async def _check_safety_thresholds(
@@ -847,8 +1167,11 @@ async def _check_safety_thresholds(
     """Page the operator when readings breach species ceilings by a safety margin.
 
     Two channels fire in parallel:
-    - local ntfy via `temperature_alert` / `co2_alert` (so a Pi running headless
-      on the LAN gets notified even if the cloud connector is disconnected)
+    - local ntfy (so a Pi running headless on the LAN gets notified even if the
+      cloud connector is disconnected): notify_critical / notify_warning for
+      temperature and humidity, co2_alert (via _emit_co2_emergency) for a CO2
+      emergency, each page naming its node and collapsed per node, parameter
+      and direction
     - cloud event via `forward_event` (so premium mobile subscribers get their
       push notification via the cloud relay's escalation engine)
 
@@ -862,14 +1185,16 @@ async def _check_safety_thresholds(
     async def _emit(param: str, severity: str, direction: str, value: float, threshold: float):
         if not _alert_due(f"{node_id}:{param}:{direction}:{severity}", severity):
             return
-        # Local ntfy: warning tier is low-priority, emergency is critical.
-        title = f"{param.title()} {severity.upper()}"
+        # Local ntfy: warning tier is low-priority, emergency is critical. The
+        # title names the node: with two chambers, a bare "Temperature
+        # EMERGENCY" did not say which one.
+        title = f"{param.title()} {severity.upper()} on {node_id}"
         msg = f"{param} {value} ({direction}); threshold {threshold}"
         try:
             if severity == "emergency":
-                # The title is the same for every node and direction, so it
-                # can't be the ntfy dedup key: a second node's emergency (or
-                # the opposite excursion) inside 15 min would be swallowed.
+                # The title is the same for both directions, so it can't be
+                # the ntfy dedup key: the opposite excursion inside 15 min
+                # would be swallowed.
                 await notify_critical(title, msg, tags=[param],
                                       dedup_key=f"{node_id}:{param}:{direction}:emergency")
             else:
@@ -935,6 +1260,40 @@ async def _check_safety_thresholds(
                         phase_params.co2_max_ppm + _CO2_WARN_MARGIN_PPM)
 
 
+def _condition_state(
+    condition: RuleCondition,
+    readings: dict,
+    phase_params=None,
+    last_fired: float | None = None,
+    cron_since: float | None = None,
+) -> bool | None:
+    """The condition on this frame: True, False, or None when the frame cannot
+    say — a sensor it compares is missing or not a number. A relay or
+    lighting node's frame carries no climate readings at all, so that is not
+    the same as false (see the hold claim in evaluate_rules)."""
+    if condition.type == ConditionType.THRESHOLD:
+        return _threshold_state(condition.threshold, readings, phase_params)
+    elif condition.type == ConditionType.SCHEDULE:
+        # phase_params carries the species' light window + FAE period; last_fired
+        # makes interval schedules elapsed-based. Neither used to reach here.
+        return _eval_schedule(condition.schedule, phase_params, last_fired, cron_since)
+    elif condition.type == ConditionType.COMPOUND:
+        compound = condition.compound
+        states = [
+            _condition_state(c, readings, phase_params, last_fired, cron_since)
+            for c in compound.conditions
+        ]
+        # Three-valued: one false branch settles an AND, one true branch an OR.
+        if compound.op.value == "AND":
+            if False in states:
+                return False
+            return None if None in states else True
+        if True in states:
+            return True
+        return None if None in states else False
+    return False
+
+
 def _evaluate_condition(
     condition: RuleCondition,
     readings: dict,
@@ -942,23 +1301,8 @@ def _evaluate_condition(
     last_fired: float | None = None,
     cron_since: float | None = None,
 ) -> bool:
-    if condition.type == ConditionType.THRESHOLD:
-        return _eval_threshold(condition.threshold, readings, phase_params)
-    elif condition.type == ConditionType.SCHEDULE:
-        # phase_params carries the species' light window + FAE period; last_fired
-        # makes interval schedules elapsed-based. Neither used to reach here.
-        return _eval_schedule(condition.schedule, phase_params, last_fired, cron_since)
-    elif condition.type == ConditionType.COMPOUND:
-        compound = condition.compound
-        results = [
-            _evaluate_condition(c, readings, phase_params, last_fired, cron_since)
-            for c in compound.conditions
-        ]
-        if compound.op.value == "AND":
-            return all(results)
-        else:
-            return any(results)
-    return False
+    """Does the condition hold on this frame? (Unknown is not a yes.)"""
+    return _condition_state(condition, readings, phase_params, last_fired, cron_since) is True
 
 
 def _temp_mid_f(phase_params):
@@ -967,10 +1311,50 @@ def _temp_mid_f(phase_params):
     return None if lo is None or hi is None else (lo + hi) / 2
 
 
+# How far inside the band the heating, cooling and dehumidify cutoffs switch
+# off: this much, but never more than a quarter of the band, so the heater's
+# off point stays below the cooler's in a narrow band. Big enough that sensor
+# noise at the edge no longer cycles the plug, small enough that a slow
+# cooler gets there well inside its 3600 s safety ceiling.
+_TEMP_DEADBAND_F = 1.0
+_HUMIDITY_DEADBAND = 3.0
+
+
+def _band_deadband(phase_params, lo_field: str, hi_field: str, deadband: float):
+    """(lo, hi, deadband) for a phase band, or None when either edge is unset."""
+    lo = getattr(phase_params, lo_field, None)
+    hi = getattr(phase_params, hi_field, None)
+    if lo is None or hi is None:
+        return None
+    return lo, hi, max(0.0, min(deadband, (hi - lo) / 4))
+
+
+def _temp_heat_off_f(phase_params):
+    band = _band_deadband(phase_params, "temp_min_f", "temp_max_f", _TEMP_DEADBAND_F)
+    return None if band is None else band[0] + band[2]
+
+
+def _temp_cool_off_f(phase_params):
+    band = _band_deadband(phase_params, "temp_min_f", "temp_max_f", _TEMP_DEADBAND_F)
+    return None if band is None else band[1] - band[2]
+
+
+def _humidity_dehumidify_off(phase_params):
+    band = _band_deadband(phase_params, "humidity_min", "humidity_max", _HUMIDITY_DEADBAND)
+    return None if band is None else band[1] - band[2]
+
+
 # profile_ref names the engine derives from PhaseParams fields rather than
 # reading one directly. temp_mid_f is the midpoint of the phase's temperature
 # band — the gate that keeps the forecast pre-cool rules in the upper half.
-_DERIVED_PROFILE_REFS = {"temp_mid_f": _temp_mid_f}
+# The *_off refs are where the heating, cooling and dehumidify cutoffs switch
+# off: a deadband inside the band (_TEMP_DEADBAND_F, _HUMIDITY_DEADBAND).
+_DERIVED_PROFILE_REFS = {
+    "temp_mid_f": _temp_mid_f,
+    "temp_heat_off_f": _temp_heat_off_f,
+    "temp_cool_off_f": _temp_cool_off_f,
+    "humidity_dehumidify_off": _humidity_dehumidify_off,
+}
 
 
 def _profile_value(phase_params, ref: str):
@@ -981,15 +1365,40 @@ def _profile_value(phase_params, ref: str):
     return value
 
 
+def _reading_value(value) -> float | None:
+    """A telemetry value a threshold can compare, or None.
+
+    Numbers only, finite: a null (the firmware writes a NaN dew point as
+    null), a string from a third-party publisher, or a NaN made the
+    comparison raise, which skipped the rule and logged an error on every
+    frame, and an OR never reached its other branch. A boolean (door_open)
+    compares as 0 / 1, the way telemetry history stores it.
+    """
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value
+    return None
+
+
 def _eval_threshold(
     threshold: ThresholdCondition,
     readings: dict,
     phase_params=None,
 ) -> bool:
-    if threshold.sensor not in readings:
-        return False
+    return _threshold_state(threshold, readings, phase_params) is True
 
-    actual = readings[threshold.sensor]
+
+def _threshold_state(
+    threshold: ThresholdCondition,
+    readings: dict,
+    phase_params=None,
+) -> bool | None:
+    """The threshold on this frame; None when the frame has no usable reading
+    for its sensor (see _condition_state)."""
+    actual = _reading_value(readings.get(threshold.sensor))
+    if actual is None:
+        return None
 
     if threshold.value is not None:
         target = threshold.value
@@ -1058,13 +1467,26 @@ def _eval_cron(expr: str, now: time.struct_time) -> bool:
     minute, hour, dom, month, dow = fields
     # cron dow: 0 and 7 are both Sunday; struct_time tm_wday is Mon=0..Sun=6.
     cron_dow = (now.tm_wday + 1) % 7
+    dom_ok = _cron_field_matches(dom, now.tm_mday)
+    dow_ok = _cron_field_matches(dow, cron_dow) or (cron_dow == 0 and _cron_field_matches(dow, 7))
+    # With BOTH day fields restricted, either one matching is enough, as in
+    # POSIX / Vixie cron: "0 8 1 * 1" is 08:00 on the 1st and on every
+    # Monday, not only on a Monday the 1st. A field starting with "*" (even
+    # "*/2") counts as unrestricted, and then both must match.
+    if not dom.startswith("*") and not dow.startswith("*"):
+        day_ok = dom_ok or dow_ok
+    else:
+        day_ok = dom_ok and dow_ok
     return (
         _cron_field_matches(minute, now.tm_min)
         and _cron_field_matches(hour, now.tm_hour)
-        and _cron_field_matches(dom, now.tm_mday)
         and _cron_field_matches(month, now.tm_mon)
-        and (_cron_field_matches(dow, cron_dow) or (cron_dow == 0 and _cron_field_matches(dow, 7)))
+        and day_ok
     )
+
+
+# Unreadable photoperiod values already logged (each once per process).
+_bad_photoperiod_logged: set[str] = set()
 
 
 def _eval_photoperiod(schedule, phase_params) -> bool:
@@ -1075,6 +1497,15 @@ def _eval_photoperiod(schedule, phase_params) -> bool:
     every 60 minutes, so "12/12" species ran their lights 24/7 and dark
     colonization phases were never actually dark.
     """
+    if schedule.photoperiod not in PHOTOPERIOD_VALUES:
+        # Anything but on/off used to read as "off" and ran the rule in the
+        # dark period: an inverted light cycle. Rule create/update refuses
+        # such a value; one stored before that never matches.
+        if schedule.photoperiod not in _bad_photoperiod_logged:
+            _bad_photoperiod_logged.add(schedule.photoperiod)
+            log.warning("Ignoring schedule photoperiod %r (need one of %s)",
+                        schedule.photoperiod, ", ".join(PHOTOPERIOD_VALUES))
+        return False
     if phase_params is None:
         return False
     hours_on = getattr(phase_params, "light_hours_on", None)
@@ -1173,69 +1604,21 @@ def _eval_schedule(
     return False
 
 
-def _safety_key(target: str, channel: str | None) -> str:
-    return f"{target}:{channel or '*'}"
+# What a vendor write does to its device, the OFF that undoes an ON, and the
+# per-device watchdog key (``vendor:<slug>:<device-id>``): one definition in
+# the integrations layer, which session-end safing (which may not import this
+# module) reads too.
+_vendor_params_on = _vendor_actions.vendor_params_on
+_vendor_safety_off = _vendor_actions.vendor_safety_off
+_vendor_watchdog_target = _vendor_actions.vendor_device_key
 
 
 def _vendor_is_on(action) -> bool | None:
-    """What a vendor action does to its device: True switches it on, False
-    switches it off, None is neither (a setpoint change).
-
-    ``action.state`` defaults to "on" for every rule, so for a vendor action it
-    says nothing — a ``set_power(on=False)`` rule still reads state="on". The
-    vendor params carry the real meaning, read the way the dispatcher coerces
-    them: set_power's ``on`` is a lax bool ("false"/"off"/"0" switch the device
-    OFF). A value the device would not accept, or whose meaning is unclear, is
-    None — neither arms a ceiling nor clears one.
-    """
-    params = action.vendor_params or {}
-    if action.vendor_action == "set_power":
-        try:
-            return _LAX_BOOL.validate_python(params.get("on"))
-        except ValidationError:
-            return None
-    if action.vendor_action in ("set_dim", "set_output"):
-        value = params.get("percent" if action.vendor_action == "set_dim" else "value")
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value > 0
-        return None
-    return None
-
-
-def _vendor_watchdog_target(slug: str, params: dict) -> str | None:
-    """Watchdog key for a vendor device: ``vendor:<slug>:<device-id>``.
-
-    Keyed on the DEVICE rather than the rule's free-form override target, so
-    two rules driving two Kasa plugs under one ``vendor:kasa`` target each keep
-    their own ceiling, and so the OFF can be rebuilt from the key alone after a
-    reboot. None when the vendor has no OFF or the device id is missing.
-    """
-    spec = _VENDOR_SAFETY_OFF.get(slug)
-    if spec is None:
-        return None
-    device = params.get(spec[1])
-    if device is None or device == "":
-        return None
-    return f"vendor:{slug}:{device}"
-
-
-def _vendor_safety_off(slug: str, on_params: dict) -> tuple[str, dict] | None:
-    """(action, params) that switch this vendor device OFF, or None."""
-    spec = _VENDOR_SAFETY_OFF.get(slug)
-    if spec is None:
-        return None
-    off_action, id_param, off_params = spec
-    device = on_params.get(id_param)
-    if device is None or device == "":
-        return None
-    params = {id_param: device, **off_params}
-    if slug == "agrowtek" and not isinstance(on_params.get("value"), bool):
-        # Mirror the ON value's type: an output driven with true/false is
-        # switched off with false, one driven with a number (or unknown) with 0.
-        params["value"] = 0
-    return off_action, params
+    """_vendor_params_on for a rule's action. ``action.state`` defaults to
+    "on" for every rule, so for a vendor action it says nothing — a
+    ``set_power(on=False)`` rule still reads state="on"; the vendor params
+    carry the real meaning."""
+    return _vendor_params_on(action.vendor_slug, action.vendor_action, action.vendor_params or {})
 
 
 async def _vendor_rule_for_watchdog(
@@ -1307,7 +1690,11 @@ async def _send_safety_off(
     True only when the command went out. A vendor target goes through the
     integrations dispatcher (a publish to sporeprint/vendor:*/cmd/* reaches no
     subscriber); a plug target through its own Shelly/Tasmota topic tree; a
-    native node through sporeprint/<node>/cmd/*. Transport errors raise.
+    native node gets the OFF every automation OFF sends
+    (service.node_off_command): its channel's cmd/<channel>, or for a
+    channel-less scene rule the node's all-off scene on cmd/scene. That one
+    used to go to cmd/config, which reads no on/off: the lights stayed on
+    while the trip read as sent. Transport errors raise.
     """
     if target.startswith("vendor:"):
         if vendor_off is None:
@@ -1320,11 +1707,19 @@ async def _send_safety_off(
     # nothing, which for THIS path means a stuck-on heater.
     if await is_plug_target(target):
         return await send_plug_command(target, "off")
-    topic = (
-        f"sporeprint/{target}/cmd/{channel}"
-        if channel else f"sporeprint/{target}/cmd/config"
-    )
-    return await mqtt_publish(topic, {"state": "off", "reason": "safety_max_on_seconds"})
+    return await mqtt_publish(*node_off_command(target, channel, "safety_max_on_seconds"))
+
+
+async def _ensure_persisted_watchdogs_loaded() -> None:
+    """Load _persisted_watchdogs from the table once per process."""
+    global _persisted_watchdogs_loaded
+    if _persisted_watchdogs_loaded:
+        return
+    async with get_db() as db:
+        cursor = await db.execute("SELECT target, channel FROM safety_watchdogs")
+        rows = await cursor.fetchall()
+    _persisted_watchdogs.update(_override_key(r["target"], r["channel"]) for r in rows)
+    _persisted_watchdogs_loaded = True
 
 
 async def _persist_safety_watchdog(
@@ -1333,6 +1728,9 @@ async def _persist_safety_watchdog(
     """Record an armed watchdog so it can be rehydrated after Pi restart."""
     now = time.time()
     expires_at = now + delay_seconds
+    # Listed before the write: listed with no row costs one no-op DELETE
+    # later; a row that is not listed would never be cleared by an OFF.
+    _persisted_watchdogs.add(_override_key(target, channel))
     async with get_db() as db:
         if channel is None:
             # SQLite treats NULLs in a PRIMARY KEY as distinct, so ON CONFLICT
@@ -1355,20 +1753,23 @@ async def _persist_safety_watchdog(
 
 
 async def _clear_persisted_safety_watchdog(target: str, channel: str | None) -> None:
-    """Remove the persisted record when an explicit OFF makes the watchdog moot."""
+    """Remove the persisted record when an explicit OFF makes the watchdog moot.
+
+    Only when one may exist (_persisted_watchdogs): most OFFs have no
+    watchdog, and each one used to cost a connection, a DELETE and a commit.
+    """
+    key = _override_key(target, channel)
+    await _ensure_persisted_watchdogs_loaded()
+    if key not in _persisted_watchdogs:
+        return
     async with get_db() as db:
-        # sqlite treats NULL in = comparisons as false, so we need IS NULL path.
-        if channel is None:
-            await db.execute(
-                "DELETE FROM safety_watchdogs WHERE target = ? AND channel IS NULL",
-                (target,),
-            )
-        else:
-            await db.execute(
-                "DELETE FROM safety_watchdogs WHERE target = ? AND channel = ?",
-                (target, channel),
-            )
+        # IS, not =: a channel-less row has channel NULL.
+        await db.execute(
+            "DELETE FROM safety_watchdogs WHERE target = ? AND channel IS ?",
+            (target, channel),
+        )
         await db.commit()
+    _persisted_watchdogs.discard(key)
 
 
 def _actuator_lock(key: str) -> asyncio.Lock:
@@ -1388,7 +1789,7 @@ def _cancel_safety_task(target: str, channel: str | None) -> None:
     `_clear_persisted_safety_watchdog` — splitting sync cancel from async
     DB cleanup keeps this helper usable from sync code paths.
     """
-    key = _safety_key(target, channel)
+    key = _override_key(target, channel)
     _safety_deadlines.pop(key, None)
     _safety_last_on.pop(key, None)
     task = _safety_tasks.pop(key, None)
@@ -1421,20 +1822,24 @@ async def note_actuator_off(
     async with contextlib.AsyncExitStack() as stack:
         # Sorted, so two callers can never take the same pair in opposite order.
         for t in sorted(targets):
-            await stack.enter_async_context(_actuator_lock(_safety_key(t, channel)))
+            await stack.enter_async_context(_actuator_lock(_override_key(t, channel)))
         for t in sorted(targets):
-            if _safety_last_on.get(_safety_key(t, channel), 0.0) >= sent_at:
+            if _safety_last_on.get(_override_key(t, channel), 0.0) >= sent_at:
                 continue
             _cancel_safety_task(t, channel)
             cleared.append(t)
-        if cleared:
+        await _ensure_persisted_watchdogs_loaded()
+        rows = [t for t in cleared if _override_key(t, channel) in _persisted_watchdogs]
+        if rows:
             async with get_db() as db:
-                for t in cleared:
+                for t in rows:
                     await db.execute(
                         "DELETE FROM safety_watchdogs WHERE target = ? AND channel IS ?",
                         (t, channel),
                     )
                 await db.commit()
+            for t in rows:
+                _persisted_watchdogs.discard(_override_key(t, channel))
     if cleared:
         log.info("Safety watchdog cleared for %s (channel %s): switched OFF outside automation",
                  ", ".join(cleared), channel)
@@ -1458,13 +1863,39 @@ async def note_actuator_on(target: str, channel: str | None) -> None:
     if channel is None and await is_plug_target(target):
         targets = await plug_aliases(target)
     for t in targets:
-        _last_off_sent.pop(_safety_key(t, channel), None)
+        _last_off_sent.pop(_override_key(t, channel), None)
 
 
 # Session-end safing (sessions.service) switches actuators OFF outside
 # automation. That module can't import this one (this one imports it), so it
 # calls back through its actuator-off listener list.
 add_actuator_off_listener(note_actuator_off)
+
+
+async def _note_vendor_write(
+    slug: str, vendor_action: str, params: dict, *, sent_at: float,
+) -> None:
+    """Bookkeeping for a vendor write from outside automation (the Pi's
+    integrations actions route, the cloud vendor_action RPC), as for a manual
+    plug or node command: an OFF clears the safety ceiling timing that device
+    (note_actuator_off), an ON drops the redundant-OFF suppression
+    (note_actuator_on). Without it a heater switched off by hand kept its
+    old deadline, and the next automation ON tripped the ceiling early: a
+    false "Safety cutoff" page and a 15-minute lockout.
+    """
+    target = _vendor_watchdog_target(slug, params)
+    if target is None:
+        return
+    is_on = _vendor_params_on(slug, vendor_action, params)
+    if is_on is False:
+        await note_actuator_off(target, None, sent_at=sent_at)
+    elif is_on:
+        await note_actuator_on(target, None)
+
+
+# Manual vendor writes go through the integrations dispatcher, which this
+# module imports — so, like sessions, it reports them through a listener.
+_vendor_actions.add_vendor_write_listener(_note_vendor_write)
 
 
 async def _arm_safety_watchdog(
@@ -1495,7 +1926,7 @@ async def _arm_safety_watchdog(
     re-arms from its own start, as before.
     """
     ceiling = rule.safety_max_on_seconds
-    key = _safety_key(target, channel)
+    key = _override_key(target, channel)
     now = time.time()
     existing = _safety_tasks.get(key)
     if held_on and existing is not None and not existing.done():
@@ -1523,22 +1954,32 @@ async def _arm_safety_watchdog(
     ))
 
 
-async def _safety_lockout(target: str, channel: str | None, rule_name: str) -> bool:
+async def _safety_lockout(
+    target: str, channel: str | None, rule_name: str,
+) -> tuple[bool, ManualOverride | None]:
     """Hold automation off an actuator whose ceiling just tripped.
 
     An expiring ManualOverride, so it shows in the overrides list with its
-    reason and the operator can clear it early. An existing hold is left alone
-    (automation is already off the actuator; don't shorten the operator's hold)
-    and False is returned. If the override cannot be persisted it is still
-    held in memory, so automation stays off the actuator until the Pi restarts.
-    Never raises: the trip's OFF must go out regardless.
+    reason and the operator can clear it early. A hold already in force that
+    lasts at least as long as the lockout is left alone (don't shorten the
+    operator's hold) and returned as the hold that applies. A shorter one is
+    replaced, so automation is never back on the actuator before the lockout
+    ends: a hold due to expire seconds after the trip used to stand in for
+    the whole lockout, and the next frame switched the heater straight back
+    on. If the override cannot be persisted it is still held in memory, so
+    automation stays off the actuator until the Pi restarts. Returns (whether
+    the lockout was placed, the longer hold that applies instead). Never
+    raises: the trip's OFF must go out regardless.
     """
     try:
         await ensure_overrides_loaded()
     except Exception as e:
         log.error("loading overrides for safety lockout failed: %s", e)
-    if is_overridden(target, channel):
-        return False
+    until = time.time() + _SAFETY_LOCKOUT_SECONDS
+    for key in (_override_key(target, channel), _override_key(target, None)):
+        held = _overrides.get(key)
+        if held is not None and held.expires_at is not None and held.expires_at >= until:
+            return False, held
     override = ManualOverride(
         target=target,
         channel=channel,
@@ -1547,7 +1988,7 @@ async def _safety_lockout(target: str, channel: str | None, rule_name: str) -> b
             f"safety lockout: rule '{rule_name}' hit safety_max_on_seconds — "
             f"automation held off for {_SAFETY_LOCKOUT_SECONDS // 60} min"
         ),
-        expires_at=time.time() + _SAFETY_LOCKOUT_SECONDS,
+        expires_at=until,
     )
     try:
         await set_override(override)
@@ -1556,7 +1997,57 @@ async def _safety_lockout(target: str, channel: str | None, rule_name: str) -> b
                   target, channel, e)
         async with _state_lock:
             _overrides[_override_key(target, channel)] = override
-    return True
+    return True, None
+
+
+async def _sleep_until_due(delay_seconds: float, deadline: float | None) -> None:
+    """Wait out a safety ceiling.
+
+    With ``deadline`` (a rehydrated row's wall-clock expiry): until the delay
+    has passed or the clock reaches the deadline, whichever comes first,
+    re-checked every _REHYDRATED_SLICE_SECONDS. A Pi without a real-time
+    clock can boot with its clock behind (fake-hwclock restores the last
+    save), which overstates the delay, and the NTP step that corrects the
+    clock never shortened a sleep already started: an expired heater ceiling
+    waited hours more.
+    """
+    if deadline is None:
+        await asyncio.sleep(delay_seconds)
+        return
+    start = time.monotonic()
+    while True:
+        left = min(delay_seconds - (time.monotonic() - start), deadline - time.time())
+        await asyncio.sleep(max(0.0, min(left, _REHYDRATED_SLICE_SECONDS)))
+        if left <= _REHYDRATED_SLICE_SECONDS:
+            return
+
+
+async def _record_safety_firing(rule_name: str) -> int | None:
+    """Reserve the trip's automation_firings row as 'pending' before its OFF
+    goes out (the firing write order AGENTS.md sets). The row used to be
+    written only after the OFF and up to ~10 min of retries, so a restart
+    in between left no record of the trip. None if the write failed: the OFF
+    goes out regardless, and the outcome is written then."""
+    try:
+        async with get_db() as db:
+            cursor = await db.execute(
+                """INSERT INTO automation_firings
+                   (rule_id, rule_name, timestamp, condition_met, action_taken, session_id, status)
+                   VALUES (?, ?, ?, ?, ?, NULL, 'pending')""",
+                (
+                    None,
+                    f"safety_max_on_seconds:{rule_name}",
+                    time.time(),
+                    json.dumps({"reason": "safety_max_on_seconds", "original_rule": rule_name}),
+                    json.dumps({"state": "off"}),
+                ),
+            )
+            firing_id = cursor.lastrowid
+            await db.commit()
+        return firing_id
+    except Exception as e:
+        log.error("recording the safety trip of rule %r failed: %s", rule_name, e)
+        return None
 
 
 async def _safety_auto_off(
@@ -1568,6 +2059,7 @@ async def _safety_auto_off(
     vendor_params: dict | None = None,
     held_on: bool | None = None,
     lockout_target: str | None = None,
+    deadline: float | None = None,
 ) -> None:
     """Sleep then switch the actuator OFF; fire-risk watchdog for stuck-on actuators.
 
@@ -1588,11 +2080,12 @@ async def _safety_auto_off(
     the transport (plug / vendor → held ON), which is what a rehydrated row
     gets. ``lockout_target`` is the key the rule's override check reads when it
     differs from ``target`` (a vendor rule's free-form target); a rehydrated
-    vendor row recovers it from its rule.
+    vendor row recovers it from its rule. ``deadline`` is a rehydrated row's
+    wall-clock expiry (see _sleep_until_due).
     """
-    key = _safety_key(target, channel)
+    key = _override_key(target, channel)
     try:
-        await asyncio.sleep(delay_seconds)
+        await _sleep_until_due(delay_seconds, deadline)
         is_vendor = target.startswith("vendor:")
         try:
             if held_on is None:
@@ -1619,14 +2112,16 @@ async def _safety_auto_off(
             # With the lockout placed after the OFF, a re-fire in between turned
             # the heater straight back on and — finding this watchdog still
             # registered — armed no new ceiling.
-            locked_out = False
+            locked_out, holding = False, None
             async with _actuator_lock(key):
                 if _safety_tasks.get(key) is asyncio.current_task():
                     _safety_tasks.pop(key, None)
                     _safety_deadlines.pop(key, None)
                     _safety_last_on.pop(key, None)
                 if held_on:
-                    locked_out = await _safety_lockout(lockout_target or target, channel, rule_name)
+                    locked_out, holding = await _safety_lockout(
+                        lockout_target or target, channel, rule_name)
+            firing_id = await _record_safety_firing(rule_name)
             published = False
             attempt = 0
             while not (is_vendor and vendor_off is None):
@@ -1656,21 +2151,29 @@ async def _safety_auto_off(
                 rule_name, target, channel, published, attempt,
             )
             now = time.time()
+            status = "sent" if published else "failed"
+            error = None if published else f"safety OFF not delivered after {attempt} attempts"
             async with get_db() as db:
-                await db.execute(
-                    """INSERT INTO automation_firings
-                       (rule_id, rule_name, timestamp, condition_met, action_taken, session_id, status, error)
-                       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
-                    (
-                        None,
-                        f"safety_max_on_seconds:{rule_name}",
-                        now,
-                        json.dumps({"reason": "safety_max_on_seconds", "original_rule": rule_name}),
-                        json.dumps({"state": "off"}),
-                        "sent" if published else "failed",
-                        None if published else f"safety OFF not delivered after {attempt} attempts",
-                    ),
-                )
+                if firing_id is not None:
+                    await db.execute(
+                        "UPDATE automation_firings SET status = ?, error = ? WHERE id = ?",
+                        (status, error, firing_id),
+                    )
+                else:
+                    await db.execute(
+                        """INSERT INTO automation_firings
+                           (rule_id, rule_name, timestamp, condition_met, action_taken, session_id, status, error)
+                           VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
+                        (
+                            None,
+                            f"safety_max_on_seconds:{rule_name}",
+                            now,
+                            json.dumps({"reason": "safety_max_on_seconds", "original_rule": rule_name}),
+                            json.dumps({"state": "off"}),
+                            status,
+                            error,
+                        ),
+                    )
                 if published:
                     # Only clear once the OFF went out — and only a row whose
                     # deadline has passed, so a watchdog re-armed by an ON that
@@ -1684,11 +2187,14 @@ async def _safety_auto_off(
             if held_on:
                 label = f"{target}:{channel}" if channel else target
                 if published:
-                    held = (
-                        f"automation held off it for {_SAFETY_LOCKOUT_SECONDS // 60} min"
-                        if locked_out else
-                        "an existing manual hold keeps automation off it"
-                    )
+                    if holding is not None:
+                        minutes = max(1, round((holding.expires_at - time.time()) / 60))
+                        held = (f"an existing manual hold ('{holding.reason or 'no reason'}') "
+                                f"keeps automation off it for {minutes} more minutes")
+                    elif locked_out:
+                        held = f"automation held off it for {_SAFETY_LOCKOUT_SECONDS // 60} min"
+                    else:
+                        held = "automation was not locked out of it"
                     await notify_warning(
                         f"Safety cutoff: {label}",
                         f"Rule '{rule_name}' held {label} on past its safety_max_on_seconds "
@@ -1727,17 +2233,24 @@ async def rehydrate_safety_watchdogs() -> int:
 
     Duplicate rows for one actuator (left by the old NULL-channel upsert)
     collapse to the tightest deadline; the extras are deleted.
+
+    The clock at boot may be behind (a Pi has no real-time clock, and the
+    server can start before NTP steps it): a row armed "in the future" proves
+    it, and fires at once; otherwise the wait is capped at the row's own
+    ceiling length and re-checks the wall clock while it runs
+    (_sleep_until_due), so a corrected clock ends it on time.
     """
+    global _persisted_watchdogs_loaded
     now = time.time()
     keep: dict[str, dict] = {}
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT rowid, target, channel, rule_name, expires_at FROM safety_watchdogs "
+            "SELECT rowid, target, channel, rule_name, armed_at, expires_at FROM safety_watchdogs "
             "ORDER BY expires_at"
         )
         extra: list[int] = []
         for row in await cursor.fetchall():
-            key = _safety_key(row["target"], row["channel"])
+            key = _override_key(row["target"], row["channel"])
             if key in keep:
                 extra.append(row["rowid"])
             else:
@@ -1749,11 +2262,24 @@ async def rehydrate_safety_watchdogs() -> int:
                 extra,
             )
             await db.commit()
+    # Every surviving row, read just now: the persisted-key set is exact.
+    _persisted_watchdogs.clear()
+    _persisted_watchdogs.update(keep)
+    _persisted_watchdogs_loaded = True
     for key, row in keep.items():
         target = row["target"]
         channel = row["channel"]
         expires_at = float(row["expires_at"])
+        armed_at = row["armed_at"]
         remaining = max(0.0, expires_at - now)
+        if armed_at is not None and now < float(armed_at):
+            log.warning(
+                "Safety watchdog for %s:%s was armed %.0fs in the future — the clock is "
+                "behind; scheduling OFF now", target, channel, float(armed_at) - now,
+            )
+            remaining = 0.0
+        elif armed_at is not None:
+            remaining = min(remaining, max(0.0, expires_at - float(armed_at)))
         if remaining > 0:
             log.info("Rehydrated safety watchdog for %s:%s (%.0fs remaining)",
                      target, channel, remaining)
@@ -1765,7 +2291,7 @@ async def rehydrate_safety_watchdogs() -> int:
         _cancel_safety_task(target, channel)
         _safety_deadlines[key] = expires_at
         _safety_tasks[key] = asyncio.create_task(
-            _safety_auto_off(target, channel, remaining, row["rule_name"])
+            _safety_auto_off(target, channel, remaining, row["rule_name"], deadline=expires_at)
         )
     return len(keep)
 
@@ -1774,7 +2300,7 @@ def _watchdog_actuator(action, target: str) -> tuple[str | None, str | None]:
     """(target, channel) the safety watchdog for this action is keyed on.
 
     A native node or plug: the RESOLVED target, so the auto-OFF goes out on the
-    same topic the ON did (V3-2). A vendor device: per DEVICE
+    same topic the ON did. A vendor device: per DEVICE
     (``vendor:<slug>:<id>``), or None when the vendor has no OFF to send.
     """
     if action.vendor_slug:
@@ -1784,19 +2310,23 @@ def _watchdog_actuator(action, target: str) -> tuple[str | None, str | None]:
 
 async def _fire_rule(rule: AutomationRule, readings: dict, session: dict | None, sio=None,
                      phase_params=None, *, chamber_nodes: list[str] | None = None,
-                     node_id: str | None = None):
+                     node_id: str | None = None, target: _Target | None = None):
     action = rule.action
 
-    # Resolve a seeded native-node placeholder (relay-01 / light-01) to the
-    # chamber's real relay/lighting node before composing the topic or arming
-    # the safety watchdog — a real node registers under a MAC-derived id, so a
-    # command published to the placeholder reaches no subscriber and would log
-    # status='sent' while nothing moves. A non-placeholder target (a real node
-    # id, a plug-*, a vendor key) resolves to itself; an unresolvable
-    # placeholder falls back to itself so validate_action_channel's warning
-    # below still surfaces the "no node of this role" gap. (V3-2) With
-    # chamber_nodes, only that chamber's (or an unassigned) node is chosen.
-    target = await resolve_node_target(action.target, chamber_nodes) or action.target
+    # The actuator, resolved before composing the topic or arming the safety
+    # watchdog (evaluate_rules passes the one it resolved for the frame): a
+    # seeded native-node placeholder (relay-01 / light-01) becomes the
+    # chamber's real relay/lighting node — a real node registers under a
+    # MAC-derived id, so a command published to the placeholder reaches no
+    # subscriber and would log status='sent' while nothing moves — and
+    # a plug named by role or by id becomes the paired plug's own id. With
+    # chamber_nodes, only that chamber's (or an unassigned) node or plug is
+    # chosen, and a placeholder with none is not fired at all.
+    tgt = target if target is not None else await _resolve_target(
+        action, chamber_nodes, grow_id=session["id"] if session else None)
+    if tgt.node is None:
+        log.warning("Rule '%s' not fired: no %r node for this chamber", rule.name, action.target)
+        return
 
     # evaluate_rules checked the hold before calling us, but a safety ceiling
     # can trip — and lock the actuator out — between that check and this
@@ -1805,61 +2335,60 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict | None,
     # (and its watchdog armed or kept) before the lockout and the OFF, or it
     # sees the lockout here and is not sent.
     await ensure_overrides_loaded()
-    wd_target, wd_channel = _watchdog_actuator(action, target)
-    lock = (_actuator_lock(_safety_key(wd_target, wd_channel))
+    wd_target, wd_channel = _watchdog_actuator(action, tgt.node)
+    lock = (_actuator_lock(_override_key(wd_target, wd_channel))
             if wd_target is not None else contextlib.nullcontext())
     async with lock:
-        if (is_overridden(target, action.channel)
-                or is_overridden(action.target, action.channel)):
+        if _target_held(action, tgt):
             log.info("Rule '%s' not fired: %s:%s is held (manual hold or safety lockout)",
                      rule.name, action.target, action.channel)
             return
-        status = await _send_rule_action(rule, target, readings, session, sio, phase_params)
+        status = await _send_rule_action(rule, tgt, readings, session, sio, phase_params)
 
     # Notify only after the actuator lock is released: ntfy is an HTTP call
     # (5 s timeout), and a safety ceiling tripping on this actuator takes the
     # same lock before its OFF.
     if status is not None and rule.notification:
-        await _notify_rule_fired(rule, target, status, readings, node_id=node_id)
+        await _notify_rule_fired(rule, tgt.node, status, readings, node_id=node_id)
 
 
 def _is_plain_off(action) -> bool:
-    """A native/plug OFF with nothing else in it (no scene). A pwm on an OFF
-    is never published (drop_duty_from_off), so it doesn't make one special."""
-    return action.state == "off" and not action.vendor_slug and not action.scene
+    """A native/plug OFF with nothing else in it (no scene). A node takes any
+    state but "on" as an OFF and is sent "off" (normalize_node_command); a plug
+    target (plug-*) is sent the state as written, where only "off" is one. A
+    pwm on an OFF is never published, so it doesn't make one special."""
+    if action.vendor_slug or action.scene:
+        return False
+    plug = action.target.startswith("plug-")
+    return (action.state if plug else node_command_state(action.state)) == "off"
 
 
 async def _plug_reports_on(target: str) -> bool:
     """Does the paired plug behind `target` report its relay ON?"""
-    role = target[len("plug-"):] if target.startswith("plug-") else None
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT last_state FROM smart_plugs WHERE plug_id = ? OR device_role = ? "
-            "ORDER BY (plug_id = ?) DESC LIMIT 1",
-            (target, role, target),
-        )
-        row = await cursor.fetchone()
+    row = await paired_plug(target)
     return bool(row and (row["last_state"] or "").lower() == "on")
 
 
-async def _skip_redundant_off(rule: AutomationRule, target: str, plug: bool) -> bool:
+async def _skip_redundant_off(rule: AutomationRule, tgt: _Target) -> bool:
     """True when this OFF would change nothing, so it is neither sent nor logged.
 
-    An OFF to a smart plug that isn't paired reaches no device (it used to log
-    a 'failed' firing and a warning every minute). An OFF to an actuator this
-    engine already switched off less than _OFF_REASSERT_SECONDS ago is skipped
-    too — unless a plug reports it is ON again (switched on by hand), or an ON
-    since then went through note_actuator_on (which drops the entry). Past that
-    window the OFF is re-sent as a safety net.
+    An OFF to a smart plug that isn't paired (for this chamber) reaches no
+    device (it used to log a 'failed' firing and a warning every minute). An
+    OFF to an actuator this engine already switched off less than
+    _OFF_REASSERT_SECONDS ago is skipped too — unless a plug reports it is ON
+    again (switched on by hand), or an ON since then went through
+    note_actuator_on (which drops the entry). Past that window the OFF is
+    re-sent as a safety net.
     """
     if not _is_plain_off(rule.action):
         return False
-    if plug and not await target_is_present(target):
+    plug = tgt.plug and not rule.action.vendor_slug
+    if plug and not tgt.paired:
         return True
-    last = _last_off_sent.get(_safety_key(target, rule.action.channel))
+    last = _last_off_sent.get(_override_key(tgt.node, rule.action.channel))
     if last is None or time.time() - last >= _OFF_REASSERT_SECONDS:
         return False
-    return not (plug and await _plug_reports_on(target))
+    return not (plug and await _plug_reports_on(tgt.node))
 
 
 def _rule_watches_co2_high(rule: AutomationRule) -> bool:
@@ -1868,6 +2397,15 @@ def _rule_watches_co2_high(rule: AutomationRule) -> bool:
     th = rule.condition.threshold
     return (rule.condition.type == ConditionType.THRESHOLD and th is not None
             and th.sensor == "co2_ppm" and th.operator in ("gt", "gte"))
+
+
+def _at_life_safety_level(rule: AutomationRule) -> bool:
+    """A CO2-high rule whose absolute threshold is the life-safety level (the
+    CO2 Hard Ceiling). Only the life-safety page covers it: a stage page sent
+    a few minutes earlier reported a far lower reading."""
+    th = rule.condition.threshold
+    return (th is not None and th.value is not None and not th.profile_ref
+            and th.value >= _CO2_LIFE_SAFETY_PPM)
 
 
 async def _notify_rule_fired(rule: AutomationRule, target: str, status: str,
@@ -1884,7 +2422,8 @@ async def _notify_rule_fired(rule: AutomationRule, target: str, status: str,
     """
     critical = rule.priority >= _LIFE_SAFETY_PRIORITY
     if (status == "sent" and node_id and _rule_watches_co2_high(rule)
-            and _alert_recent(f"{node_id}:co2:high:emergency", "emergency")):
+            and _alert_recent(_co2_page_slot(node_id, _at_life_safety_level(rule)),
+                              "emergency")):
         return
     if not _alert_due(f"rule:{rule.id}:{rule.name}", "emergency" if critical else "warning"):
         return
@@ -1904,16 +2443,17 @@ async def _notify_rule_fired(rule: AutomationRule, target: str, status: str,
         log.warning("notification for rule '%s' failed: %s", rule.name, e)
 
 
-async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
+async def _send_rule_action(rule: AutomationRule, tgt: _Target, readings: dict,
                             session: dict | None, sio=None, phase_params=None):
-    """Send one rule's command to its (resolved) target, audit it, and arm or
+    """Send one rule's command to its resolved actuator, audit it, and arm or
     clear its safety watchdog. Called by _fire_rule under the actuator lock.
 
     Returns the delivery status ('sent' / 'failed'), or None when nothing was
     sent (a redundant OFF)."""
     action = rule.action
-    plug = not action.vendor_slug and await is_plug_target(target)
-    if await _skip_redundant_off(rule, target, plug):
+    target = tgt.node
+    plug = tgt.plug and not action.vendor_slug
+    if await _skip_redundant_off(rule, tgt):
         log.debug("Rule '%s': %s:%s is already OFF — not re-sent",
                   rule.name, target, action.channel)
         return None
@@ -1939,31 +2479,35 @@ async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
         payload["vendor_slug"] = action.vendor_slug
         payload["vendor_action"] = action.vendor_action
         payload["vendor_params"] = action.vendor_params
-    # An OFF never carries a duty value — deployed firmware let pwm win.
-    payload = drop_duty_from_off(payload)
+    # An OFF never carries a duty value — deployed firmware let pwm win. A
+    # node is sent "on" or "off" exactly as its firmware reads the state
+    # (normalize_node_command); a plug or vendor payload here is the audit
+    # copy of what its own transport sends.
+    if plug or action.vendor_slug:
+        payload = drop_duty_from_off(payload)
+    else:
+        payload = normalize_node_command(payload)
 
     # Rules written before channel validation existed (or straight into the DB)
     # can still name a channel the node drops. MQTT accepts any topic, so the
     # publish "succeeds" and we'd log a fired row for an actuator that never
     # moved. We don't refuse — the node may just be offline, and a live rule is
     # not ours to veto mid-grow — but the audit trail should not read clean.
-    if channel_error := await validate_action_channel(action):
-        log.warning("Rule '%s' fires into an unknown channel: %s", rule.name, channel_error)
+    # Checked against the node the command goes to (resolved once, for this
+    # chamber): a placeholder no node answers keeps its own name, and the
+    # check then says no node of its role is registered.
+    if not action.vendor_slug and not plug:
+        channel_error = (await validate_action_channel(action) if target == action.target
+                         else await node_channel_error(target, action))
+        if channel_error:
+            log.warning("Rule '%s' fires into an unknown channel: %s", rule.name, channel_error)
 
-    # Command routing. The firmware's cmd_router dispatches on the EXACT topic
-    # suffix (firmware lib/sp_core/cmd_router.h), so the suffix is the contract:
-    #   cmd/<channel> — switch/dim a named channel
-    #   cmd/scene     — apply a lighting scene
-    #   cmd/config    — read/publish intervals, calibration
-    # `scene` used to fall to cmd/config, whose handler reads only the interval
-    # and calibration keys and ignores `scene` entirely — so every seeded
-    # "Light Scene" rule published, logged status='sent', and did nothing.
-    if action.channel:
-        topic = f"sporeprint/{target}/cmd/{action.channel}"
-    elif action.scene:
-        topic = f"sporeprint/{target}/cmd/scene"
-    else:
-        topic = f"sporeprint/{target}/cmd/config"
+    # Command routing: the topic suffix is the firmware's contract
+    # (service.node_command_topic). `scene` used to fall to cmd/config, whose
+    # handler reads only the interval and calibration keys and ignores
+    # `scene` entirely — so every seeded "Light Scene" rule published, logged
+    # status='sent', and did nothing.
+    topic = node_command_topic(target, action.channel, action.scene)
 
     condition_met = json.dumps({
         "readings": {k: readings.get(k) for k in
@@ -1976,33 +2520,6 @@ async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
     # evidence the command actually went out.
     firing_id: int | None = None
     async with get_db() as db:
-        if rule.log_to_session and session:
-            # v4.1.5 — vendor actions get a more descriptive timeline
-            # row so chamber post-mortems read like
-            #   "Rule 'night-fog' fired: kasa.set_power({ip:10.0.0.20, on:true})"
-            # instead of the misleading legacy
-            #   "Rule 'night-fog' fired: vendor:kasa/None → on"
-            if action.vendor_slug:
-                description = (
-                    f"Rule '{rule.name}' fired: "
-                    f"{action.vendor_slug}.{action.vendor_action}"
-                    f"({json.dumps(action.vendor_params, separators=(',', ':'))})"
-                )
-            else:
-                description = (
-                    f"Rule '{rule.name}' fired: "
-                    f"{action.target}/{action.channel} → {action.state}"
-                )
-            await db.execute(
-                "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
-                (
-                    session["id"],
-                    "automation",
-                    f"rule:{rule.name}",
-                    description,
-                    json.dumps({"rule_id": rule.id, "action": payload, "trigger_readings": readings}),
-                ),
-            )
         cursor = await db.execute(
             """INSERT INTO automation_firings
                (rule_id, rule_name, timestamp, condition_met, action_taken, session_id, status)
@@ -2028,6 +2545,11 @@ async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
                 action.vendor_params or {},
             )
             status = "sent"
+        elif plug and not tgt.paired:
+            # No plug answers this target (for this chamber): nothing to send
+            # it to. (send_plug_command would resolve the role across every
+            # chamber and switch another chamber's plug.)
+            error = f"no plug paired for {target}"
         elif plug:
             # Smart plugs do NOT speak the sporeprint/<node>/cmd/* protocol —
             # Shelly listens on shellies/<id>/relay/0/command and Tasmota on
@@ -2047,15 +2569,53 @@ async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
         error = str(e)
         log.warning("Rule '%s' publish failed: %s", rule.name, e)
 
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE automation_firings SET status = ?, error = ? WHERE id = ?",
-            (status, error, firing_id),
-        )
-        await db.commit()
+    # Record the outcome, and put only a command that went out on the grow's
+    # timeline: session_events is append-only, and a "Rule … fired" row
+    # written before the publish stayed when it failed (an unpaired plug or a
+    # broker outage added a false actuation every cooldown). A database error
+    # here must not skip the bookkeeping below: the command is already on the
+    # wire, and a heater switched ON under a ceiling still needs its watchdog.
+    try:
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE automation_firings SET status = ?, error = ? WHERE id = ?",
+                (status, error, firing_id),
+            )
+            if status == "sent" and rule.log_to_session and session:
+                # v4.1.5 — vendor actions get a more descriptive timeline
+                # row so chamber post-mortems read like
+                #   "Rule 'night-fog' fired: kasa.set_power({ip:10.0.0.20, on:true})"
+                # instead of the misleading legacy
+                #   "Rule 'night-fog' fired: vendor:kasa/None → on"
+                if action.vendor_slug:
+                    description = (
+                        f"Rule '{rule.name}' fired: "
+                        f"{action.vendor_slug}.{action.vendor_action}"
+                        f"({json.dumps(action.vendor_params, separators=(',', ':'))})"
+                    )
+                else:
+                    description = (
+                        f"Rule '{rule.name}' fired: "
+                        f"{action.target}/{action.channel} → {action.state}"
+                    )
+                await db.execute(
+                    "INSERT INTO session_events (session_id, type, source, description, data) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        session["id"],
+                        "automation",
+                        f"rule:{rule.name}",
+                        description,
+                        json.dumps({"rule_id": rule.id, "action": payload,
+                                    "trigger_readings": readings}),
+                    ),
+                )
+            await db.commit()
+    except Exception as e:
+        log.error("Recording rule '%s' firing (%s) failed: %s", rule.name, status, e)
 
     # Remember what this actuator was last told (see _skip_redundant_off).
-    off_key = _safety_key(target, action.channel)
+    off_key = _override_key(target, action.channel)
     if status == "sent" and _is_plain_off(action):
         _last_off_sent[off_key] = time.time()
     else:
@@ -2091,16 +2651,25 @@ async def _send_rule_action(rule: AutomationRule, target: str, readings: dict,
                 )
         else:
             vendor_params = None
-            is_on = {"on": True, "off": False}.get(action.state)
+            # What was sent: a node's state as normalize_node_command spelled
+            # it ("false" went out as "off" and must clear the ceiling too). A
+            # native command with neither a channel nor a scene goes to
+            # cmd/config, which switches nothing: no ON to bound, no OFF.
+            is_on = ({"on": True, "off": False}.get(action.state if plug else payload["state"])
+                     if plug or action.channel or action.scene else None)
             # Plugs ignore duration_sec (send_plug_command sends bare on/off),
             # so a plug ON — like a native ON without a duration — stays on
             # until something turns it off. A native ON WITH a duration is a
             # firmware-timed pulse that ends by itself.
             held_on = plug or not duration_sec
         if wd_target is not None and is_on is False:
-            # OFF explicitly sent — any pending watchdog is now redundant.
-            _cancel_safety_task(wd_target, wd_channel)
-            await _clear_persisted_safety_watchdog(wd_target, wd_channel)
+            # OFF explicitly sent — any pending watchdog on this actuator is
+            # now redundant, under whichever of its names it was armed (a plug
+            # by role or by id, a node by placeholder or resolved id).
+            names = {wd_target} if action.vendor_slug else {wd_target, *tgt.names}
+            for name in sorted(names):
+                _cancel_safety_task(name, wd_channel)
+                await _clear_persisted_safety_watchdog(name, wd_channel)
         elif wd_target is not None and is_on and ceiling:
             await _arm_safety_watchdog(
                 wd_target, wd_channel, rule,

@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-# The v3.4.7 SV-7 change refuses to boot when SPOREPRINT_API_KEY is empty AND
+# Since v3.4.7 the server refuses to boot when SPOREPRINT_API_KEY is empty AND
 # allow_unauthenticated is false (the new secure-by-default). Tests don't set
 # an api_key, so opt into LAN-trust mode for the test process before the
 # settings module imports — pydantic-settings reads the env at import time.
@@ -54,11 +54,10 @@ def mock_mqtt(monkeypatch):
 
     import app.mqtt
     import app.automation.engine
-    import app.automation.smart_plugs
     import app.hardware.service
     monkeypatch.setattr(app.mqtt, "mqtt_publish", fake_publish)
     monkeypatch.setattr(app.automation.engine, "mqtt_publish", fake_publish)
-    monkeypatch.setattr(app.automation.smart_plugs, "mqtt_publish", fake_publish)
+    # Smart plugs publish raw through app.mqtt._client (mock_mqtt_raw).
     # v3.3.2 refactor: hardware/router imports mqtt_publish via hardware/service
     monkeypatch.setattr(app.hardware.service, "mqtt_publish", fake_publish)
     return calls
@@ -131,8 +130,13 @@ def _reset_engine_state():
     engine._overrides_loaded = False
     engine._rule_seen.clear()
     engine._alert_last_sent.clear()
+    engine._co2_page_undelivered.clear()
     engine._last_off_sent.clear()
     engine._phase_fallback_logged.clear()
+    engine._no_node_logged.clear()
+    # Each test has its own database: the persisted-watchdog keys reload from it.
+    engine._persisted_watchdogs.clear()
+    engine._persisted_watchdogs_loaded = False
     for task in list(engine._safety_tasks.values()):
         if not task.done():
             task.cancel()
@@ -149,6 +153,10 @@ def _reset_mqtt_clock_state():
     mqtt._node_clock.clear()
     mqtt._skew_logged_at.clear()
     mqtt._reserved_drop_logged.clear()
+    # Per-node bookkeeping keyed by node id (the log trim cadence, the CA
+    # mismatch warned about): each test's database starts empty.
+    mqtt._node_log_since_trim.clear()
+    mqtt._ca_mismatch_logged.clear()
 
 
 @pytest.fixture(autouse=True)

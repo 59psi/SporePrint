@@ -22,7 +22,7 @@ from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 
 # The seeded FAE rule names the placeholder relay-01; the real relay node is
-# MAC-derived, so the command must publish to the resolved node's topic. (V3-2)
+# MAC-derived, so the command must publish to the resolved node's topic.
 RELAY_NODE = "node-relay-7a3f1c"
 
 

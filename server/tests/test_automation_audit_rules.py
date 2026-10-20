@@ -1,22 +1,22 @@
-"""Automation engine — rule selection, arbitration and alerting (hardware audit).
+"""Automation engine — rule selection, arbitration and alerting.
 
-One section per audit finding. Each test drives the real engine
+One section per behaviour. Each test drives the real engine
 (``evaluate_rules``) against a temp DB with real species profiles and, where
-the finding is about the shipped behaviour, the real seeded rule templates:
+the behaviour is the shipped one, the real seeded rule templates:
 
-- srv-auto#4 / srv-rest#2  species-scoped rules never fired (hyphen vs underscore ids)
-- srv-auto#5              no per-actuator arbitration (lowest priority sent last)
-- srv-auto#7              Scheduled FAE ran in 'passive' FAE phases
-- srv-auto#8              a phase the profile doesn't define disabled everything
-- srv-auto#9              emergency alerts every frame; sealed containers paged on RH/CO2
-- srv-auto#15             the rule `notification` flag was never read
-- srv-auto#16             CO2 Hard Ceiling needed a session / open container / FAE phase
-- srv-auto#18             cutoffs re-sent OFF every minute (and logged each one)
-- srv-auto#19             cron only fired when a frame landed in the matching minute
-- srv-auto#21 / srv-rest#20  reishi growth_form (antler vs conk) was never read
-- srv-auto#22             every node was evaluated against the newest session
-- srv-auto#29             bulk_bag wasn't sealed during colonization
-- srv-auto#30             plug command endpoint reported 'sent' for a no-op
+- species-scoped rules never fired (hyphen vs underscore ids)
+- no per-actuator arbitration (lowest priority sent last)
+- Scheduled FAE ran in 'passive' FAE phases
+- a phase the profile doesn't define disabled everything
+- emergency alerts every frame; sealed containers paged on RH/CO2
+- the rule `notification` flag was never read
+- CO2 Hard Ceiling needed a session / open container / FAE phase
+- cutoffs re-sent OFF every minute (and logged each one)
+- cron only fired when a frame landed in the matching minute
+- reishi growth_form (antler vs conk) was never read
+- every node was evaluated against the newest session
+- bulk_bag wasn't sealed during colonization
+- plug command endpoint reported 'sent' for a no-op
 """
 
 import json
@@ -26,7 +26,9 @@ from unittest.mock import patch
 import pytest
 
 import app.automation.engine as engine
+import app.automation.templates as rule_templates
 import app.cloud.service as cloud_service
+import app.notifications.service as notification_service
 from app.automation.engine import _container_is_sealed, _eval_schedule, evaluate_rules
 from app.automation.models import (
     AutomationRule,
@@ -40,8 +42,8 @@ from app.automation.service import create_rule, seed_builtin_rules, serialize_ru
 from app.automation.smart_plugs import register_plug
 from app.automation.templates import BUILTIN_RULES, LEGACY_BUILTIN_RULES
 from app.db import get_db
-from app.sessions.models import SessionCreate
-from app.sessions.service import create_session
+from app.sessions.models import PhaseAdvance, SessionCreate
+from app.sessions.service import advance_phase, create_session
 from app.species.service import seed_builtins
 
 _real_localtime = time.localtime
@@ -73,7 +75,7 @@ def _reset_pause_state():
 @pytest.fixture()
 def alerts(monkeypatch):
     """Record every alert the engine emits (ntfy tiers + cloud forward)."""
-    rec = {"critical": [], "warning": [], "co2": [], "forward": []}
+    rec = {"critical": [], "warning": [], "co2": [], "co2_pages": [], "forward": []}
 
     async def _critical(title, message, tags=None, **kw):
         rec["critical"].append((title, message))
@@ -81,8 +83,9 @@ def alerts(monkeypatch):
     async def _warning(title, message, dedup_key=None, **kw):
         rec["warning"].append((title, message))
 
-    async def _co2(ppm):
+    async def _co2(ppm, node_id=None, **kw):
         rec["co2"].append(ppm)
+        rec["co2_pages"].append((ppm, node_id, kw))
 
     async def _forward(event_type, data):
         rec["forward"].append((event_type, data))
@@ -138,7 +141,7 @@ async def _firings(name):
         return [r["status"] for r in await cursor.fetchall()]
 
 
-# ── srv-auto#4 / srv-rest#2 — species-scoped rules ─────────────────────────
+# ── species-scoped rules ───────────────────────────────────────────────────
 
 
 async def test_species_rule_fires_for_session_created_with_underscored_id(mock_mqtt):
@@ -175,7 +178,7 @@ def test_coverage_species_gate_tolerates_separator_drift():
     assert not _rule_applies(rule, "reishi", "fruiting")
 
 
-# ── srv-auto#5 — per-actuator arbitration ──────────────────────────────────
+# ── per-actuator arbitration ───────────────────────────────────────────────
 
 
 async def test_cordyceps_blue_is_not_overwritten_by_the_generic_photoperiod(mock_mqtt):
@@ -329,11 +332,12 @@ async def test_edited_legacy_rule_is_flagged_at_boot(caplog):
         await db.commit()
     with caplog.at_level("WARNING", logger="app.automation.service"):
         await seed_builtin_rules()
-    flagged = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    flagged = [r.getMessage() for r in caplog.records
+               if r.levelname == "WARNING" and "was edited" in r.getMessage()]
     assert len(flagged) == 1 and "Pre-cool for Hot Forecast" in flagged[0]
 
 
-# ── srv-auto#7 — Scheduled FAE only where the profile schedules FAE ────────
+# ── Scheduled FAE only where the profile schedules FAE ─────────────────────
 
 
 async def test_scheduled_fae_does_not_run_in_a_passive_phase(mock_mqtt):
@@ -352,7 +356,7 @@ async def test_scheduled_fae_still_runs_in_a_continuous_phase(mock_mqtt):
     assert [p["state"] for p in _cmds(mock_mqtt, "/cmd/fae")] == ["on"]
 
 
-# ── srv-auto#8 — phases the profile doesn't define ─────────────────────────
+# ── phases the profile doesn't define ──────────────────────────────────────
 
 
 async def test_missing_primordia_phase_falls_back_to_fruiting(mock_mqtt, mock_mqtt_raw, alerts):
@@ -373,7 +377,43 @@ async def test_missing_rest_phase_falls_back_to_fruiting(mock_mqtt, alerts):
     assert any(e == "temperature_alert" for e, _ in alerts["forward"])
 
 
-# ── srv-auto#9 — alert dedup + sealed containers ───────────────────────────
+async def test_a_grow_advanced_to_rest_in_its_light_window_goes_dark(mock_mqtt, alerts):
+    """Rest runs with the lights off, but no light rule covered rest: the
+    fruiting scene stayed on for the whole rest."""
+    await _seed_all()
+    s = await _session("blue_oyster", "fruiting")
+    with _clock(_local(12)):
+        await evaluate_rules("climate-1", {"temp_f": 60})
+    assert [p["scene"] for p in _cmds(mock_mqtt, "/cmd/scene")] == ["fruiting_standard"]
+    await advance_phase(s["id"], PhaseAdvance(phase="rest"))
+    with _clock(_local(13)):
+        await evaluate_rules("climate-1", {"temp_f": 60})
+    assert _cmds(mock_mqtt, "/cmd/scene")[-1] == {"state": "off", "scene": "colonization_dark"}
+
+
+@pytest.mark.parametrize("table", ["PRE_FULL_SCALE_BUILTIN_RULES", "PRE_DARK_REST_BUILTIN_RULES"])
+async def test_shipped_forms_of_changed_builtins_upgrade(table):
+    """An existing install keeps the rule it was first given unless its old
+    form is on record (docs/automation-rules.md, Changing a built-in rule)."""
+    current = {r.name: r for r in BUILTIN_RULES}
+    old_forms = getattr(rule_templates, table)
+    async with get_db() as db:
+        for rule in old_forms.values():
+            await db.execute(
+                "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) "
+                "VALUES (?, ?, 1, ?, ?)",
+                (rule.name, rule.description, rule.priority, serialize_rule_data(rule)),
+            )
+        await db.commit()
+    await seed_builtin_rules()
+    async with get_db() as db:
+        cursor = await db.execute("SELECT name, rule_data FROM automation_rules")
+        rows = {r["name"]: json.loads(r["rule_data"]) for r in await cursor.fetchall()}
+    for name in old_forms:
+        assert rows[name] == json.loads(serialize_rule_data(current[name])), name
+
+
+# ── alert dedup + sealed containers ────────────────────────────────────────
 
 
 async def test_sealed_grow_bag_does_not_page_on_room_humidity(alerts):
@@ -410,7 +450,7 @@ async def test_escalation_from_warning_to_emergency_is_immediate(alerts):
     assert len(alerts["critical"]) == 1
 
 
-# ── srv-auto#15 — notification flag ────────────────────────────────────────
+# ── notification flag ──────────────────────────────────────────────────────
 
 
 def _rule(name, priority, *, notification):
@@ -448,7 +488,7 @@ async def test_rule_notification_is_sent_outside_the_actuator_lock(mock_mqtt, mo
     assert held == [False]
 
 
-# ── srv-auto#16 — CO2 Hard Ceiling is species/phase/container independent ──
+# ── CO2 Hard Ceiling is species/phase/container independent ────────────────
 
 
 async def test_co2_hard_ceiling_vents_with_no_active_session(mock_mqtt, alerts):
@@ -499,7 +539,90 @@ async def test_undelivered_co2_exhaust_still_pages(mock_mqtt, alerts):
     assert [m for t, m in alerts["critical"] if "CO2 Hard Ceiling" in t and "NOT delivered" in m]
 
 
-# ── srv-auto#18 — redundant cutoffs ────────────────────────────────────────
+async def test_a_saturated_co2_sensor_trips_the_life_safety_backstop(mock_mqtt, alerts):
+    """The SCD30 / SCD4x report a saturated reading as exactly 40000 ppm."""
+    await _seed_all()
+    await evaluate_rules("climate-1", {"co2_ppm": 40000})
+    assert [p["state"] for p in _cmds(mock_mqtt, "/cmd/exhaust")] == ["on"]
+    assert alerts["co2"] == [40000]
+    assert [e for e, _ in alerts["forward"]] == ["co2_alert"]
+
+
+async def test_a_climb_to_the_life_safety_level_pages_inside_the_stage_window(mock_mqtt, alerts):
+    """A stage CO2 page must not hold back the page for a climb to a level
+    dangerous to people; the Hard Ceiling's own notice stays covered by it."""
+    await _seed_all()
+    await _session("blue_oyster", "fruiting")
+    with _clock(_local(12)):
+        await evaluate_rules("climate-1", {"co2_ppm": 3000})
+    with _clock(_local(12, 2)):
+        await evaluate_rules("climate-1", {"co2_ppm": 45000})
+    assert alerts["co2"] == [3000, 45000]
+    assert [kw["life_safety"] for _, node, kw in alerts["co2_pages"]] == [False, True]
+    assert {node for _, node, _ in alerts["co2_pages"]} == {"climate-1"}
+    assert [d["co2_ppm"] for e, d in alerts["forward"] if e == "co2_alert"] == [3000, 45000]
+    assert not [t for t, _ in alerts["critical"] if "CO2 Hard Ceiling" in t]
+    with _clock(_local(12, 4)):  # the same reading again pages nothing new
+        await evaluate_rules("climate-1", {"co2_ppm": 45000})
+    assert alerts["co2"] == [3000, 45000]
+
+
+async def test_each_nodes_co2_emergency_reaches_ntfy(monkeypatch):
+    """Under one shared ntfy dedup key, one node's CO2 page silenced every
+    other node's for 15 minutes."""
+    posted: list[dict] = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *a, **k):  # the notifier passes its TLS context
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, timeout=None):
+            posted.append(json)
+            return _Response()
+
+    async def _forward(event_type, data):
+        return None
+
+    monkeypatch.setattr(notification_service.settings, "ntfy_url", "http://ntfy.local")
+    monkeypatch.setattr(notification_service.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(cloud_service, "forward_event", _forward)
+    await evaluate_rules("node-a", {"co2_ppm": 45000})
+    await evaluate_rules("node-b", {"co2_ppm": 45000})
+    titles = [p["title"] for p in posted]
+    assert len(titles) == 2
+    assert any("node-a" in t for t in titles) and any("node-b" in t for t in titles)
+
+
+async def test_an_undelivered_co2_page_is_retried_without_reforwarding(monkeypatch):
+    pages: list[int] = []
+    forwards: list[str] = []
+
+    async def _co2(ppm, node_id=None, **kw):
+        pages.append(ppm)
+        return len(pages) > 1  # ntfy down for the first attempt
+
+    async def _forward(event_type, data):
+        forwards.append(event_type)
+
+    monkeypatch.setattr(engine, "co2_alert", _co2)
+    monkeypatch.setattr(cloud_service, "forward_event", _forward)
+    for _ in range(3):
+        await evaluate_rules("climate-1", {"co2_ppm": 45000})
+    assert pages == [45000, 45000]  # retried once, then delivered
+    assert forwards == ["co2_alert"]
+
+
+# ── redundant cutoffs ──────────────────────────────────────────────────────
 
 
 async def test_cutoff_for_an_unpaired_plug_writes_nothing(mock_mqtt):
@@ -535,7 +658,7 @@ def test_dehumidify_cutoff_does_not_log_to_the_session():
     assert rule.log_to_session is False
 
 
-# ── srv-auto#19 — cron catch-up ────────────────────────────────────────────
+# ── cron catch-up ──────────────────────────────────────────────────────────
 
 
 def test_cron_matches_a_minute_between_two_frames():
@@ -560,7 +683,7 @@ async def test_cron_rule_fires_when_frames_straddle_the_matching_minute(mock_mqt
     assert len(_cmds(mock_mqtt, "/cmd/heater")) == 1
 
 
-# ── srv-auto#21 / srv-rest#20 — reishi growth_form ─────────────────────────
+# ── reishi growth_form ─────────────────────────────────────────────────────
 
 
 async def test_antler_reishi_keeps_elevated_co2_while_fruiting(mock_mqtt):
@@ -582,7 +705,7 @@ async def test_conk_reishi_gets_fresh_air_during_primordia(mock_mqtt):
     assert "on" in fae
 
 
-# ── srv-auto#22 — per-chamber session + node resolution ────────────────────
+# ── per-chamber session + node resolution ──────────────────────────────────
 
 
 async def _chamber(name, node_ids):
@@ -683,7 +806,7 @@ async def test_chambered_node_never_borrows_another_chambers_session(
     assert not alerts["critical"] and not alerts["forward"]
 
 
-# ── srv-auto#29 — bulk bags are sealed until fruiting ──────────────────────
+# ── bulk bags are sealed until fruiting ────────────────────────────────────
 
 
 def test_bulk_bag_is_sealed_until_fruiting():
@@ -691,7 +814,7 @@ def test_bulk_bag_is_sealed_until_fruiting():
     assert _container_is_sealed("bulk_bag", "fruiting") is False
 
 
-# ── srv-auto#30 — plug command endpoint is honest ──────────────────────────
+# ── plug command endpoint is honest ────────────────────────────────────────
 
 
 def test_plug_command_for_an_unpaired_plug_is_an_error(client):

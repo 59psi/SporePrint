@@ -1,4 +1,4 @@
-"""Hardware-capability verdict for a chamber + species (V2-1).
+"""Hardware-capability verdict for a chamber + species.
 
 Answers a single question the UI could not previously ask honestly: *given the
 hardware actually paired to this chamber, can the seeded automation for species
@@ -9,8 +9,9 @@ Every input already exists; this module only assembles them:
 - the species profile's `phases` (species.service.get_profile),
 - the enabled automation rules the engine will evaluate, filtered by the SAME
   `applies_to_phases` / `applies_to_species` predicates the engine uses,
-- `target_is_present()` + `validate_action_channel()` to decide, per rule
-  action, whether the named actuator is really there,
+- the chamber's node and plug resolution (`resolve_node_target()`,
+  `smart_plugs.chamber_plug()`) and `validate_action_channel()` to decide,
+  per rule action, whether the named actuator is really there,
 - `requires_absent_target` to surface the capability-aware fallbacks
   (vent-with-fans for a missing dehumidifier, mist-pump for a missing
   humidifier) as the `fallback` on the requirement they stand in for.
@@ -19,16 +20,33 @@ No hardware state is invented — an actuator is "available" only when the paire
 smart-plug row or node channel says so.
 """
 
+import json
+
 from ..db import get_db
 from ..hardware.service import get_node
+from ..integrations import _registry, _settings_store
 from .models import AutomationRule
 from .service import (
-    deserialize_rule_row,
     resolve_node_target,
     rule_applies_to_species,
+    valid_rules,
     validate_action_channel,
 )
-from .smart_plugs import target_is_present
+from .smart_plugs import chamber_plug, is_plug_target
+
+# The channels each node personality exposes (firmware sp_core/personality.h),
+# for a node that has not reported its channel names in a health doc yet.
+_PERSONALITY_CHANNELS = {
+    "relay": frozenset({"fae", "exhaust", "circulation", "aux"}),
+    "lighting": frozenset({"white", "blue", "red", "far_red"}),
+}
+
+# Ids listed in any chamber's node_ids.
+_CHAMBER_LISTED_SQL = (
+    "SELECT 1 FROM chambers c, "
+    "json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j "
+    "WHERE j.value = ? LIMIT 1"
+)
 
 
 async def _load_enabled_rules() -> list[AutomationRule]:
@@ -44,7 +62,7 @@ async def _load_enabled_rules() -> list[AutomationRule]:
             "FROM automation_rules WHERE enabled = 1 ORDER BY priority DESC"
         )
         rows = await cursor.fetchall()
-    return [AutomationRule.model_validate(deserialize_rule_row(row)) for row in rows]
+    return valid_rules(rows)
 
 
 def _rule_applies(rule: AutomationRule, species_id: str, phase: str) -> bool:
@@ -59,39 +77,68 @@ def _actuator_label(action) -> str:
     return f"{action.target}/{action.channel}" if action.channel else action.target
 
 
+async def _vendor_present(slug: str) -> bool:
+    """A vendor action's device is reachable when its driver is registered and
+    its integration is enabled (it reached a get_node() lookup on its
+    vendor:* key and always read unavailable)."""
+    driver = _registry.registered_drivers().get(slug)
+    if driver is None:
+        return False
+    stored = await _settings_store.load(slug, driver.secret_fields)
+    return bool(stored and stored.enabled)
+
+
+async def _listed_in_a_chamber(node_id: str) -> bool:
+    async with get_db() as db:
+        cursor = await db.execute(_CHAMBER_LISTED_SQL, (node_id,))
+        return await cursor.fetchone() is not None
+
+
+def _node_channels(node: dict) -> frozenset[str]:
+    """The channels a node answers to: those its health doc reported, else
+    its personality's."""
+    try:
+        reported = json.loads(node["channels"]) if node.get("channels") else None
+    except (TypeError, ValueError):
+        reported = None
+    if isinstance(reported, list):
+        return frozenset(reported)
+    return _PERSONALITY_CHANNELS.get(node.get("node_type") or "", frozenset())
+
+
 async def _actuator_present(action, chamber_nodes: list[str] | None = None) -> bool:
     """Is the actuator this action drives actually paired to the Pi right now?
 
-    Three action shapes, three honest checks — all reading the same registries
-    `target_is_present` / `validate_action_channel` / `hardware_nodes` do:
+    Resolved the way the engine resolves it when it drives the chamber
+    (``chamber_nodes``: the chamber's node ids), so another chamber's relay,
+    light or plug never makes this chamber read as covered:
 
-    - node channel (target=relay-01, channel=exhaust): the node must not have
-      rejected the channel AND some node must expose it;
-    - smart plug (target=plug-*, no channel): a `smart_plugs` row by id or role;
-    - bare node target (target=light-01, scene-driven, no channel): a node of
-      the placeholder's role is registered. `target_is_present` only answers for
-      plugs and channel names, so a scene-only light node is checked against the
-      node registry directly — RESOLVING the placeholder first, so a lighting
-      node registered under its MAC-derived id still reads as present instead of
-      the chamber reading as "no lighting". (V3-2)
-
-    With ``chamber_nodes`` a placeholder (relay-01 / light-01) must resolve the
-    way the engine resolves it for that chamber — the chamber's own node of
-    that role, or one in no chamber — so another chamber's relay or light never
-    makes this chamber read as covered.
+    - vendor action: its driver is registered and its integration enabled;
+    - smart plug (plug-*, by id or role): the plug a rule for this chamber
+      reaches (smart_plugs.chamber_plug);
+    - node target, with or without a channel: the resolved node (a placeholder
+      → the chamber's node of its role, or one in no chamber) is registered,
+      is this chamber's or in no chamber, and — for a channel — answers to it
+      itself (the channels it reported, else its personality's). Any node on
+      the Pi reporting the channel used to be enough.
     """
-    if await validate_action_channel(action):
+    if action.vendor_slug:
+        return await _vendor_present(action.vendor_slug)
+    if await validate_action_channel(action, chamber_nodes):
         # Either a live node rejected this channel, or the placeholder target
         # resolves to no node of its role — both mean the actuator isn't there.
         return False
-    if chamber_nodes and await resolve_node_target(action.target, chamber_nodes) is None:
-        return False
-    if action.channel:
-        return await target_is_present(action.channel)
-    if action.target.startswith("plug-"):
-        return await target_is_present(action.target)
     resolved = await resolve_node_target(action.target, chamber_nodes)
-    return resolved is not None and await get_node(resolved) is not None
+    if resolved is None:
+        return False
+    if resolved == action.target and await is_plug_target(resolved):
+        return await chamber_plug(resolved, chamber_nodes) is not None
+    node = await get_node(resolved)
+    if node is None:
+        return False
+    if chamber_nodes and resolved not in chamber_nodes and await _listed_in_a_chamber(resolved):
+        return False  # another chamber's node
+    return not action.channel or action.channel in _node_channels(node)
 
 
 async def _resolve_fallback(target: str, fallbacks: list[AutomationRule],

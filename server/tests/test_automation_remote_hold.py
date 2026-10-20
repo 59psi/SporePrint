@@ -44,7 +44,7 @@ from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 
 # A real relay node registers under a MAC-derived id, DISTINCT from the seeded
-# relay-01 placeholder that _seed_session_and_rule's rule names. (V4-1)
+# relay-01 placeholder that _seed_session_and_rule's rule names.
 MAC_RELAY_NODE = "node-a3f1"
 
 
@@ -246,7 +246,7 @@ def test_engine_exports_pause_and_suspend_symbols():
     from app.automation.engine import set_paused, suspend_rule  # noqa: F401
 
 
-# ── manual hold on the resolved node survives the next tick (V4-1) ──────────
+# ── manual hold on the resolved node survives the next tick ─────────────────
 
 
 async def test_manual_hold_on_resolved_node_is_not_clawed_back(mock_mqtt):
