@@ -9,6 +9,7 @@ from app.weather.prediction import (
     _fit_linear_regression,
     _solve_linear_system,
     _predict,
+    _store_model,
     predict_indoor_conditions,
     get_model_status,
     retrain_models,
@@ -77,7 +78,7 @@ async def test_retrain_no_data():
 
 
 async def test_training_data_spans_rolled_up_telemetry():
-    """srv-rest#25: training claimed a 30-day window but joined only RAW
+    """Training claimed a 30-day window but joined only RAW
     telemetry, which retention rolls into 5-min buckets (and deletes) after 7
     days — so only ~7 days of samples ever existed. Rolled-up history must
     contribute too."""
@@ -120,3 +121,71 @@ async def test_training_data_spans_rolled_up_telemetry():
     sample = data[0]
     assert sample["indoor_humidity"] == 85.0
     assert 70.0 <= sample["indoor_temp"] <= 72.4
+
+
+async def _seed_hours(weather_rows, telemetry_rows):
+    async with get_db() as db:
+        await db.executemany(
+            "INSERT INTO weather_readings (timestamp, provider, temp_f, humidity) VALUES (?, ?, ?, ?)",
+            weather_rows,
+        )
+        await db.executemany(
+            "INSERT INTO telemetry_readings (timestamp, node_id, sensor, value) VALUES (?, ?, ?, ?)",
+            telemetry_rows,
+        )
+        await db.commit()
+
+
+async def test_a_closet_watched_only_by_integrations_trains_a_model():
+    """Integration sensors (Aranet, Pulse, Trane, ...) write temp_c only, and
+    training read temp_f alone: such a closet never got a model, so no
+    forecast alert could ever fire."""
+    now = time.time()
+    hour0 = now - (now % 3600)
+    weather_rows, telemetry_rows = [], []
+    for h in range(1, 9 * 24):
+        ts = hour0 - h * 3600
+        outdoor = 50.0 + (h % 24)
+        weather_rows.append((ts, "openmeteo", outdoor, 60.0 + (h % 7)))
+        indoor_f = 60.0 + outdoor / 4 + (h % 5) * 0.1
+        telemetry_rows.append((ts + 30, "aranet-1", "temp_c", (indoor_f - 32) * 5 / 9))
+        telemetry_rows.append((ts + 30, "aranet-1", "humidity", 85.0 + (h % 3)))
+    await _seed_hours(weather_rows, telemetry_rows)
+
+    data = await _build_training_data()
+    assert len(data) >= 9 * 24 - 5
+    # The hour's temp_c mean, in °F.
+    assert all(70.0 <= d["indoor_temp"] <= 79.0 for d in data)
+
+    await retrain_models()
+    status = await get_model_status()
+    assert status["status"] == "active"
+    assert status["temp_model"]["training_samples"] == len(data)
+
+
+async def test_a_node_publishing_both_units_counts_its_readings_once():
+    """The climate node sends temp_f and temp_c for every reading: the hour's
+    temp_f mean wins, the temp_c copy is not averaged in."""
+    now = time.time()
+    ts = now - (now % 3600) - 3600
+    await _seed_hours(
+        [(ts, "openmeteo", 50.0, 60.0)],
+        [(ts + 30, "climate-01", "temp_f", 70.0),
+         (ts + 30, "climate-01", "temp_c", 30.0)],  # disagreeing on purpose
+    )
+    [sample] = await _build_training_data()
+    assert sample["indoor_temp"] == 70.0
+
+
+async def test_prediction_skips_a_null_hour_and_assumes_humidity():
+    """A provider gap (temp or humidity null) raised TypeError and lost every
+    forecast alert of the poll."""
+    await _store_model("temp", {"coefficients": [1.0, 0.1, 0.0, 0.0], "r_squared": 0.9}, 10, 240)
+    ts = time.time() + 3600
+    result = await predict_indoor_conditions([
+        {"timestamp": ts, "temp_f": None, "humidity": 40},
+        {"timestamp": ts + 3600, "temp_f": 80.0, "humidity": None},
+    ])
+    assert len(result) == 1
+    assert result[0]["predicted_indoor_temp_f"] == 85.0  # 80 + 0.1 * an assumed 50 %
+    assert result[0]["outdoor_humidity"] is None

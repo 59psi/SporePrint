@@ -1,17 +1,18 @@
-import re
-from pathlib import Path
+import asyncio
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from starlette.datastructures import UploadFile
 
 from ..config import settings
 from ..hardware.service import get_camera_sensor, normalize_camera_sensor, record_camera_sensor
+from ..node_ids import NODE_ID_RE
 from ..sessions.service import get_active_session_for_node
 from .service import (
+    FrameStorageError,
+    InvalidFramePathError,
     analyze_frame_claude,
     analyze_frame_local,
     apply_user_label,
-    frame_storage_name,
     get_frame_by_id,
     get_frames,
     insert_frame,
@@ -21,13 +22,13 @@ from .service import (
     sniff_image_media_type,
     update_analysis_claude,
     update_analysis_local,
+    write_frame_file,
 )
 
 router = APIRouter()
 
-# Node IDs drive on-disk filenames — constrain the charset to what
-# firmware actually uses and reject traversal payloads like `../etc/passwd`.
-_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+# Node IDs drive on-disk filenames: NODE_ID_RE constrains the charset to what
+# firmware actually uses and rejects traversal payloads like `../etc/passwd`.
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 # Room for the multipart boundary and part headers around a max-size image.
 _MULTIPART_OVERHEAD_BYTES = 64 * 1024
@@ -93,7 +94,7 @@ async def ingest_frame(
     # Optional: the cam's auto-detected image sensor (ov2640 / ov3660 / ov5640).
     x_camera_sensor: str = Header(default=""),
 ):
-    if not _NODE_ID_RE.match(x_node_id):
+    if not NODE_ID_RE.match(x_node_id):
         raise HTTPException(400, "Invalid X-Node-Id (alphanumeric, _, -, max 32 chars)")
 
     media_type, content = await _read_frame_body(request)
@@ -101,29 +102,26 @@ async def ingest_frame(
         raise HTTPException(415, "Only JPEG, PNG, and WebP images are accepted")
     if not content:
         raise HTTPException(400, "Empty frame body")
+    # The bytes are the authority, as for a contamination photo: a body that
+    # is no JPEG / PNG / WebP image is refused whatever its Content-Type, or
+    # it would be stored as a frame and later sent to Claude as one. The
+    # stored extension (and the media type later declared to Claude) is the
+    # sniffed type.
+    stored_type = sniff_image_media_type(content)
+    if stored_type not in _ACCEPTED_MEDIA:
+        raise HTTPException(415, "The frame body is not a JPEG, PNG or WebP image")
 
     # Unsynced cams (missing / unparseable / uptime-based X-Timestamp) get
     # arrival time — the frame is kept either way.
     ts = resolve_frame_timestamp(x_timestamp)
 
-    storage = Path(settings.vision_storage).resolve()
-    storage.mkdir(parents=True, exist_ok=True)
-
-    # Keep the real image type (bytes win over the header) so the extension —
-    # and the media_type later declared to Claude — match the content.
-    stored_type = sniff_image_media_type(content) or media_type
-    for _ in range(3):
-        file_path = (storage / frame_storage_name(x_node_id, ts, stored_type)).resolve()
-        if not file_path.is_relative_to(storage):
-            raise HTTPException(400, "Invalid frame path")
-        try:
-            with file_path.open("xb") as fh:  # exclusive: never overwrite a frame
-                fh.write(content)
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise HTTPException(500, "Could not allocate a unique frame filename")
+    try:
+        file_path = await asyncio.to_thread(
+            write_frame_file, settings.vision_storage, x_node_id, ts, stored_type, content)
+    except InvalidFramePathError as e:
+        raise HTTPException(400, str(e))
+    except FrameStorageError as e:
+        raise HTTPException(500, str(e))
 
     camera_sensor = normalize_camera_sensor(x_camera_sensor)
     if camera_sensor:
@@ -143,14 +141,14 @@ async def ingest_frame(
         flash_used=0 if x_flash_used.strip().lower() in ("0", "false", "no") else 1,
     )
 
-    # Run local CNN analysis (async, non-blocking).
+    # The local CNN first pass: None (nothing stored) until a model exists.
     local_result = await analyze_frame_local(file_path)
     if local_result:
         await update_analysis_local(frame_id, local_result)
 
-    # H4-1: the local CNN above is a permanent stub, so kick the real Claude
+    # H4-1: the local CNN above is not built, so kick the real Claude
     # detector on ingest to actually catch contamination / harvest windows.
-    # Cost-gated (BYOK key present + active session + per-session throttle) and
+    # Cost-gated (BYOK key present + active session + per-camera throttle) and
     # non-blocking — it runs in the background and routes any detection through
     # the existing alert + cloud-forward plumbing, so the response returns now.
     await maybe_schedule_auto_analysis(
