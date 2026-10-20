@@ -1,32 +1,63 @@
 import asyncio
 import os
+import shutil
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
-
 
 # Since v3.4.7 the server refuses to boot when SPOREPRINT_API_KEY is empty AND
 # allow_unauthenticated is false (the new secure-by-default). Tests don't set
 # an api_key, so opt into LAN-trust mode for the test process before the
 # settings module imports — pydantic-settings reads the env at import time.
+# The app imports below must therefore come after this line.
 os.environ.setdefault("SPOREPRINT_ALLOW_UNAUTHENTICATED", "true")
+
+import app.automation.engine  # noqa: E402
+import app.cloud.service  # noqa: E402
+import app.hardware.service  # noqa: E402
+import app.main  # noqa: E402
+import app.mqtt  # noqa: E402
+import app.notifications.service  # noqa: E402
+import app.retention.service  # noqa: E402
+import app.weather.service  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.db import init_db  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def _db_template(tmp_path_factory):
+    """One database with the full schema, built once per test session.
+
+    init_db() reads nothing but settings.database_path and keeps no module
+    state, so a byte copy of the file it leaves behind is the same database a
+    fresh init_db() would build, at a fraction of the cost (the schema plus
+    its migrations took ~50 ms per test, most of the suite's runtime).
+    """
+    path = tmp_path_factory.mktemp("db-template") / "template.db"
+    saved = settings.database_path
+    settings.database_path = str(path)
+    try:
+        asyncio.run(init_db())
+    finally:
+        settings.database_path = saved
+    # The last connection closed, so SQLite checkpointed and removed the WAL:
+    # the main file holds everything.
+    assert not path.with_name(path.name + "-wal").exists()
+    return path
 
 
 @pytest.fixture(autouse=True)
-async def _db(tmp_path, monkeypatch):
+def _db(tmp_path, monkeypatch, _db_template):
     """Provide a fresh SQLite database for each test.
 
     Monkeypatches settings.database_path to a temp file so every call to
-    get_db() connects to the same test database. Runs init_db() to apply
-    the full schema.
+    get_db() connects to the same test database, a copy of the session's
+    fully initialised template.
     """
-    db_path = str(tmp_path / "test.db")
-
-    from app.config import settings
-    monkeypatch.setattr(settings, "database_path", db_path)
-
-    from app.db import init_db
-    await init_db()
+    db_path = tmp_path / "test.db"
+    shutil.copyfile(_db_template, db_path)
+    monkeypatch.setattr(settings, "database_path", str(db_path))
 
 
 class _MqttCallsList(list):
@@ -52,9 +83,6 @@ def mock_mqtt(monkeypatch):
     fake_publish = _MockPublish()
     calls.mock = fake_publish
 
-    import app.mqtt
-    import app.automation.engine
-    import app.hardware.service
     monkeypatch.setattr(app.mqtt, "mqtt_publish", fake_publish)
     monkeypatch.setattr(app.automation.engine, "mqtt_publish", fake_publish)
     # Smart plugs publish raw through app.mqtt._client (mock_mqtt_raw).
@@ -76,7 +104,6 @@ def mock_mqtt_raw(monkeypatch):
         async def publish(self, topic, payload):
             calls.append((topic, payload))
 
-    import app.mqtt
     monkeypatch.setattr(app.mqtt, "_client", _FakeClient())
     return calls
 
@@ -84,7 +111,6 @@ def mock_mqtt_raw(monkeypatch):
 @pytest.fixture()
 def mock_sio():
     """Provide a fake Socket.IO server that records emitted events."""
-    from unittest.mock import AsyncMock
     return AsyncMock()
 
 
@@ -101,11 +127,6 @@ def client(monkeypatch):
     async def _noop_coro():
         await asyncio.Event().wait()
 
-    import app.mqtt
-    import app.weather.service
-    import app.retention.service
-    import app.cloud.service
-    import app.main
     monkeypatch.setattr(app.mqtt, "start_mqtt", _noop_task)
     monkeypatch.setattr(app.weather.service, "start_weather_polling", _noop_task)
     monkeypatch.setattr(app.retention.service, "start_retention_task", _noop_coro)
@@ -114,15 +135,14 @@ def client(monkeypatch):
     monkeypatch.setattr(app.main, "_nightly_weather_aggregate", _noop_coro)
     monkeypatch.setattr(app.main, "_node_liveness_sweeper", _noop_coro)
 
-    from app.main import app
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with TestClient(app.main.app, raise_server_exceptions=False) as c:
         yield c
 
 
 @pytest.fixture(autouse=True)
 def _reset_engine_state():
     """Clear module-level mutable state in the automation engine between tests."""
-    import app.automation.engine as engine
+    engine = app.automation.engine
     engine._last_fired.clear()
     engine._overrides.clear()
     engine._rule_cache.clear()
@@ -148,7 +168,7 @@ def _reset_mqtt_clock_state():
     """Clear the per-node telemetry ordering / clock-skew bookkeeping in mqtt.py
     (a node's newest live ts from one test would make the next test's frames
     look out of order)."""
-    import app.mqtt as mqtt
+    mqtt = app.mqtt
     mqtt._node_newest_ts.clear()
     mqtt._node_clock.clear()
     mqtt._skew_logged_at.clear()
@@ -162,14 +182,13 @@ def _reset_mqtt_clock_state():
 @pytest.fixture(autouse=True)
 def _reset_notification_state():
     """Clear notification dedup tracking between tests."""
-    import app.notifications.service as svc
-    svc._last_sent.clear()
+    app.notifications.service._last_sent.clear()
 
 
 @pytest.fixture(autouse=True)
 def _reset_weather_state():
     """Clear weather cache between tests."""
-    import app.weather.service as wsvc
+    wsvc = app.weather.service
     wsvc._cache = {}
     wsvc._cache_ts = 0
     wsvc._forecast_cache = []
