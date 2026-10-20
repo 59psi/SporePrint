@@ -37,10 +37,15 @@ AutomationRule:
   adds to each frame: `outdoor_temp_f`, `outdoor_humidity`,
   `outdoor_dew_point_f`, `outdoor_wind_mph`, `forecast_high_f`,
   `forecast_low_f`.
-- Targets: `relay-01` and `light-01` are placeholders that resolve to the
-  chamber's relay or lighting node (`resolve_node_target()`); in a chamber
-  with no node of that role the rule does not fire. `plug-<role>` names a
-  smart plug by id or role, either way the same plug. A chamber may list plug
+- Targets: `relay-01` and `light-01` are placeholders for a relay or
+  lighting node (`resolve_node_target()`): for a chamber's nodes the
+  chamber's own node of that role, else one no chamber lists; for nodes in
+  no chamber one no chamber lists, else one of a chamber that runs the same
+  grow, never a node of a chamber that runs a grow of its own. Where none of
+  these answers the rule does not fire (only while no node of the role is
+  paired at all do nodes in no chamber still address the placeholder's own
+  id, with a warning). `plug-<role>` names a smart plug by id or role,
+  either way the same plug. A chamber may list plug
   ids among its node ids: a role (a plug whose id is `plug-<role>` counts as
   one of the role's) then resolves to that chamber's own plug, else to a plug
   no chamber lists. For nodes in no chamber it resolves to a plug no chamber

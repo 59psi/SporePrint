@@ -44,6 +44,7 @@ from .service import (
     hold_applies,
     node_command_state,
     normalize_node_command,
+    placeholder_nodes,
     resolve_node_target,
     rule_applies_to_species,
     rules_generation,
@@ -693,8 +694,8 @@ class _Target:
 
     ``node`` is the canonical name: the resolved node id, the paired plug's own
     id (whether the rule names it by id or by role), or a vendor key; None for
-    a placeholder (relay-01 / light-01) no node of its role answers for a
-    chamber. ``names`` is every name a hold or a safety ceiling on this
+    a placeholder (relay-01 / light-01) no node of its role answers for the
+    nodes the rule runs on. ``names`` is every name a hold or a safety ceiling on this
     actuator may be stored under (the rule's own target, the resolved node,
     the plug's id and role). A plug's ``role`` is its device_role; ``paired``
     is False for a plug target no paired plug answers (for this chamber).
@@ -710,7 +711,8 @@ async def _resolve_target(
     action, chamber_nodes: list[str] | None, *, grow_id: int | None = None,
 ) -> _Target:
     """The action's _Target for a chamber's nodes (``chamber_nodes``) or for
-    nodes in no chamber running grow ``grow_id`` (smart_plugs.chamber_plug).
+    nodes in no chamber running grow ``grow_id`` (resolve_node_target for a
+    relay-01 / light-01 placeholder, smart_plugs.chamber_plug for a plug).
     A plug named by role and by id is one actuator: two rules naming it the
     two ways both owned it, and an OFF through one name left a ceiling armed
     through the other running (a false trip and a 15-minute lockout of a
@@ -718,14 +720,19 @@ async def _resolve_target(
     target = action.target
     if action.vendor_slug:
         return _Target(target, frozenset({target}))
-    # A placeholder resolves to the chamber's node of its role (or None);
-    # anything else resolves to itself.
-    node = await resolve_node_target(target, chamber_nodes)
+    # A placeholder resolves to the node of its role these nodes drive (or
+    # None); anything else resolves to itself.
+    node = await resolve_node_target(target, chamber_nodes, grow_id=grow_id)
     if node is None:
-        # In a chamber: nothing of the role answers for it, nothing to drive.
-        # With no chamber the placeholder keeps its own name, and the channel
-        # check's warning names the missing node.
-        return _Target(None if chamber_nodes else target, frozenset({target}))
+        # Nothing of the role answers for these nodes, nothing to drive: in a
+        # chamber, or in no chamber while every node of the role is listed by
+        # a chamber that does not run their grow. Only with no node of the
+        # role registered at all does the placeholder keep its own name for
+        # nodes in no chamber, and the channel check's warning names the
+        # missing node.
+        if chamber_nodes or await placeholder_nodes(target):
+            return _Target(None, frozenset({target}))
+        return _Target(target, frozenset({target}))
     if node == target and await is_plug_target(target):
         row = await chamber_plug(target, chamber_nodes, grow_id=grow_id)
         if row is None:  # not paired (for this chamber): its own name only
@@ -944,8 +951,9 @@ async def evaluate_rules(
     targets: dict[tuple[str, bool], _Target] = {}
     present: dict[str, bool] = {}
     scope = tuple(chamber_nodes or ())
-    # The grow these nodes run: nodes in no chamber borrow a plug of a role
-    # they lack only from a chamber that runs the same grow (chamber_plug).
+    # The grow these nodes run: nodes in no chamber borrow a node or plug of a
+    # role they lack only from a chamber that runs the same grow
+    # (resolve_node_target, chamber_plug).
     grow_id = session["id"] if session else None
 
     for rule in rules:
@@ -963,14 +971,17 @@ async def evaluate_rules(
                 tgt = targets[tkey] = await _resolve_target(action, chamber_nodes, grow_id=grow_id)
 
             if tgt.node is None:
-                # A placeholder with no node of its role for this chamber: a
-                # publish to the placeholder reaches nothing and used to log
-                # 'sent' (another chamber's node satisfied the global channel
-                # check). Nothing to drive: say so once, until one is paired.
+                # A placeholder with no node of its role for these nodes (a
+                # chamber's, or nodes in no chamber while every node of the
+                # role is another grow's): a publish to the placeholder
+                # reaches nothing and used to log 'sent' (another chamber's
+                # node satisfied the global channel check). Nothing to drive:
+                # say so once, until one answers.
                 if in_scope and (rule.id, scope) not in _no_node_logged:
                     _no_node_logged.add((rule.id, scope))
-                    log.warning("Rule '%s' skipped: no %r node for this chamber (nodes %s)",
-                                rule.name, action.target, list(scope))
+                    where = f"this chamber (nodes {list(scope)})" if scope else "the nodes in no chamber"
+                    log.warning("Rule '%s' skipped: no %r node for %s",
+                                rule.name, action.target, where)
                 continue
             _no_node_logged.discard((rule.id, scope))
 
@@ -2321,11 +2332,14 @@ async def _fire_rule(rule: AutomationRule, readings: dict, session: dict | None,
     # subscriber and would log status='sent' while nothing moves — and
     # a plug named by role or by id becomes the paired plug's own id. With
     # chamber_nodes, only that chamber's (or an unassigned) node or plug is
-    # chosen, and a placeholder with none is not fired at all.
+    # chosen; without, an unassigned one or one of a chamber that runs the
+    # session's grow. A placeholder no such node answers is not fired at all
+    # (_resolve_target says when it keeps its own name instead).
     tgt = target if target is not None else await _resolve_target(
         action, chamber_nodes, grow_id=session["id"] if session else None)
     if tgt.node is None:
-        log.warning("Rule '%s' not fired: no %r node for this chamber", rule.name, action.target)
+        log.warning("Rule '%s' not fired: no %r node for %s", rule.name, action.target,
+                    "this chamber" if chamber_nodes else "the nodes in no chamber")
         return
 
     # evaluate_rules checked the hold before calling us, but a safety ceiling

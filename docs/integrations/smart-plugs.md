@@ -45,7 +45,7 @@ In the Tasmota web UI, **Configuration → MQTT**:
 | Port | 1883 |
 | User | `sp-3p` |
 | Password | `SPOREPRINT_MQTT_3P_PASSWORD` from `.env` |
-| Topic | the plug's role: `humidifier`, `dehumidifier`, `heater` or `cooler` (must be unique) |
+| Topic | the plug's role: `humidifier`, `dehumidifier`, `heater` or `cooler` (must be unique; chambers with plugs of their own: [a plug for each chamber](#a-plug-for-each-chamber)) |
 | Full Topic | **`tasmota/%topic%/%prefix%/`** |
 
 Or in the Tasmota console:
@@ -101,7 +101,7 @@ the Shelly web UI, **Settings → Connectivity → MQTT**:
 | Server | the Pi's IP and port: `<pi-ip>:1883` |
 | Username | `sp-3p` |
 | Password | `SPOREPRINT_MQTT_3P_PASSWORD` from `.env` |
-| MQTT prefix | **`shellies/<role>`**: `shellies/humidifier`, `shellies/dehumidifier`, `shellies/heater` or `shellies/cooler` (one level under `shellies/`, unique per plug) |
+| MQTT prefix | **`shellies/<role>`**: `shellies/humidifier`, `shellies/dehumidifier`, `shellies/heater` or `shellies/cooler` (one level under `shellies/`, unique per plug; chambers with plugs of their own: [a plug for each chamber](#a-plug-for-each-chamber)) |
 | RPC status notifications over MQTT | on |
 | Generic status update over MQTT | on |
 
@@ -125,6 +125,21 @@ Only `output`, `apower` and `errors` are read. `NotifyStatus` is a delta: a
 missing key means unchanged, never off. An overpower or overtemp entry in
 `errors` is logged. On a multi-channel device, `switch:0` is
 `plug-<role>` and `switch:<n>` is `plug-<role>-<n>`.
+
+### A plug for each chamber
+
+A chamber can list its plugs' ids among its node ids, and its rules then
+switch its own plug of each role ([automation rules](../automation-rules.md),
+Targets). Name each such plug after its chamber, not its role: Tasmota Topic
+`heater-a` (plug id `plug-heater-a`) or Gen2+ prefix `shellies/heater-a`,
+with its role (`heater`) assigned in the app and its plug id listed in its
+chamber; a per-plug login takes the same name
+(`./scripts/add-plug-mqtt-user.sh heater-a`). A manual hold, and the
+15-minute lockout a safety cutoff places, are kept under the plug's id, and
+`plug-heater` is also the name every chamber's heater rules use: a hold or a
+lockout on a plug with that id pauses the heater rules of every chamber, not
+only its own. With one plug of each role, naming the plug after its role is
+all it takes.
 
 ### Online / offline
 
