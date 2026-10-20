@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import math
+import re
 import secrets
 import time
 
@@ -14,11 +15,16 @@ from .config import settings
 from .hardware.coredumps import ACK_SUFFIX as COREDUMP_ACK_SUFFIX
 from .hardware.coredumps import ingest_chunk as ingest_coredump_chunk
 from .hardware.ota_push import note_node_event as note_node_ota_event
+from .node_clock import MAX_FUTURE_SKEW_SECONDS, SYNCED_TS_MIN
 from .notifications.service import notify
+from .provision import served_ca_fingerprint
 from .telemetry.service import (
+    SENSOR_FIELDS,
     active_session_for_node,
+    insert_readings,
     latest_node_timestamp,
-    store_bulk_readings,
+    reading_rows,
+    skipped_value_count,
 )
 from .db import get_db
 
@@ -26,10 +32,30 @@ log = logging.getLogger(__name__)
 
 _client: aiomqtt.Client | None = None
 
-# Telemetry `ts` wire contract (firmware <-> Pi):
+# A lighting bank's channel-level report shares the bare `telemetry` topic
+# ({<channel>: level 0-1023, ...}; firmware wire_contract.h build_dim_levels).
+# Current firmware marks it "report": "dim_levels" and stamps a ts; earlier
+# images sent it with neither — and every other frame on that topic, sensor
+# reading or not, carries a ts.
+_DIM_LEVELS_REPORT = "dim_levels"
+
+
+def _is_level_report(payload: dict) -> bool:
+    """A channel-level report, not a sensor frame: live actuator state with
+    no reading to store and nothing for the rules to act on."""
+    if payload.get("report") == _DIM_LEVELS_REPORT:
+        return True
+    return "ts" not in payload and not any(k in payload for k in SENSOR_FIELDS)
+
+# Telemetry `ts` wire contract (firmware <-> Pi; app/node_clock.py):
 #   * ts is Unix-epoch seconds once the node's clock is NTP-synced. Anything
 #     below 1e9 (2001-09-09) is an unsynced node's uptime, never a real epoch,
 #     and is replaced with the Pi's arrival time.
+#   * A synced ts more than MAX_FUTURE_SKEW_SECONDS ahead of the Pi (a bogus
+#     sync) is stored and shown at the arrival time too: at its own ts the
+#     reading stayed "latest" until real time caught up with it, and no
+#     retention cutoff reached it. Ordering and skew still go by the node's
+#     ts (_classify_frame), so the Pi's clock still decides nothing live.
 #   * Frames replayed from the node's offline buffer carry "replay": true.
 #   * A frame is NOT live when it carries "replay": true, or when its ts is
 #     older than the newest ts already accepted live from the same node (a
@@ -44,8 +70,9 @@ _client: aiomqtt.Client | None = None
 #     Pi-vs-node skew is measured per node and reported instead (a rate-
 #     limited WARNING past _CLOCK_SKEW_WARN_SECONDS, and reliability.
 #     node_clock_skew in GET /api/health/detail/system).
-_UNSYNCED_TS_BELOW = 1_000_000_000
+_UNSYNCED_TS_BELOW = SYNCED_TS_MIN
 _uptime_ts_clamp_count = 0
+_future_ts_clamp_count = 0
 _mqtt_restart_count = 0
 
 # Per-node telemetry clock bookkeeping (see the contract above).
@@ -76,7 +103,10 @@ _non_live_counts = {"replay": 0, "out_of_order": 0}
 # under these names are dropped and the names can never register as nodes: a
 # leaked plug credential (sp-3p lives on third-party plug firmware) must not
 # become a node, claim a node type, or feed the rules engine. The Pi server's
-# own configured account (settings.mqtt_username) is reserved too.
+# own configured account (settings.mqtt_username) is reserved too, and so is
+# every per-plug login (settings.mqtt_plug_users, which
+# scripts/add-plug-mqtt-user.sh fills): the same patterns let a plug's own
+# login, whose password lives in the plug, post as a node.
 # tests/test_mqtt_acl_contract.py keeps this in step with acl.conf and
 # scripts/rotate-mqtt-creds.sh.
 RESERVED_NODE_IDS = frozenset({"server", "sp-3p", "sp-cmd", "sp-telemetry"})
@@ -85,12 +115,27 @@ RESERVED_NODE_IDS = frozenset({"server", "sp-3p", "sp-cmd", "sp-telemetry"})
 _reserved_drop_logged: set[str] = set()
 
 
-def is_reserved_node_id(node_id: str) -> bool:
-    """Is `node_id` a broker service account name (never a node)? Case-insensitive."""
-    name = str(node_id or "").strip().lower()
+def is_service_account(name: str) -> bool:
+    """Is `name` one of the broker's service accounts (RESERVED_NODE_IDS or
+    the server's own login)? Case-insensitive. The ACL's per-plug patterns
+    let these post plug state under their own name too, so smart_plugs
+    ignores such frames."""
+    name = str(name or "").strip().lower()
     if not name:
         return False
     return name in RESERVED_NODE_IDS or name == (settings.mqtt_username or "").strip().lower()
+
+
+def plug_logins() -> frozenset[str]:
+    """The per-plug broker logins (settings.mqtt_plug_users), lowercased."""
+    return frozenset(n for n in re.split(r"[\s,]+", (settings.mqtt_plug_users or "").lower()) if n)
+
+
+def is_reserved_node_id(node_id: str) -> bool:
+    """Is `node_id` a broker login that is not a node: a service account or a
+    per-plug login? Case-insensitive."""
+    name = str(node_id or "").strip().lower()
+    return bool(name) and (is_service_account(name) or name in plug_logins())
 
 
 async def purge_reserved_nodes() -> int:
@@ -100,7 +145,8 @@ async def purge_reserved_nodes() -> int:
     upserted a node row, and a row is what admits keyless camera uploads and
     cloud target_kind routing. Returns the number of rows removed.
     """
-    names = sorted(RESERVED_NODE_IDS | {(settings.mqtt_username or "").strip().lower()} - {""})
+    names = sorted((RESERVED_NODE_IDS | {(settings.mqtt_username or "").strip().lower()}
+                    | plug_logins()) - {""})
     removed = 0
     async with get_db() as db:
         for name in names:
@@ -120,13 +166,39 @@ async def purge_reserved_nodes() -> int:
 # automation/smart_plugs.py and config/mosquitto/acl.conf.
 _VENDOR_PLUG_PREFIXES = ("shellies/", "tasmota/")
 
-# Telemetry frames also refresh a registered node's liveness (srv-hw#22): the
+# Telemetry frames also refresh a registered node's liveness: the
 # offline sweeper in main.py reads last_seen, which only status/* frames used
 # to write. UPDATE only — status changes stay with the heartbeat/LWT path, and
 # telemetry never registers a node (registration gates keyless camera uploads).
 _TOUCH_LAST_SEEN_SQL = (
     "UPDATE hardware_nodes SET last_seen = MAX(COALESCE(last_seen, 0), ?) "
     "WHERE node_id = ?"
+)
+
+# node_logs keeps about the newest _NODE_LOG_KEEP rows per node. Finding the
+# cutoff walks the node's whole log, so it runs once _NODE_LOG_TRIM_EVERY rows
+# have arrived since the last trim (and on a node's first batch after a
+# start), not on every batch: a chatty node flushes up to one every 2 s, and
+# the per-batch trim cost several times the batch's own inserts.
+_NODE_LOG_KEEP = 10_000
+_NODE_LOG_TRIM_EVERY = 500
+_node_log_since_trim: dict[str, int] = {}
+_TRIM_NODE_LOG_SQL = (
+    "DELETE FROM node_logs WHERE node_id = ? AND id <= "
+    "(SELECT id FROM node_logs WHERE node_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)"
+)
+
+# A switch report's trigger when the node itself switched the channel off
+# (firmware wire_contract.h kTriggerSafetyCutoff).
+_TRIGGER_SAFETY_CUTOFF = "safety_cutoff"
+
+# Lifetime actuator_events total per (node, channel, action), bumped in the
+# same transaction as the row: the Grafana counter reads it, so retention can
+# prune old rows without the counter going backwards.
+_COUNT_ACTUATOR_EVENT_SQL = (
+    "INSERT INTO actuator_event_counts (node_id, channel, action, n) "
+    "VALUES (?, ?, ?, 1) "
+    "ON CONFLICT(node_id, channel, action) DO UPDATE SET n = n + 1"
 )
 
 # Node-side alert types (firmware check_alerts / reed edges) -> ntfy tier.
@@ -146,7 +218,15 @@ _NODE_ALERT_DEDUP_SECONDS = {"critical": 900, "warning": 300, "info": 3600}
 def get_reliability_counters() -> dict:
     return {
         "uptime_ts_clamps": _uptime_ts_clamp_count,
+        # Synced frames dated past MAX_FUTURE_SKEW_SECONDS ahead, stamped
+        # with their arrival time instead.
+        "future_ts_clamps": _future_ts_clamp_count,
         "mqtt_supervisor_restarts": _mqtt_restart_count,
+        # Frames dropped before routing (oversized, or JSON that cannot be
+        # built: see _decode_payload).
+        "dropped_frames": _dropped_frame_count,
+        # Frame fields not stored: not a finite number (telemetry.service).
+        "skipped_readings": skipped_value_count(),
         # Frames stored but not evaluated (see the ts contract above).
         "non_live_frames": dict(_non_live_counts),
         # Per node: Pi arrival time minus the node's ts, as last seen.
@@ -220,7 +300,7 @@ def _classify_frame(node_id: str, ts: float, *, replay: bool, node_clock: bool,
 def _sign_cmd_payload(payload: dict) -> dict:
     """Sign a cmd/* payload with HMAC-SHA256 over canonical JSON.
 
-    v3.4.9 C-1 — the firmware's verifyFrame expects:
+    The firmware's verifyFrame expects:
       * `ts` epoch seconds (Pi wall-clock, NTP-disciplined)
       * `signature` = HMAC-SHA256(settings.mqtt_hmac_key, canonical_body)
 
@@ -263,7 +343,7 @@ def _bind_cmd_payload(topic: str, payload: dict) -> dict:
     * "topic" — the full `sporeprint/<node>/cmd/<suffix>` it is published on.
       Current firmware rejects a signed frame whose "topic" differs from the
       topic it arrived on, so a captured frame can't be redirected to another
-      channel or node (fw-node#11).
+      channel or node.
     * "nonce" — 64 random bits. The node remembers each accepted (topic, MAC)
       for the replay window; without a nonce, two legitimate identical
       commands in the same `ts` second (on/off/on) are byte-identical and
@@ -354,7 +434,7 @@ async def mqtt_publish(topic: str, payload: dict) -> bool:
     if _is_cmd_topic(topic):
         if not settings.mqtt_hmac_key:
             # Fail closed when enforced — never ship an unsigned actuator
-            # command silently (the archaeology's top finding).
+            # command silently.
             if _signing_enforced():
                 _log_signing_block(topic)
                 return False
@@ -367,6 +447,14 @@ async def mqtt_publish(topic: str, payload: dict) -> bool:
                 log.warning("cmd frame to %s too large for topic binding; "
                             "sending it signed but unbound", topic)
                 outbound = _sign_cmd_payload(payload)
+        size = len(json.dumps(outbound).encode("utf-8"))
+        if size >= _NODE_INBOUND_FRAME_CAP:
+            # Even unbound, the node would drop it unread: report it as not
+            # sent (send_command answers 503) rather than "sent" and lost.
+            log.error("cmd frame to %s is %d bytes; nodes drop frames of %d "
+                      "bytes or more, so it was not sent", topic, size,
+                      _NODE_INBOUND_FRAME_CAP)
+            return False
 
     try:
         await _client.publish(topic, json.dumps(outbound))
@@ -407,6 +495,16 @@ def _is_vendor_plug_topic(topic: str) -> bool:
     return topic.startswith(_VENDOR_PLUG_PREFIXES)
 
 
+# Frames larger than this are dropped unread. A node's MQTT buffer holds about
+# 1 KB and the largest plug frames (Tasmota status, Shelly Gen2 RPC) a few KB,
+# so nothing legitimate comes close; the broker sets no packet size limit.
+_MAX_PAYLOAD_BYTES = 64 * 1024
+# Frames dropped before routing: oversized, or JSON that Python refuses to
+# build (nesting past the recursion limit, an integer past the 4300-digit
+# limit). Reported under reliability in GET /api/health/detail/system.
+_dropped_frame_count = 0
+
+
 def _decode_payload(topic: str, raw: bytes):
     """Decode one MQTT payload for routing; None means drop the frame.
 
@@ -415,7 +513,19 @@ def _decode_payload(topic: str, raw: bytes):
     those topics a payload that isn't JSON is passed through as the stripped
     string. Numeric power reports, the `true`/`false` online flag and the JSON
     of Tasmota telemetry and Shelly Gen2 RPC frames still parse.
+
+    Never raises. A payload json.loads cannot build — nested deeper than the
+    recursion limit (RecursionError) or holding an integer past Python's
+    digit limit (a ValueError that is not a JSONDecodeError) — is dropped on
+    every topic: escaping the message loop, one such retained frame restarted
+    the MQTT session on every reconnect, and ingest never recovered.
     """
+    global _dropped_frame_count
+    if len(raw) > _MAX_PAYLOAD_BYTES:
+        _dropped_frame_count += 1
+        log.warning("dropping a %d-byte frame on %s (limit %d bytes)",
+                    len(raw), topic[:120], _MAX_PAYLOAD_BYTES)
+        return None
     try:
         text = raw.decode()
     except UnicodeDecodeError:
@@ -427,6 +537,11 @@ def _decode_payload(topic: str, raw: bytes):
             return None
         # Empty/whitespace (e.g. a retained message being cleared) is no state.
         return text.strip() or None
+    except (ValueError, RecursionError) as e:
+        _dropped_frame_count += 1
+        log.warning("dropping an undecodable frame on %s: %s",
+                    topic[:120], type(e).__name__)
+        return None
     if not _is_vendor_plug_topic(topic) and not isinstance(payload, dict):
         return None
     return payload
@@ -475,18 +590,26 @@ async def start_mqtt(sio):
                     )
 
                 async for message in client.messages:
-                    topic = str(message.topic)
-                    # $SYS payloads are plain text — handle before the JSON
-                    # parse below would silently drop them.
-                    if topic.startswith("$SYS/"):
-                        _handle_sys_message(topic, bytes(message.payload or b""))
-                        continue
-                    payload = _decode_payload(topic, bytes(message.payload or b""))
-                    if payload is None:
-                        continue
-
+                    # Everything one frame does stays inside this try: an
+                    # exception escaping it ends the session (and with it the
+                    # subscriptions), and a retained frame that raises again on
+                    # every redelivery would keep ingest down for good.
+                    topic = "?"
                     try:
-                        await _handle_message(sio, topic, payload)
+                        topic = str(message.topic)
+                        raw = bytes(message.payload or b"")
+                        # $SYS payloads are plain text — handle before the
+                        # JSON parse below would silently drop them.
+                        if topic.startswith("$SYS/"):
+                            _handle_sys_message(topic, raw)
+                            continue
+                        payload = _decode_payload(topic, raw)
+                        if payload is None:
+                            continue
+                        await _handle_message(
+                            sio, topic, payload,
+                            retained=getattr(message, "retain", False) is True,
+                        )
                     except Exception as e:
                         log.exception("_handle_message(%s) crashed: %s", topic, e)
 
@@ -507,8 +630,10 @@ async def start_mqtt(sio):
             await asyncio.sleep(5)
 
 
-async def _handle_message(sio, topic: str, payload):
-    global _uptime_ts_clamp_count
+async def _handle_message(sio, topic: str, payload, *, retained: bool = False):
+    """Route one decoded frame. ``retained`` is True when the broker delivers
+    a stored retained message on (re)subscribe rather than a live publish."""
+    global _uptime_ts_clamp_count, _future_ts_clamp_count
     # Smart plug messages (Shelly / Tasmota) live on the vendor's own topic
     # tree and are often bare text; they never enter the sporeprint/* branches.
     if _is_vendor_plug_topic(topic):
@@ -524,12 +649,12 @@ async def _handle_message(sio, topic: str, payload):
     msg_type = parts[2]
 
     if is_reserved_node_id(node_id):
-        # A service account publishing through the per-node ACL patterns
-        # (see RESERVED_NODE_IDS): never a node, never rules input.
+        # A service account or plug login publishing through the per-node ACL
+        # patterns (see RESERVED_NODE_IDS): never a node, never rules input.
         if node_id.lower() not in _reserved_drop_logged:
             _reserved_drop_logged.add(node_id.lower())
             log.warning("[SEC] dropping sporeprint/%s/%s frames: %r is a broker "
-                        "service account, not a node", node_id, msg_type, node_id)
+                        "service account or plug login, not a node", node_id, msg_type, node_id)
         return
 
     if msg_type == "telemetry" and len(parts) == 4:
@@ -540,21 +665,22 @@ async def _handle_message(sio, topic: str, payload):
         # SENSOR_FIELDS) — so the actuator_events table, built for exactly this
         # feed, had no writer and Grafana's actuator_event_count sat at zero.
         received_at = time.time()
+        channel = payload.get("channel", parts[3])
+        action = payload.get("state", "unknown")
         async with get_db() as db:
             await db.execute(
                 """INSERT INTO actuator_events (timestamp, node_id, channel, action, value, trigger)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (
-                    received_at, node_id,
-                    payload.get("channel", parts[3]),
-                    payload.get("state", "unknown"),
+                    received_at, node_id, channel, action,
                     payload.get("pwm"),
                     payload.get("trigger", "report"),
                 ),
             )
+            await db.execute(_COUNT_ACTUATOR_EVENT_SQL, (node_id, channel, action))
             await db.execute(_TOUCH_LAST_SEEN_SQL, (received_at, node_id))
             await db.commit()
-        await sio.emit("actuator_state", {"node_id": node_id, **payload})
+        await sio.emit("actuator_state", {**payload, "node_id": node_id})
         # Keep the cloud forward — remote clients render live actuator state
         # from these frames; only the pointless local store + rules eval stops.
         await forward_telemetry(node_id, payload)
@@ -568,8 +694,40 @@ async def _handle_message(sio, topic: str, payload):
                 await note_actuator_on(node_id, str(payload.get("channel") or parts[3]))
             except Exception as e:
                 log.warning("noting %s/%s ON failed: %s", node_id, parts[3], e)
+        elif payload.get("trigger") == _TRIGGER_SAFETY_CUTOFF:
+            # The node's own cutoff (max-on backstop, safe mode, OTA start)
+            # switched the channel off: a manual ON hold on it is over.
+            from .automation.engine import end_on_hold_after_cutoff
+            try:
+                await end_on_hold_after_cutoff(node_id, str(payload.get("channel") or parts[3]))
+            except Exception as e:
+                log.warning("ending the ON hold on %s/%s failed: %s", node_id, parts[3], e)
+
+    elif msg_type == "telemetry" and _is_level_report(payload):
+        # A lighting bank's channel levels: shown and forwarded live, as
+        # before, but not a reading — no session to tag, nothing to store,
+        # nothing for the rules (which run on the node's periodic telemetry
+        # frame, schedules included, at its own cadence). Every ramp step
+        # used to run the whole sensor path.
+        received_at = time.time()
+        try:
+            ts = float(payload.get("ts"))
+        except (TypeError, ValueError):
+            ts = math.nan
+        payload["ts"] = ts if math.isfinite(ts) and ts >= _UNSYNCED_TS_BELOW else received_at
+        try:
+            async with get_db() as db:
+                await db.execute(_TOUCH_LAST_SEEN_SQL, (received_at, node_id))
+                await db.commit()
+        except Exception as e:
+            log.warning("refreshing last_seen for %s failed: %s", node_id, e)
+        await sio.emit("telemetry", {**payload, "node_id": node_id})
+        await forward_telemetry(node_id, payload)
 
     elif msg_type == "telemetry":
+        # Late import: the engine imports this module (mqtt_publish).
+        from .automation.engine import _session_for_node, evaluate_rules
+
         received_at = time.time()
         replay = payload.get("replay") is True
         raw_ts = payload.get("ts")
@@ -580,42 +738,68 @@ async def _handle_message(sio, topic: str, payload):
         # True when ts is the node's own synced clock; False when the Pi
         # stamps its arrival time (no/garbled ts, or an unsynced uptime ts).
         node_clock = math.isfinite(ts) and ts >= _UNSYNCED_TS_BELOW
-        if not node_clock:
-            if math.isfinite(ts):
-                # Unsynced node clock: the ts is uptime, not wall time.
-                _uptime_ts_clamp_count += 1
-                log.debug("unsynced ts %s from %s, stamping arrival time", raw_ts, node_id)
+        if not node_clock and math.isfinite(ts):
+            # Unsynced node clock: the ts is uptime, not wall time.
+            _uptime_ts_clamp_count += 1
+            log.debug("unsynced ts %s from %s, stamping arrival time", raw_ts, node_id)
+        # A synced clock far ahead of the Pi (see the contract above): ordered
+        # and skew-checked on the node's ts below, stored at arrival time.
+        future = node_clock and ts > received_at + MAX_FUTURE_SKEW_SECONDS
+        not_live = _classify_frame(node_id, ts if node_clock else received_at,
+                                   replay=replay, node_clock=node_clock,
+                                   received_at=received_at)
+        if future:
+            _future_ts_clamp_count += 1
+            log.debug("ts %s from %s is %.0f s ahead of the Pi; stamping arrival time",
+                      raw_ts, node_id, ts - received_at)
+        if future or not node_clock:
             ts = received_at
-            if replay:
-                # A replayed unsynced frame's real time is unrecoverable but is
-                # certainly older than what the node already reported live.
-                # Never let it land after (and so shadow) the latest reading.
+            if not_live:
+                # A late frame's real time is unrecoverable but is certainly
+                # older than what the node already reported live. Never let
+                # it land after (and so shadow) the latest reading.
                 newest = await latest_node_timestamp(node_id)
                 if newest is not None and newest <= ts:
                     ts = newest - 0.001
-        not_live = _classify_frame(node_id, ts, replay=replay, node_clock=node_clock,
-                                   received_at=received_at)
         payload["ts"] = ts
 
         # Tag the reading with the grow its node was part of at `ts`
         # (transcripts and the per-session telemetry endpoint resolve by
-        # session_id). Per node: chambered grows can run side by side.
-        session_id = await active_session_for_node(node_id, ts)
+        # session_id): the grow the rules engine drives with the node's
+        # readings (sessions.service.get_active_session_for_node). A live
+        # frame resolves it once for the tag and the engine both; a session
+        # started after the frame's ts (a replay, a lagging clock) does not
+        # claim the reading.
+        node_session = None
+        if not_live:
+            session_id = await active_session_for_node(node_id, ts)
+        else:
+            node_session = await _session_for_node(node_id)
+            session = node_session[0]
+            if session and (session.get("created_at") or 0) <= ts:
+                session_id = session["id"]
+            else:
+                session_id = await active_session_for_node(node_id, ts)
 
-        try:
-            await store_bulk_readings(node_id, payload, ts, session_id=session_id)
-        except Exception as e:
-            # e.g. "database is locked" while the nightly retention job holds
-            # the write lock. Losing the history row must not also cost a live
-            # frame its rules evaluation (safety cutoffs included).
-            log.warning("storing telemetry from %s failed: %s", node_id, e)
-        # Any frame (replayed ones too) proves the node is up right now.
+        # The readings and the last_seen touch are one transaction (one
+        # commit on the SD card per frame). A failed insert is rolled back
+        # on its own (insert_readings' savepoint), and losing the history
+        # row must not also cost the node its liveness or a live frame its
+        # rules evaluation (safety cutoffs included); e.g. "database is
+        # locked" while the nightly retention job holds the write lock.
+        rows = reading_rows(node_id, payload, ts, session_id)
         try:
             async with get_db() as db:
+                await db.execute("BEGIN")
+                try:
+                    await insert_readings(db, rows)
+                except Exception as e:
+                    log.warning("storing telemetry from %s failed: %s", node_id, e)
+                # Any frame (replayed ones too) proves the node is up right now.
                 await db.execute(_TOUCH_LAST_SEEN_SQL, (received_at, node_id))
                 await db.commit()
         except Exception as e:
-            log.warning("refreshing last_seen for %s failed: %s", node_id, e)
+            log.warning("storing telemetry from %s failed: %s", node_id, e)
         if not_live:
             # History only: the local socket feed renders each frame as the
             # current reading and the rules engine acts on it, so a late frame
@@ -627,7 +811,7 @@ async def _handle_message(sio, topic: str, payload):
                       not_live, node_id, ts)
             await forward_telemetry(node_id, {**payload, "replay": True})
             return
-        await sio.emit("telemetry", {"node_id": node_id, **payload})
+        await sio.emit("telemetry", {**payload, "node_id": node_id})
         await forward_telemetry(node_id, payload)
 
         # Enrich readings with outdoor weather (virtual sensors for automation rules)
@@ -640,10 +824,10 @@ async def _handle_message(sio, topic: str, payload):
                 if weather.get(key) is not None:
                     enriched[key] = weather[key]
 
-        # Evaluate automation rules against enriched readings
-        from .automation.engine import evaluate_rules
+        # Evaluate automation rules against enriched readings, on the grow
+        # already resolved for the tag above.
         try:
-            await evaluate_rules(node_id, enriched, sio)
+            await evaluate_rules(node_id, enriched, sio, node_session=node_session)
         except Exception as e:
             log.error("Automation engine error: %s", e)
 
@@ -661,10 +845,22 @@ async def _handle_message(sio, topic: str, payload):
             # dropped on the floor. reset_reason is the panic-loop tell: a node
             # stuck in a WDT/brownout reboot cycle looks "online" on every other
             # signal — this column is the only place that failure is visible.
+            # tls / tls_fallback / board / ca_fp (and ca_fp_match, the Pi's
+            # check of ca_fp) are the node's transport security, as of its
+            # latest heartbeat (see _heartbeat_tls_fields).
+            tls, tls_fallback, board, ca_fp, ca_fp_match = _heartbeat_tls_fields(
+                node_id, payload)
+            # A heartbeat is never retained, so it is the node alive right now:
+            # it re-arms the liveness sweeper's offline page
+            # (offline_notified_at, main._sweep_stale_nodes).
             async with get_db() as db:
+                cursor = await db.execute(
+                    "SELECT status FROM hardware_nodes WHERE node_id = ?", (node_id,))
+                prior = await cursor.fetchone()
                 await db.execute(
-                    """INSERT INTO hardware_nodes (node_id, node_type, firmware_version, last_seen, ip_address, status, roles, reset_reason, mqtt_reconnects)
-                       VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?)
+                    """INSERT INTO hardware_nodes (node_id, node_type, firmware_version, last_seen, ip_address, status, roles, reset_reason, mqtt_reconnects,
+                                                   tls, tls_fallback, board, ca_fp, ca_fp_match)
+                       VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(node_id) DO UPDATE SET
                          node_type=CASE WHEN excluded.node_type != 'unknown'
                                         THEN excluded.node_type
@@ -675,28 +871,54 @@ async def _handle_message(sio, topic: str, payload):
                          status='online',
                          roles=COALESCE(excluded.roles, hardware_nodes.roles),
                          reset_reason=COALESCE(excluded.reset_reason, hardware_nodes.reset_reason),
-                         mqtt_reconnects=COALESCE(excluded.mqtt_reconnects, hardware_nodes.mqtt_reconnects)""",
+                         mqtt_reconnects=COALESCE(excluded.mqtt_reconnects, hardware_nodes.mqtt_reconnects),
+                         tls=excluded.tls,
+                         tls_fallback=excluded.tls_fallback,
+                         board=excluded.board,
+                         ca_fp=excluded.ca_fp,
+                         ca_fp_match=excluded.ca_fp_match,
+                         offline_notified_at=NULL""",
                     (node_id, payload.get("type", "unknown"),
                      payload.get("firmware_version"), time.time(),
                      payload.get("ip"), roles_json,
-                     payload.get("reset_reason"), payload.get("mqtt_reconnects")),
+                     payload.get("reset_reason"), payload.get("mqtt_reconnects"),
+                     tls, tls_fallback, board, ca_fp, ca_fp_match),
                 )
                 await db.commit()
+            if prior is None or prior["status"] != "online":
+                # A node back from offline (or heard for the first time) is
+                # news to local Socket.IO clients, as a status frame is.
+                await sio.emit("node_status", {"node_id": node_id, "status": "online"})
         else:
             status = payload.get("status", "unknown")
+            # last_seen is when the node was last heard. Only a live "online"
+            # is the node talking: a retained frame is the broker replaying a
+            # stored one on (re)subscribe — a dead node's days-old LWT among
+            # them — and an "offline" is the broker's LWT for a node that has
+            # stopped. Either used to stamp last_seen with now, so a node gone
+            # for days read "seen just now" after every Pi restart.
+            heard_now = status == "online" and not retained
             async with get_db() as db:
+                # A live "online" also re-arms the liveness sweeper's offline
+                # page (offline_notified_at); a replayed one must not, or a
+                # dead node would page again after every Pi restart.
                 await db.execute(
                     """INSERT INTO hardware_nodes (node_id, node_type, status, last_seen)
                        VALUES (?, 'unknown', ?, ?)
-                       ON CONFLICT(node_id) DO UPDATE SET status=excluded.status, last_seen=excluded.last_seen""",
-                    (node_id, status, time.time()),
+                       ON CONFLICT(node_id) DO UPDATE SET
+                         status=excluded.status,
+                         last_seen=COALESCE(excluded.last_seen, hardware_nodes.last_seen),
+                         offline_notified_at=CASE WHEN excluded.last_seen IS NULL
+                                                  THEN hardware_nodes.offline_notified_at
+                                                  END""",
+                    (node_id, status, time.time() if heard_now else None),
                 )
                 await db.commit()
             await sio.emit("node_status", {"node_id": node_id, "status": status})
 
     elif msg_type == "health":
         # Component-level health from ESP32 nodes
-        await sio.emit("component_health", {"node_id": node_id, **payload})
+        await sio.emit("component_health", {**payload, "node_id": node_id})
         # v4.2: the health doc is the only place a node enumerates the channel
         # names it answers to (an object keyed by name). Persist those names —
         # the node routes `cmd/<channel>` by exact match and drops anything it
@@ -712,6 +934,21 @@ async def _handle_message(sio, topic: str, payload):
                     (node_id, json.dumps(sorted(channels)), time.time()),
                 )
                 await db.commit()
+        elif channels is None or channels == {}:
+            # No channel object: the node answers to no channel (a climate
+            # node, a camera; every switch or dim image always lists its
+            # channels). A node re-provisioned from relay to climate kept its
+            # old list, so rules on channels it no longer has still passed
+            # validate_action_channel. '[]', not NULL: NULL means "never
+            # reported" and passes every channel. A `channels` of any other
+            # shape is not understood, so it changes nothing.
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE hardware_nodes SET channels = '[]' "
+                    "WHERE node_id = ? AND channels IS NOT NULL AND channels != '[]'",
+                    (node_id,),
+                )
+                await db.commit()
         try:
             await forward_component_health(node_id, payload)
         except Exception as e:
@@ -723,8 +960,12 @@ async def _handle_message(sio, topic: str, payload):
         # should still not land in journalctl verbatim at WARNING level.
         alert_kind = payload.get("kind") or payload.get("type") or "unknown"
         log.warning("Alert from node=%s kind=%s", node_id, alert_kind)
-        await sio.emit("alert", {"node_id": node_id, **payload})
-        await forward_event("alert", {"node_id": node_id, **payload})
+        # Every event names the node by its topic, the identity the broker's
+        # per-node ACL vouches for, never by a node_id inside its payload
+        # (which would let one node raise alerts in a sibling's name).
+        alert = {**payload, "node_id": node_id}
+        await sio.emit("alert", alert)
+        await forward_event("alert", alert)
         # Local push: the engine's species-range alerts need an active session,
         # so these firmware absolute-limit alerts are the only page a headless
         # Pi sends between grows (or for a dead sensor).
@@ -739,6 +980,7 @@ async def _handle_message(sio, topic: str, payload):
         entries = payload.get("entries")
         if isinstance(entries, list) and entries:
             async with get_db() as db:
+                stored = 0
                 for e in entries[:64]:  # batch sanity cap
                     if not isinstance(e, dict):
                         continue
@@ -749,13 +991,15 @@ async def _handle_message(sio, topic: str, payload):
                         (node_id, int(e.get("ts_ms", 0) or 0),
                          int(e.get("level", 1) or 1), msg),
                     )
-                # Retention: keep the newest ~10k rows per node.
-                await db.execute(
-                    """DELETE FROM node_logs WHERE node_id = ? AND id NOT IN
-                       (SELECT id FROM node_logs WHERE node_id = ?
-                        ORDER BY id DESC LIMIT 10000)""",
-                    (node_id, node_id),
-                )
+                    stored += 1
+                # Retention, in the batch's transaction: see _NODE_LOG_KEEP.
+                since = _node_log_since_trim.get(node_id)
+                if since is None or since + stored >= _NODE_LOG_TRIM_EVERY:
+                    await db.execute(_TRIM_NODE_LOG_SQL, (node_id, node_id, _NODE_LOG_KEEP))
+                    since = 0
+                else:
+                    since += stored
+                _remember(_node_log_since_trim, node_id, since)
                 await db.commit()
             dropped = payload.get("dropped")
             if dropped:
@@ -795,11 +1039,118 @@ async def _handle_message(sio, topic: str, payload):
         # error from ArduinoOTA). Forwarded as a node_ota event so remote
         # operators can see node updates; this is visibility only — pushing
         # images stays a LAN operation.
-        evt = {"node_id": node_id, **payload}
+        evt = {**payload, "node_id": node_id}
         # A push waiting for the node's answer to its signed manifest.
         note_node_ota_event(node_id, payload)
         await sio.emit("node_ota", evt)
-        await forward_event("node_ota", evt)
+        # forward_event's envelope is {"type": "node_ota", "ts": <Pi time>,
+        # **data}, so the node's own keys must not shadow it: a start event's
+        # `type` (firmware | filesystem) turned the event into a "firmware"
+        # one, and the node's `ts` (uptime before an NTP sync) replaced the
+        # Pi's. They ride along as ota_type / node_ts.
+        relay = {k: v for k, v in payload.items() if k not in ("type", "ts")}
+        await forward_event("node_ota", {
+            **relay, "node_id": node_id,
+            "ota_type": payload.get("type"), "node_ts": payload.get("ts"),
+        })
+
+
+_CA_FP_RE = re.compile(r"^[0-9a-f]{64}$")
+# node -> the ca_fp last warned about (capped like the clock tables).
+_ca_mismatch_logged: dict[str, str] = {}
+
+
+def _heartbeat_tls_fields(node_id: str, payload: dict) -> tuple:
+    """(tls, tls_fallback, board, ca_fp, ca_fp_match) for the heartbeat upsert.
+
+    tls / tls_fallback are 1/0, or None from an image that reports neither.
+    ca_fp is the SHA-256 of the CA PEM the node's TLS link pinned; ca_fp_match
+    is 1 when it is the CA this Pi serves (GET /api/provision/ca), 0 when it
+    is another one — the node trusted a different CA on first use, or the
+    broker's certificate no longer comes from the CA the Pi serves — and None
+    when either side is unknown. A mismatch is logged once per fingerprint.
+    """
+    tls_raw = payload.get("tls")
+    tls = int(tls_raw) if isinstance(tls_raw, bool) else None
+    # Emitted only when true, so its absence means false on an image that
+    # reports tls at all.
+    if payload.get("tls_fallback") is True:
+        tls_fallback = 1
+    else:
+        tls_fallback = 0 if tls is not None else None
+    board_raw = payload.get("board")
+    board = board_raw[:64] if isinstance(board_raw, str) and board_raw else None
+    fp_raw = payload.get("ca_fp")
+    ca_fp = fp_raw if isinstance(fp_raw, str) and _CA_FP_RE.match(fp_raw) else None
+    served = served_ca_fingerprint() if ca_fp is not None else None
+    if ca_fp is None or served is None:
+        _ca_mismatch_logged.pop(node_id, None)
+        return tls, tls_fallback, board, ca_fp, None
+    if ca_fp == served:
+        _ca_mismatch_logged.pop(node_id, None)
+        return tls, tls_fallback, board, ca_fp, 1
+    if _ca_mismatch_logged.get(node_id) != ca_fp:
+        _remember(_ca_mismatch_logged, node_id, ca_fp)
+        log.warning(
+            "[SEC] node %s verifies the broker against CA %s…, not the CA this "
+            "Pi serves (%s…): it trusted a different CA when it was set up, or "
+            "the broker's certificate is not from this Pi's CA. Re-provision the "
+            "node's Secure MQTT if the CA was regenerated.",
+            node_id, ca_fp[:16], served[:16],
+        )
+    return tls, tls_fallback, board, ca_fp, 0
+
+
+async def _reading_normal_for_grow(node_id: str, alert_type: str, value) -> bool:
+    """Is a firmware absolute-limit reading normal for the grow the node drives?
+
+    The node's limits are fixed (above 4000 ppm CO2, below 40 °F or above
+    90 °F, RH below 30 % or above 99 %), and phases the engine treats as normal
+    cross them: colonization holds CO2 at 5000-15000 ppm with no fresh air, cold
+    storage holds 35-40 °F. Paged regardless, they sent a CRITICAL every hour
+    for the whole phase. So, with a grow the engine manages (the same session,
+    phase setpoints and container rule as evaluate_rules):
+      * co2 is normal while the phase runs no fresh air (fae_mode "none") or is
+        within its ceiling; the engine's life-safety check still pages a level
+        dangerous to people;
+      * temperature and humidity are normal inside the phase's band, and a
+        low humidity also in a phase that does not drive humidity (cold
+        storage: a fridge idles dry);
+      * co2 and humidity say nothing about a sealed vessel's interior (the
+        engine's stage alerts skip them too).
+    With no managed grow, or when the lookup fails, nothing is normal and the
+    alert pages as before: between grows these are a headless Pi's only pages.
+    """
+    if alert_type not in ("temperature", "co2", "humidity"):
+        return False
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        return False
+    # Late import: the engine imports this module (mqtt_publish).
+    from .automation import engine
+    try:
+        session, _ = await engine._session_for_node(node_id)
+        if not session:
+            return False
+        profile = await engine.get_profile(session["species_profile_id"])
+        if profile is not None and not getattr(profile, "chamber_cultivable", True):
+            return False  # reference-only species: the engine manages nothing
+        params = engine._resolve_phase_params(session, profile)
+        if params is None:
+            return False
+        sealed = engine._container_is_sealed(session.get("container_type"),
+                                             session["current_phase"])
+    except Exception as e:
+        log.warning("resolving %s's grow for its %s alert failed: %s", node_id, alert_type, e)
+        return False
+    if alert_type == "temperature":
+        return params.temp_min_f <= value <= params.temp_max_f
+    if sealed:
+        return True
+    if alert_type == "co2":
+        return getattr(params, "fae_mode", None) == "none" or value <= params.co2_max_ppm
+    low_ok = (not getattr(params, "humidity_driven", True)
+              or value >= params.humidity_min)
+    return low_ok and value <= params.humidity_max
 
 
 async def _notify_node_alert(node_id: str, alert_type: str, payload: dict) -> None:
@@ -809,6 +1160,8 @@ async def _notify_node_alert(node_id: str, alert_type: str, payload: dict) -> No
     door opening INFO (a door closing is not pushed). Unknown types from newer
     firmware page WARNING rather than being dropped. The dedup key includes the
     frame's `sensor`, since one alert type (sensor_failure) covers several.
+    A temperature, co2 or humidity reading the node's grow treats as normal
+    is not pushed (see _reading_normal_for_grow).
     """
     if alert_type == "door":
         try:
@@ -817,9 +1170,13 @@ async def _notify_node_alert(node_id: str, alert_type: str, payload: dict) -> No
             opened = False
         if not opened:
             return
+    value = payload.get("value")
+    if await _reading_normal_for_grow(node_id, alert_type, value):
+        log.debug("node %s %s alert (value %s) is normal for its grow's phase; not paged",
+                  node_id, alert_type, value)
+        return
     priority = _NODE_ALERT_PRIORITY.get(alert_type, "warning")
     message = str(payload.get("message") or alert_type.replace("_", " "))
-    value = payload.get("value")
     has_reading = alert_type not in ("door", "sensor_failure")
     if has_reading and isinstance(value, (int, float)) and not isinstance(value, bool):
         message = f"{message} (value {value:g})"

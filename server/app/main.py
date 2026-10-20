@@ -10,23 +10,32 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ._request_id_mw import RequestIdMiddleware
+from .auth import ApiKeyMiddleware, socketio_auth_ok, socketio_client_addr
+from .cloud.service import forward_event
+from .cloud.session_sync import attach as attach_session_sync
 from .config import settings
 from .db import get_db
 from .hardware.coredumps import coredump_dir, discard_partial_writes
-from .health.service import update_task
-from .host_allow import HostAllowMiddleware
+from .health.service import (
+    register_task,
+    track_client_connect,
+    track_client_disconnect,
+    update_task,
+)
+from .host_allow import CrossSiteRequestGuard, HostAllowMiddleware, socketio_origin_allowed
+from .notifications.service import node_offline
 from .retention import service as retention_service
-from .sessions.service import check_phase_reminders
+from .sessions.service import check_phase_reminders, release_cold_storage_links
+from .settings_service import apply_persisted_settings
 
-# Socket.IO accepts wildcard origins because engineio's CORS implementation only
-# allows exact-string match (no regex/callable) and the Pi binds to a dynamic
-# LAN IP that varies per-household. The gate is the connect-handler auth check
-# (app.auth.socketio_auth_ok): when SPOREPRINT_API_KEY is set, every connect
-# must present a matching bearer in the `auth` payload or the server rejects
-# the handshake. Without the key an attacker reaching this WS can still read
-# telemetry — treat `SPOREPRINT_API_KEY` as the actual confidentiality gate,
-# not CORS.
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+# Socket.IO checks a browser's Origin with host_allow.socketio_origin_allowed:
+# the request's own host, or a name the Host allow-list admits. A page on
+# another site can neither open the live stream nor read it (the Pi's LAN
+# address varies per household, so an exact-origin list cannot work). Native
+# clients send no Origin and pass. With SPOREPRINT_API_KEY set, every connect
+# must also present the bearer (the connect handler's app.auth.socketio_auth_ok).
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=socketio_origin_allowed)
 
 
 @asynccontextmanager
@@ -39,11 +48,10 @@ async def lifespan(app: FastAPI):
 
     from .automation.service import seed_builtin_rules
     from .cloud.service import start_cloud_connector
-    from .cloud.session_sync import attach as attach_session_sync
     from .retention.service import start_retention_task
     from .weather.service import start_weather_polling
 
-    # v3.4.9 Debt 5 — configure structured logging with request_id
+    # Configure structured logging with request_id
     # threading before anything else so even boot-path messages carry
     # the contextvar (empty on boot; non-empty per-request).
     configure_logging()
@@ -70,21 +78,28 @@ async def lifespan(app: FastAPI):
         )
 
     await init_db()
+    # The operator's saved settings (Claude key, ntfy topic, OTA verify key,
+    # weather location) into the runtime config before anything reads it.
+    await apply_persisted_settings()
     _ensure_coredump_dir(log)
     await seed_builtins()
     await seed_builtin_rules()
+    # A grow that went to cold storage before advancing there dropped its
+    # chamber link still holds the chamber it left; release it before the
+    # rules engine starts on that chamber's telemetry.
+    await release_cold_storage_links()
 
-    # v3.4.9 Debt 4 — wire the previously-orphaned task registry. Each
-    # long-running supervisor registers on boot; the admin dashboard now
-    # shows real status instead of derived best-guess.
-    from .health.service import register_task
+    # The task registry. Each
+    # long-running supervisor registers on boot and reports running / idle /
+    # error (with the error) from its own loop, so GET
+    # /api/health/detail/tasks shows a failing job as failing. The cloud
+    # connector reports through app.cloud.service.get_task_status instead.
     register_task("mqtt", "running")
-    register_task("weather_polling", "running")
-    register_task("retention", "running")
-    register_task("cloud_connector", "running")
+    register_task("weather_polling", "idle")
+    register_task("retention", "idle")
     register_task("daily_retrain", "idle")
     register_task("nightly_weather_aggregate", "idle")
-    register_task("node_liveness_sweeper", "running")
+    register_task("node_liveness_sweeper", "idle")
     register_task("phase_reminders", "idle")
 
     from .integrations._health_sweeper import (
@@ -286,64 +301,82 @@ async def _phase_reminder_loop():
 
 
 # A node is considered offline once we haven't heard from it for this long.
-# last_seen is refreshed by status/* frames and by every telemetry frame
-# (mqtt.py). Heartbeats come at least every 5 min (current firmware keeps them
-# on their own clock) and relay banks report switch state every 60 s, so 15
-# min is three missed heartbeats — enough to tell a WiFi blip from an outage.
+# last_seen is refreshed by heartbeats, live status frames and every telemetry
+# frame (mqtt.py). Heartbeats come at least every 5 min (current firmware
+# keeps them on their own clock) and relay banks report switch state every
+# 60 s, so 15 min is three missed heartbeats — enough to tell a WiFi blip from
+# an outage (and a planned reconnect, such as a transport switch, from either).
 _NODE_OFFLINE_THRESHOLD_SECONDS = 900
 _NODE_SWEEPER_INTERVAL_SECONDS = 60
 
 
-async def _node_liveness_sweeper():
-    """Flag hardware nodes whose last_seen is too stale and page the operator once.
+async def _sweep_stale_nodes(now: float | None = None) -> list[dict]:
+    """Mark the nodes silent past the threshold offline and page each one once.
 
-    Pages ntfy locally AND forwards the event to the cloud relay so premium
-    mobile subscribers get a push notification when a node drops offline.
+    Paged once per silence, whatever set status='offline': the broker's LWT
+    does that ~22 s into nearly every real outage (power or WiFi loss, a crash
+    loop), and the old `status != 'offline'` filter skipped exactly those
+    nodes, so they were never paged. offline_notified_at marks the page; the
+    node's next heartbeat or live 'online' status clears it (mqtt.py), and it
+    survives a Pi restart, so a dead node is not paged again at every boot.
+
+    The rows are committed before any page goes out: the ntfy POST (5 s
+    timeouts) used to run inside the open write transaction, and telemetry
+    ingest and rule firings meanwhile failed with 'database is locked'.
+    Pages ntfy locally, tells local Socket.IO clients (node_status) and
+    forwards node_offline to the cloud relay, which pushes premium mobile
+    subscribers.
     """
-    from .db import get_db
-    from .notifications.service import node_offline
-    from .cloud.service import forward_event
     log = logging.getLogger(__name__)
+    now = time.time() if now is None else now
+    threshold = now - _NODE_OFFLINE_THRESHOLD_SECONDS
+    async with get_db() as db:
+        cursor = await db.execute(
+            """UPDATE hardware_nodes SET status = 'offline', offline_notified_at = ?
+                WHERE offline_notified_at IS NULL
+                  AND last_seen IS NOT NULL AND last_seen < ?
+            RETURNING node_id, last_seen""",
+            (now, threshold),
+        )
+        stale = [dict(row) for row in await cursor.fetchall()]
+        await db.commit()
 
+    for row in stale:
+        node_id, last_seen = row["node_id"], row["last_seen"]
+        log.warning("Node %s marked offline (last_seen %.0fs ago)", node_id, now - last_seen)
+        try:
+            await sio.emit("node_status", {"node_id": node_id, "status": "offline"})
+        except Exception as e:
+            log.warning("node_status emit failed for %s: %s", node_id, e)
+        try:
+            await node_offline(node_id)
+        except Exception as e:
+            log.warning("node_offline notification failed for %s: %s", node_id, e)
+        try:
+            await forward_event("node_offline", {
+                "node_id": node_id,
+                "last_seen": last_seen,
+                "seconds_stale": now - last_seen,
+            })
+        except Exception as e:
+            log.warning("forward_event(node_offline) failed for %s: %s", node_id, e)
+    return stale
+
+
+async def _node_liveness_sweeper():
+    """Once a minute, page the nodes that went silent (_sweep_stale_nodes)."""
+    log = logging.getLogger(__name__)
     while True:
         try:
             await asyncio.sleep(_NODE_SWEEPER_INTERVAL_SECONDS)
-            now = time.time()
-            threshold = now - _NODE_OFFLINE_THRESHOLD_SECONDS
-            async with get_db() as db:
-                cursor = await db.execute(
-                    """SELECT node_id, last_seen FROM hardware_nodes
-                       WHERE status != 'offline' AND last_seen IS NOT NULL AND last_seen < ?""",
-                    (threshold,),
-                )
-                stale_rows = await cursor.fetchall()
-                for row in stale_rows:
-                    node_id = row["node_id"]
-                    last_seen = row["last_seen"]
-                    await db.execute(
-                        "UPDATE hardware_nodes SET status = 'offline' WHERE node_id = ?",
-                        (node_id,),
-                    )
-                    log.warning("Node %s marked offline (last_seen %.0fs ago)",
-                                node_id, now - last_seen)
-                    try:
-                        await node_offline(node_id)
-                    except Exception as e:
-                        log.warning("node_offline notification failed for %s: %s", node_id, e)
-                    try:
-                        await forward_event("node_offline", {
-                            "node_id": node_id,
-                            "last_seen": last_seen,
-                            "seconds_stale": now - last_seen,
-                        })
-                    except Exception as e:
-                        log.warning("forward_event(node_offline) failed for %s: %s", node_id, e)
-                if stale_rows:
-                    await db.commit()
+            update_task("node_liveness_sweeper", "running")
+            await _sweep_stale_nodes()
+            update_task("node_liveness_sweeper", "idle")
         except asyncio.CancelledError:
             return
         except Exception as e:
-            logging.getLogger(__name__).error("Node liveness sweeper failed: %s", e)
+            update_task("node_liveness_sweeper", "error", error=str(e))
+            log.error("Node liveness sweeper failed: %s", e)
             await asyncio.sleep(60)
 
 
@@ -352,21 +385,21 @@ app = FastAPI(title="SporePrint", version="5.2.2", lifespan=lifespan)
 # LAN-scoped CORS — the Pi is a local-network appliance, not an internet service.
 #
 # Threat model: a wildcard "*" origin would let ANY website the user visits
-# toggle their fans, lights, and smart plugs via cross-origin requests.
-# LAN-scoping blocks that entirely.
+# read the API's answers and, with JSON bodies, toggle their fans, lights and
+# smart plugs. CORS only governs what a page may read and which requests need
+# a preflight: a page can still SEND a body-less or form POST. Those are
+# refused by host_allow.CrossSiteRequestGuard (wrapped around this app in
+# socket_app) unless their Origin is a name the Pi answers to.
 #
 # Why we do NOT include sporeprint.ai:
 #   1. Mixed content: the hosted web app runs on HTTPS. Browsers block HTTPS
 #      pages from making HTTP requests to the Pi (http://192.168.x.x:3001).
 #      CORS is not even consulted — the request is refused by the browser
 #      before the preflight goes out.
-#   2. NAT: Railway servers hosting sporeprint.ai cannot reach a Pi behind
-#      a home router. There is no public reverse-FQDN pointing at the Pi.
-#   3. Actual flow: device pairing and cloud/configure are only ever POSTed
-#      from the mobile app (Capacitor native shell — no browser sandbox) or
-#      from the web app running on LAN in dev mode (localhost:3002 → Pi).
-#      Once paired, the Pi initiates an OUTBOUND WebSocket to the cloud —
-#      cloud never initiates inbound to the Pi.
+#   2. The cloud never calls the Pi from a browser. Its only calls in are
+#      pairing's pair-verify and configure, server to server through the
+#      operator's temporary public address, with no Origin; once paired, the
+#      Pi keeps an OUTBOUND WebSocket to the cloud relay.
 #
 # Allowed origins:
 #   - localhost / 127.0.0.1 (any port) — local browser dev + Pi itself
@@ -383,20 +416,21 @@ _LAN_ORIGIN_REGEX = (
     r")(:\d+)?$|^capacitor://localhost$"
 )
 
+# Each add_middleware wraps the ones added before it, so the request passes
+# RequestIdMiddleware -> CORSMiddleware -> ApiKeyMiddleware -> the routes. The
+# API-key 401 thus goes back out through CORS: a cross-origin client reads a
+# 401 instead of an opaque CORS failure. The request id is outermost, so a
+# rejected request still carries a correlatable id.
+app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=_LAN_ORIGIN_REGEX,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin",
+                   "X-Requested-With", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
     allow_credentials=True,
 )
-
-from .auth import ApiKeyMiddleware, socketio_auth_ok, socketio_client_addr
-from ._request_id_mw import RequestIdMiddleware
-
-# v3.4.9 Debt 5 — request-id middleware lives BEFORE the api key check
-# so even rejected-401 requests carry a correlatable id in the log.
-app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
 from .telemetry.router import router as telemetry_router
@@ -481,10 +515,6 @@ async def health():
     return {"status": "ok", "version": "5.2.2"}
 
 
-# Track Socket.IO clients for health reporting
-from .health.service import track_client_connect, track_client_disconnect
-
-
 @sio.on("connect")
 async def _sio_connect(sid, environ, auth=None):
     # v3.3.3 — pass the remote address into the auth callback so its rate-limit
@@ -509,4 +539,6 @@ async def _sio_disconnect(sid):
 # Outermost layer: the Host allow-list (DNS-rebinding guard, app/host_allow.py)
 # wraps Socket.IO as well as every FastAPI route. uvicorn serves this object
 # (server/Dockerfile CMD), so nothing reaches the app for an unlisted Host.
-socket_app = HostAllowMiddleware(socketio.ASGIApp(sio, app))
+# Inside it, the cross-site guard refuses state-changing requests a page on
+# another site sent to the Pi's real name.
+socket_app = HostAllowMiddleware(CrossSiteRequestGuard(socketio.ASGIApp(sio, app)))

@@ -1,6 +1,6 @@
 """Pi→ESP32 command-signing enforcement (mqtt.py).
 
-Closes the archaeology's top finding: an unset mqtt_hmac_key used to make the
+An unset mqtt_hmac_key used to make the
 Pi ship cmd/* frames UNSIGNED, silently, with no way to enforce or observe it.
 Now signing is:
   * signed when the key is set (unchanged),
@@ -119,7 +119,7 @@ async def test_non_cmd_topic_never_blocked(monkeypatch, fake_client):
     assert "signature" not in body
 
 
-# ── destination binding + per-frame nonce (fw-node#11) ──────────────────
+# ── destination binding + per-frame nonce ───────────────────────────────
 #
 # Firmware verifies HMAC over canonical(frame minus "signature"), covering every
 # member, so extra members are backward compatible with deployed nodes. Current
@@ -199,6 +199,25 @@ async def test_binding_is_dropped_rather_than_overflow_the_node_buffer(monkeypat
     await mqtt.mqtt_publish(topic, {"server_url": "x" * 100})
     _, small = fake_client.published[1]
     assert small["topic"] == topic
+
+
+@pytest.mark.parametrize("key,policy", [("deadbeef", "auto"), ("", "never")])
+async def test_frame_the_node_would_drop_is_reported_unsent(monkeypatch, fake_client,
+                                                            key, policy):
+    # Too large even unbound: the node would drop it unread (>= 1024 bytes,
+    # firmware mqtt_link.h kInboundCap). It used to go out anyway and report
+    # "sent" while the command never ran; now it is refused here, which
+    # send_command answers with a 503.
+    _set(monkeypatch, key=key, policy=policy)
+    ok = await mqtt.mqtt_publish("sporeprint/relay-01/cmd/config",
+                                 {"server_url": "x" * 1100})
+    assert ok is False
+    assert fake_client.published == []
+    # Just under the cap still goes out.
+    assert await mqtt.mqtt_publish("sporeprint/relay-01/cmd/config",
+                                   {"server_url": "x" * 800}) is True
+    assert len(json.dumps(fake_client.published[0][1]).encode()) < \
+        mqtt._NODE_INBOUND_FRAME_CAP
 
 
 # ── health surfacing ────────────────────────────────────────────────────

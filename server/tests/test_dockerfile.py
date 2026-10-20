@@ -13,6 +13,7 @@ from pathlib import Path
 
 DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
 DOCKERIGNORE = Path(__file__).resolve().parents[1] / ".dockerignore"
+BUILD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements-build.txt"
 
 
 def _instructions() -> list[tuple[str, str]]:
@@ -37,12 +38,45 @@ def test_dependencies_install_from_the_lockfile():
     copies = [rest for op, rest in ins if op == "COPY"]
     assert any("uv.lock" in c.split() for c in copies), "uv.lock never copied into the image"
     runs = " ".join(rest for op, rest in ins if op == "RUN")
-    assert re.search(r"\buv==\d+\.\d+\.\d+\b", runs), "uv must be version-pinned"
     assert re.search(r"uv export\b[^&]*--locked", runs)  # stale lock fails the build
     assert "--no-emit-project" in runs
     assert "--require-hashes" in runs
     # No resolver run over pyproject ranges.
     assert not re.search(r"pip install[^&]*\s\.(\s|$)", runs), "pip install . re-resolves ranges"
+
+
+def _pip_installs(runs: str) -> list[str]:
+    return [m.group(0) for m in re.finditer(r"pip install\b[^&;|]*", runs)]
+
+
+def test_the_build_tools_are_pinned_too():
+    """uv writes the hashes pip enforces, so the hash-checked install is only
+    as good as those two tools. The build upgraded pip to whatever PyPI had
+    that day and installed uv by version alone, both unverified and as root:
+    Pis built on different days ran different pip."""
+    runs = " ".join(rest for op, rest in _instructions() if op == "RUN")
+    assert "--upgrade pip" not in runs and not re.search(r"pip install[^&]*\s-U\b", runs)
+    installs = _pip_installs(runs)
+    assert installs, "no pip install in the image build"
+    for install in installs:
+        assert "--require-hashes" in install, f"unverified install: {install}"
+    # uv itself: exactly the hashed files, nothing it might pull in, never built.
+    bootstrap = next(i for i in installs if "requirements-build.txt" in i)
+    for flag in ("--no-deps", "--only-binary=:all:"):
+        assert flag in bootstrap, bootstrap
+    copies = [rest for op, rest in _instructions() if op == "COPY"]
+    assert any("requirements-build.txt" in c.split() for c in copies)
+
+
+def test_uv_is_pinned_by_version_and_hash():
+    text = BUILD_REQUIREMENTS.read_text()
+    pins = re.findall(r"^([A-Za-z0-9_.-]+)==(\S+)", text, re.M)
+    assert [name for name, _ in pins] == ["uv"], pins
+    assert re.fullmatch(r"\d+\.\d+\.\d+", pins[0][1]), pins
+    hashes = re.findall(r"--hash=sha256:([0-9a-f]{64})\b", text)
+    # One per file PyPI serves, so the amd64 and arm64 builds both verify.
+    assert len(hashes) >= 2 and len(set(hashes)) == len(hashes)
+    assert "uv pip compile" in text and "--generate-hashes" in text  # how to refresh it
 
 
 def test_uvicorn_trusts_forwarded_headers_only_from_the_compose_network():

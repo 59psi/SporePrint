@@ -103,7 +103,31 @@ def test_prepare_refuses_a_replaced_package_and_leaves_the_ini(tmp_path, served)
     with pytest.raises(pft.PinError, match="does not match the lock"):
         pft.prepare(lock, ini, tmp_path / "dest")
     assert ini.read_text() == before
-    assert not list((tmp_path / "dest" / "downloads").glob("esp32-core*"))
+    assert not list((tmp_path / "dest" / "downloads").rglob("esp32-core*"))
+
+
+def test_packages_whose_urls_share_a_file_name_keep_their_own_checked_copy(tmp_path, served):
+    """Downloads are stored by file name: a second package whose URL ends in
+    the same name must not overwrite the first one's checked file, which
+    platform.json already points at."""
+    url_a, url_b = "https://example.test/a/tools.zip", "https://example.test/b/tools.zip"
+    platform = _platform_zip({"tool-a": {"version": url_a}, "tool-b": {"version": url_b}})
+    served.update({PLATFORM_URL: platform, url_a: b"tool a", url_b: b"tool b"})
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps({
+        "platform": {"url": PLATFORM_URL, "sha256": _sha(platform)},
+        "packages": {"tool-a": {"url": url_a, "sha256": _sha(b"tool a")},
+                     "tool-b": {"url": url_b, "sha256": _sha(b"tool b")}},
+    }))
+    ini = tmp_path / "platformio.ini"
+    ini.write_text(f"[esp32_base]\nplatform = {PLATFORM_URL}\n")
+    platform_dir = pft.prepare(lock, ini, tmp_path / "dest")
+    packages = json.loads((platform_dir / "platform.json").read_text())["packages"]
+    local = {name: Path(packages[name]["version"][len("file://"):]) for name in ("tool-a", "tool-b")}
+    assert local["tool-a"] != local["tool-b"]
+    assert local["tool-a"].read_bytes() == b"tool a" and local["tool-b"].read_bytes() == b"tool b"
+    # The archive keeps its own name (the extension tells PlatformIO how to unpack it).
+    assert local["tool-a"].name == local["tool-b"].name == "tools.zip"
 
 
 def test_prepare_refuses_a_replaced_platform(tmp_path, served):

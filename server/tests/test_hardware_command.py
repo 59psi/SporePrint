@@ -45,3 +45,20 @@ def test_invalid_channel_still_400(client, mock_mqtt):
                     json={"channel": "../other", "state": "on"})
     assert r.status_code == 400
     assert mock_mqtt == []
+
+
+def test_a_trailing_newline_never_reaches_a_topic(client, mock_mqtt):
+    """A regex `$` also matches before a trailing newline, so "abc\\n" used to
+    pass and publish sporeprint/abc\\n/cmd/fae: a topic the node never hears,
+    reported as "sent"."""
+    r = client.post("/api/hardware/nodes/abc%0A/command",
+                    json={"channel": "fae", "state": "on"})
+    assert r.status_code == 400
+    r = client.post("/api/hardware/nodes/relay-01/command",
+                    json={"channel": "fae\n", "state": "on"})
+    assert r.status_code == 400
+    r = client.post("/api/hardware/nodes/abc%0A/peripherals", json={"hx711": True})
+    assert r.status_code == 400
+    r = client.post("/api/hardware/claim", json={"node_id": "relay-01\n"})
+    assert r.status_code == 400
+    assert mock_mqtt == []

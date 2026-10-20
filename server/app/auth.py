@@ -1,11 +1,17 @@
 """Bearer-token auth gate for /api/* and Socket.IO.
 
-Enabled when `SPOREPRINT_API_KEY` is set. When unset (dev mode) all requests
-pass through — the LAN-scoped CORS middleware remains the only gate.
+Enabled when `SPOREPRINT_API_KEY` is set. When unset (LAN-trust mode) all
+requests pass through here; the Host allow-list and the cross-site guard
+(app/host_allow.py) and the LAN-scoped CORS remain the gates.
 
 Requests that pass without the bearer:
 - `/api/health` (any method) — the UI's existence probe must work before auth is set up
 - `POST /api/cloud/pair`      — pairing handshake (code + lockout is the gate here)
+- `GET /api/cloud/pair-verify` and `POST /api/cloud/configure` — the cloud's
+  calls back to the Pi while pairing or rotating its token. The cloud never
+  holds the Pi's API key; both need the single-use, 10-minute configure_token
+  that only a code-gated `/pair` hands out, so the bearer-gated pairing code
+  stays the gate.
 - `GET /api/provision/ca`     — the broker's PUBLIC CA certificate for the node's
   Secure-MQTT trust-on-first-use fetch (firmware tls_transport.h sends no bearer;
   a 401 would silently drop the node to plaintext 1883). The handler refuses any
@@ -28,11 +34,16 @@ per-client JWT infrastructure on a Pi was judged to be more operational
 burden than the blast-radius of "a LAN-side attacker already inside the
 grower's network can hit the API". Compensating controls:
 
-  * CORS regex narrows browser origins to localhost, mDNS, RFC1918, and
-    the official Capacitor shells + sporeprint.ai (see main.py).
+  * CORS (main.py `_LAN_ORIGIN_REGEX`) admits localhost, *.local, RFC 1918
+    and capacitor://localhost only, never sporeprint.ai (cloud traffic
+    arrives over the relay).
   * The Host allow-list (app/host_allow.py, wrapped around main.socket_app)
     refuses DNS-rebinding requests: a remote page that re-points its own
     hostname at the Pi still sends its own name as Host and gets a 421.
+  * The cross-site guard (host_allow.CrossSiteRequestGuard) refuses a
+    POST/PUT/PATCH/DELETE whose browser Origin is another site, and the
+    Socket.IO handshake checks the same Origin rule, so a page the operator
+    visits can neither drive the Pi nor read its live stream.
   * Every connect is logged with `sid`, remote IP, and whether auth is
     present — a spike of connects from one IP is visible in journalctl.
   * Rate-limit on Socket.IO connect (bounded-retry via `_connect_rate_ok`)
@@ -52,7 +63,6 @@ from __future__ import annotations
 import collections
 import hmac
 import logging
-import re
 import time
 
 from fastapi import Request
@@ -61,6 +71,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import settings
 from .db import get_db
+from .node_ids import NODE_ID_RE
 
 log = logging.getLogger(__name__)
 
@@ -69,14 +80,34 @@ log = logging.getLogger(__name__)
 # reconnects and tight enough to trip on a scripted probe.
 _CONNECT_RATE_CAP = 20
 _CONNECT_RATE_WINDOW = 60.0
+# Client addresses remembered at once. Reaching it forgets every address with
+# no connect inside the window, then the ones heard from longest ago.
+_CONNECT_RATE_MAX_CLIENTS = 1024
 _connect_attempts: dict[str, collections.deque] = {}
+
+
+def _forget_idle_clients(now: float) -> None:
+    for addr in [a for a, q in _connect_attempts.items()
+                 if not q or now - q[-1] > _CONNECT_RATE_WINDOW]:
+        del _connect_attempts[addr]
+    while len(_connect_attempts) >= _CONNECT_RATE_MAX_CLIENTS:
+        oldest = min(_connect_attempts, key=lambda a: _connect_attempts[a][-1])
+        del _connect_attempts[oldest]
 
 
 def _connect_rate_ok(remote_addr: str | None) -> bool:
     if not remote_addr:
         return True
-    now = time.time()
-    q = _connect_attempts.setdefault(remote_addr, collections.deque())
+    # Monotonic, not the wall clock: after a backward wall-clock step (NTP, a
+    # manual `date -s`, an RTC that ran ahead) the entries stamped "in the
+    # future" never aged out, and connects were refused until the wall clock
+    # caught up again.
+    now = time.monotonic()
+    q = _connect_attempts.get(remote_addr)
+    if q is None:
+        if len(_connect_attempts) >= _CONNECT_RATE_MAX_CLIENTS:
+            _forget_idle_clients(now)
+        q = _connect_attempts[remote_addr] = collections.deque()
     # Drop timestamps older than the window.
     while q and (now - q[0]) > _CONNECT_RATE_WINDOW:
         q.popleft()
@@ -94,11 +125,18 @@ _PUBLIC_PATHS = frozenset({
 # whitelist also exposed e.g. POST /api/cloud/pairing-code).
 _PUBLIC_ROUTES = frozenset({
     ("POST", "/api/cloud/pair"),
+    # The cloud's pairing / token-rotation callbacks. It cannot send the Pi's
+    # API key (it never has it), so behind the gate pairing could never finish
+    # in API-key mode, and the only mode it worked in left the whole API open
+    # on the public address pairing needs. Both handlers refuse anything but a
+    # live configure_token, which only the code-gated /pair issues.
+    ("GET", "/api/cloud/pair-verify"),
+    ("POST", "/api/cloud/configure"),
     # Serves only the public CA (app/provision.py); nodes fetch it keyless.
     ("GET", "/api/provision/ca"),
 })
 
-# v3.4.9 L-9 — the camera node posts JPEGs here but has no slot for
+# The camera node posts JPEGs here but has no slot for
 # SPOREPRINT_API_KEY (no captive-portal UI to enter it, no secure
 # distribution channel from the Pi to each ESP32). A keyless upload is
 # accepted only when (enforced in _camera_frame_rejection):
@@ -112,7 +150,6 @@ _PUBLIC_ROUTES = frozenset({
 # still future work.
 _CAMERA_FRAME_ROUTE = ("POST", "/api/vision/frame")
 _MAX_FRAME_UPLOAD_BYTES = 20 * 1024 * 1024
-_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 
 
 async def _node_is_registered(node_id: str) -> bool:
@@ -126,7 +163,7 @@ async def _node_is_registered(node_id: str) -> bool:
 async def _camera_frame_rejection(request: Request) -> JSONResponse | None:
     """Gate a keyless camera frame upload; None means let it through."""
     node_id = request.headers.get("x-node-id") or ""
-    if not _NODE_ID_RE.match(node_id):
+    if not NODE_ID_RE.match(node_id):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     length = request.headers.get("content-length")
     if length is None:
@@ -150,23 +187,30 @@ def _extract_bearer(header_value: str | None) -> str | None:
     return parts[1].strip()
 
 
-def _valid_token(presented: object) -> bool:
-    """Constant-time check of a presented bearer against SPOREPRINT_API_KEY.
+def token_matches(presented: object, expected: str) -> bool:
+    """Constant-time check of a presented bearer against an expected secret.
 
     Compares UTF-8 bytes: compare_digest raises TypeError on non-ASCII str
     (header values arrive latin-1 decoded) and on mixed types, which turned a
     wrong token into a 500. Anything that is not a non-empty str — the
-    Socket.IO auth payload is client JSON — is simply wrong. surrogatepass:
-    JSON can carry a lone surrogate ("\\ud800"), which strict UTF-8 refuses.
+    Socket.IO auth payload is client JSON — is simply wrong. surrogatepass,
+    on both sides: JSON can carry a lone surrogate ("\\ud800"), which strict
+    UTF-8 refuses, and a secret saved through the API is JSON too. Shared by
+    the API gate and the Grafana exporter's /metrics token.
     """
-    if not settings.api_key:
-        return True
     if not isinstance(presented, str) or not presented:
         return False
     return hmac.compare_digest(
         presented.encode("utf-8", "surrogatepass"),
-        settings.api_key.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
     )
+
+
+def _valid_token(presented: object) -> bool:
+    """A presented bearer against SPOREPRINT_API_KEY (any passes when unset)."""
+    if not settings.api_key:
+        return True
+    return token_matches(presented, settings.api_key)
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):

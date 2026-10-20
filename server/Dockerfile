@@ -11,8 +11,7 @@ FROM python:3.12.15-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7
 # ships tzdata (canonical Region/City zones; legacy aliases such as US/Pacific
 # live in tzdata-legacy, which install.sh resolves on the host). Install it
 # only if a future base drops it, so the usual build stays offline for apt.
-RUN pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
-    adduser --disabled-password --gecos "" --no-create-home appuser && \
+RUN adduser --disabled-password --gecos "" --no-create-home appuser && \
     if [ ! -f /usr/share/zoneinfo/America/New_York ]; then \
         apt-get update && \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata && \
@@ -23,10 +22,15 @@ WORKDIR /app
 
 # Install exactly what uv.lock pins — the set the test suite ran against —
 # hash-checked. `--locked` fails the build if pyproject.toml changed without
-# re-running `uv lock`. uv is only needed for the export and is removed in the
+# re-running `uv lock`. Every tool in that chain is pinned too: pip is the one
+# the digest-pinned base ships (never upgraded from PyPI at build time), and
+# uv, which writes the hashes pip then enforces, installs only as the exact
+# files hashed in requirements-build.txt (its header has the command that
+# regenerates it). uv is only needed for the export and is removed in the
 # same layer.
-COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir --root-user-action=ignore uv==0.12.23 && \
+COPY pyproject.toml uv.lock requirements-build.txt ./
+RUN pip install --no-cache-dir --root-user-action=ignore --require-hashes \
+        --no-deps --only-binary=:all: -r requirements-build.txt && \
     uv export --no-cache --locked --no-dev --no-emit-project --format requirements.txt \
         -o /tmp/requirements.txt && \
     pip install --no-cache-dir --root-user-action=ignore --require-hashes \
