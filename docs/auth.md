@@ -20,13 +20,11 @@ A web page you open is not on your LAN, but a malicious one could try to act
 as if it were by *DNS rebinding* (its own hostname re-resolves to the Pi's LAN
 address, so the browser treats the Pi as the same site). The
 [Host allow-list](#host-allow-list-dns-rebinding) below refuses those
-requests. What it does not stop, in LAN-trust mode:
-
-- any compromised device or guest on the LAN;
-- a page in your browser *sending* a request to the Pi's IP (a cross-site
-  form post or image load). It cannot read the answer (CORS), and JSON
-  endpoints refuse non-JSON bodies, but requests that need no body can still
-  be triggered that way.
+requests. A page on another site can also send requests to the Pi's real
+name, as a form post or an image load does; the
+[cross-site guard](#cross-site-requests) refuses the ones that change
+anything, and CORS keeps the answers to the rest from the page. What neither
+stops, in LAN-trust mode, is any compromised device or guest on the LAN.
 
 On a network you do not fully trust, use API-key mode.
 
@@ -53,9 +51,20 @@ Public paths in API-key mode:
 |---|---|
 | `/api/health` (any method) | Liveness checks |
 | `POST /api/cloud/pair` | The cloud pairing handshake: a LAN client trades the code for a configure token (code-gated, rate-limited) |
+| `GET /api/cloud/pair-verify` | The cloud's check, while pairing or rotating the device token, that the Pi issued the configure token. The cloud never holds your API key; anything but a live configure token gets 401 |
+| `POST /api/cloud/configure` | The cloud's delivery of the device credentials, with the same configure token: single-use, valid 10 minutes, issued only by `POST /api/cloud/pair` |
 | `GET /api/provision/ca` | The broker's public CA, fetched keyless by Secure-MQTT nodes. It never serves a file containing a private key |
 
-`GET`/`POST /api/cloud/pairing-code` need the bearer in this mode.
+`GET`/`POST /api/cloud/pairing-code` need the bearer in this mode, so the
+pairing code, and with it every configure token, needs the key.
+
+**Pairing with sporeprint.ai** needs the Pi on a public HTTPS address for a
+few minutes (the cloud calls `pair-verify` and `configure` back). Use API-key
+mode for that window: in LAN-trust mode that address would serve the whole
+API to anyone who finds the name (a new HTTPS name often shows up in public
+certificate logs within minutes). The dashboard sends no key, so mint the
+pairing code with curl; the
+steps are in the README ([Pairing a Pi](../README.md#pairing-a-pi)).
 
 **Camera uploads.** The ESP32-CAM has no slot for the API key, so
 `POST /api/vision/frame` without a bearer is accepted only when:
@@ -72,7 +81,10 @@ carry its own bearer token (see
 
 ## Socket.IO
 
-The connect handshake uses the same bearer rule. Connect attempts are
+The connect handshake uses the same bearer rule. A browser's handshake must
+also come from an allowed Origin (see [Cross-site requests](#cross-site-requests)),
+so a page on another site can neither open nor read the live stream; native
+clients send no Origin. Connect attempts are
 rate-limited per client address, and the address is the real client: behind
 the dashboard's nginx it comes from `X-Forwarded-For`, which uvicorn trusts
 only from `FORWARDED_ALLOW_IPS`. Under Docker that is the ui container's fixed
@@ -111,15 +123,36 @@ SPOREPRINT_ALLOWED_HOSTS=pi.example.net,*.ts.net   # names, *.suffix, IPs, CIDRs
 SPOREPRINT_ALLOWED_HOSTS=*                          # turn the check off
 ```
 
-The same applies to a camera node whose portal "Pi host" is such a name: its
-frame uploads are refused until the name is listed. `GET /api/health` and
-`GET /api/provision/ca` (the public broker CA) answer for any name.
+The same applies to a camera node whose portal "Pi host" is such a name,
+including a router's own LAN domain outside the list above (for example
+`sporeprint.fritz.box`): its frame uploads are refused until the name is
+listed, while MQTT keeps the camera looking online. The server logs each such
+camera with its node id (at most hourly), and a camera registered with the Pi
+pages once a day (WARNING) until the name is listed or the camera's Pi host
+is changed. `GET /api/health` and `GET /api/provision/ca` (the public broker
+CA) answer for any name.
+
+## Cross-site requests
+
+Browsers mark every `POST`, `PUT`, `PATCH` and `DELETE` with the `Origin` of
+the page that sent it. In both modes the server refuses those (**403**) unless
+that Origin is the request's own host (the dashboard, by whatever name you
+reach it) or a name the Host allow-list above admits, so a page on another
+site cannot abort a session or mint a pairing code through your browser. A
+request without an `Origin` (curl, scripts, the camera, the cloud's pairing
+calls) is not a page and passes. `SPOREPRINT_ALLOWED_HOSTS=*` turns off the
+Host check, not this one. The deprecated `GET` form of
+`/api/experiments/{id}/analyze` (it spends Claude credit) is refused when the
+browser marks it `Sec-Fetch-Site: cross-site`, since an image load carries no
+`Origin`. The Socket.IO handshake applies the same Origin rule.
 
 ## CORS
 
 `allow_origin_regex` admits localhost, `*.local`, the RFC 1918 ranges and
-`capacitor://localhost` only. CORS decides which pages may *read* responses;
-it does not stop a request from being sent (see LAN-trust above).
+`capacitor://localhost` only, for every method the API uses (`PUT` included)
+and the `X-Request-ID` header, which responses expose. CORS decides which
+pages may *read* responses; sending is the [cross-site guard](#cross-site-requests)'s
+job.
 
 ## Recovering a Pi set up with the old `setup.sh`
 

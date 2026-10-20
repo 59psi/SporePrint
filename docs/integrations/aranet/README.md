@@ -25,39 +25,32 @@ the rules control. Free-tier — traffic stays on the LAN.
 3. In the Pi LAN UI at `/integrations`, find the Aranet row and click
    *Configure*:
    - `base_url`: e.g. `http://10.0.0.42` (mDNS hostnames OK).
-   - `api_key`: paste the value from step 1. A later save keeps the stored
-     key when `api_key` is omitted or sent back as its `••••last4` preview
-     (`""` clears it) — except when the save changes `base_url`: the key is
-     only ever sent to the address it was entered for, so a new `base_url`
-     needs the key re-entered (422 otherwise).
+   - `api_key`: paste the value from step 1. Settings show a saved key as
+     `••••` plus a short fingerprint, never any of its characters. A later
+     save keeps the stored key when `api_key` is omitted or sent back as
+     that preview (`""` clears it) — except when the save changes
+     `base_url`: the key is only ever sent to the address it was entered
+     for, so a new `base_url` needs the key re-entered (422 otherwise).
    - `poll_seconds`: 60 s is plenty — Aranet sensors only radio every
      ~10 minutes anyway.
-   - Leave `sensor_mappings` empty for now; we'll fill it in next.
    - Save (don't enable yet).
 4. Hit *Test connection*. You should see "ok · sensors_seen: N" with N
-   matching the number of sensors paired to your PRO.
-5. Click *Discover* (or call `GET /api/integrations/aranet/discover`).
-   The response lists every Aranet sensor with its `id` and current
-   measurement types. Use the IDs to populate `sensor_mappings`:
-
-   ```json
-   {
-     "abc-123-uuid": "1",
-     "def-456-uuid": "2"
-   }
-   ```
-
-   The keys are Aranet sensor IDs; the values are SporePrint chamber
-   IDs as strings.
-6. Save again, then *Enable*. Within one poll interval the readings
-   land in telemetry history under node IDs like
-   `aranet:abc-123-uuid`.
+   matching the number of sensors paired to your PRO. A test only reads
+   the PRO; it stores nothing.
+5. Call `GET /api/integrations/aranet/discover`. The response lists every
+   Aranet sensor with its `id` and current measurement types.
+6. *Enable*. Within one poll interval the readings land in telemetry
+   history under node IDs like `aranet:abc-123-uuid`, in no chamber.
+   `sensor_mappings` (sensor id → chamber id) is accepted in the config
+   but not used yet: to show a sensor with a chamber (in Grafana's
+   `chamber_id` label and the chamber's readings), add its node id to
+   that chamber's `node_ids` (`PATCH /api/chambers/{id}`).
 
 ## Sensor type mapping
 
 | Aranet measurement type | SporePrint sensor name |
 |---|---|
-| `temperature` | `temp_c` |
+| `temperature` | `temp_c` (a reading the PRO reports in °F is converted) |
 | `humidity` | `humidity` |
 | `co2` | `co2_ppm` |
 
@@ -74,6 +67,14 @@ guaranteed to lag by up to that interval. The driver polls the PRO
 every 60 s by default — that's fine because the PRO caches the latest
 reading per sensor. Lowering `poll_seconds` further does not get you
 fresher data; it just hits the PRO's rate limit faster.
+
+Because the PRO keeps serving a sensor's latest reading until the next
+one arrives, each reading is stored once, at the time the sensor took it
+(when the PRO reports that time), not again on every poll. A sensor whose
+reading stops changing for 30 minutes (or three polls, when that is
+longer) — a flat battery, out of radio range — is not stored as fresh:
+the integration's health turns `degraded` and names it (`error` when
+every sensor has gone quiet).
 
 ## Troubleshooting
 
