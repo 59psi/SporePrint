@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
 from .._net import split_host_port, url_host
-from ...telemetry.service import store_reading
+from ...telemetry.service import store_readings
 
 
 # Wemo firmware serves UPnP on one of 49151-49155 and commonly moves between
@@ -49,6 +49,7 @@ _GET_INSIGHT_BODY = """<?xml version="1.0" encoding="utf-8"?>
 
 class WemoDeviceMapping(BaseModel):
     ip: str
+    # Accepted but not used yet: readings are stored as wemo:<ip> in no chamber.
     chamber_id: str = ""
     actuator: str = "wemo"
     is_insight: bool = False
@@ -108,26 +109,33 @@ class WemoDriver(HttpVendorDriver):
     async def poll_once(self) -> tuple[int, dict[str, Any]]:
         cfg: WemoConfig = self._cfg  # type: ignore[assignment]
         if not cfg.devices:
-            return 0, {"reason": "no devices"}
-        rows = 0
+            raise WemoError("no devices configured")
+        readings: list[tuple[float, str, str, float]] = []
+        failed: dict[str, str] = {}
         now = time.time()
-        for d in cfg.devices:
+        for i, d in enumerate(cfg.devices):
             try:
-                state = await self._get_state(d.ip, cfg.request_timeout_seconds)
-            except WemoError:
-                continue
-            node_id = f"wemo:{d.ip}"
-            await store_reading(node_id, "actuator_state", float(state), now)
-            rows += 1
-            if d.is_insight:
-                try:
-                    power_w = await self._get_insight_power(d.ip, cfg.request_timeout_seconds)
-                except WemoError:
-                    power_w = None
-                if power_w is not None:
-                    await store_reading(node_id, "power_w", power_w, now)
-                    rows += 1
-        return rows, {"rows": rows, "devices": len(cfg.devices)}
+                readings.extend(await self._poll_device(cfg, d, now))
+            except Exception as exc:  # noqa: BLE001 — one plug must not stop the rest
+                failed[d.ip or f"device {i + 1}"] = str(exc)
+        # One transaction for the whole poll, not a commit per reading.
+        rows = await store_readings(readings)
+        return rows, {"rows": rows, "devices": len(cfg.devices), "failed": failed}
+
+    async def _poll_device(
+        self, cfg: WemoConfig, d: WemoDeviceMapping, now: float
+    ) -> list[tuple[float, str, str, float]]:
+        """One plug's (timestamp, node id, sensor, value) readings."""
+        state = await self._get_state(d.ip, cfg.request_timeout_seconds)
+        node_id = f"wemo:{d.ip}"
+        readings = [(now, node_id, "actuator_state", float(state))]
+        if d.is_insight:
+            # None when the Insight endpoint fails: that costs only the power
+            # reading, the plug itself answered.
+            power_w = await self._get_insight_power(d.ip, cfg.request_timeout_seconds)
+            if power_w is not None:
+                readings.append((now, node_id, "power_w", power_w))
+        return readings
 
     # ── Write paths ────────────────────────────────────────────────
 
@@ -154,10 +162,20 @@ class WemoDriver(HttpVendorDriver):
             _GET_STATE_BODY,
             timeout,
         )
-        m = re.search(r"<BinaryState>([01])</BinaryState>", text)
+        m = re.search(r"<BinaryState>([^<]+)</BinaryState>", text)
         if m is None:
             raise WemoError(f"unexpected GetBinaryState response: {text[:200]!r}")
-        return int(m.group(1))
+        # Plugs answer 0/1; an Insight answers 8 (on, load idle), and some
+        # firmware sends a pipe-delimited BinaryState ("1|1611092839|…")
+        # whose first field is the state. Anything non-zero is on.
+        raw = m.group(1).split("|", 1)[0].strip()
+        try:
+            state = int(raw)
+        except ValueError:
+            raise WemoError(
+                f"unexpected BinaryState {m.group(1)[:40]!r} from {ip}"
+            ) from None
+        return 1 if state else 0
 
     async def _get_insight_power(self, ip: str, timeout: float) -> float | None:
         try:

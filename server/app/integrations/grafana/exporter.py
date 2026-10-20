@@ -15,22 +15,38 @@ because:
      counter must survive (the database is the source of truth).
 
 The trade-off is one SQLite read per scrape, which at 30s scrape interval
-is well within the Pi's I/O budget.
+is well within the Pi's I/O budget: the sensor query reads only the recent
+window of readings, and the actuator counter reads a small totals table.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+import time
 from typing import Any
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Info, generate_latest
 
+from ...chambers.service import list_chambers
 from ...db import get_db
+from .. import _registry
 from .config import GrafanaConfig
 
 
 logger = logging.getLogger(__name__)
+
+# A node's last reading stops being exported once the node has been silent
+# this long — the Pi calls a node offline after 15 minutes without telemetry
+# (main.py's liveness sweeper) — so a dead sensor's last value does not keep
+# showing as a live gauge until retention deletes it.
+_NODE_READING_MAX_AGE_SECONDS = 900.0
+# Vendor readings (node ids "<driver>:<device>") arrive once per driver poll,
+# up to an hour apart, and some are stored at the time the sensor took them
+# (an Aranet4 radios a sample every 1-10 minutes): they stay current for as
+# many polls as the driver's own health allows before it calls the vendor
+# stale, and never less than 30 minutes.
+_DEFAULT_STALE_POLLS = 3.0
+_VENDOR_READING_MIN_AGE_SECONDS = 1800.0
 
 
 # Prometheus best practice: stable label cardinality. We label by node_id
@@ -87,31 +103,55 @@ async def _node_to_chamber_map() -> dict[str, str]:
     chamber. Nodes not assigned to any chamber map to ``""`` so the label
     is always present (Prometheus requires consistent label sets per
     metric, missing-label rewrites cost cardinality).
+
+    Built from the chambers service's parsed rows; a row whose node_ids is
+    not a JSON list (hand-edited, or legacy) contributes no nodes instead of
+    failing the scrape. Oldest chamber first, so a node listed in two
+    chambers is labelled with the newer one.
     """
     out: dict[str, str] = {}
-    async with get_db() as db:
-        cursor = await db.execute("SELECT id, node_ids FROM chambers")
-        for row in await cursor.fetchall():
-            chamber_id = str(row["id"])
-            try:
-                node_ids = json.loads(row["node_ids"] or "[]")
-            except json.JSONDecodeError:
-                node_ids = []
-            for node_id in node_ids:
-                out[str(node_id)] = chamber_id
+    for chamber in reversed(await list_chambers()):
+        node_ids = chamber.get("node_ids")
+        if not isinstance(node_ids, list):
+            continue
+        for node_id in node_ids:
+            out[str(node_id)] = str(chamber["id"])
     return out
 
 
-async def _latest_per_sensor() -> list[dict[str, Any]]:
-    """One row per (node_id, sensor) — the most recent value."""
+def _vendor_max_reading_ages() -> dict[str, float]:
+    """{driver slug: seconds} a polled vendor reading stays current."""
+    out: dict[str, float] = {}
+    for slug, drv in _registry.registered_drivers().items():
+        poll = getattr(getattr(drv, "config", None), "poll_seconds", None)
+        if isinstance(poll, bool) or not isinstance(poll, (int, float)) or poll <= 0:
+            continue
+        polls = getattr(drv, "stale_after_multiplier", _DEFAULT_STALE_POLLS)
+        out[slug] = max(_VENDOR_READING_MIN_AGE_SECONDS, float(poll) * float(polls))
+    return out
+
+
+def _max_reading_age(node_id: str, vendor_ages: dict[str, float]) -> float:
+    slug, sep, _device = node_id.partition(":")
+    if sep and slug in vendor_ages:
+        return vendor_ages[slug]
+    return _NODE_READING_MAX_AGE_SECONDS
+
+
+async def _latest_per_sensor(since: float) -> list[dict[str, Any]]:
+    """One row per (node_id, sensor) with a reading at or after ``since`` —
+    the most recent value. Bounding the window keeps the scan to recent rows
+    (idx_telemetry_sensor_time) instead of the whole raw table."""
     async with get_db() as db:
         cursor = await db.execute(
             """
             SELECT node_id, sensor, value, MAX(timestamp) AS timestamp
             FROM telemetry_readings
             WHERE sensor IN ('temp_c','humidity','co2_ppm','lux','dew_point_f','weight_g','door_open')
+              AND timestamp >= ?
             GROUP BY node_id, sensor
-            """
+            """,
+            (since,),
         )
         rows = await cursor.fetchall()
     return [dict(r) for r in rows]
@@ -131,13 +171,15 @@ async def _active_sessions() -> list[dict[str, Any]]:
 
 
 async def _actuator_event_counts() -> list[tuple[str, str, str, int]]:
+    """Lifetime actuator events per (node, channel, action).
+
+    Read from the totals the MQTT ingest keeps beside each actuator_events
+    row, never counted from the raw table: that table is pruned nightly, and
+    counting it on every scrape cost a full scan that grew without bound.
+    """
     async with get_db() as db:
         cursor = await db.execute(
-            """
-            SELECT node_id, channel, action, COUNT(*) AS n
-            FROM actuator_events
-            GROUP BY node_id, channel, action
-            """
+            "SELECT node_id, channel, action, n FROM actuator_event_counts"
         )
         rows = await cursor.fetchall()
     return [(r["node_id"], r["channel"] or "", r["action"], r["n"]) for r in rows]
@@ -200,22 +242,39 @@ async def collect_samples(cfg: GrafanaConfig, *, version: str) -> bytes:
         sensor_gauges[prom_name] = Gauge(
             prom_name, doc, _SENSOR_LABELS, registry=registry
         )
+    reading_time: Gauge | None = None
+    if cfg.include_sensor_history:
+        reading_time = Gauge(
+            "sporeprint_node_reading_timestamp_seconds",
+            "Unix time of the exported reading, per node and sensor (diagnostic)",
+            (*_SENSOR_LABELS, "sensor"),
+            registry=registry,
+        )
 
     chamber_map = await _node_to_chamber_map()
 
-    for row in await _latest_per_sensor():
+    now = time.time()
+    vendor_ages = _vendor_max_reading_ages()
+    longest = max([_NODE_READING_MAX_AGE_SECONDS, *vendor_ages.values()])
+    for row in await _latest_per_sensor(now - longest):
         sensor = row["sensor"]
         if sensor not in _SENSOR_MAP:
             continue
+        node_id = str(row["node_id"])
+        if now - float(row["timestamp"]) > _max_reading_age(node_id, vendor_ages):
+            continue  # the node (or vendor) went quiet: no live gauge
         prom_name, _doc, _unit = _SENSOR_MAP[sensor]
         value = float(row["value"])
         if sensor == "dew_point_f":
             value = _f_to_c(value)
-        node_id = str(row["node_id"])
         chamber_id = chamber_map.get(node_id, "")
         sensor_gauges[prom_name].labels(
             node_id=node_id, chamber_id=chamber_id
         ).set(value)
+        if reading_time is not None:
+            reading_time.labels(
+                node_id=node_id, chamber_id=chamber_id, sensor=sensor
+            ).set(float(row["timestamp"]))
 
     session_active = Gauge(
         "sporeprint_chamber_session_active",

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
+
+from .._net import split_host_port
 
 
 PulseTransport = Literal["cloud", "local"]
 
 
 class PulseConfig(BaseModel):
-    """Dual-transport config — cloud (premium, account-mediated) or local
-    (free, LAN-only).
+    """Dual-transport config — cloud (account-mediated) or local (LAN-only),
+    both free on the Pi.
 
     Cloud mode: ``email`` + ``password`` exchanged for a session token on
     first poll; the token is held in process memory and refreshed
@@ -26,9 +29,10 @@ class PulseConfig(BaseModel):
     your Pulse fleet is reachable at known LAN IPs, set
     ``local_device_urls`` to skip discovery entirely.
 
-    `device_mappings` maps Pulse device id → SporePrint chamber id so
-    readings get tagged with the chamber for downstream UI. Devices not
-    listed here are still polled and stored, just with chamber ``""``.
+    Every device's readings are stored under the node id
+    ``pulse:<device id>``, in no chamber. `device_mappings` (Pulse device
+    id → SporePrint chamber id) is accepted but not used yet: to show a
+    device in a chamber, add its node id to that chamber's ``node_ids``.
 
     `poll_seconds` floor is 60 s for cloud (Pulse's cloud rate limit is
     roughly 1 req/sec per token); 30 s for local (no remote rate limit
@@ -38,8 +42,8 @@ class PulseConfig(BaseModel):
     transport: PulseTransport = Field(
         default="cloud",
         description=(
-            "cloud = api.pulsegrow.com (premium); "
-            "local = LAN UDP discovery + HTTP poll (free)."
+            "cloud = api.pulsegrow.com; "
+            "local = LAN UDP discovery + HTTP poll."
         ),
     )
 
@@ -83,8 +87,9 @@ class PulseConfig(BaseModel):
         default_factory=list,
         description=(
             "Optional list of explicit per-device URLs (e.g. "
-            "['http://10.0.0.5', 'http://10.0.0.6']). When non-empty, "
-            "discovery is skipped and these URLs are polled directly."
+            "['http://10.0.0.5', 'http://10.0.0.6:8080']). When non-empty, "
+            "discovery is skipped and these URLs are polled directly. A URL "
+            "without a port uses local_http_port."
         ),
     )
     local_discovery_timeout_seconds: float = Field(
@@ -108,8 +113,9 @@ class PulseConfig(BaseModel):
     device_mappings: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Pulse device id → SporePrint chamber id. Devices not listed "
-            "are still polled but tagged with chamber ''."
+            "Pulse device id → SporePrint chamber id. Accepted but not "
+            "used yet: every device is stored as pulse:<device id> in no "
+            "chamber; add that node id to a chamber's node_ids instead."
         ),
     )
     request_timeout_seconds: float = Field(
@@ -136,3 +142,25 @@ class PulseConfig(BaseModel):
         # Trim whitespace to catch the common copy-paste-with-newline
         # mistake. Empty after strip is treated identically to empty.
         return v.strip()
+
+    @field_validator("local_device_urls")
+    @classmethod
+    def _check_device_urls(cls, urls: list[str]) -> list[str]:
+        # Each entry is a device root, http(s)://host[:port] and nothing else:
+        # a bad entry is refused on save instead of failing every poll.
+        out: list[str] = []
+        for raw in urls:
+            url = raw.strip().rstrip("/")
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError(
+                    f"local_device_urls: {raw!r} must start with http:// or https://"
+                )
+            if parsed.path or parsed.params or parsed.query or parsed.fragment:
+                raise ValueError(
+                    f"local_device_urls: {raw!r} must be the device's root URL "
+                    "(no path or query)"
+                )
+            split_host_port(parsed.netloc, field="local_device_urls")
+            out.append(url)
+        return out

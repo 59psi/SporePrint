@@ -1,23 +1,17 @@
-"""v4.1 Pulse Grow integration — cloud-API poller (premium-tier).
+"""Pulse Grow integration — cloud-API and LAN poller (free).
 
 Pulse Grow's environmental sensors (Pulse One / Pulse Pro / Pulse Zero)
-are WiFi-only and pair to the operator's Pulse account at
-``app.pulsegrow.com``. v4.1.0 ships the **cloud transport** only — the
-Pi authenticates against ``api.pulsegrow.com``, polls each device's
-recent-data endpoint, and publishes readings into the existing telemetry
-pipeline.
+are WiFi devices paired to the operator's Pulse account at
+``app.pulsegrow.com``. Two transports:
 
-Tier rationale: this transport routes through Pulse's cloud API. We
-hold the operator's Pulse credentials on the Pi (encrypted at rest via
-the integrations Fernet key) and refresh tokens periodically. That is
-*our* infra cost, so per ``feedback_tier_model`` the toggle is gated
-premium. The driver itself does not enforce the gate — phase 5's
-cloud-web settings UI hides the Pulse toggle from free-tier users
-because they can't have paired the Pi anyway.
+- **cloud** — the Pi authenticates against ``api.pulsegrow.com`` with the
+  operator's own account (credentials encrypted at rest on the Pi via the
+  integrations Fernet key), polls each device's recent-data endpoint and
+  stores the readings in telemetry history;
+- **local** — UDP discovery plus per-device HTTP on the LAN.
 
-A separate **local-discovery transport** (UDP scan + per-device HTTP) is
-on the v4.1.x roadmap once we can verify Pulse's local-mode endpoint
-shape on a paired device. Free-tier when it ships.
+Both run free on the Pi: it has no paygate, and neither touches the
+SporePrint cloud.
 """
 
 from .driver import PulseDriver

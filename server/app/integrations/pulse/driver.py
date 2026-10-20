@@ -1,48 +1,45 @@
 """Pulse Grow IntegrationDriver implementation (dual transport).
 
-The driver itself is registered as ``free`` because the lowest tier it
-can run in (local transport — UDP discovery + LAN HTTP polling) does
-not touch our cloud. The cloud-web settings UI is responsible for
-hiding the cloud-transport option from free-tier users since cloud mode
-holds the operator's Pulse credentials and refreshes tokens against
-api.pulsegrow.com (premium per ``feedback_tier_model``).
+Both transports run free on the Pi: local polls the devices on the LAN,
+cloud logs in to api.pulsegrow.com with the operator's own Pulse account
+(the password stays on the Pi, encrypted at rest). The poll loop,
+start/stop and health come from HttpVendorDriver; this driver supplies one
+poll (``poller.run_one_poll``) and the Test.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from .._base import IntegrationDriver, IntegrationHealth
+from .._base import IntegrationHealth
+from .._http_skeleton import HttpVendorDriver
+from .._samples import SampleTracker
 from .client import PulseCloudClient, PulseError
 from .config import PulseConfig
-from .poller import poll_loop
+from .local_transport import PulseLocalTransport
+from .poller import STALE_FLOOR_SECONDS, run_one_poll
 
 
 logger = logging.getLogger(__name__)
 
 
-class PulseDriver(IntegrationDriver):
+class PulseDriver(HttpVendorDriver):
     name: ClassVar[str] = "pulse"
-    # Lowest tier the driver can run in: free (local transport). Cloud
-    # mode is gated by the cloud-web settings UI, not the driver.
     tier_required: ClassVar[str] = "free"
     config_schema: ClassVar[type[BaseModel]] = PulseConfig
     secret_fields: ClassVar[set[str]] = {"password"}
 
     def __init__(self) -> None:
+        super().__init__()
         self._cfg: PulseConfig = PulseConfig()
-        self._task: asyncio.Task | None = None
-        self._last_poll_at: float | None = None
-        self._last_poll_ok: bool = False
-        self._last_error: str | None = None
         # Long-lived cloud client (holds the session token between polls).
         self._cloud_client: PulseCloudClient | None = None
         self._cloud_client_key: tuple | None = None
+        # The sample each device sensor last stored (see _samples.py).
+        self._samples = SampleTracker(STALE_FLOOR_SECONDS)
 
     def _client_for(self, cfg: PulseConfig) -> PulseCloudClient | None:
         """Cloud transport: reuse one client (and so one session token)
@@ -60,33 +57,31 @@ class PulseDriver(IntegrationDriver):
 
     async def configure(self, config: BaseModel) -> None:
         assert isinstance(config, PulseConfig)
-        self._cfg = config
+        await super().configure(config)
 
-    async def start(self) -> None:
-        if self._task is not None and not self._task.done():
-            return
-        self._task = asyncio.create_task(
-            poll_loop(
-                lambda: self._cfg,
-                record_outcome=self._record_outcome,
-                client_provider=self._client_for,
-            )
-        )
+    def _clear_login_refusal(self) -> None:
+        # A save of the same credentials keeps the cloud client (and its
+        # session token) but lets it try a refused login once more.
+        if self._cloud_client is not None:
+            self._cloud_client.clear_login_refusal()
 
-    async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._task = None
+    async def poll_once(self) -> tuple[int, dict[str, Any]]:
+        cfg = self._cfg
+        # Local transport can run on its defaults (discovery finds the
+        # devices); cloud transport cannot log in without credentials.
+        if cfg.transport == "cloud" and (not cfg.email or not cfg.password):
+            raise PulseError("email and password are required for cloud transport")
+        result = await run_one_poll(cfg, client=self._client_for(cfg), tracker=self._samples)
+        # A device whose fetch failed, or whose sample stopped changing, is a
+        # failed device: some failing is "degraded", all of them an error.
+        return result.written, {
+            "rows": result.written,
+            "devices": result.devices,
+            "failed": result.failed,
+        }
 
     async def test_connection(self) -> IntegrationHealth:
         if self._cfg.transport == "local":
-            from .local_transport import PulseLocalTransport
             client = PulseLocalTransport(self._cfg)
             try:
                 devices = await client.list_devices()
@@ -123,34 +118,3 @@ class PulseDriver(IntegrationDriver):
                 "devices_seen": len(devices.devices),
             },
         )
-
-    async def health(self) -> IntegrationHealth:
-        if self._task is None:
-            return IntegrationHealth(state="disabled")
-        if self._last_poll_at is None:
-            return IntegrationHealth(state="ok")
-        if not self._last_poll_ok:
-            return IntegrationHealth(state="error", last_error=self._last_error)
-        stale_after = self._cfg.poll_seconds * 3
-        if (time.time() - self._last_poll_at) > stale_after:
-            return IntegrationHealth(
-                state="degraded",
-                last_error=(
-                    f"no successful poll in {stale_after}s "
-                    "(loop may be hung; restart the driver)"
-                ),
-            )
-        return IntegrationHealth(state="ok")
-
-    def _record_outcome(self, ok: bool, error: str | None) -> None:
-        self._last_poll_at = time.time()
-        self._last_poll_ok = ok
-        self._last_error = error
-
-    @property
-    def config(self) -> PulseConfig:
-        return self._cfg
-
-    @property
-    def is_polling(self) -> bool:
-        return self._task is not None and not self._task.done()

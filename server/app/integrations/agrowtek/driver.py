@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
 from .._net import path_segment
-from ...telemetry.service import store_reading
+from ...telemetry.service import store_readings
 
 
 # Mapping known GCX measurement names → SporePrint sensor names.
@@ -32,7 +32,13 @@ class AgrowtekConfig(BaseModel):
     base_url: str = Field(default="", description="LAN HTTP root, e.g. http://10.0.0.30")
     api_key: str = Field(default="", description="API key from GCX admin UI")
     poll_seconds: int = Field(default=60, ge=30, le=3600)
-    sensor_mappings: dict[str, str] = Field(default_factory=dict)
+    sensor_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "GCX sensor id → SporePrint chamber id. Accepted but not used yet: "
+            "readings are stored as agrowtek:<sensor id> in no chamber."
+        ),
+    )
     request_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
 
     @field_validator("base_url")
@@ -70,9 +76,10 @@ class AgrowtekDriver(HttpVendorDriver):
     async def poll_once(self) -> tuple[int, dict[str, Any]]:
         cfg: AgrowtekConfig = self._cfg  # type: ignore[assignment]
         if not cfg.base_url or not cfg.api_key:
-            return 0, {"reason": "missing creds"}
+            # Enabled without them: an error in health, not an empty "ok".
+            raise RuntimeError("Agrowtek: base_url and api_key are required")
         sensors = await self._fetch_sensors(cfg)
-        rows = 0
+        readings: list[tuple[float, str, str, float]] = []
         now = time.time()
         for sensor in sensors:
             sensor_id = str(sensor.get("id", ""))
@@ -83,8 +90,9 @@ class AgrowtekDriver(HttpVendorDriver):
                 sp_sensor = _TYPE_MAP.get(k)
                 if sp_sensor is None or not isinstance(v, (int, float)):
                     continue
-                await store_reading(node_id, sp_sensor, float(v), now)
-                rows += 1
+                readings.append((now, node_id, sp_sensor, float(v)))
+        # One transaction for the whole poll, not a commit per reading.
+        rows = await store_readings(readings)
         return rows, {"sensors": len(sensors), "rows": rows}
 
     async def set_output(

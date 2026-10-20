@@ -86,7 +86,7 @@ async def test_put_back_redacted_placeholder_keeps_real_secret(grafana):
                                            "config": {"bearer_token": "realkey-ABCD"}})
     listed = await _registry.get_config("grafana")
     placeholder = listed["config"]["bearer_token"]
-    assert placeholder == "••••ABCD"
+    assert placeholder == store.secret_preview("realkey-ABCD")
 
     # "Edit one field and save": the form PUTs the whole (redacted) config back.
     await _registry.put_config("grafana", {
@@ -162,11 +162,13 @@ async def test_listing_survives_lost_fernet_key(grafana, fresh_keystore, monkeyp
 
     rows = await _registry.list_integrations()  # must not raise InvalidToken
     graf = next(r for r in rows if r["slug"] == "grafana")
-    assert graf["config"]["bearer_token"] == ""
+    # The stored-but-unreadable secret shows as a bare mask, which a form
+    # round-trip sends back to mean "keep it".
+    assert graf["config"]["bearer_token"] == store.UNREADABLE_SECRET_PLACEHOLDER
     assert "re-enter" in (graf["health"]["last_error"] or "")
 
     cfg = await _registry.get_config("grafana")
-    assert cfg["config"]["bearer_token"] == ""
+    assert cfg["config"]["bearer_token"] == store.UNREADABLE_SECRET_PLACEHOLDER
 
     row = await store.load("grafana", grafana.secret_fields)
     assert row.unreadable_secrets == frozenset({"bearer_token"})
@@ -177,6 +179,74 @@ async def test_listing_survives_lost_fernet_key(grafana, fresh_keystore, monkeyp
     row = await store.load("grafana", grafana.secret_fields)
     assert row.config["bearer_token"] == "new-tok-5678"
     assert row.unreadable_secrets == frozenset()
+
+
+# ── an undecryptable secret fails closed and is never overwritten ────
+
+
+async def _swap_key(fresh_keystore, monkeypatch, name: str) -> None:
+    monkeypatch.setattr(settings, "integration_key_path", str(fresh_keystore / name))
+    reset_fernet_cache()
+
+
+def _metrics_client() -> TestClient:
+    app = FastAPI()
+    app.include_router(metrics_router)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+async def test_unreadable_bearer_token_keeps_metrics_closed(grafana, fresh_keystore, monkeypatch):
+    # The token blanked by a lost key used to start the exporter with no
+    # bearer check: /metrics served every gauge to anyone.
+    await store.save("grafana", True, {"bearer_token": "prom-token-1234"}, grafana.secret_fields)
+    await _swap_key(fresh_keystore, monkeypatch, ".int-key-new-pi")
+
+    await _registry.start_enabled_drivers()
+    assert grafana.enabled is False
+    assert _metrics_client().get("/metrics").status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        await _registry.enable("grafana")
+    assert exc.value.status_code == 409
+    assert grafana.enabled is False
+
+    with pytest.raises(HTTPException) as exc:
+        await _registry.put_config("grafana", {"enabled": True, "config": {
+            "bearer_token": store.UNREADABLE_SECRET_PLACEHOLDER, "include_actuator_state": False}})
+    assert exc.value.status_code == 409
+    assert grafana.enabled is False
+
+
+async def test_unreadable_secret_survives_disable_enable_and_saves(
+    grafana, fresh_keystore, monkeypatch,
+):
+    # The original key is only temporarily missing (a DB restored before the
+    # key file was copied). Nothing done meanwhile may overwrite the secret.
+    await store.save("grafana", True, {"bearer_token": "prom-token-1234"}, grafana.secret_fields)
+    original_key = fresh_keystore / ".int-key"
+    await _swap_key(fresh_keystore, monkeypatch, ".int-key-temporary")
+
+    await _registry.disable("grafana")
+    with pytest.raises(HTTPException):
+        await _registry.enable("grafana")
+    listed = (await _registry.get_config("grafana"))["config"]
+    # The settings form saves the whole config back, mask included.
+    await _registry.put_config("grafana", {"enabled": False, "config": {
+        **listed, "include_actuator_state": False}})
+    # …and a PUT that leaves the secret out keeps it too.
+    await _registry.put_config("grafana", {"enabled": False, "config": {
+        "include_contamination_metrics": False}})
+    row = await store.load("grafana", grafana.secret_fields)
+    assert row.unreadable_secrets == frozenset({"bearer_token"})
+    assert "re-enter" in (row.last_error or ""), "the warning stays until it is re-entered"
+
+    # The key file comes back: the secret decrypts again.
+    monkeypatch.setattr(settings, "integration_key_path", str(original_key))
+    reset_fernet_cache()
+    row = await store.load("grafana", grafana.secret_fields)
+    assert row.config["bearer_token"] == "prom-token-1234"
+    assert row.config["include_contamination_metrics"] is False
+    assert row.enabled is False
 
 
 # ── a kept secret stays bound to where it is sent ────────────────────
@@ -212,7 +282,7 @@ async def test_new_base_url_needs_the_key_re_entered(url_driver, key_sent):
     cfg = {"base_url": "http://attacker.example:8080"}
     if key_sent == "masked preview":
         cfg["api_key"] = (await _registry.get_config(url_driver.name))["config"]["api_key"]
-        assert cfg["api_key"] == "••••1234"
+        assert cfg["api_key"] == store.secret_preview(_OPERATOR_KEY)
 
     with pytest.raises(HTTPException) as exc:
         await _registry.put_config(url_driver.name, {"enabled": False, "config": cfg})

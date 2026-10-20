@@ -11,14 +11,20 @@ from pydantic import BaseModel, Field, field_validator
 
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
-from ...telemetry.service import store_reading
+from ...telemetry.service import store_readings
 
 
 class QuestConfig(BaseModel):
     base_url: str = Field(default="", description="LAN HTTP root, e.g. http://10.0.0.40")
     poll_seconds: int = Field(default=60, ge=30, le=3600)
     request_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
-    chamber_id: str = Field(default="", description="SporePrint chamber id this Quest serves")
+    chamber_id: str = Field(
+        default="",
+        description=(
+            "Accepted but not used yet: readings are stored as quest:<host> "
+            "in no chamber."
+        ),
+    )
 
     @field_validator("base_url")
     @classmethod
@@ -52,16 +58,18 @@ class QuestDriver(HttpVendorDriver):
     async def poll_once(self) -> tuple[int, dict[str, Any]]:
         cfg: QuestConfig = self._cfg  # type: ignore[assignment]
         if not cfg.base_url:
-            return 0, {"reason": "missing base_url"}
+            # Enabled without it: an error in health, not an empty "ok".
+            raise RuntimeError("Quest: base_url is required")
         data = await self._fetch_status(cfg)
         node_id = f"quest:{urlparse(cfg.base_url).netloc}"
-        rows = 0
+        readings: list[tuple[float, str, str, float]] = []
         now = time.time()
         for k, sp in [("temp_c", "temp_c"), ("humidity", "humidity"), ("setpoint_humidity", "setpoint_humidity")]:
             v = data.get(k)
             if isinstance(v, (int, float)):
-                await store_reading(node_id, sp, float(v), now)
-                rows += 1
+                readings.append((now, node_id, sp, float(v)))
+        # One transaction for the whole poll, not a commit per reading.
+        rows = await store_readings(readings)
         return rows, {"rows": rows}
 
     async def set_setpoint(self, humidity_pct: int) -> dict[str, Any]:
