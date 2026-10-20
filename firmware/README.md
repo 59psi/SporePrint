@@ -95,7 +95,10 @@ Wiring, flashing and provisioning are in the
   push answers both, by nonce length). OTA stays off until an OTA
   password of at least 12 characters is set in the setup portal.
 - A new image is on probation until it has held MQTT for 60 s; a crash,
-  watchdog reset or power loss before then boots the previous image.
+  watchdog reset or power loss before then boots the previous image. A push
+  to a node whose image is still on probation and never reached MQTT is
+  refused (`ERR image_on_probation`): it would overwrite the only confirmed
+  image. Power-cycle the node back to its previous image, then push again.
 - **Signed manifests (optional):** build with `SPOREPRINT_OTA_PUBKEY_B64`
   (base64 of the 32-byte Ed25519 release key the Pi pins) in the build
   environment and the image accepts `cmd/ota_manifest`, then flashes only
@@ -133,7 +136,10 @@ Pushing a `firmware-vX.Y.Z` tag runs
 [`.github/workflows/firmware-release.yml`](../.github/workflows/firmware-release.yml),
 which publishes a GitHub Release with one **signed** `<env>.zip` per env in
 the table above (from `firmware-v5.1.0` on; the older `firmware-v4.2.0`
-release holds unsigned images for three boards). Each zip holds:
+release holds unsigned images for three boards). It builds and signs nothing
+until `pio test -e native` passes on the tag, and stops when the signing
+key's public half is not the repository variable `OTA_PUBKEY_B64`, the key
+every Pi pins. Each zip holds:
 
 | File | What it is for |
 |---|---|

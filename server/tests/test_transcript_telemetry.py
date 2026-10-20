@@ -1,14 +1,14 @@
 """Transcript telemetry summaries, vision-summary bounding, and missing data.
 
-srv-rest#1: the per-phase telemetry summary filtered `WHERE session_id = ?`,
+Summaries: the per-phase telemetry summary filtered `WHERE session_id = ?`,
 but ingest never tagged rows with a session, and retention moves anything older
 than 7 days into telemetry_rollups (which has no session_id). Every summary
 came back {}.
 
-srv-rest#12: analyze_with_claude sent every Claude vision summary, which on a
+Vision summaries: analyze_with_claude sent every Claude vision summary, which on a
 long grow (one per 15 min) overflows the model's context window.
 
-srv-rest#26: a deleted species profile crashed the markdown export, and an
+Missing data: a deleted species profile crashed the markdown export, and an
 unknown session id raised a 500 instead of a 404.
 """
 
@@ -19,8 +19,10 @@ from app.chambers.models import ChamberCreate
 from app.chambers.service import create_chamber
 from app.db import get_db
 from app.sessions.models import PhaseAdvance, SessionCreate
+from app.config import settings
 from app.sessions.service import advance_phase, complete_session, create_session
-from app.species.service import seed_builtins
+from app.species.models import GrowPhase
+from app.species.service import get_profile, seed_builtins
 from app.transcript import service as transcript_service
 from app.transcript.service import export_json, export_markdown
 
@@ -63,7 +65,7 @@ async def _single_phase_summary(session_id):
     return data["phase_telemetry"][0]["telemetry_summary"]
 
 
-# ── srv-rest#1 ───────────────────────────────────────────────────
+# ── per-phase telemetry summaries ────────────────────────────────
 
 
 async def test_summary_uses_session_tagged_raw_rows():
@@ -152,7 +154,7 @@ async def test_completed_session_last_phase_does_not_run_to_now():
         assert "temp_f" not in pt["telemetry_summary"]
 
 
-# ── srv-rest#26 ──────────────────────────────────────────────────
+# ── missing profile / unknown session ────────────────────────────
 
 
 async def test_export_json_unknown_session_returns_none():
@@ -180,7 +182,7 @@ def test_analyze_endpoint_404_for_unknown_session(client, monkeypatch):
     assert r.status_code == 404
 
 
-# ── srv-rest#12 ──────────────────────────────────────────────────
+# ── bounded vision summaries ─────────────────────────────────────
 
 
 def _frame(ts, assessment, summary="x" * 200):
@@ -283,3 +285,109 @@ async def test_analyze_sends_bounded_vision_summaries(monkeypatch):
     payload = json.loads(content.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
     assert len(payload["vision_summaries"]) <= transcript_service._MAX_VISION_SUMMARIES
     assert payload["vision_summary_stats"]["total_analyses"] == 60 * 96
+
+
+# ── the analysis is told each phase's targets ───────────────────
+
+
+def _capturing_client(captured: dict):
+    class _Messages:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+
+            class _Block:
+                text = '{"overall_score": 70, "summary": "ok"}'
+
+            class _Resp:
+                content = [_Block()]
+
+            return _Resp()
+
+    class _Client:
+        def __init__(self, *a, **k):
+            self.messages = _Messages()
+
+    return _Client
+
+
+def _sent_payload(captured: dict) -> dict:
+    content = captured["messages"][0]["content"]
+    return json.loads(content.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+
+
+async def test_analyze_sends_each_phases_targets_and_expected_duration(monkeypatch):
+    """The prompt asks for actuals vs targets and phase timing, but only the
+    species id reached the model: no setpoints, no expected durations."""
+    await seed_builtins()
+    s = await create_session(SessionCreate(name="Targets", species_profile_id="blue_oyster"))
+    await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
+    # A phase entered before the Pi froze setpoints at entry: the profile's
+    # current params stand in.
+    async with get_db() as db:
+        await db.execute("UPDATE phase_history SET params_snapshot = NULL "
+                         "WHERE session_id = ? AND phase = 'substrate_colonization'", (s["id"],))
+        await db.commit()
+
+    captured: dict = {}
+    monkeypatch.setattr(settings, "claude_api_key", "sk-test")
+    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", _capturing_client(captured))
+    assert (await transcript_service.analyze_with_claude(s["id"]))["overall_score"] == 70
+
+    payload = _sent_payload(captured)
+    profile = await get_profile("blue_oyster")
+    by_phase = {p["phase"]: p for p in payload["phase_telemetry"]}
+    assert list(by_phase) == ["substrate_colonization", "fruiting"]
+    for phase in by_phase:
+        want = profile.phases[GrowPhase(phase)]
+        targets = by_phase[phase]["targets"]
+        assert targets["temp_min_f"] == want.temp_min_f
+        assert targets["temp_max_f"] == want.temp_max_f
+        assert targets["humidity_min"] == want.humidity_min
+        assert targets["co2_max_ppm"] == want.co2_max_ppm
+        assert targets["fae_mode"] == want.fae_mode
+        assert targets["expected_duration_days"] == list(want.expected_duration_days)
+        assert "notes" not in targets and "co2_source" not in targets
+        assert "duration_hours" in by_phase[phase] and "telemetry_summary" in by_phase[phase]
+    assert by_phase["fruiting"]["targets_source"] == "frozen at phase entry"
+    assert by_phase["substrate_colonization"]["targets_source"] == "species profile"
+    assert payload["species"]["common_name"] == profile.common_name
+    assert "targets" in captured["system"]
+
+
+async def test_frozen_targets_win_over_a_later_profile_edit(monkeypatch):
+    """What the grow ran on is the phase-entry snapshot, not the profile now."""
+    await seed_builtins()
+    s = await create_session(SessionCreate(name="Edited", species_profile_id="blue_oyster"))
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT params_snapshot FROM phase_history WHERE session_id = ?", (s["id"],))).fetchone()
+        snapshot = json.loads(row["params_snapshot"])
+        snapshot["temp_min_f"] = 61.5
+        await db.execute("UPDATE phase_history SET params_snapshot = ? WHERE session_id = ?",
+                         (json.dumps(snapshot), s["id"]))
+        await db.commit()
+
+    captured: dict = {}
+    monkeypatch.setattr(settings, "claude_api_key", "sk-test")
+    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", _capturing_client(captured))
+    await transcript_service.analyze_with_claude(s["id"])
+    (phase,) = _sent_payload(captured)["phase_telemetry"]
+    assert phase["targets"]["temp_min_f"] == 61.5
+
+
+async def test_phase_targets_fall_back_to_the_stand_in_phase():
+    """A phase the profile does not define runs on its stand-in's environment
+    bands (rest on fruiting), and says so; the stand-in's light schedule and
+    duration are not sent as this phase's. Unknown profiles give no targets."""
+    await seed_builtins()
+    profile = await get_profile("blue_oyster")
+    targets, source = transcript_service._phase_targets(
+        {"phase": "rest", "params_snapshot": None}, profile)
+    fruiting = profile.phases[GrowPhase.FRUITING]
+    assert targets["temp_min_f"] == fruiting.temp_min_f
+    assert targets["humidity_max"] == fruiting.humidity_max
+    assert "fruiting" in source and "rest" in source
+    assert not {"light_hours_on", "light_spectrum", "expected_duration_days"} & set(targets)
+    assert transcript_service._phase_targets({"phase": "rest", "params_snapshot": None}, None) == (None, None)
+    assert transcript_service._phase_targets(
+        {"phase": "cold_storage", "params_snapshot": None}, profile) == (None, None)

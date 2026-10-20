@@ -7,8 +7,9 @@
 # Development (`pnpm --filter @sporeprint/pi-ui build`, then
 # `rsync -a --delete --checksum frontend/packages/pi-ui/dist/ <this repo>/ui/dist/`).
 #
-# The Pi nginx config (nginx.conf) is unchanged — same try_files SPA
-# fallback, same /api/ + /socket.io/ proxy to the FastAPI server.
+# nginx.conf serves the bundle (index.html revalidated on every load, the
+# hashed /assets/ cached for good, no framing by other sites) and proxies
+# /api/ + /socket.io/ to the FastAPI server.
 
 # Base pinned to an exact STABLE nginx (even minor; `nginx:alpine` floats with
 # mainline) by tag AND multi-arch index digest (amd64, arm64, arm/v7, arm/v6),

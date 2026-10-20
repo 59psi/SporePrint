@@ -135,19 +135,19 @@ def _offs(mqtt_calls, suffix):
 
 
 async def test_note_actuator_on_drops_the_redundant_off_entry():
-    key = engine._safety_key("relay-01", "heater")
+    key = engine._override_key("relay-01", "heater")
     engine._last_off_sent[key] = time.time()
-    engine._last_off_sent[engine._safety_key("relay-01", "fae")] = time.time()
+    engine._last_off_sent[engine._override_key("relay-01", "fae")] = time.time()
     await note_actuator_on("relay-01", "heater")
     assert key not in engine._last_off_sent
-    assert engine._safety_key("relay-01", "fae") in engine._last_off_sent
+    assert engine._override_key("relay-01", "fae") in engine._last_off_sent
 
 
 async def test_note_actuator_on_covers_both_names_of_a_plug():
     await register_plug(plug_id="plug-h1", name="heater", plug_type="shelly",
                         mqtt_topic_prefix="shellies/h1", device_role="heater")
     for name in ("plug-heater", "plug-h1"):
-        engine._last_off_sent[engine._safety_key(name, None)] = time.time()
+        engine._last_off_sent[engine._override_key(name, None)] = time.time()
     await note_actuator_on("plug-h1", None)
     assert engine._last_off_sent == {}
 

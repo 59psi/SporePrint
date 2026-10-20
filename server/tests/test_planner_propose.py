@@ -5,7 +5,9 @@ Separate from test_planner.py (weather-compat scorer) and test_planner_events.py
 /propose[.ics] endpoints, and the iCal phase-timeline projection.
 """
 
-from datetime import date
+from datetime import date, timedelta
+
+from icalendar import Calendar
 
 from app.species.models import GrowPhase, PhaseParams, SpeciesProfile
 from app.species.service import seed_builtins
@@ -178,6 +180,28 @@ def test_cycle_to_ical_uids_are_deterministic_and_unique():
     assert "proposal-test_oyster-2026-07-16-harvest@sporeprint" in ics
     uids = [ln for ln in ics.splitlines() if ln.startswith("UID:")]
     assert len(uids) == len(set(uids))
+
+
+def test_cycle_to_ical_every_event_ends_after_it_starts():
+    """RFC 5545: DTEND is exclusive and strictly later than DTSTART. The
+    harvest marker ended on the day it started, which strict clients drop."""
+    cycle = propose_cycle(_make_profile(), date(2026, 7, 16))
+    events = Calendar.from_ical(cycle_to_ical(cycle)).walk("VEVENT")
+    assert len(events) == len(cycle.phases) + 1
+    for ev in events:
+        assert ev.decoded("dtend") > ev.decoded("dtstart"), ev.get("summary")
+    harvest = next(ev for ev in events if "Expected Harvest" in str(ev.get("summary")))
+    assert harvest.decoded("dtstart") == cycle.harvest_date
+    assert harvest.decoded("dtend") == cycle.harvest_date + timedelta(days=1)
+
+
+def test_cycle_to_ical_escapes_the_calendar_name():
+    """A custom profile's common name is free text: a newline in it failed
+    the whole feed, and a comma came out unescaped in X-WR-CALNAME."""
+    cycle = propose_cycle(_make_profile(common_name="Oyster, blue\nstrain"), date(2026, 7, 16))
+    ics = cycle_to_ical(cycle)
+    assert "X-WR-CALNAME:SporePrint plan — Oyster\\, blue\\nstrain" in ics
+    assert len(Calendar.from_ical(ics).walk("VEVENT")) == len(cycle.phases) + 1
 
 
 # --- API endpoints ---

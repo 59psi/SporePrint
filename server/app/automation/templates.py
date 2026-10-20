@@ -74,15 +74,19 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     # Like the heating/cooling cutoffs, this is true the whole time the chamber
     # is in range, so it stays out of the session timeline (it wrote ~1,440
-    # events a day there). The firing history still records it.
+    # events a day there). The firing history still records it. It stops a
+    # deadband below the maximum (humidity_dehumidify_off = humidity_max - d,
+    # d = 3 %RH, at most a quarter of the band), not at it, so noise at the
+    # edge does not cycle the dehumidifier.
     AutomationRule(
         name="Dehumidify Cutoff",
-        description="Stop the dehumidifier once humidity is back within range",
+        description="Stop the dehumidifier once humidity is back within range, past the deadband",
         priority=10,
         applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_max"),
+            threshold=ThresholdCondition(sensor="humidity", operator="lt",
+                                         profile_ref="humidity_dehumidify_off"),
         ),
         action=RuleAction(target="plug-dehumidifier", state="off"),
         cooldown_seconds=60,
@@ -208,9 +212,11 @@ BUILTIN_RULES: list[AutomationRule] = [
         # above any legitimate cultivation band, including a 10-40k colonization,
         # so it never fights a real grow — but it still protects the equipment
         # and anyone in the room if CO2 runs away with no active grow profile.
+        # At or above, not above: 40000 is the SCD30 / SCD4x full scale, so a
+        # saturated sensor reads exactly 40000 and "> 40000" never fired.
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", value=40000),
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gte", value=40000),
         ),
         action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
         cooldown_seconds=120,
@@ -274,16 +280,21 @@ BUILTIN_RULES: list[AutomationRule] = [
         safety_max_on_seconds=3600,
         log_to_session=True,
     ),
+    # The cutoffs switch off a deadband INSIDE the band (temp_heat_off_f =
+    # temp_min_f + d, temp_cool_off_f = temp_max_f - d; d is 1 °F, at most a
+    # quarter of the band). Switching off at the same edge the trigger switches
+    # on made sensor noise at the edge cycle the plug every few minutes: relay
+    # wear on every plug, short-cycling on a compressor cooler.
     AutomationRule(
         name="Heating Cutoff",
-        description="Turn off heater when temperature reaches target",
+        description="Turn off heater once temperature is back inside the band, past the deadband",
         priority=10,
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
                 sensor="temp_f",
                 operator="gte",
-                profile_ref="temp_min_f",
+                profile_ref="temp_heat_off_f",
             ),
         ),
         action=RuleAction(target="plug-heater", state="off"),
@@ -292,14 +303,14 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     AutomationRule(
         name="Cooling Cutoff",
-        description="Turn off cooler when temperature drops to target",
+        description="Turn off cooler once temperature is back inside the band, past the deadband",
         priority=10,
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(
                 sensor="temp_f",
                 operator="lte",
-                profile_ref="temp_max_f",
+                profile_ref="temp_cool_off_f",
             ),
         ),
         action=RuleAction(target="plug-cooler", state="off"),
@@ -344,9 +355,13 @@ BUILTIN_RULES: list[AutomationRule] = [
     ),
     AutomationRule(
         name="Light Scene — Colonization Dark",
-        description="Ensure lights off during colonization (profile: light_hours_on = 0)",
+        description="Ensure lights off during colonization and rest (profile: light_hours_on = 0)",
         priority=3,
-        applies_to_phases=["substrate_colonization", "grain_colonization"],
+        # Rest runs with the lights off too (the engine resolves it with
+        # light_hours_on = 0), and no photoperiod rule covers it: without rest
+        # here, a grow advanced to rest inside its light window kept the
+        # fruiting scene on for the whole rest.
+        applies_to_phases=["substrate_colonization", "grain_colonization", "rest"],
         condition=RuleCondition(
             type=ConditionType.SCHEDULE,
             # photoperiod="off" with light_hours_on=0 is always true — the
@@ -556,9 +571,9 @@ BUILTIN_RULES: list[AutomationRule] = [
 
 
 # Built-in rules whose SHIPPED definition was later found unsafe or broken,
-# exactly as they shipped, keyed by name. seed_builtin_rules only seeds an empty
-# table, so an existing install would keep the old copy forever; instead it
-# upgrades a stored rule to the current BUILTIN_RULES entry (priority included)
+# exactly as they shipped, keyed by name. seed_builtin_rules never re-seeds a
+# rule a Pi already has, so an existing install would keep the old copy forever;
+# instead it upgrades a stored rule to the current BUILTIN_RULES entry (priority included)
 # while — and only while — its behaviour and priority still match the legacy
 # form. An operator-edited rule is never overwritten.
 LEGACY_BUILTIN_RULES: dict[str, AutomationRule] = {
@@ -787,9 +802,159 @@ PRE_BROWNING_BUILTIN_RULES: dict[str, AutomationRule] = {
 }
 
 
+# The CO2 Hard Ceiling as it shipped before it tripped AT the sensors' full
+# scale: "> 40000" can never fire, because the SCD30 / SCD4x report a
+# saturated reading as exactly 40000.
+PRE_FULL_SCALE_BUILTIN_RULES: dict[str, AutomationRule] = {
+    "CO2 Hard Ceiling": AutomationRule(
+        name="CO2 Hard Ceiling",
+        description="Absolute exhaust backstop — vents no matter the species or phase",
+        priority=21,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", value=40000),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
+        cooldown_seconds=120,
+        notification=True,
+        log_to_session=True,
+    ),
+}
+
+
+# Light Scene — Colonization Dark as it shipped before it covered rest: no
+# light rule ran in rest, so a grow advanced to rest inside its light window
+# kept the fruiting scene on.
+PRE_DARK_REST_BUILTIN_RULES: dict[str, AutomationRule] = {
+    "Light Scene — Colonization Dark": AutomationRule(
+        name="Light Scene — Colonization Dark",
+        description="Ensure lights off during colonization (profile: light_hours_on = 0)",
+        priority=3,
+        applies_to_phases=["substrate_colonization", "grain_colonization"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(photoperiod="off"),
+        ),
+        action=RuleAction(target="light-01", scene="colonization_dark", state="off"),
+        cooldown_seconds=3600,
+        log_to_session=True,
+    ),
+}
+
+
+# Four built-ins exactly as every release before 5.0.0 shipped them, before
+# they were scoped to the phases they serve and read the species profile.
+# CO2 FAE Trigger ran in colonization too. Emergency CO2 Exhaust fired at a
+# fixed 3000 ppm in every phase; unscoped at priority 20 it now also reads as
+# a life-safety rule, which skips the sealed-container and fae_mode gates, so
+# it vented colonizing grow bags at full power. The FAE cycle ignored the
+# profile's fae_interval_min / fae_duration_sec, and the dark scene was an
+# hourly re-assertion with no photoperiod.
+PRE_PHASE_GATE_BUILTIN_RULES: dict[str, AutomationRule] = {
+    "CO2 FAE Trigger": AutomationRule(
+        name="CO2 FAE Trigger",
+        description="Activate FAE fan when CO2 exceeds species target maximum",
+        priority=8,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", profile_ref="co2_max_ppm"),
+        ),
+        action=RuleAction(target="relay-01", channel="fae", state="on", pwm=200, duration_sec=300),
+        cooldown_seconds=300,
+        safety_max_on_seconds=1800,
+        log_to_session=True,
+    ),
+    "Emergency CO2 Exhaust": AutomationRule(
+        name="Emergency CO2 Exhaust",
+        description="Emergency exhaust activation when CO2 exceeds 3000ppm",
+        priority=20,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="gt", value=3000),
+        ),
+        action=RuleAction(target="relay-01", channel="exhaust", state="on", pwm=255, duration_sec=600),
+        cooldown_seconds=120,
+        notification=True,
+        log_to_session=True,
+    ),
+    "Scheduled FAE Cycle": AutomationRule(
+        name="Scheduled FAE Cycle",
+        description="Periodic FAE fan activation every 20 minutes during fruiting phases",
+        priority=5,
+        applies_to_phases=["primordia_induction", "fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(interval_min=20),
+        ),
+        action=RuleAction(target="relay-01", channel="fae", state="on", pwm=180, duration_sec=300),
+        cooldown_seconds=1200,
+        log_to_session=True,
+    ),
+    "Light Scene — Colonization Dark": AutomationRule(
+        name="Light Scene — Colonization Dark",
+        description="Ensure lights off during colonization",
+        priority=3,
+        applies_to_phases=["substrate_colonization", "grain_colonization"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(interval_min=60),
+        ),
+        action=RuleAction(target="light-01", scene="colonization_dark"),
+        cooldown_seconds=3600,
+        log_to_session=True,
+    ),
+}
+
+
+# The three cutoffs as they shipped before they switched off a deadband inside
+# the band: off at the very edge the trigger switches on at, so sensor noise
+# there cycled the plug every few minutes.
+PRE_DEADBAND_BUILTIN_RULES: dict[str, AutomationRule] = {
+    "Heating Cutoff": AutomationRule(
+        name="Heating Cutoff",
+        description="Turn off heater when temperature reaches target",
+        priority=10,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="temp_f", operator="gte", profile_ref="temp_min_f"),
+        ),
+        action=RuleAction(target="plug-heater", state="off"),
+        cooldown_seconds=60,
+        log_to_session=False,
+    ),
+    "Cooling Cutoff": AutomationRule(
+        name="Cooling Cutoff",
+        description="Turn off cooler when temperature drops to target",
+        priority=10,
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="temp_f", operator="lte", profile_ref="temp_max_f"),
+        ),
+        action=RuleAction(target="plug-cooler", state="off"),
+        cooldown_seconds=60,
+        log_to_session=False,
+    ),
+    "Dehumidify Cutoff": AutomationRule(
+        name="Dehumidify Cutoff",
+        description="Stop the dehumidifier once humidity is back within range",
+        priority=10,
+        applies_to_phases=list(_OPEN_SUBSTRATE_PHASES),
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_max"),
+        ),
+        action=RuleAction(target="plug-dehumidifier", state="off"),
+        cooldown_seconds=60,
+        log_to_session=False,
+    ),
+}
+
+
 def _superseded_builtin_rules() -> dict[str, tuple[AutomationRule, ...]]:
     forms: dict[str, list[AutomationRule]] = {}
-    for table in (LEGACY_BUILTIN_RULES, PRE_BROWNING_BUILTIN_RULES):
+    for table in (LEGACY_BUILTIN_RULES, PRE_BROWNING_BUILTIN_RULES,
+                  PRE_FULL_SCALE_BUILTIN_RULES, PRE_DARK_REST_BUILTIN_RULES,
+                  PRE_PHASE_GATE_BUILTIN_RULES, PRE_DEADBAND_BUILTIN_RULES):
         for name, rule in table.items():
             forms.setdefault(name, []).append(rule)
     return {name: tuple(rules) for name, rules in forms.items()}
@@ -800,3 +965,81 @@ def _superseded_builtin_rules() -> dict[str, tuple[AutomationRule, ...]]:
 # pre-browning gate). seed_builtin_rules upgrades an unedited copy of ANY of
 # them to the current BUILTIN_RULES entry.
 SUPERSEDED_BUILTIN_RULES: dict[str, tuple[AutomationRule, ...]] = _superseded_builtin_rules()
+
+
+# Built-ins no release ships any more, exactly as they last shipped. Removing
+# a built-in from BUILTIN_RULES leaves every stored copy running, so it is
+# recorded here instead: seed_builtin_rules switches an unedited copy off,
+# once (an operator can switch it back on), and names an edited one in the log.
+# Light Scene — Fruiting re-lit the fruiting scene every hour, through the dark
+# period Photoperiod — Lights Off keeps. The two CO2 restrict rules became CO2
+# Floor — Restrict FAE, which reads the profile's co2_min_ppm instead (reishi
+# conk sessions no longer have their FAE held off).
+RETIRED_BUILTIN_RULES: dict[str, AutomationRule] = {
+    "Light Scene — Fruiting": AutomationRule(
+        name="Light Scene — Fruiting",
+        description="Switch to fruiting light scene when entering fruiting phase",
+        priority=3,
+        applies_to_phases=["fruiting"],
+        condition=RuleCondition(
+            type=ConditionType.SCHEDULE,
+            schedule=ScheduleCondition(interval_min=60),
+        ),
+        action=RuleAction(target="light-01", scene="fruiting_standard"),
+        cooldown_seconds=3600,
+        log_to_session=True,
+    ),
+    "Reishi Antler CO2 Restrict FAE": AutomationRule(
+        name="Reishi Antler CO2 Restrict FAE",
+        description="Keep FAE minimal during reishi antler formation to maintain high CO2 >1500ppm",
+        priority=12,
+        applies_to_species=["reishi"],
+        applies_to_phases=["primordia_induction"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", value=1500),
+        ),
+        action=RuleAction(target="relay-01", channel="fae", state="off"),
+        cooldown_seconds=300,
+        log_to_session=True,
+    ),
+    "King Trumpet Primordia CO2 Restrict": AutomationRule(
+        name="King Trumpet Primordia CO2 Restrict",
+        description="Restrict FAE during king trumpet primordia to keep CO2 elevated (1000-2000ppm)",
+        priority=12,
+        applies_to_species=["king_trumpet"],
+        applies_to_phases=["primordia_induction"],
+        condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="co2_ppm", operator="lt", value=1000),
+        ),
+        action=RuleAction(target="relay-01", channel="fae", state="off"),
+        cooldown_seconds=300,
+        log_to_session=True,
+    ),
+}
+
+
+# What a fresh table was seeded with before 5.2.0, by name in seed order.
+# Those releases seeded only an empty table and recorded nothing, so on such a
+# database seed_builtin_rules has to work out from what is stored which
+# built-ins the Pi was already given (an absent one may have been deleted).
+# Every release from 0.2 to 4.x seeded the first set; 5.0.0 to 5.1.x the second.
+SEEDED_BEFORE_V5: tuple[str, ...] = (
+    "Humidity Boost", "Humidity Cut", "CO2 FAE Trigger", "Emergency CO2 Exhaust",
+    "Scheduled FAE Cycle", "Heating Trigger", "Cooling Trigger", "Heating Cutoff",
+    "Cooling Cutoff", "Light Scene — Fruiting", "Light Scene — Colonization Dark",
+    "Lion's Mane Night Cool", "Reishi Antler CO2 Restrict FAE",
+    "King Trumpet Primordia CO2 Restrict", "Cordyceps Blue Light",
+    "Pre-cool for Hot Forecast", "Dry Weather Humidity Boost", "Heat Wave Warning",
+)
+SEEDED_V5_0_TO_V5_1: tuple[str, ...] = (
+    "Humidity Boost", "Humidity Cut", "Dehumidify", "Dehumidify Cutoff",
+    "Humidity Vent (no dehumidifier)", "Circulation Cycle", "Mist (no humidifier)",
+    "CO2 FAE Trigger", "Emergency CO2 Exhaust", "CO2 Hard Ceiling",
+    "Scheduled FAE Cycle", "Heating Trigger", "Cooling Trigger", "Heating Cutoff",
+    "Cooling Cutoff", "Photoperiod — Lights On", "Photoperiod — Lights Off",
+    "Light Scene — Colonization Dark", "Lion's Mane Night Cool",
+    "CO2 Floor — Restrict FAE", "Cordyceps Blue Light", "Pre-cool for Hot Forecast",
+    "Dry Weather Humidity Boost", "Heat Wave Warning",
+)

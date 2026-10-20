@@ -642,15 +642,22 @@ Then: on first boot every node raises a WiFi access point called
    scale, door reed switch (and, under it, "Door contact wired on its NO
    terminal (open with the door shut) — invert"). These are **config-flag**
    devices. Unlike the I²C sensors they are never autodetected: if you wired
-   one and don't tick it, it will silently never report.
+   one and don't tick it, it will silently never report. Once the node has
+   found an I²C CO₂ or light sensor it expects it at every boot; after
+   removing one on purpose, tick "Forget I²C sensors removed on purpose" here.
 7. Optionally: **OTA password** (at least 12 characters, or OTA stays off),
    **Command signing key** (the key `provision-node.sh` printed — with it the
    node rejects unsigned, forged, replayed or redirected commands, and accepts
    none until its clock has synced over NTP), **Secure MQTT (TLS)** (+
    **Require TLS**, see below) and **NTP server** (the Pi's address for a
-   room with no internet; the default is `pool.ntp.org`).
+   room with no internet; the default is `pool.ntp.org`). `install.sh` makes
+   the Pi answer NTP from the LAN (chrony, udp/123: open it if the Pi runs a
+   firewall).
 
 Blank password / key fields keep the saved value when you revisit the portal.
+A new signing key (after `provision-node.sh --rotate`) leaves the old one
+working until the Pi signs with the new key, so re-key every node before
+the Pi: [Rotating the key](firmware-security.md#rotating-the-key).
 A form the node refuses comes back with "Not saved." and the reason, with what
 you typed still filled in.
 
@@ -659,7 +666,9 @@ The node reboots and appears on your dashboard within about 30 seconds.
 **The camera's portal** has no personality or peripherals: it asks only for
 the same WiFi, Pi address, MQTT and optional fields (OTA password, signing
 key, Secure MQTT, NTP server). It uploads frames to
-`http://<Pi address>:8000`.
+`http://<Pi address>:8000`. Saving a new Pi address also drops an upload URL
+set earlier by command, so frames follow the Pi; the command
+`{"server_url": ""}` does the same without the portal.
 
 **Reopening the portal later.** A node whose settings have connected before no
 longer opens `SporePrint-Setup` when WiFi drops: it boots offline, buffers
@@ -686,9 +695,11 @@ into the certificate) as the Pi address. Until a CA is pinned, the node falls
 back to plaintext **loudly**: an ERROR log, a `tls_downgrade` alert whose
 message says why (no CA yet, certificate name mismatch or another CA, nothing
 on 8883, TLS error, login refused), `tls:false` in its heartbeat, and
-fetch-and-try retries after 1, 2, 4 and 8 min, then every 15 min, with no
-reboot. A certificate that does not name the node's Pi address is never
-pinned: re-run `./install.sh` on the Pi or use `sporeprint.local`. Tick
+fetch-and-check retries after 1, 2, 4 and 8 min, then every 15 min, with no
+reboot. Each check is a bare TLS handshake while MQTT stays up on plaintext;
+only a CA that verifies moves the node to TLS. A certificate that does not
+name the node's Pi address is never pinned: re-run `./install.sh` on the Pi
+or use `sporeprint.local`. Tick
 **Require TLS** to have the node stay offline instead of falling back. The
 heartbeat's `ca_fp` is the SHA-256 of the CA the node pinned.
 
@@ -855,13 +866,17 @@ Work down this list. Each step proves the one before it.
    ~30 s of boot. If not: wrong Pi address, wrong WiFi, or a broker login that
    doesn't match the node id.
 4. **Live telemetry** — temperature and humidity update. CO₂ needs a **5-minute
-   warm-up** before it reads true; ignore the first few minutes.
+   warm-up** before it reads true; ignore the first few minutes (an MH-Z19C
+   sends no CO₂ reading at all for its first 3 minutes after power-up).
 5. **Sensors you enabled are actually reporting.** Check the node's health
    panel: it publishes an `expected_missing` list, and an enabled MH-Z19C or
    HX711 that isn't delivering is listed **and** raises a `sensor_failure`
-   alert. **A declared-but-missing sensor is an alert, not silence.** The reed
-   switch is the exception — electrically, an unwired switch looks like a shut
-   door — so prove it in step 9.
+   alert. So is an I²C CO₂ or light sensor (SCD4x / SCD30 / BH1750) the node
+   found at an earlier boot that no longer answers at boot — after removing
+   one on purpose, forget it in the setup portal (§9, step 6). **A
+   declared-but-missing sensor is an alert, not silence.** The reed switch is
+   the exception — electrically, an unwired switch looks like a shut door —
+   so prove it in step 9.
 6. **Actuators** — toggle each channel from the UI and watch the fan spin. A
    channel that does nothing is usually a gate wire on the wrong GPIO or a
    missing common ground; a whole board that does nothing is its blown or
@@ -926,11 +941,13 @@ Work down this list. Each step proves the one before it.
 - **Apply `.env` changes:** `docker compose up -d server`
   (`docker compose restart` does not re-read `.env`).
 - **Rotate broker passwords:** `./scripts/rotate-mqtt-creds.sh` rotates the
-  shared accounts (`server`, `sp-3p` — re-enter it in every plug afterwards —
-  and the tooling accounts); re-running `add-node-mqtt-user.sh <node_id>`
-  rotates one node's login. Edit the broker's password file only with these
-  two scripts (`docker compose exec mqtt mosquitto_passwd` can't: the file is
-  mounted read-only).
+  shared accounts (`server` and the tooling accounts);
+  `./scripts/rotate-mqtt-creds.sh sp-3p` rotates the smart plugs' login, and
+  every plug stays off the broker, its relay held as it was, until you enter
+  the new password (the script prints it) in that plug. Re-running
+  `add-node-mqtt-user.sh <node_id>` rotates one node's login. Edit the
+  broker's password file only with these two scripts (`docker compose exec
+  mqtt mosquitto_passwd` can't: the file is mounted read-only).
 - **Back up** the whole `sporeprint_db` Docker volume: `sporeprint.db` (copy it
   with `sqlite3 … ".backup …"`), `.integration-key` (losing it means
   re-entering every vendor credential) and `cloud.env` (the cloud pairing).

@@ -12,11 +12,16 @@ def _check_kind(v: str) -> str:
 
 
 def _check_date(v: str) -> str:
+    """The date as stored: canonical YYYY-MM-DD.
+
+    date.fromisoformat also takes '20261016' and '2026-W42-5' (Python 3.11+);
+    stored as sent, those sorted outside every month's text range
+    (date >= '2026-10-01') and the event never showed on the calendar.
+    """
     try:
-        _date.fromisoformat(v)
+        return _date.fromisoformat(v).isoformat()
     except (ValueError, TypeError):
         raise ValueError("date must be an ISO date (YYYY-MM-DD)")
-    return v
 
 
 class PlannedEventCreate(BaseModel):

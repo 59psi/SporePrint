@@ -55,6 +55,8 @@ retired; this is where each section's subject lives.
 | Transcript JSON: per-sensor standard deviation and time out of range, hardware health | Not built | Min / max / avg / count per sensor per phase |
 | Transcript markdown: inline sparkline SVGs and a recommendations section | Not built | Recommendations come from the Claude analysis (`POST /api/transcript/sessions/{id}/analyze`) |
 | Builder guide generator with SVG wiring diagrams | Partial | `POST /api/builder/guide` writes a markdown guide with ASCII wiring and saves it (`GET /api/builder/guides`) |
+| A chamber's own rule list (`automation_rule_ids`) | Not built | `PATCH /api/chambers/{id}` stores the list and the chamber endpoints return it, but the engine never reads it: rules run on each chamber's node telemetry and resolve their targets to that chamber's nodes ([automation rules](automation-rules.md)) |
+| Vendor readings tagged to a chamber by the integration settings (`chamber_id`, `fixture_mappings`, `device_mappings`, `sensor_mappings`, a plug's `chamber_id`) | Not built | The configs accept these fields; no driver reads them. Readings are stored under `<vendor>:<device id>` in no chamber; adding that node id to a chamber's `node_ids` shows it with the chamber ([lighting / HVAC drivers](integrations/lighting-hvac-skeletons.md)) |
 
 ## Dashboard
 

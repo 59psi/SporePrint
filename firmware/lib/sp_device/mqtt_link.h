@@ -3,14 +3,17 @@
 // mqtt_link — PubSubClient wrapper for the v2 node.
 //
 // The publish path STREAMS: beginPublish(topic, measureJson(doc), retain)
-// then serializeJson(doc, client) — PubSubClient is a Print subclass, so
-// the document serializes straight into the MQTT packet. There is no
-// intermediate buffer to mis-size, which retires v1's defect class where a
-// 512-byte serialize buffer silently truncated every log batch and
-// coredump chunk into unparseable JSON.
+// then the document serializes into the MQTT packet through a 256-byte
+// chunking writer (sp_core/chunked_writer.h) — one transport write (one TLS
+// record) per chunk, not per character. The document is never held whole,
+// so there is no buffer to mis-size: v1's 512-byte serialize buffer
+// silently truncated every log batch and coredump chunk into unparseable
+// JSON. A short write drops the connection (the packet is desynced); the
+// next pass reconnects.
 //
-// Inbound stays at a 1024-byte cap with an explicit oversize drop (logged,
-// never truncated). Reconnect is non-blocking-ish: at most one connect
+// Inbound stays at a 1024-byte cap with an explicit oversize drop (logged
+// through SP_LOG, so it reaches the Pi; never truncated). Reconnect is
+// non-blocking-ish: at most one connect
 // attempt per pass, at least 5 s after the previous attempt ENDED (so a
 // failing attempt is always followed by 5 s of unblocked passes), skipped
 // while WiFi is down. The attempt is synchronous, so its worst case (DNS +
@@ -41,6 +44,7 @@ public:
     MqttLink(Client& transport, const char* node_id, const char* node_type,
              const char* fw_version)
         : mqtt_(transport),
+          transport_(&transport),
           node_id_(node_id),
           node_type_(node_type),
           fw_version_(fw_version) {}
@@ -49,6 +53,14 @@ public:
     // required but no Pi CA pinned yet — tls_policy.h FailClosed).
     void begin(const char* host, uint16_t port, const char* user,
                const char* pass, bool connect_now = true);
+
+    // MQTT keepalive in seconds, sent in CONNECT (call before begin();
+    // PubSubClient's default is 15). The broker drops a client it has heard
+    // nothing from for 1.5x this and publishes its LWT ("offline"): an image
+    // whose loop legitimately blocks longer than ~22 s — the camera's frame
+    // upload — raises it, or every slow upload costs an offline/online pair
+    // and the commands sent in between.
+    void set_keepalive(uint16_t seconds) { mqtt_.setKeepAlive(seconds); }
 
     // Move the link onto another transport (a candidate Pi CA to try on TLS
     // 8883, or back to plaintext when that trial failed — tls_policy.h).
@@ -75,7 +87,8 @@ public:
     // classify_tls_trial_failure).
     int state() { return mqtt_.state(); }
 
-    // Streamed publish. Returns false when disconnected or the write fails.
+    // Streamed, chunked publish. Returns false when disconnected or a write
+    // fell short (the connection is then dropped).
     bool publish(const char* topic, JsonDocument& doc, bool retain = false);
     bool publish_raw(const char* topic, const char* payload, bool retain = false);
 
@@ -101,6 +114,7 @@ private:
                                 unsigned int length);
 
     PubSubClient mqtt_;
+    Client* transport_;  // the client mqtt_ writes through
     std::string node_id_;
     std::string node_type_;
     std::string fw_version_;

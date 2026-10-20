@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ..db import UnknownReferenceError
 from .models import PlannedEventCreate, PlannedEventUpdate
 from .service import (
     get_recommendations,
@@ -53,13 +54,19 @@ async def list_events(
 @router.post("/events")
 async def create_event(data: PlannedEventCreate):
     """Create a planned grow event."""
-    return await create_planned_event(data)
+    try:
+        return await create_planned_event(data)
+    except UnknownReferenceError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.put("/events/{event_id}")
 async def update_event(event_id: int, data: PlannedEventUpdate):
     """Update a planned event (incl. `date` — the drag-reschedule)."""
-    updated = await update_planned_event(event_id, data)
+    try:
+        updated = await update_planned_event(event_id, data)
+    except UnknownReferenceError as e:
+        raise HTTPException(422, str(e))
     if not updated:
         raise HTTPException(404, "Planned event not found")
     return updated
@@ -74,7 +81,7 @@ async def delete_event(event_id: int):
     return {"deleted": True}
 
 
-# ── Proposed cycle + iCal phase-timeline projection (V1-2) ───────
+# ── Proposed cycle + iCal phase-timeline projection ──────────────
 
 from datetime import date  # noqa: E402
 

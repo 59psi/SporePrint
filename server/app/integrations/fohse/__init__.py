@@ -1,4 +1,4 @@
-"""Fohse horticultural lighting (cloud, premium).
+"""Fohse horticultural lighting (vendor cloud, free on the Pi).
 
 Fohse's high-end LED fixtures pair via WiFi to the FohseConnect cloud.
 Operator authenticates with their account; we poll fixture telemetry

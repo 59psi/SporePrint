@@ -413,6 +413,48 @@ void test_scd4x_frc_success_and_failure() {
     TEST_ASSERT_EQUAL_STRING("frc failed", scd.health().last_error);
 }
 
+// A sensor-only power cycle (loose cable) leaves the SCD4x IDLE: data_ready
+// never reports a sample again and CO2 stayed stale until the node rebooted.
+// restart_periodic() — what the node sends once per stale window — writes
+// ASC off (RAM: power-up reloads the stored setting) and starts periodic
+// measurement. A sensor that is still periodic NACKs both: expected, and not
+// a health failure.
+void test_scd4x_restart_periodic_recovers_an_idle_sensor() {
+    MockClock clock;
+    TimedI2cBus bus(clock);
+    sp::Scd4x scd(bus, clock);
+
+    // Idle: data_ready says "no sample" (healthy), so CO2 just goes stale.
+    bus.expect_write(0x62, {0xE4, 0xB8});
+    std::vector<uint8_t> not_ready;
+    push_word(not_ready, 0x8000);
+    bus.expect_read(0x62, not_ready);
+    TEST_ASSERT_FALSE(scd.data_ready());
+
+    // Recovery: ASC off (arg CRC 0x81), the 1 ms command time, then start.
+    bus.expect_write(0x62, {0x24, 0x16, 0x00, 0x00, 0x81});
+    bus.expect_write(0x62, {0x21, 0xB1});
+    TEST_ASSERT_TRUE(scd.restart_periodic());
+    TEST_ASSERT_TRUE(bus.at(0x62, {0x21, 0xB1}) - bus.at(0x62, {0x24, 0x16, 0x00, 0x00, 0x81}) >= 1);
+
+    // Measuring again.
+    bus.expect_write(0x62, {0xE4, 0xB8});
+    std::vector<uint8_t> ready;
+    push_word(ready, 0x8006);
+    bus.expect_read(0x62, ready);
+    TEST_ASSERT_TRUE(scd.data_ready());
+
+    // Already periodic (the staleness had another cause): both writes NACK,
+    // nothing counts against health.
+    bus.expect_write_nack(0x62);
+    bus.expect_write_nack(0x62);
+    TEST_ASSERT_FALSE(scd.restart_periodic());
+    TEST_ASSERT_EQUAL_UINT32(0, scd.health().fails);
+    TEST_ASSERT_NULL(scd.health().last_error);
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+}
+
 // ── SCD30 ──────────────────────────────────────────────────────
 
 void test_scd30_float_decode() {
@@ -579,9 +621,52 @@ void test_bh1750_lux_conversion() {
     bus.expect_write(0x23, {0x10});
     TEST_ASSERT_TRUE(bh.begin());
     bus.expect_read(0x23, {0x27, 0x10});  // 10000 counts → 8333.3 lux
+    bus.expect_write(0x23, {0x01});       // re-arm after every read
+    bus.expect_write(0x23, {0x10});
     float lux;
     TEST_ASSERT_TRUE(bh.read(&lux));
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 8333.3f, lux);
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
+}
+
+// A BH1750 that lost power (loose connector) wakes in power-down and answers
+// 0x0000: a "healthy" 0 lx forever, since continuous mode used to be set
+// only at boot. Every read now re-arms it, so the pass after the power cycle
+// reads light again — and a begin() that failed at boot is retried the same
+// way.
+void test_bh1750_rearms_every_read_so_a_power_cycled_sensor_recovers() {
+    MockI2cBus bus;
+    sp::Bh1750 bh(bus);
+    // begin() failed at boot: power-on ACKed, the mode write NACKed.
+    bus.expect_write(0x23, {0x01});
+    bus.expect_write_nack(0x23);
+    TEST_ASSERT_FALSE(bh.begin());
+
+    // Powered down / never armed: 0x0000, then re-armed.
+    bus.expect_read(0x23, {0x00, 0x00});
+    bus.expect_write(0x23, {0x01});
+    bus.expect_write(0x23, {0x10});
+    float lux = -1.0f;
+    TEST_ASSERT_TRUE(bh.read(&lux));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, lux);
+
+    // Next pass: continuous mode is running again.
+    bus.expect_read(0x23, {0x01, 0x2C});  // 300 counts → 250 lx
+    bus.expect_write(0x23, {0x01});
+    bus.expect_write(0x23, {0x10});
+    TEST_ASSERT_TRUE(bh.read(&lux));
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 250.0f, lux);
+
+    // Off the bus: the read fails (a health failure) and the re-arm is still
+    // tried — one NACKed write, no second opcode.
+    bus.expect_read(0x23, {}, /*ack=*/false);
+    bus.expect_write_nack(0x23);
+    TEST_ASSERT_FALSE(bh.read(&lux));
+    TEST_ASSERT_EQUAL_UINT32(1, bh.health().fails);
+    TEST_ASSERT_EQUAL_STRING("read error", bh.health().last_error);
+    TEST_ASSERT_TRUE(bus.script_consumed());
+    TEST_ASSERT_EQUAL_STRING("", bus.error.c_str());
 }
 
 // ── autodetect ─────────────────────────────────────────────────
@@ -1357,6 +1442,7 @@ int main(int, char**) {
     RUN_TEST(test_scd4x_data_ready_and_read);
     RUN_TEST(test_scd4x_data_ready_bus_failure_is_a_health_fail);
     RUN_TEST(test_scd4x_frc_success_and_failure);
+    RUN_TEST(test_scd4x_restart_periodic_recovers_an_idle_sensor);
     RUN_TEST(test_scd30_float_decode);
     RUN_TEST(test_scd30_read_measurement_floats);
     RUN_TEST(test_scd30_stretch_timeout_is_read_fail);
@@ -1365,6 +1451,7 @@ int main(int, char**) {
     RUN_TEST(test_scd30_out_of_range_rejected);
     RUN_TEST(test_scd30_nan_rejected);
     RUN_TEST(test_bh1750_lux_conversion);
+    RUN_TEST(test_bh1750_rearms_every_read_so_a_power_cycled_sensor_recovers);
     RUN_TEST(test_autodetect_sht4x_wins_at_0x44);
     RUN_TEST(test_autodetect_sht3x_after_sht4x_miss);
     RUN_TEST(test_autodetect_nothing_attached);

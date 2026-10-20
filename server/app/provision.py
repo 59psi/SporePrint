@@ -22,6 +22,7 @@ with the compose mount (tests/test_provision_ca.py pins both).
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -37,16 +38,45 @@ _CA_PATHS = (
 )
 
 
-@router.get("/ca", response_class=PlainTextResponse)
-async def get_ca() -> str:
+class MisconfiguredCAError(Exception):
+    """The CA file holds key material, so it is never served."""
+
+
+def read_ca_pem() -> str | None:
+    """The CA certificate PEM GET /ca serves, or None when there is none."""
     for p in _CA_PATHS:
         if p.is_file():
             pem = p.read_text()
             # Serve only the certificate — refuse to ever ship a file that
             # somehow contains key material.
             if "PRIVATE KEY" in pem:
-                raise HTTPException(500, "CA file is misconfigured")
+                raise MisconfiguredCAError(str(p))
             return pem
+    return None
+
+
+def served_ca_fingerprint() -> str | None:
+    """Lowercase hex SHA-256 of the PEM GET /ca serves, or None without one.
+
+    The firmware heartbeat's `ca_fp` is the same digest of the PEM its TLS
+    link pinned (wire_contract.h build_heartbeat), so a node whose `ca_fp`
+    differs trusts some other CA.
+    """
+    try:
+        pem = read_ca_pem()
+    except (OSError, UnicodeDecodeError, MisconfiguredCAError):
+        return None
+    return hashlib.sha256(pem.encode()).hexdigest() if pem is not None else None
+
+
+@router.get("/ca", response_class=PlainTextResponse)
+async def get_ca() -> str:
+    try:
+        pem = read_ca_pem()
+    except MisconfiguredCAError:
+        raise HTTPException(500, "CA file is misconfigured") from None
+    if pem is not None:
+        return pem
     raise HTTPException(
         404, "No broker CA found — run ./install.sh on the Pi to generate it "
              "(Docker: it is mounted at /certs/ca.crt)")

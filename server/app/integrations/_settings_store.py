@@ -11,6 +11,8 @@ plaintext config dict.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -21,7 +23,7 @@ from cryptography.fernet import InvalidToken
 
 from ..db import get_db
 from ._base import IntegrationHealth, IntegrationState
-from ._keystore import get_fernet
+from ._keystore import get_fernet, preview_key
 
 
 logger = logging.getLogger(__name__)
@@ -29,10 +31,18 @@ logger = logging.getLogger(__name__)
 
 _SECRET_PREFIX = "fernet:"
 
-# The UI / cloud-web show secrets as `••••last4` (see redact_for_response).
-# A config PUT that sends this preview back means "unchanged" — it must never
-# be stored as the credential.
+# The UI / cloud-web show a secret as `••••` plus a short fingerprint (see
+# redact_for_response). A config PUT that sends this preview back means
+# "unchanged" — it must never be stored as the credential.
 REDACTED_PREFIX = "••••"
+
+# What GET shows for a stored secret that no longer decrypts. Sent back (or
+# omitted) by a PUT, it keeps the stored ciphertext, so a form round-trip
+# never overwrites a secret the original key file could still decrypt.
+UNREADABLE_SECRET_PLACEHOLDER = REDACTED_PREFIX
+
+# Hex digits of the fingerprint a preview shows.
+_PREVIEW_HEX_DIGITS = 6
 
 # Surfaced as the row's last_error when a stored secret can no longer be
 # decrypted (integration key lost or rotated, e.g. DB restored to a new Pi).
@@ -136,11 +146,29 @@ async def save(
     enabled: bool,
     config: dict[str, Any],
     secret_fields: set[str],
+    *,
+    preserve: frozenset[str] = frozenset(),
 ) -> StoredSettings:
-    encrypted = _encrypt_secrets(config, secret_fields)
-    payload = json.dumps(encrypted, separators=(",", ":"))
+    """Upsert a driver's settings, secrets encrypted.
+
+    `preserve` names secrets whose stored ciphertext is kept as it is: ones
+    that no longer decrypt (``""`` in `config`) and that the caller did not
+    replace. Re-encrypting that ``""`` would destroy a secret the original
+    key file could still recover.
+    """
+    encrypted = dict(_encrypt_secrets(config, secret_fields))
     now = time.time()
     async with get_db() as db:
+        if preserve:
+            cursor = await db.execute(
+                "SELECT config FROM integration_settings WHERE slug = ?", (slug,)
+            )
+            row = await cursor.fetchone()
+            stored = json.loads(row["config"]) if row and row["config"] else {}
+            for name in preserve:
+                raw = stored.get(name)
+                if isinstance(raw, str) and raw.startswith(_SECRET_PREFIX):
+                    encrypted[name] = raw
         await db.execute(
             "INSERT INTO integration_settings (slug, enabled, config, updated_at) "
             "VALUES (?, ?, ?, ?) "
@@ -148,7 +176,7 @@ async def save(
             "  enabled = excluded.enabled, "
             "  config = excluded.config, "
             "  updated_at = excluded.updated_at",
-            (slug, int(enabled), payload, now),
+            (slug, int(enabled), json.dumps(encrypted, separators=(",", ":")), now),
         )
         await db.commit()
     return StoredSettings(
@@ -159,7 +187,21 @@ async def save(
         last_health_at=None,
         last_error=None,
         updated_at=now,
+        unreadable_secrets=frozenset(preserve),
     )
+
+
+async def set_enabled(slug: str, enabled: bool) -> bool:
+    """Flip a stored row's enabled flag, leaving its config untouched (so a
+    secret that no longer decrypts keeps its ciphertext). False when no row
+    is stored for `slug`."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "UPDATE integration_settings SET enabled = ?, updated_at = ? WHERE slug = ?",
+            (int(enabled), time.time(), slug),
+        )
+        await db.commit()
+    return cursor.rowcount > 0
 
 
 async def update_health(slug: str, health: IntegrationHealth) -> None:
@@ -192,16 +234,34 @@ async def list_all(driver_secret_fields: dict[str, set[str]]) -> list[StoredSett
     ]
 
 
-def redact_for_response(config: dict[str, Any], secret_fields: set[str]) -> dict[str, Any]:
-    """Return a copy of `config` with secret-field values replaced by a
-    last-4 preview. The settings UI shows e.g. `••••wXyZ` so the operator
-    can recognise their key without exposing it.
+def secret_preview(value: str) -> str:
+    """``••••`` plus a short fingerprint of `value`, keyed by this Pi's
+    integration key: the same secret always shows the same preview, so the
+    operator can tell whether it changed, but the preview reveals none of
+    the secret's characters (it used to show the last four — a whole short
+    secret, half an 8-character password — and the listing goes to the
+    cloud's fleet cache)."""
+    digest = hmac.new(
+        preview_key(), value.encode("utf-8", "surrogatepass"), hashlib.sha256
+    ).hexdigest()
+    return f"{REDACTED_PREFIX}{digest[:_PREVIEW_HEX_DIGITS]}"
+
+
+def redact_for_response(
+    config: dict[str, Any],
+    secret_fields: set[str],
+    unreadable: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Return a copy of `config` with each secret replaced by its preview
+    (secret_preview), and each secret in `unreadable` (stored, but no longer
+    decryptable) by UNREADABLE_SECRET_PLACEHOLDER.
     """
     out: dict[str, Any] = {}
     for k, v in config.items():
-        if k in secret_fields and isinstance(v, str) and v:
-            tail = v[-4:] if len(v) >= 4 else v
-            out[k] = f"{REDACTED_PREFIX}{tail}"
+        if k in secret_fields and k in unreadable:
+            out[k] = UNREADABLE_SECRET_PLACEHOLDER
+        elif k in secret_fields and isinstance(v, str) and v:
+            out[k] = secret_preview(v)
         else:
             out[k] = v
     return out

@@ -14,6 +14,15 @@ from .models import SubstrateRecipe
 # Base density: approximately 0.3 kg dry substrate per liter of final volume
 BASE_DENSITY_KG_PER_LITER = 0.3
 
+# Ingredients that are liquids by name: they scale with the batch but weigh
+# nothing toward its dry reference mass (calculate_recipe).
+_WATER = re.compile(r"\bwater\b", re.I)
+_LIQUID = re.compile(r"\b(?:water|broth|molasses|syrup)\b", re.I)
+
+
+def _is_liquid(name: str) -> bool:
+    return bool(_LIQUID.search(name))
+
 _NUMBER = r"\d+(?:\.\d+)?"
 # "650g" · "2.5 lbs" · "1/2 cup" · "30-50 plugs per log" · "10-20% by volume"
 _AMOUNT_RE = re.compile(
@@ -127,17 +136,28 @@ def calculate_recipe(
     with the batch and are never multiplied; a percentage is annotated with
     the weight it comes to for this batch.
 
+    Liquids (water, broth) are not dry substrate: they scale with the batch
+    but do not count toward its reference dry weight (a recipe that is all
+    liquid, a spore slurry, scales on its liquids). When the recipe gives its
+    water as ``water_liters_per_liter_substrate``, that is the batch's one
+    water figure: a measured water ingredient is not listed beside it (the
+    BRF recipes said "0.5 cup" and "0.6 L" for the same litre).
+
     Returns a dict with scaled ingredients, water, spawn, and sterilization info.
     """
     # We use the base density model: target_dry_weight = volume * 0.3 kg.
     target_dry_kg = volume_liters * BASE_DENSITY_KG_PER_LITER
 
     # Reference dry weight of the recipe as written (weight/volume units only).
-    ref_total_kg = 0.0
-    for qty_str in recipe.ingredients.values():
+    dry_kg = all_kg = 0.0
+    for name, qty_str in recipe.ingredients.items():
         value, hi, unit = _parse_amount(qty_str)
         if value is not None:
-            ref_total_kg += _to_kg(value if hi is None else (value + hi) / 2, unit)
+            kg = _to_kg(value if hi is None else (value + hi) / 2, unit)
+            all_kg += kg
+            if not _is_liquid(name):
+                dry_kg += kg
+    ref_total_kg = dry_kg or all_kg
 
     # Scale factor: target / reference.  Guard against zero-ref.
     if ref_total_kg > 0:
@@ -148,6 +168,8 @@ def calculate_recipe(
     scaled_ingredients: dict[str, str] = {
         name: _scale_amount(qty_str, scale, target_dry_kg)
         for name, qty_str in recipe.ingredients.items()
+        if not (recipe.water_liters_per_liter_substrate > 0 and _WATER.search(name)
+                and _parse_amount(qty_str)[0] is not None)
     }
 
     # Water volume

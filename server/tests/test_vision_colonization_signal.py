@@ -15,6 +15,7 @@ from app.db import get_db
 from app.vision import service
 from app.vision.service import (
     _COLONIZATION_COMPLETE_PERCENT,
+    _load_frame_grow,
     _maybe_colonization_alert,
     colonization_signal,
 )
@@ -77,7 +78,7 @@ async def test_full_colonization_emits_event_notify_and_forward(monkeypatch):
 
     frame = {"id": 7, "session_id": sid, "node_id": "cam-01"}
     result = {"colonization_percent": 98, "surface": "bag", "summary": "fully run"}
-    await _maybe_colonization_alert(frame, result, "Blue Oyster")
+    await _maybe_colonization_alert(frame, result, await _load_frame_grow(sid))
 
     events = await _colonization_events(sid)
     assert len(events) == 1
@@ -87,11 +88,18 @@ async def test_full_colonization_emits_event_notify_and_forward(monkeypatch):
     assert data["frame_id"] == 7
 
     notify.assert_awaited_once()
+    assert notify.await_args.kwargs["dedup_key"] == f"colonization:{sid}"
     forward.assert_awaited_once()
     fwd_event, fwd_payload = forward.await_args.args
     assert fwd_event == "colonization_complete"
     assert fwd_payload["session_id"] == sid
     assert fwd_payload["surface"] == "bag"
+    # The cloud reads these keys: the wire stays as it was.
+    assert set(fwd_payload) == {"node_id", "session_id", "species", "reason",
+                                "colonization_percent", "surface", "frame_id"}
+    assert set(data) == {"reason", "colonization_percent", "surface", "frame_id"}
+    assert events[0]["source"] == "vision"
+    assert events[0]["description"].startswith("Colonization complete: ")
 
 
 async def test_below_threshold_emits_nothing(monkeypatch):
@@ -104,7 +112,7 @@ async def test_below_threshold_emits_nothing(monkeypatch):
     await _maybe_colonization_alert(
         {"id": 1, "session_id": sid, "node_id": "cam-01"},
         {"colonization_percent": 60, "surface": "jar"},
-        "Blue Oyster",
+        await _load_frame_grow(sid),
     )
 
     assert await _colonization_events(sid) == []
@@ -121,10 +129,11 @@ async def test_second_completion_is_deduped_within_window(monkeypatch):
 
     frame = {"id": 1, "session_id": sid, "node_id": "cam-01"}
     result = {"colonization_percent": 100, "surface": "agar"}
-    await _maybe_colonization_alert(frame, result, "Blue Oyster")
+    grow = await _load_frame_grow(sid)
+    await _maybe_colonization_alert(frame, result, grow)
     # A later fully-colonized frame for the same session must not re-fire.
     await _maybe_colonization_alert(
-        {"id": 2, "session_id": sid, "node_id": "cam-01"}, result, "Blue Oyster"
+        {"id": 2, "session_id": sid, "node_id": "cam-01"}, result, grow
     )
 
     assert len(await _colonization_events(sid)) == 1

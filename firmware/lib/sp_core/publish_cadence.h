@@ -1,6 +1,6 @@
 #pragma once
 //
-// publish_cadence — when the periodic publishes are due (srv-hw#22).
+// publish_cadence — when the periodic publishes are due.
 //
 // Telemetry (+ health) follows the operator-tunable publish_interval_ms
 // (cmd/config, clamped 5 s .. 1 h). The status heartbeat must NOT: the Pi
@@ -69,6 +69,51 @@ private:
     uint32_t publish_ms_;
     uint32_t last_publish_ms_ = 0;
     uint32_t last_heartbeat_ms_ = 0;
+};
+
+// The lighting bank's level report (one telemetry document for every dim
+// channel) during a ramp. A ramp moves the level one LSB at a time — 0 →
+// 1023 over 60 s is ~17 steps a second per channel — and the report went out
+// on every step of every channel, each one a full live telemetry frame on
+// the Pi (store, socket emit, cloud forward, rule evaluation). The LEDC duty
+// still follows every step; the REPORT now goes out at most once per pass
+// and, while only ramp steps are pending, at most once per
+// kRampReportIntervalMs. A change that is not a ramp step (the ramp reached
+// its target, a timer or max-on cutoff) is reported on the same pass.
+class DimReportThrottle {
+public:
+    static constexpr uint32_t kRampReportIntervalMs = 1000;
+
+    // A dim channel changed this pass; `ramp_step`: an intermediate step of a
+    // ramp that is still running.
+    void note_change(bool ramp_step) {
+        dirty_ = true;
+        if (!ramp_step) urgent_ = true;
+    }
+
+    // The level report should go out now (call once per pass, after every
+    // channel has ticked). Signed difference: a `now` taken before a report
+    // that a command sent later in the same pass reads as no time elapsed.
+    bool due(uint32_t now_ms) const {
+        if (!dirty_) return false;
+        return urgent_ || !reported_ ||
+               (int32_t)(now_ms - last_report_ms_) >=
+                   (int32_t)kRampReportIntervalMs;
+    }
+
+    // A level report went out (any path: this throttle, a command, a scene).
+    void reported(uint32_t now_ms) {
+        dirty_ = false;
+        urgent_ = false;
+        reported_ = true;
+        last_report_ms_ = now_ms;
+    }
+
+private:
+    bool dirty_ = false;
+    bool urgent_ = false;
+    bool reported_ = false;
+    uint32_t last_report_ms_ = 0;
 };
 
 }  // namespace sp

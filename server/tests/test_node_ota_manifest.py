@@ -47,8 +47,10 @@ def _pinned_test_key(monkeypatch):
     ota_push._status.clear()
     ota_push._tasks.clear()
     ota_push._manifest_waiters.clear()
+    ota_push._success_waiters.clear()
     yield
     ota_push._manifest_waiters.clear()
+    ota_push._success_waiters.clear()
 
 
 def _signed(image: bytes, *, artifact="node_esp32", version="5.1.0",
@@ -80,7 +82,7 @@ def test_firmware_suffix_matches():
 
 def test_a_matching_signed_manifest_passes():
     data, sig = _signed(IMAGE)
-    signed = check_node_manifest(data, sig, IMAGE, "5.0.0")
+    signed = check_node_manifest(data, sig, IMAGE, "5.0.0", "climate")
     assert signed.manifest["artifact"] == "node_esp32"
     assert base64.b64decode(signed.manifest_b64) == data
     assert base64.b64decode(signed.sig_b64) == sig
@@ -99,13 +101,35 @@ def test_a_matching_signed_manifest_passes():
 def test_refusals(mutate, needle):
     data, sig, image = mutate()
     with pytest.raises(NodeManifestError, match=needle):
-        check_node_manifest(data, sig, image, "5.0.0")
+        check_node_manifest(data, sig, image, "5.0.0", "climate")
+
+
+@pytest.mark.parametrize("artifact, node_type", [
+    ("cam", "relay"), ("cam_esp32s3", "climate"), ("cam_xiao_esp32s3", "unknown"),
+    ("cam", None), ("node_esp32", "camera"), ("node_esp32s3_n32r16v", "camera"),
+])
+def test_an_image_for_another_kind_of_node_is_refused(artifact, node_type):
+    """A node built without the verify key flashes whatever it is sent, so
+    the Pi binds the image to the kind of node: a camera image on a relay
+    node would drive its MOSFET gate pins as camera bus lines."""
+    data, sig = _signed(IMAGE, artifact=artifact)
+    with pytest.raises(NodeManifestError, match=f"for {artifact}, not this"):
+        check_node_manifest(data, sig, IMAGE, "5.0.0", node_type)
+
+
+@pytest.mark.parametrize("artifact, node_type", [
+    ("cam", "camera"), ("cam_waveshare_s3", "camera"), ("node_esp32", "relay"),
+    ("node_esp32s3", "lighting"), ("node_esp32", "climate"),
+])
+def test_an_image_for_this_kind_of_node_passes(artifact, node_type):
+    data, sig = _signed(IMAGE, artifact=artifact)
+    assert check_node_manifest(data, sig, IMAGE, "5.0.0", node_type).manifest["artifact"] == artifact
 
 
 def test_unknown_node_versions_are_not_compared():
     data, sig = _signed(IMAGE, version="1.0.0")
     for fw in (None, "", "dev", "unknown"):
-        check_node_manifest(data, sig, IMAGE, fw)
+        check_node_manifest(data, sig, IMAGE, fw, "climate")
 
 
 def test_no_pinned_key_refuses(monkeypatch):
@@ -113,13 +137,13 @@ def test_no_pinned_key_refuses(monkeypatch):
     monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
     data, sig = _signed(IMAGE)
     with pytest.raises(NodeManifestError, match="no OTA verify key"):
-        check_node_manifest(data, sig, IMAGE, "5.0.0")
+        check_node_manifest(data, sig, IMAGE, "5.0.0", "climate")
 
 
 def test_oversize_manifest_refused_before_verification():
     with pytest.raises(NodeManifestError, match="a node takes at most"):
         check_node_manifest(b"{" * (node_manifest.MAX_NODE_MANIFEST_BYTES + 1),
-                            b"\0" * 64, IMAGE, None)
+                            b"\0" * 64, IMAGE, None, "climate")
 
 
 def test_a_real_manifest_fits_one_node_command_frame(monkeypatch):
@@ -128,7 +152,7 @@ def test_a_real_manifest_fits_one_node_command_frame(monkeypatch):
     monkeypatch.setattr(settings, "mqtt_hmac_key", "k" * 32)
     data, sig = _signed(IMAGE, artifact="node_esp32s3_n32r16v",
                         version="v10.20.30-beta.12")
-    cmd = check_node_manifest(data, sig, IMAGE, None).command()
+    cmd = check_node_manifest(data, sig, IMAGE, None, "climate").command()
     topic = "sporeprint/a-long-node-name-0123456789/cmd/ota_manifest"
     frame = json.dumps(_sign_cmd_payload(_bind_cmd_payload(topic, cmd)))
     assert len(frame.encode()) < _NODE_INBOUND_FRAME_CAP
@@ -136,11 +160,13 @@ def test_a_real_manifest_fits_one_node_command_frame(monkeypatch):
 
 # ── the push: manifest first ───────────────────────────────────
 
-async def _register_node(node_id: str, ip: str = "10.1.2.3", fw: str = "5.0.0") -> None:
+async def _register_node(node_id: str, ip: str = "10.1.2.3", fw: str = "5.0.0",
+                         node_type: str = "climate") -> None:
     async with get_db() as db:
         await db.execute(
             "INSERT INTO hardware_nodes (node_id, node_type, ip_address, "
-            "firmware_version) VALUES (?, 'climate', ?, ?)", (node_id, ip, fw))
+            "firmware_version, status, last_seen) VALUES (?, ?, ?, ?, 'online', ?)",
+            (node_id, node_type, ip, fw, time.time()))
         await db.commit()
 
 
@@ -168,9 +194,13 @@ async def _wait_final(client, node_id, timeout=5.0):
 @pytest.fixture()
 def node_answers(monkeypatch):
     """Publishing cmd/ota_manifest makes the 'node' answer with `answer`
-    (None = never answers). Records the order of manifest and push."""
+    (None = never answers). Records the order of manifest and push. The push
+    runs push_firmware's before-invitation step, as the real one does once it
+    holds the callback port, then the node reports the flash: with the
+    manifest version when it flashed under an arming (`report`, by default
+    "manifest" when armed)."""
     log: list = []
-    state = {"answer": "armed", "published": True}
+    state = {"answer": "armed", "published": True, "report": None}
 
     async def _publish(topic, payload):
         log.append(("publish", topic, payload))
@@ -184,8 +214,13 @@ def node_answers(monkeypatch):
             ota_push.note_node_event(node, {"event": "manifest_rejected", "reason": answer})
         return state["published"]
 
-    async def _push(node_id, ip, port, password, image, **kwargs):
+    async def _push(node_id, ip, port, password, image, before_invite=None, **kwargs):
+        if before_invite is not None:
+            await before_invite()
         log.append(("push", node_id, image))
+        report = state["report"] or ("manifest" if state["answer"] == "armed" else "plain")
+        ota_push.note_node_event(node_id, {"event": "success", "manifest": "5.1.0"}
+                                 if report == "manifest" else {"event": "success"})
 
     monkeypatch.setattr("app.hardware.service.mqtt_publish", _publish)
     monkeypatch.setattr(ota_push, "push_firmware", _push)
@@ -253,6 +288,64 @@ async def test_no_manifest_is_the_old_push(client, node_answers):
     assert st["state"] == "ok"
     assert st["manifest"] is None
     assert [e[0] for e in node_answers["log"]] == ["push"]
+
+
+async def test_a_flash_the_node_reports_without_its_manifest_check_is_pi_verified(client, node_answers):
+    """The node armed, but its success report carries no manifest version: it
+    flashed the image without its own check (the arming was gone by then)."""
+    node_answers["report"] = "plain"
+    await _register_node("climate-01")
+    data, sig = _signed(IMAGE)
+    assert _post(client, "climate-01", manifest=data, sig=sig).status_code == 202
+    st = await _wait_final(client, "climate-01")
+    assert st["state"] == "ok"
+    assert st["manifest"] == "pi_verified"
+
+
+async def test_a_camera_image_for_a_relay_node_is_a_400(client, node_answers):
+    await _register_node("relay-01", node_type="relay")
+    data, sig = _signed(IMAGE, artifact="cam")
+    r = _post(client, "relay-01", manifest=data, sig=sig)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Signed manifest refused: this manifest is for cam, not this relay node"
+    assert node_answers["log"] == []
+    await _register_node("cam-01", node_type="camera")
+    assert _post(client, "cam-01", manifest=data, sig=sig).status_code == 202
+    assert (await _wait_final(client, "cam-01"))["state"] == "ok"
+
+
+async def test_the_manifest_is_armed_only_once_the_callback_port_is_free(monkeypatch):
+    """The node keeps an arming for 5 minutes. A push queued behind others on
+    the one callback port must not arm before it gets the port, or the arming
+    can lapse and the node flashes the image unchecked."""
+    order: list[str] = []
+    sha = hashlib.sha256(IMAGE).hexdigest()
+
+    async def _send(topic, payload):
+        order.append("arm")
+        ota_push.note_node_event("climate-01", {"event": "manifest_armed", "sha256": sha})
+        return True
+
+    async def _push_once(node_id, *args):
+        order.append("invite")
+        ota_push.note_node_event(node_id, {"event": "success", "manifest": "5.1.0"})
+
+    monkeypatch.setattr(ota_push, "CALLBACK_PORT", 3233)  # the shared, locked port
+    monkeypatch.setattr(ota_push, "_callback_port_lock", asyncio.Lock())
+    monkeypatch.setattr(ota_push, "_push_once", _push_once)
+    signed = check_node_manifest(*_signed(IMAGE), IMAGE, "5.0.0", "climate")
+
+    await ota_push._callback_port_lock.acquire()  # another node's push holds it
+    ota_push.start_push("climate-01", "10.1.2.3", 3232, PASSWORD, IMAGE,
+                        manifest=signed, send_command=_send)
+    task = ota_push._tasks["climate-01"]
+    await asyncio.sleep(0.1)
+    assert order == []
+    ota_push._callback_port_lock.release()
+    await asyncio.wait_for(task, 2)
+    assert order == ["arm", "invite"]
+    st = ota_push.get_status("climate-01")
+    assert st["state"] == "ok" and st["manifest"] == "node_verified"
 
 
 async def test_bad_or_half_manifest_is_a_400(client, node_answers):

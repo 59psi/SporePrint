@@ -8,10 +8,14 @@ Two responsibilities:
 
 1. **Health transitions.** Periodically poll every registered driver's
    ``health()``. When the state transitions to ``error`` or ``degraded``,
-   emit ``vendor_health_degraded`` via ``cloud.service.forward_event``.
-   When the state transitions back to ``ok``, emit
+   emit ``vendor_health_degraded`` via ``cloud.service.forward_event``,
+   with the driver's error as ``reason``. When a failing driver is back
+   to ``ok`` — for several sweeps in a row, so a flaky device is one
+   incident, not a page a minute — or is disabled, emit
    ``vendor_health_degraded`` with ``resolved=True``. The cloud relay
-   forwards both to the user's push rules + escalation chain.
+   forwards both to the user's push rules + escalation chain. A driver
+   going between ``disabled`` and ``ok`` (boot, enable, disable) had no
+   incident and sends nothing.
 
 2. **State snapshot.** On startup and after every config save, push the
    full ``/api/integrations`` listing up to the cloud as an
@@ -32,15 +36,24 @@ import asyncio
 import logging
 
 from . import _registry
+from ._base import IntegrationHealth
 
 
 logger = logging.getLogger(__name__)
 
 
 _SWEEP_INTERVAL_SECONDS = 60.0
-# Last-known state per driver, keyed by slug. Transitions out of ``ok``
-# become events; transitions back into ``ok`` clear them.
+# A failing driver counts as recovered only once this many sweeps in a row
+# read "ok": a device that fails every other poll stays one open incident
+# instead of a "degraded" page and a resolve every couple of minutes.
+_RECOVERED_AFTER_SWEEPS = 3
+# The states that open an incident in the cloud.
+_INCIDENT_STATES = ("error", "degraded")
+# Last-known state per driver, keyed by slug: the state the cloud was last
+# told about. Transitions out of ``ok`` become events; recoveries clear them.
 _last_state: dict[str, str] = {}
+# Sweeps in a row a failing driver has read "ok" (see _RECOVERED_AFTER_SWEEPS).
+_ok_streak: dict[str, int] = {}
 
 
 async def push_state_snapshot() -> None:
@@ -61,7 +74,9 @@ async def push_state_snapshot() -> None:
         logger.debug("integrations health: snapshot forward skipped")
 
 
-async def _emit_transition(slug: str, old_state: str, new_state: str) -> bool:
+async def _emit_transition(
+    slug: str, old_state: str, new_state: str, health: IntegrationHealth,
+) -> bool:
     """Emit the event for a transition, if it needs one.
 
     Returns True when the transition is fully handled (delivered, or no
@@ -69,13 +84,14 @@ async def _emit_transition(slug: str, old_state: str, new_state: str) -> bool:
     caller then keeps the old state so the next sweep retries.
     """
     from ..cloud.service import forward_event
-    resolves = (
-        (new_state == "ok" and old_state != "ok")
-        # Disabling a failing driver ends the incident too — otherwise the
-        # cloud escalation stays open forever.
-        or (new_state == "disabled" and old_state in ("error", "degraded"))
-    )
-    if resolves:
+    # Only an incident that was opened is resolved: a driver going from
+    # "disabled" to "ok" (every boot, every enable) never had one, and
+    # resolving it anyway paged an "integration degraded" for it. Disabling
+    # a failing driver ends its incident too — otherwise the cloud
+    # escalation stays open forever.
+    # confirm=True: delivered means acknowledged by the relay, so an event
+    # sent into a connection that died without closing is retried too.
+    if old_state in _INCIDENT_STATES and new_state in ("ok", "disabled"):
         # Cleared — resolve any pending escalation in the cloud.
         return bool(await forward_event(
             "vendor_health_degraded",
@@ -84,15 +100,19 @@ async def _emit_transition(slug: str, old_state: str, new_state: str) -> bool:
                 "previous_state": old_state,
                 "resolved": True,
             },
+            confirm=True,
         ))
-    if new_state in ("error", "degraded") and old_state != new_state:
+    if new_state in _INCIDENT_STATES and old_state != new_state:
         return bool(await forward_event(
             "vendor_health_degraded",
             {
                 "vendor": slug,
                 "state": new_state,
+                # What the push says the driver reports.
+                "reason": health.last_error or new_state,
                 "resolved": False,
             },
+            confirm=True,
         ))
     return True
 
@@ -116,9 +136,19 @@ async def _sweep_once() -> None:
         if old_state is None:
             _last_state[slug] = new_state
             continue
+        if new_state == "ok" and old_state in _INCIDENT_STATES:
+            # A recovery has to hold for _RECOVERED_AFTER_SWEEPS sweeps
+            # before it resolves the incident; a failure in between keeps
+            # the same incident open (no second page).
+            _ok_streak[slug] = _ok_streak.get(slug, 0) + 1
+            if _ok_streak[slug] < _RECOVERED_AFTER_SWEEPS:
+                continue
+        else:
+            _ok_streak.pop(slug, None)
         if new_state != old_state:
-            if await _emit_transition(slug, old_state, new_state):
+            if await _emit_transition(slug, old_state, new_state, health):
                 _last_state[slug] = new_state
+                _ok_streak.pop(slug, None)
             else:
                 logger.debug(
                     "integrations health: %s %s→%s not delivered (cloud "

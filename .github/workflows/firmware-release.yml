@@ -20,7 +20,14 @@
 # private key). It reaches only the two jobs that run no build tooling, no
 # third-party action and no write token, and in each only the one step that
 # needs it:
-#   release-key  derives the PUBLIC verify key and outputs only that.
+#   release-key  derives the PUBLIC verify key, refuses to go on unless it is
+#                the repository variable OTA_PUBKEY_B64 (the key every Pi
+#                pins: a wrong signing key would ship images every Pi
+#                refuses), and outputs only that.
+#   native-tests runs the firmware's host test suite (`pio test -e native`),
+#                the firmware-vs-server fixture diffs and the Arduino-free
+#                check on the tagged tree. It gets no key; build and sign wait
+#                for it, so nothing is built or signed unless it passes.
 #   build        runs PlatformIO, which downloads and executes platform and
 #                library build scripts, so it gets the public key only.
 #   sign         signs each firmware.bin with scripts/sign-ota-bundle.py
@@ -49,8 +56,11 @@
 # platformio.ini. The platform's own Python virtualenv is created beforehand from
 # firmware/requirements-penv.txt (exact versions, SHA-256 each) and the
 # build runs uv offline, so nothing else reaches it from PyPI; the post-build
-# check refuses a penv holding anything unpinned. No job restores a cache.
-# The workflow fails closed when OTA_SIGNING_KEY is missing.
+# check refuses a penv holding anything unpinned. native-tests installs the
+# same hashed PlatformIO; its host platform and test framework come from the
+# registry, and it builds nothing that ships. No job restores a cache.
+# The workflow fails closed when OTA_SIGNING_KEY is missing, or when its
+# public half is not the repository variable OTA_PUBKEY_B64.
 #
 # Untrusted input: the dispatch `tag` input and github.ref_name reach shell
 # only through env vars, never ${{ }} inside run:, and the tag guard accepts
@@ -206,8 +216,85 @@ jobs:
           echo "pubkey=$PUBKEY" >> "$GITHUB_OUTPUT"
           echo "Release verify key: $PUBKEY"
 
-  build:
+      - name: Check the signing key is the one every Pi pins
+        env:
+          PUBKEY: ${{ steps.derive.outputs.pubkey }}
+          # The fleet's verify key, the public half Pis hold as
+          # SPOREPRINT_OTA_PUBKEY_B64. A wrong OTA_SIGNING_KEY derives its own
+          # public half, which every image would carry and every Pi refuse.
+          PINNED_PUBKEY: ${{ vars.OTA_PUBKEY_B64 }}
+        run: |
+          KEY_RE='^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$'
+          if ! [[ "$PINNED_PUBKEY" =~ $KEY_RE ]]; then
+            echo "::error::the OTA_PUBKEY_B64 repository variable is not a base64 Ed25519 public key: set it to the key every Pi pins (gh variable set OTA_PUBKEY_B64 --body <key>)."
+            exit 1
+          fi
+          if [ "$PUBKEY" != "$PINNED_PUBKEY" ]; then
+            echo "::error::OTA_SIGNING_KEY's public half is $PUBKEY, not $PINNED_PUBKEY (OTA_PUBKEY_B64, the key every Pi pins): refusing to release images every Pi would refuse."
+            exit 1
+          fi
+          echo "The signing key matches OTA_PUBKEY_B64."
+
+  native-tests:
+    # The host test suites (channel safety, HMAC and canonical form, OTA
+    # manifests, drivers) and the fixture parity checks, on the tagged tree.
+    # build and sign need this job: a tag whose tests fail is never built or
+    # signed.
     needs: release-key
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.release-key.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check the tag still names the commit being released
+        env:
+          RELEASE_SHA: ${{ needs.release-key.outputs.sha }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ -z "$RELEASE_SHA" ] || [ "$HEAD_SHA" != "$RELEASE_SHA" ]; then
+            echo "::error::the tag now names $HEAD_SHA, not $RELEASE_SHA: it moved during the run. Refusing to continue."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO (every package hash-checked)
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r firmware/requirements-pio.txt
+
+      - name: Native test suite
+        working-directory: firmware
+        run: pio test -e native
+
+      - name: Golden-fixture parity (firmware copy vs server copy)
+        run: |
+          diff -q firmware/test/fixtures/signing_vectors.json \
+                  server/tests/fixtures/signing_vectors.json
+          diff -q firmware/test/fixtures/ota_manifest_vectors.json \
+                  server/tests/fixtures/ota_manifest_vectors.json
+          echo "signing and OTA manifest vectors byte-identical"
+
+      - name: Arduino-free core check
+        # lib/sp_core + lib/sp_drivers must stay host-compilable: no
+        # Arduino.h. The native build proves they compile; this catches an
+        # include hiding behind an #ifdef.
+        run: |
+          if grep -rn "include [<\"]Arduino.h" firmware/lib/sp_core firmware/lib/sp_drivers; then
+            echo "::error::Arduino.h leaked into a native-safe library"
+            exit 1
+          fi
+          echo "sp_core + sp_drivers are Arduino-free"
+
+  build:
+    needs: [release-key, native-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -333,7 +420,7 @@ jobs:
           retention-days: 7
 
   sign:
-    needs: [release-key, build]
+    needs: [release-key, native-tests, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Holds the signing key (one step). No write token and only GitHub's own

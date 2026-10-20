@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GrafanaConfig(BaseModel):
@@ -20,7 +20,9 @@ class GrafanaConfig(BaseModel):
 
     `include_sensor_history` is off by default because Prometheus is built
     for instantaneous gauge samples — historical scrape lag belongs in the
-    TSDB, not in the exporter response. Flip on for diagnostics only.
+    TSDB, not in the exporter response. Flip on for diagnostics: it adds
+    `sporeprint_node_reading_timestamp_seconds`, the time of each exported
+    reading, so a dashboard can show how old each value is.
     """
 
     bearer_token: str = Field(
@@ -41,6 +43,19 @@ class GrafanaConfig(BaseModel):
     include_sensor_history: bool = Field(
         default=False,
         description=(
-            "Diagnostic: also emit oldest-fresh-reading age. Off by default."
+            "Diagnostic: also emit `sporeprint_node_reading_timestamp_seconds`, "
+            "the time of each exported reading. Off by default."
         ),
     )
+
+    @field_validator("bearer_token")
+    @classmethod
+    def _token_is_text(cls, v: str) -> str:
+        # JSON can carry an unpaired surrogate ("\ud800"). UTF-8 cannot encode
+        # it, so the token could not be stored encrypted, and no scraper could
+        # ever send it in an Authorization header.
+        try:
+            v.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("bearer_token must be plain text") from None
+        return v

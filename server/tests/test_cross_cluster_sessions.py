@@ -1,14 +1,13 @@
-"""Sessions / chambers cross-cluster follow-ups (hardware audit, pass 2).
+"""Sessions / chambers cross-cluster behaviour.
 
-- srv-auto#8: POST /phase refuses a phase that isn't a GrowPhase, or one the
+- POST /phase refuses a phase that isn't a GrowPhase, or one the
   species profile can't run (no setpoints and no fallback); next-phase skips
   phases the profile doesn't define;
 - CLAUDE.md §12: the chamber-aware active-session lookup lives in
   sessions.service (get_active_session_for_chambers / _for_node);
-- srv-auto#10: a chamberless session's telemetry still resolves a node after
+- a chamberless session's telemetry still resolves a node after
   its tagged raw rows have aged into rollups;
-- automation-safety #3c: session-end safing clears the OFF'd actuators'
-  safety ceilings;
+- session-end safing clears the OFF'd actuators' safety ceilings;
 - chambers: linking a session through PATCH /api/chambers also binds it.
 """
 
@@ -30,7 +29,15 @@ from app.automation.service import create_rule
 from app.automation.smart_plugs import register_plug
 from app.chambers.models import ChamberCreate, ChamberUpdate
 from app.cloud.service import _dispatch_system_command
-from app.chambers.service import chambers_for_node, create_chamber, update_chamber
+from app.chambers.service import (
+    ChamberBusyError,
+    SessionBoundElsewhereError,
+    SessionLinkError,
+    chambers_for_node,
+    create_chamber,
+    get_chamber,
+    update_chamber,
+)
 from app.db import get_db
 from app.sessions.models import PhaseAdvance, SessionCreate
 from app.sessions.service import (
@@ -67,7 +74,7 @@ async def _session(species="blue_oyster", phase="substrate_colonization", **kw):
     ))
 
 
-# ── srv-auto#8: phase validation ───────────────────────────────────────────
+# ── phase validation ───────────────────────────────────────────────────────
 
 
 async def test_unknown_phase_is_refused():
@@ -175,7 +182,7 @@ def test_phase_endpoint_returns_422_for_a_typo(client):
     assert "fruitng" in r.json()["detail"]
 
 
-# ── srv-auto#8: next-phase skips undefined phases ──────────────────────────
+# ── next-phase skips undefined phases ──────────────────────────────────────
 
 
 def test_suggestion_without_a_profile_is_unchanged():
@@ -233,6 +240,16 @@ async def _age(session_id, seconds):
         await db.commit()
 
 
+async def _bind(session_id, chamber_id):
+    """Bind and link a session to a chamber the way older releases could,
+    with another grow already bound there (create_session refuses that now)."""
+    async with get_db() as db:
+        await db.execute("UPDATE sessions SET chamber_id = ? WHERE id = ?", (chamber_id, session_id))
+        await db.execute("UPDATE chambers SET active_session_id = ? WHERE id = ?",
+                         (session_id, chamber_id))
+        await db.commit()
+
+
 async def test_session_for_chambers_prefers_bound_then_linked_then_unbound():
     a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"])))["id"]
     unbound_old = await _session("unit-a")
@@ -279,14 +296,66 @@ async def test_unchambered_node_prefers_the_chamberless_grow_like_the_tagger():
     assert await active_session_for_node("climate-loose", time.time() + 5) == closet["id"]
 
 
-async def test_unchambered_node_takes_the_only_chambers_grow():
-    """A chamber whose node list is incomplete: the unlisted node can only be
-    that grow's (the tagger leaves its readings untagged until it's listed)."""
+async def test_unchambered_node_never_takes_a_chambers_grow():
+    """An unlisted node used to take the grow of the only chamber with one.
+    When the closet's own (chamberless) grow ended, the closet's unlisted
+    nodes then ran that chamber's setpoints. A node runs a chamber's grow
+    only when it is listed in the chamber."""
     a = (await create_chamber(ChamberCreate(name="A", node_ids=["cam-a"])))["id"]
-    s = await _session("unit-a", chamber_id=a)
-    await _age(s["id"], 50)
-    newer = await _session("unit-b", chamber_id=a)
-    assert (await get_active_session_for_node("climate-loose"))["id"] == newer["id"]
+    await _session("unit-a", chamber_id=a)
+    assert await get_active_session_for_node("climate-loose") is None
+    closet = await _session("unit-x")
+    assert (await get_active_session_for_node("climate-loose"))["id"] == closet["id"]
+    await complete_session(closet["id"])
+    assert await get_active_session_for_node("climate-loose") is None
+    assert await active_session_for_node("climate-loose", time.time() + 5) is None
+
+
+async def test_a_second_grow_in_a_busy_chamber_is_refused():
+    """The newest grow bound to a chamber ran it: a grain jar started in a
+    fruiting tub's chamber took the chamber over (sealed vessel: no fresh air
+    or humidity control for the tub)."""
+    a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"])))["id"]
+    tub = await _session("unit-a", "fruiting", chamber_id=a)
+    with pytest.raises(ChamberBusyError, match="unit-a"):
+        await _session("unit-b", "grain_colonization", chamber_id=a, container_type="grain_jar")
+    assert (await get_active_session_for_node("climate-a"))["id"] == tub["id"]
+    # A cloud session_start says why, as success=false.
+    ok, reason = await _dispatch_system_command("session_start", {
+        "name": "jar", "species_profile_id": "blue_oyster", "chamber_id": a,
+    })
+    assert ok is False and "already runs" in reason
+    # Free again once the tub's grow has ended, or gone to the fridge.
+    await complete_session(tub["id"])
+    jar = await _session("unit-b", chamber_id=a, container_type="grain_jar")
+    await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
+    assert (await _session("unit-c", chamber_id=a))["chamber_id"] == a
+
+
+def test_create_endpoint_answers_409_for_a_busy_chamber(client):
+    chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
+    body = {"name": "Tub", "species_profile_id": "blue_oyster", "chamber_id": chamber["id"]}
+    assert client.post("/api/sessions", json=body).status_code == 200
+    r = client.post("/api/sessions", json={**body, "name": "Jar"})
+    assert r.status_code == 409, r.text
+    assert "Tub" in r.json()["detail"]
+
+
+async def test_ending_one_of_two_grows_bound_to_a_chamber_relinks_the_other():
+    """Two grows bound to one chamber (as older releases allowed): ending the
+    newer one cleared the chamber's link, so the dashboards showed the
+    chamber idle while its older grow still ran there."""
+    a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"])))["id"]
+    older = await _session("unit-a", chamber_id=a)
+    await _age(older["id"], 100)
+    newer = await _session("unit-b")
+    await _bind(newer["id"], a)
+    assert (await get_chamber(a))["active_session_id"] == newer["id"]
+    await complete_session(newer["id"])
+    assert (await get_chamber(a))["active_session_id"] == older["id"]
+    assert (await get_active_session_for_node("climate-a"))["id"] == older["id"]
+    await complete_session(older["id"])
+    assert (await get_chamber(a))["active_session_id"] is None
 
 
 async def test_unchambered_node_never_guesses_between_two_chambers():
@@ -348,7 +417,7 @@ async def test_chambers_for_node_tolerates_malformed_node_ids():
     assert found == [{"id": good, "node_ids": ["climate-a"]}]
 
 
-# ── srv-auto#10: chamberless session telemetry after raw rows age out ──────
+# ── chamberless session telemetry after raw rows age out ───────────────────
 
 
 async def _rollup(node, sensor, ts, value=70.0):
@@ -371,16 +440,29 @@ async def test_chamberless_session_resolves_a_node_from_rollups():
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-1"
 
 
-async def test_rollup_fallback_ignores_chambered_nodes_and_other_windows():
-    await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
+async def test_rollup_fallback_ignores_other_grows_nodes_and_other_windows():
+    a = await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
     s = await _session("unit-a")
     await _age(s["id"], 20 * 86400)
+    await _session("unit-c", chamber_id=a["id"])  # chamber A runs its own grow
     start = (await get_session(s["id"]))["created_at"]
-    await _rollup("climate-a", "temp_f", start + 3600)      # a chamber's node
+    await _rollup("climate-a", "temp_f", start + 3600)      # another grow's node
     await _rollup("climate-old", "temp_f", start - 86400)   # before this grow
     assert await resolve_session_node_id(s["id"], "temp_f") is None
     await _rollup("climate-1", "temp_f", start + 60)
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-1"
+
+
+async def test_rollup_fallback_finds_the_chamber_a_chamberless_grow_runs():
+    """A chamber with no grow of its own runs the newest chamberless session
+    (the per-node rule), so once the grow's tagged raw rows have aged into
+    rollups its readings are still found in that chamber."""
+    await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
+    s = await _session("unit-a")
+    await _age(s["id"], 20 * 86400)
+    start = (await get_session(s["id"]))["created_at"]
+    await _rollup("climate-a", "temp_f", start + 3600)
+    assert await resolve_session_node_id(s["id"], "temp_f") == "climate-a"
 
 
 async def test_rollup_fallback_prefers_the_node_with_most_data():
@@ -393,7 +475,7 @@ async def test_rollup_fallback_prefers_the_node_with_most_data():
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-2"
 
 
-# ── automation-safety #3c: session end clears safety ceilings ──────────────
+# ── session end clears safety ceilings ─────────────────────────────────────
 
 
 @pytest.fixture()
@@ -430,14 +512,15 @@ async def test_session_end_clears_the_ceilings_of_what_it_switched_off(
     await create_rule(_on_rule("fan", "relay-a", "fae"))
     s = await _session("unit-a", "fruiting")
     await evaluate_rules("climate-1", {"temp_f": 70})
-    assert {"plug-heater:*", "relay-a:fae"} <= set(engine._safety_tasks)
-    assert await _watchdog_rows() == {("plug-heater", None), ("relay-a", "fae")}
+    # The plug's ceiling is kept under its own id, whichever name the rule used.
+    assert {"plug-h1:*", "relay-a:fae"} <= set(engine._safety_tasks)
+    assert await _watchdog_rows() == {("plug-h1", None), ("relay-a", "fae")}
 
     await complete_session(s["id"])
 
     assert ("shellies/h1/relay/0/command", "off") in mock_mqtt_raw
     assert ("sporeprint/relay-a/cmd/fae", {"state": "off", "reason": "session_ended"}) in json_publishes
-    assert "plug-heater:*" not in engine._safety_tasks
+    assert "plug-h1:*" not in engine._safety_tasks
     assert "relay-a:fae" not in engine._safety_tasks
     assert await _watchdog_rows() == set()
 
@@ -486,12 +569,77 @@ async def test_ending_one_chambers_grow_safes_only_that_chambers_nodes(
 
 async def test_ending_a_grow_its_chamber_still_runs_safes_nothing(
         mock_mqtt, mock_mqtt_raw, json_publishes):
+    """Two grows bound to chamber A, as older releases allowed: ending the
+    older one leaves A run by the other."""
     a, b = await _two_chamber_rules()
     first = await _session("unit-a", "fruiting", chamber_id=a)
-    await _session("unit-a2", "fruiting", chamber_id=a)
+    await _age(first["id"], 100)
+    second = await _session("unit-a2", "fruiting")
+    await _bind(second["id"], a)
     await _session("unit-b", "fruiting", chamber_id=b)
     await complete_session(first["id"])
     assert _offs(json_publishes, mock_mqtt_raw) == []
+
+
+async def _register_node(node_id, node_type, seen_ago):
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, last_seen, status) VALUES (?, ?, ?, 'online')",
+            (node_id, node_type, time.time() - seen_ago),
+        )
+        await db.commit()
+
+
+async def test_last_grow_ending_switches_a_placeholder_off_where_its_on_went(
+        mock_mqtt, mock_mqtt_raw, json_publishes):
+    """'light-01' fired for chamber A lands on A's light; ending A's grow (the
+    last one) resolved the placeholder anew to the light seen last anywhere —
+    chamber B's — and A's light stayed on its fruiting scene for good."""
+    a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a", "light-a"])))["id"]
+    await create_chamber(ChamberCreate(name="B", node_ids=["climate-b", "light-b"]))
+    await _register_node("light-a", "lighting", 300)
+    await _register_node("light-b", "lighting", 5)
+    await create_rule(AutomationRule(
+        name="lights", priority=1,
+        condition=RuleCondition(type=ConditionType.THRESHOLD,
+                                threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=0)),
+        action=RuleAction(target="light-01", scene="fruiting_standard", state="on"),
+    ))
+    s = await _session("unit-a", "fruiting", chamber_id=a)
+    await evaluate_rules("climate-a", {"temp_f": 70})
+    assert [t for t, _ in mock_mqtt if t.endswith("/cmd/scene")] == ["sporeprint/light-a/cmd/scene"]
+    await complete_session(s["id"])
+    offs = _offs(json_publishes, mock_mqtt_raw)
+    assert "sporeprint/light-a/cmd/scene" in offs
+    assert "sporeprint/light-b/cmd/scene" in offs  # every node the placeholder stands for
+
+
+async def test_closet_grow_ending_beside_a_chambers_grow_safes_the_closet(
+        mock_mqtt, mock_mqtt_raw, json_publishes):
+    """A chamberless closet grow ended while chamber B ran its own: safing was
+    skipped, so the closet's unlisted relay stayed as the grow left it. The
+    nodes it ran that no grow runs now are switched off (an idle chamber's
+    nodes it ran included) — never B's, nor a plug B's grow may use."""
+    a, b = await _two_chamber_rules()
+    closet = await _session("unit-x", "fruiting")
+    await _session("unit-b", "fruiting", chamber_id=b)
+    await complete_session(closet["id"])
+    assert sorted(_offs(json_publishes, mock_mqtt_raw)) == [
+        "sporeprint/relay-a/cmd/fae", "sporeprint/relay-z/cmd/fae"]
+
+
+async def test_a_grow_parked_in_cold_storage_does_not_hold_back_safing(
+        mock_mqtt, mock_mqtt_raw, json_publishes):
+    """A jar in the fridge runs no chamber, but counted as an active grow:
+    ending the closet's grow then switched nothing off."""
+    a, b = await _two_chamber_rules()
+    jar = await _session("unit-j", "grain_colonization", container_type="grain_jar")
+    await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
+    closet = await _session("unit-x", "fruiting")
+    await complete_session(closet["id"])
+    assert sorted(_offs(json_publishes, mock_mqtt_raw)) == [
+        "shellies/h1/relay/0/command", "sporeprint/relay-a/cmd/fae",
+        "sporeprint/relay-b/cmd/fae", "sporeprint/relay-z/cmd/fae"]
 
 
 async def test_last_grow_ending_still_safes_everything(
@@ -515,12 +663,71 @@ async def test_linking_an_unbound_session_binds_it_to_the_chamber():
 
 
 async def test_linking_never_moves_a_session_bound_to_another_chamber():
+    """The engine runs a bound session only in its own chamber: a link from
+    another chamber made the dashboards show the grow in chamber A while A's
+    nodes ran something else. Refused; nothing changes."""
     a = await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
     b = await create_chamber(ChamberCreate(name="B", node_ids=["climate-b"]))
     s = await _session("unit-a", chamber_id=b["id"])
-    updated = await update_chamber(a["id"], ChamberUpdate(active_session_id=s["id"]))
-    assert updated["active_session_id"] == s["id"]
+    with pytest.raises(SessionBoundElsewhereError, match=f"chamber {b['id']}"):
+        await update_chamber(a["id"], ChamberUpdate(active_session_id=s["id"], name="A2"))
+    after = await get_chamber(a["id"])
+    assert after["active_session_id"] is None and after["name"] == "A"
     assert (await get_session(s["id"]))["chamber_id"] == b["id"]
+
+
+async def test_linking_an_ended_or_unknown_session_is_refused():
+    c = await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
+    done = await _session("unit-a")
+    await complete_session(done["id"])
+    with pytest.raises(SessionLinkError, match="completed"):
+        await update_chamber(c["id"], ChamberUpdate(active_session_id=done["id"]))
+    with pytest.raises(SessionLinkError, match="not found"):
+        await update_chamber(c["id"], ChamberUpdate(active_session_id=9999))
+    assert (await get_chamber(c["id"]))["active_session_id"] is None
+    # An ended session keeps the (absent) chamber its history ran in.
+    assert (await get_session(done["id"]))["chamber_id"] is None
+
+
+def test_link_endpoint_maps_refusals(client):
+    a = client.post("/api/chambers", json={"name": "A"}).json()
+    b = client.post("/api/chambers", json={"name": "B"}).json()
+    bound = client.post("/api/sessions", json={
+        "name": "in B", "species_profile_id": "blue_oyster", "chamber_id": b["id"],
+    }).json()
+    done = client.post("/api/sessions", json={
+        "name": "done", "species_profile_id": "blue_oyster",
+    }).json()
+    client.post(f"/api/sessions/{done['id']}/complete")
+
+    def patch(session_id):
+        return client.patch(f"/api/chambers/{a['id']}", json={"active_session_id": session_id})
+
+    assert patch(bound["id"]).status_code == 409
+    assert patch(done["id"]).status_code == 422
+    assert patch(9999).status_code == 422  # was a FOREIGN KEY 500
+    assert client.get(f"/api/chambers/{a['id']}").json()["active_session_id"] is None
+
+
+async def test_linking_and_renaming_resync_the_bound_sessions(monkeypatch):
+    """The cloud snapshot names the session's chamber: binding a session here
+    (or renaming its chamber) must reach the session-change listeners."""
+    changed: list[int] = []
+
+    async def _listener(session_id):
+        changed.append(session_id)
+
+    monkeypatch.setattr(sessions_service, "_session_change_listeners", [_listener])
+    c = await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
+    s = await _session("unit-a")
+    changed.clear()
+    await update_chamber(c["id"], ChamberUpdate(active_session_id=s["id"]))
+    assert changed == [s["id"]]
+    changed.clear()
+    await update_chamber(c["id"], ChamberUpdate(description="shelf 2"))
+    assert changed == []
+    await update_chamber(c["id"], ChamberUpdate(name="Closet"))
+    assert changed == [s["id"]]
 
 
 async def test_detaching_leaves_the_session_binding_alone():
@@ -534,7 +741,12 @@ async def test_linked_session_telemetry_is_tagged_to_it():
     """The telemetry tagger reads sessions.chamber_id only; a PATCH link used
     to leave a chamber's readings untagged."""
     c = await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
+    other = await create_chamber(ChamberCreate(name="B", node_ids=["climate-b"]))
     s = await _session("unit-a")
-    assert await active_session_for_node("climate-a", time.time() + 5) is None
+    await _session("unit-c", chamber_id=other["id"])
+    # Chamber A has no grow of its own, so it already runs the chamberless
+    # grow (the rule the engine drives its node by); B runs its own.
+    assert await active_session_for_node("climate-a", time.time() + 5) == s["id"]
+    assert await active_session_for_node("climate-b", time.time() + 5) != s["id"]
     await update_chamber(c["id"], ChamberUpdate(active_session_id=s["id"]))
     assert await active_session_for_node("climate-a", time.time() + 5) == s["id"]

@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.integrations import (
     DriverConfigError,
@@ -61,6 +62,13 @@ class DummyConfig(BaseModel):
     api_key: str = ""
     poll_seconds: int = 60
 
+    @field_validator("base_url")
+    @classmethod
+    def _needs_scheme(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("base_url must start with http:// or https://")
+        return v
+
 
 class DummyDriver(IntegrationDriver):
     name = "dummy"
@@ -73,6 +81,7 @@ class DummyDriver(IntegrationDriver):
         self.start_calls = 0
         self.stop_calls = 0
         self.test_result = IntegrationHealth(state="ok")
+        self.health_result = IntegrationHealth(state="ok")
         self.fail_configure: str | None = None
 
     async def configure(self, config: BaseModel) -> None:
@@ -80,6 +89,10 @@ class DummyDriver(IntegrationDriver):
             raise DriverConfigError(self.fail_configure)
         assert isinstance(config, DummyConfig)
         self.configure_calls.append(config)
+
+    @property
+    def config(self) -> DummyConfig | None:
+        return self.configure_calls[-1] if self.configure_calls else None
 
     async def start(self) -> None:
         self.start_calls += 1
@@ -91,7 +104,7 @@ class DummyDriver(IntegrationDriver):
         return self.test_result
 
     async def health(self) -> IntegrationHealth:
-        return self.test_result
+        return self.health_result
 
 
 # ── Registration ──────────────────────────────────────────────────────
@@ -140,22 +153,43 @@ async def test_secret_field_is_encrypted_on_disk(fresh_keystore):
 
 
 @pytest.mark.asyncio
-async def test_redact_for_response_returns_last4_preview():
+async def test_redact_for_response_returns_a_fingerprint_preview(fresh_keystore):
     redacted = store.redact_for_response(
         {"api_key": "abcdefghij", "base_url": "http://x"},
         secret_fields={"api_key"},
     )
-    assert redacted["api_key"] == "••••ghij"
+    preview = redacted["api_key"]
+    # A stable fingerprint keyed by this Pi's integration key: the operator
+    # can tell whether the key changed, but none of its characters show
+    # (the preview used to be the last four).
+    assert re.fullmatch(r"••••[0-9a-f]{6}", preview)
+    assert "ghij" not in preview
+    assert store.redact_for_response({"api_key": "abcdefghij"}, {"api_key"})["api_key"] == preview
+    assert store.secret_preview("abcdefghiJ") != preview
     assert redacted["base_url"] == "http://x"
 
 
 @pytest.mark.asyncio
-async def test_redact_handles_short_secret():
+async def test_redact_never_returns_a_short_secret(fresh_keystore):
     redacted = store.redact_for_response(
         {"api_key": "ab"},
         secret_fields={"api_key"},
     )
-    assert redacted["api_key"] == "••••ab"
+    # A secret of four characters or fewer used to come back whole.
+    assert redacted["api_key"] != "••••ab" and "ab" not in redacted["api_key"][4:]
+
+
+@pytest.mark.asyncio
+async def test_preview_depends_on_the_pis_key(tmp_path, monkeypatch):
+    from app.config import settings
+    previews = []
+    for name in ("key-a", "key-b"):
+        monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / name))
+        reset_fernet_cache()
+        previews.append(store.secret_preview("1234"))
+    reset_fernet_cache()
+    # Without the Pi's key a preview cannot be checked against a guess.
+    assert previews[0] != previews[1]
 
 
 @pytest.mark.asyncio
@@ -256,9 +290,128 @@ def test_get_config_returns_redacted_secret(driver_and_client):
     )
     resp = client.get("/api/integrations/dummy/config")
     body = resp.json()
-    assert body["config"]["api_key"] == "••••1234"
+    assert body["config"]["api_key"] == store.secret_preview("topsecret-1234")
+    assert "1234" not in body["config"]["api_key"]
     # Schema is included for the UI to render the form.
     assert "properties" in body["schema"]
+
+
+def test_put_config_custom_validator_error_is_a_400_with_its_message(driver_and_client):
+    # A field_validator's ValueError rides in the error's ctx, which the JSON
+    # response could not serialize: every such rejection was a 500.
+    _, client = driver_and_client
+    resp = client.put(
+        "/api/integrations/dummy/config",
+        json={"enabled": False, "config": {"base_url": "10.0.0.40", "api_key": "s3cret"}},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "base_url must start with http://" in resp.text
+    assert "s3cret" not in resp.text, "the rejected config is not echoed back"
+
+
+@pytest.mark.parametrize("raw,started", [("false", False), ("off", False), ("true", True), (1, True)])
+def test_put_config_reads_enabled_as_a_lax_bool(driver_and_client, raw, started):
+    # bool("false") is True: the string used to enable and start the driver.
+    driver, client = driver_and_client
+    resp = client.put("/api/integrations/dummy/config",
+                      json={"enabled": raw, "config": {"base_url": "http://x"}})
+    assert resp.status_code == 200
+    assert resp.json()["enabled"] is started
+    assert driver.start_calls == int(started)
+
+
+def test_put_config_rejects_an_unreadable_enabled_flag(driver_and_client):
+    driver, client = driver_and_client
+    resp = client.put("/api/integrations/dummy/config",
+                      json={"enabled": "sometimes", "config": {"base_url": "http://x"}})
+    assert resp.status_code == 400
+    assert driver.start_calls == 0 and driver.configure_calls == []
+
+
+def test_put_config_rejects_a_secret_that_cannot_be_stored(driver_and_client):
+    # JSON can carry an unpaired surrogate; it cannot be encrypted for
+    # storage, so the save used to fail only after the driver had already
+    # been configured with it.
+    driver, client = driver_and_client
+    resp = client.put(
+        "/api/integrations/dummy/config",
+        content='{"enabled": true, "config": {"base_url": "http://x", "api_key": "k\\ud800"}}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+    assert "api_key must be plain text" in resp.text
+    assert driver.configure_calls == [] and driver.start_calls == 0
+    assert client.get("/api/integrations/dummy/config").json()["config"] == {}
+
+
+def test_put_config_without_config_keeps_the_stored_config(driver_and_client):
+    # A body with no `config` used to reset every non-secret field to its
+    # default (base_url, devices, mappings) while keeping the secrets.
+    driver, client = driver_and_client
+    client.put("/api/integrations/dummy/config", json={
+        "enabled": False,
+        "config": {"base_url": "http://10.0.0.5", "api_key": "k-1", "poll_seconds": 120}})
+    resp = client.put("/api/integrations/dummy/config", json={"enabled": True})
+    assert resp.status_code == 200
+    body = client.get("/api/integrations/dummy/config").json()
+    assert body["enabled"] is True
+    assert body["config"]["base_url"] == "http://10.0.0.5"
+    assert body["config"]["poll_seconds"] == 120
+    assert body["config"]["api_key"] == store.secret_preview("k-1")
+
+
+def test_put_config_without_enabled_keeps_the_stored_flag(driver_and_client):
+    driver, client = driver_and_client
+    client.put("/api/integrations/dummy/config",
+               json={"enabled": True, "config": {"base_url": "http://x"}})
+    resp = client.put("/api/integrations/dummy/config", json={"config": {"base_url": "http://y"}})
+    assert resp.json()["enabled"] is True
+    assert driver.stop_calls == 0
+
+
+async def test_put_config_puts_the_driver_back_when_the_save_fails(
+    fresh_registry, fresh_keystore, monkeypatch,
+):
+    driver = DummyDriver()
+    register(driver)
+    await _registry.put_config("dummy", {"enabled": False, "config": {"base_url": "http://old"}})
+
+    async def _disk_full(*args, **kwargs):
+        raise RuntimeError("database or disk is full")
+
+    monkeypatch.setattr(store, "save", _disk_full)
+    with pytest.raises(RuntimeError):
+        await _registry.put_config("dummy", {"enabled": False, "config": {"base_url": "http://new"}})
+    # The driver must not keep running settings that were never saved (a
+    # restart would silently revert them).
+    assert driver.config.base_url == "http://old"
+
+
+def test_listing_shows_the_drivers_live_health(driver_and_client):
+    # The listing used to show only the last Test's result: a driver whose
+    # polls started failing after a good Test still read "ok".
+    driver, client = driver_and_client
+    client.put("/api/integrations/dummy/config",
+               json={"enabled": True, "config": {"base_url": "http://x"}})
+    assert client.post("/api/integrations/dummy/test").json()["state"] == "ok"
+    driver.health_result = IntegrationHealth(state="error", last_error="connect timeout")
+    health = client.get("/api/integrations").json()[0]["health"]
+    assert (health["state"], health["last_error"]) == ("error", "connect timeout")
+    assert health["last_checked_at"] is not None, "still the time of the last Test"
+
+    client.post("/api/integrations/dummy/disable")
+    driver.health_result = IntegrationHealth(state="disabled")
+    assert client.get("/api/integrations").json()[0]["health"]["state"] == "disabled"
+
+
+def test_listing_flags_an_enabled_driver_that_is_not_running(driver_and_client):
+    driver, client = driver_and_client
+    client.put("/api/integrations/dummy/config",
+               json={"enabled": True, "config": {"base_url": "http://x"}})
+    driver.health_result = IntegrationHealth(state="disabled")  # it failed to start
+    health = client.get("/api/integrations").json()[0]["health"]
+    assert health["state"] == "error"
+    assert "not running" in health["last_error"]
 
 
 def test_test_connection_persists_health(driver_and_client):

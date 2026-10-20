@@ -11,15 +11,17 @@
 # What it does (idempotent — safe to re-run to pick up updates):
 #   1. Detects the OS (Raspberry Pi OS / Debian / Ubuntu).
 #   2. Installs Docker Engine + the Compose plugin if they are missing
-#      (official get.docker.com convenience script), plus chrony (NTP) and
-#      openssl if needed. Nothing else has to be installed by hand.
+#      (official get.docker.com convenience script), plus chrony (NTP; it
+#      also serves time to the nodes on the LAN) and openssl if needed.
+#      Nothing else has to be installed by hand.
 #   3. Writes a LAN-trust .env and generates the secrets the stack needs:
 #      the MQTT broker credentials (+ TLS certificates), a smart-plug
-#      credential and the node command-signing key; records the host's time
-#      zone (TZ) for the automation schedules. Keys already set are kept. No
-#      secret is ever committed to git.
+#      credential, the node command-signing key and an unguessable ntfy
+#      topic; records the host's time zone (TZ) for the automation schedules.
+#      Keys already set are kept. No secret is ever committed to git.
 #   4. Brings the whole stack up with `docker compose up -d --build` and
-#      waits for the API to report healthy.
+#      waits for the API to report healthy and the server to reach the MQTT
+#      broker.
 #   5. Prints the dashboard URL.
 #
 # Security posture: the Pi runs in LAN-trust mode (see app/auth.py). The
@@ -35,6 +37,11 @@
 #   SPOREPRINT_SKIP_START  =1 to prepare everything but not start the stack
 
 set -euo pipefail
+# The containers read the checkout as other users (the broker as uid 1883,
+# the server as uid 1000): a clone made under a stricter umask (077) left
+# acl.conf, models/ and docs/ unreadable to them. Secrets get explicit modes
+# (.env, ca.key, server.key and passwd are 0600).
+umask 022
 
 REPO_URL="${SPOREPRINT_REPO_URL:-https://github.com/59psi/SporePrint.git}"
 REPO_DIR="${SPOREPRINT_REPO_DIR:-$HOME/SporePrint}"
@@ -98,16 +105,65 @@ apt_install() { # apt_install <pkg...> — best-effort; caller decides if fatal.
   $SUDO apt-get update -q && $SUDO apt-get install -y "$@"
 }
 
-# ── 2. NTP (chrony) — keeps the clock accurate so cloud command replay windows
-#       and log/telemetry timestamps stay correct. Best-effort, never fatal. ──
-step "Ensuring accurate time (chrony/NTP)"
-if command -v chronyc >/dev/null 2>&1 || command -v timedatectl >/dev/null 2>&1; then
-  info "Time sync already available"
+# ── 2. Time: chrony, also the LAN's time server ──────────────────────────────
+# The Pi's clock keeps cloud command replay windows and log/telemetry
+# timestamps right. Nodes in a room without internet take their time from
+# the Pi (the setup portal's "NTP server"), and a node holding the
+# command-signing key refuses every command until its clock is set. So the Pi
+# answers NTP from private addresses (udp/123), from its own clock when it
+# has no upstream either. chrony does both; systemd-timesyncd (Raspberry Pi
+# OS's default) serves no clients, and installing chrony replaces it.
+# Best-effort, never fatal.
+step "Ensuring accurate time and a LAN time server (chrony)"
+CHRONY_CONF="${SP_CHRONY_CONF:-/etc/chrony/chrony.conf}"
+chrony_serve_lan() { # write the LAN-server drop-in, make chrony read it, restart it
+  local dir dropin
+  dir="$(dirname "$CHRONY_CONF")/conf.d"
+  dropin="$dir/sporeprint.conf"
+  printf '%s\n' \
+    "# Written by SporePrint's install.sh: answer NTP from private (LAN) addresses" \
+    "# so ESP32 nodes without internet access can set their clocks from this Pi." \
+    "allow 10.0.0.0/8" "allow 172.16.0.0/12" "allow 192.168.0.0/16" \
+    "# Serve this Pi's own clock when it has no upstream source either." \
+    "local stratum 10" \
+    | { $SUDO mkdir -p "$dir" && $SUDO tee "$dropin" >/dev/null; } || return 1
+  # Debian's chrony.conf reads conf.d (confdir); include the file otherwise.
+  if ! grep -Eq "^[[:space:]]*(confdir[[:space:]]+${dir}|include[[:space:]]+${dropin})[[:space:]]*\$" \
+       "$CHRONY_CONF" 2>/dev/null; then
+    printf 'include %s\n' "$dropin" | $SUDO tee -a "$CHRONY_CONF" >/dev/null || return 1
+  fi
+  command -v systemctl >/dev/null 2>&1 || return 2
+  $SUDO systemctl enable chrony >/dev/null 2>&1 || true
+  $SUDO systemctl restart chrony >/dev/null 2>&1 \
+    || $SUDO systemctl restart chronyd >/dev/null 2>&1 || return 2
+}
+HAVE_CHRONY=0
+if command -v chronyc >/dev/null 2>&1 || [ -x /usr/sbin/chronyd ]; then
+  HAVE_CHRONY=1
+elif command -v ntpd >/dev/null 2>&1 || [ -x /usr/sbin/ntpd ]; then
+  info "ntpd keeps time here and answers NTP clients by default: nodes can use this Pi as their NTP server"
 elif apt_install chrony >/dev/null 2>&1; then
-  command -v systemctl >/dev/null 2>&1 && $SUDO systemctl enable --now chrony >/dev/null 2>&1 || true
+  HAVE_CHRONY=1
   info "Installed chrony"
+elif [ "$(timedatectl show -p NTP --value 2>/dev/null || true)" = "yes" ]; then
+  warn "Could not install chrony. systemd-timesyncd keeps this Pi's clock but serves no clients:"
+  warn "nodes cannot use this Pi as their NTP server (without internet they never get the time)."
 else
-  warn "Could not install chrony — ensure NTP time sync is enabled if you later pair with the cloud."
+  warn "Could not install chrony and no NTP client runs: this Pi's clock may drift (cloud commands"
+  warn "are then refused as stale) and nodes cannot set their clocks from it."
+fi
+if [ "$HAVE_CHRONY" = "1" ]; then
+  CHRONY_RC=0
+  chrony_serve_lan || CHRONY_RC=$?
+  case "$CHRONY_RC" in
+    0) if $SUDO chronyc accheck 192.168.1.1 2>/dev/null | grep -i denied >/dev/null; then
+         warn "chrony did not load $(dirname "$CHRONY_CONF")/conf.d/sporeprint.conf: nodes cannot use this Pi as their NTP server"
+       else
+         info "chrony keeps time and answers NTP from the LAN (udp/123: open it if this Pi runs a firewall)"
+       fi ;;
+    2) warn "chrony is set up to serve the LAN; restart it to apply (sudo systemctl restart chrony)" ;;
+    *) warn "Could not write chrony's LAN config: nodes cannot use this Pi as their NTP server" ;;
+  esac
 fi
 
 # ── 3. Docker Engine + Compose plugin ────────────────────────────────────────
@@ -187,16 +243,61 @@ fi
 step "Preparing configuration (.env)"
 
 gen_secret() { openssl rand -base64 36 2>/dev/null | tr -d '=+/ ' | cut -c1-40; }
-env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# Keep env_get / env_set in step with scripts/lib/host.sh sp_env_get /
+# sp_env_set (tests/test_provision_scripts.py holds both to compose's reading).
+env_get() { # env_get KEY [FILE] — KEY's value as docker compose reads it, or nothing
+  # The last line wins; surrounding quotes are removed (a double-quoted value
+  # also unescapes \" \\ \$ \n \t \r); an unquoted value loses its outer
+  # blanks and a trailing " # comment"; an `export ` prefix is allowed. Read
+  # verbatim, a quoted password would be hashed into passwd with its quotes
+  # while compose hands the server the bare value.
+  [ -f "${2:-.env}" ] || return 0
+  SP_ENV_KEY="$1" awk '
+    BEGIN { k = ENVIRON["SP_ENV_KEY"] }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      sub(/^[ \t]*export[ \t]+/, "", line)
+      if (index(line, k "=") != 1) next
+      v = substr(line, length(k) + 2)
+      sub(/^[ \t]+/, "", v)
+      q = substr(v, 1, 1)
+      if (q == "\"" || q == "\047") {
+        out = ""
+        for (i = 2; i <= length(v); i++) {
+          c = substr(v, i, 1)
+          if (c == q) break
+          if (q == "\"" && c == "\\" && i < length(v)) {
+            i++; c = substr(v, i, 1)
+            if (c == "n") c = "\n"
+            else if (c == "t") c = "\t"
+            else if (c == "r") c = "\r"
+            else if (c != "\\" && c != "\"" && c != "$") c = "\\" c
+          }
+          out = out c
+        }
+        v = out
+      } else {
+        sub(/[ \t]+#.*$/, "", v)
+        sub(/[ \t]+$/, "", v)
+      }
+      last = v; found = 1
+    }
+    END { if (found) printf "%s", last }' "${2:-.env}"
+}
 env_set() { # env_set KEY VALUE — replace in place or append. Idempotent.
-  local key="$1" val="$2" tmp
+  # The value reaches awk in its environment, never on its command line (the
+  # process table) or through -v (which rewrites backslash escapes). awk ends
+  # every line it writes with a newline, so a last line saved without one
+  # never has the new key glued onto it.
+  local src=.env tmp
+  [ -f .env ] || src=/dev/null
   tmp="$(mktemp)"
-  if grep -qE "^${key}=" .env 2>/dev/null; then
-    awk -v k="$key" -v v="$val" 'BEGIN{FS=OFS="="} $1==k{print k"="v; next} {print}' .env > "$tmp"
-  else
-    cat .env > "$tmp" 2>/dev/null || true
-    printf '%s=%s\n' "$key" "$val" >> "$tmp"
-  fi
+  SP_ENV_KEY="$1" SP_ENV_VAL="$2" awk '
+    BEGIN { FS = OFS = "="; k = ENVIRON["SP_ENV_KEY"]; v = ENVIRON["SP_ENV_VAL"] }
+    $1 == k { print k "=" v; seen = 1; next }
+    { print }
+    END { if (!seen) print k "=" v }' "$src" > "$tmp"
   mv "$tmp" .env
 }
 
@@ -248,7 +349,7 @@ fi
 # scripts/provision-node.sh left in server/.env — nodes may already hold it.
 # Keep in step with scripts/lib/host.sh sp_ensure_signing_key.
 if [ -z "$(env_get SPOREPRINT_MQTT_HMAC_KEY)" ]; then
-  HMAC_KEY="$(grep -E '^SPOREPRINT_MQTT_HMAC_KEY=' server/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  HMAC_KEY="$(env_get SPOREPRINT_MQTT_HMAC_KEY server/.env)"
   if [ -n "$HMAC_KEY" ]; then
     info "Reusing the command-signing key from server/.env"
   else
@@ -257,6 +358,28 @@ if [ -z "$(env_get SPOREPRINT_MQTT_HMAC_KEY)" ]; then
   fi
   env_set SPOREPRINT_MQTT_HMAC_KEY "$HMAC_KEY"
   unset HMAC_KEY
+fi
+
+# ntfy alert topic. The bundled ntfy server has no logins: anyone who can
+# reach port 8080 and knows the topic can read the alerts or post fake ones.
+# A new install gets a topic nobody can guess. An existing one keeps the
+# topic its phones subscribe to (a new one would silently cut them off) and
+# is warned while that is still the default.
+NTFY_TOPIC="$(env_get SPOREPRINT_NTFY_TOPIC)"
+NTFY_TOPIC_GUESSABLE=0
+if [ -z "$NTFY_TOPIC" ] || [ "$NTFY_TOPIC" = "sporeprint" ]; then
+  if [ "$EXISTING_INSTALL" = "0" ]; then
+    NTFY_TOPIC="sporeprint-$(openssl rand -hex 8)"
+    env_set SPOREPRINT_NTFY_TOPIC "$NTFY_TOPIC"
+    info "Generated the ntfy alert topic ${NTFY_TOPIC} (SPOREPRINT_NTFY_TOPIC)"
+  else
+    NTFY_TOPIC="sporeprint"
+    NTFY_TOPIC_GUESSABLE=1
+    warn "Alerts go to the default ntfy topic 'sporeprint', which anyone on your network can"
+    warn "read and post fake alerts to. Unless you set your own in Settings → Notifications,"
+    warn "put SPOREPRINT_NTFY_TOPIC=<a long random name> in .env, re-run ./install.sh and"
+    warn "subscribe your phone to the new topic."
+  fi
 fi
 
 # Time zone: automation schedules (photoperiod, time windows, cron) run on
@@ -316,6 +439,15 @@ chmod 600 .env 2>/dev/null || true
 step "Provisioning MQTT broker credentials"
 PASSWD_FILE="config/mosquitto/passwd"
 mkdir -p config/mosquitto
+# acl.conf is opened after the drop to uid 1883 too: it must be world-readable
+# however the checkout was made (git records no read bits). Mosquitto 2.1
+# warns that a later release will refuse a world-readable acl_file: a broker
+# upgrade must hand it to uid 1883 the way passwd is.
+for f in config/mosquitto/mosquitto.conf config/mosquitto/acl.conf; do
+  if [ -f "$f" ] && ! chmod 644 "$f" 2>/dev/null; then
+    warn "Could not make $f readable to the broker (chmod 644 it, or it will not start)"
+  fi
+done
 BROKER_CHOWN=0
 [ "$(uname -s)" = "Linux" ] && BROKER_CHOWN=1
 PASSWD_CHANGED=0
@@ -323,7 +455,9 @@ if [ ! -f "$PASSWD_FILE" ] || [ "$MQTT_CREDS_FRESH" = "1" ]; then
   # Set `server` + `sp-3p` IN PLACE (never `mosquitto_passwd -c` on an
   # existing file): per-node users added by scripts/add-node-mqtt-user.sh
   # survive a re-run, and the inode the running broker's bind mount points at
-  # stays the same. Credentials travel on stdin, not argv.
+  # stays the same. Passwords travel on stdin, into the container and on to
+  # mosquitto_passwd (password + confirmation), never on a command line: a
+  # container's processes show in the Pi's process table.
   # shellcheck disable=SC2016  # the -c script expands inside the container
   printf '%s\n%s\n%s\n%s\n' server "$MQTT_PASS" sp-3p "$MQTT_3P_PASS" \
     | dc run --rm -i -e SP_CHOWN="$BROKER_CHOWN" \
@@ -331,7 +465,7 @@ if [ ! -f "$PASSWD_FILE" ] || [ "$MQTT_CREDS_FRESH" = "1" ]; then
       set -e
       [ -f /work/passwd ] || : > /work/passwd
       while IFS= read -r u && IFS= read -r p; do
-        mosquitto_passwd -b /work/passwd "$u" "$p" >/dev/null
+        printf "%s\n%s\n" "$p" "$p" | mosquitto_passwd /work/passwd "$u" >/dev/null
       done
       grep -q "^server:" /work/passwd
       grep -q "^sp-3p:" /work/passwd
@@ -363,9 +497,14 @@ server_san() {
   for ip in $HOST_IPS; do san="${san},IP:${ip},DNS:${ip}"; done
   printf '%s' "$san"
 }
-issue_server_cert() { # (re)issue server.key + server.crt from the existing CA
+# Keep issue_server_cert / cert_reissue_reason in step with scripts/lib/host.sh
+# sp_issue_server_cert / sp_cert_reissue_reason.
+issue_server_cert() { # (re)issue server.key + server.crt from the CA in $CERT_DIR
+  # Both are made in a directory inside $CERT_DIR (the same filesystem, so
+  # each rename is atomic) and moved into place only once both exist; on any
+  # failure the old pair stays and this returns 1.
   local tmp
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$CERT_DIR/.issue.XXXXXX")" || return 1
   if openssl req -newkey rsa:2048 -nodes \
        -keyout "$tmp/server.key" -out "$tmp/server.csr" \
        -subj "/CN=sporeprint.local" 2>/dev/null \
@@ -373,21 +512,36 @@ issue_server_cert() { # (re)issue server.key + server.crt from the existing CA
        -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
        -CAcreateserial -CAserial "$tmp/ca.srl" \
        -days 1825 -out "$tmp/server.crt" \
-       -extfile <(printf 'subjectAltName=%s' "$(server_san)") 2>/dev/null; then
-    chmod 600 "$tmp/server.key"
-    chmod 644 "$tmp/server.crt"
-    mv -f "$tmp/server.key" "$CERT_DIR/server.key"
-    mv -f "$tmp/server.crt" "$CERT_DIR/server.crt"
+       -extfile <(printf 'subjectAltName=%s' "$(server_san)") 2>/dev/null \
+     && chmod 600 "$tmp/server.key" && chmod 644 "$tmp/server.crt" \
+     && mv -f "$tmp/server.key" "$CERT_DIR/server.key" \
+     && mv -f "$tmp/server.crt" "$CERT_DIR/server.crt"; then
     rm -rf "$tmp"
     return 0
   fi
   rm -rf "$tmp"
   return 1
 }
+cert_reissue_reason() { # why server.crt must be re-issued from the CA, or nothing
+  if ! openssl x509 -in "$CERT_DIR/server.crt" -noout -checkend $((30 * 86400)) >/dev/null 2>&1; then
+    printf 'it expires within 30 days'
+  elif [ -n "$PRIMARY_IP" ] && ! openssl x509 -in "$CERT_DIR/server.crt" -noout -text 2>/dev/null \
+       | grep -E "IP Address:$(printf '%s' "$PRIMARY_IP" | sed 's/\./\\./g')(,|\$)" >/dev/null; then
+    # (grep reads to the end: an early -q exit could SIGPIPE openssl, and
+    # under pipefail that would read as "not covered".)
+    printf 'it does not cover %s' "$PRIMARY_IP"
+  fi
+}
 CERTS_CHANGED=0
 CA_CHANGED=0
-if [ ! -f "$CERT_DIR/server.crt" ]; then
-  mkdir -p "$CERT_DIR"
+mkdir -p "$CERT_DIR"
+# The broker opens the certificates after dropping to uid 1883, so the
+# directory must be searchable by it whatever umask made it.
+chmod 755 "$CERT_DIR" || fail "could not make $CERT_DIR searchable by the broker (chmod 755)"
+if [ ! -f "$CERT_DIR/ca.crt" ]; then
+  # No CA yet (or $CERT_DIR was deleted to start over): a new CA and a server
+  # certificate from it. A node that pinned an earlier CA must be provisioned
+  # again.
   openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
     -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
     -subj "/CN=SporePrint Local CA" 2>/dev/null || fail "CA certificate generation failed"
@@ -397,21 +551,35 @@ if [ ! -f "$CERT_DIR/server.crt" ]; then
   CERTS_CHANGED=1
   CA_CHANGED=1
   info "Generated CA + server certificate in $CERT_DIR"
-elif [ -n "$PRIMARY_IP" ] && ! openssl x509 -in "$CERT_DIR/server.crt" -noout -text 2>/dev/null \
-       | grep -qE "IP Address:$(printf '%s' "$PRIMARY_IP" | sed 's/\./\\./g')(,|\$)"; then
-  # Older installs issued a DNS-only certificate. Re-issue just the server
-  # certificate from the SAME CA — nodes pin the CA, so they keep verifying.
-  if [ -r "$CERT_DIR/ca.key" ] && issue_server_cert; then
+elif [ ! -f "$CERT_DIR/server.crt" ] || [ ! -f "$CERT_DIR/server.key" ]; then
+  # Never a new CA while ca.crt exists: Secure-MQTT nodes have pinned it and
+  # refuse any other until they are factory-reset. Re-issue from it.
+  [ -r "$CERT_DIR/ca.key" ] || fail "$CERT_DIR has the CA certificate but not its key (ca.key), so the broker certificate cannot be re-issued. Restore ca.key, or delete $CERT_DIR to start a new CA: every Secure-MQTT node must then be factory-reset and provisioned again."
+  issue_server_cert || fail "server certificate generation failed"
+  CERTS_CHANGED=1
+  info "Re-issued the broker certificate from the existing CA (pinned nodes unaffected)"
+else
+  # Older installs issued a DNS-only certificate, the host's address can
+  # change, and the certificate runs for five years: re-issue from the SAME
+  # CA. Nodes pin the CA, so they keep verifying.
+  REISSUE_WHY="$(cert_reissue_reason)"
+  if [ -z "$REISSUE_WHY" ]; then
+    info "TLS certificates already present — leaving as-is"
+  elif [ -r "$CERT_DIR/ca.key" ] && issue_server_cert; then
     CERTS_CHANGED=1
-    info "Re-issued the broker certificate to cover ${PRIMARY_IP} (same CA — pinned nodes unaffected)"
+    info "Re-issued the broker certificate (${REISSUE_WHY}; same CA — pinned nodes unaffected)"
   else
-    warn "The broker certificate does not cover ${PRIMARY_IP}. Nodes using Secure MQTT must use"
+    warn "The broker certificate needs re-issuing (${REISSUE_WHY}) but $CERT_DIR/ca.key could not issue one."
+    warn "Restore ca.key and re-run ./install.sh. Meanwhile nodes using Secure MQTT should use"
     warn "sporeprint.local (or ${HOST_NAME}.local) as the broker address."
   fi
-else
-  info "TLS certificates already present — leaving as-is"
 fi
 [ -f "$CERT_DIR/ca.crt" ] || fail "$CERT_DIR/ca.crt is missing — delete $CERT_DIR and re-run ./install.sh to regenerate the CA"
+if ! openssl x509 -in "$CERT_DIR/ca.crt" -noout -checkend $((365 * 86400)) >/dev/null 2>&1; then
+  warn "The broker CA ($CERT_DIR/ca.crt) expires within a year ($(openssl x509 -in "$CERT_DIR/ca.crt" -noout -enddate 2>/dev/null | cut -d= -f2))."
+  warn "Replacing it means provisioning every Secure-MQTT node again: delete $CERT_DIR, re-run ./install.sh,"
+  warn "then factory-reset and re-provision each node that uses Secure MQTT."
+fi
 
 # ── 7b. Hand the broker's secret files to the broker user (Linux) ─────────────
 # Idempotent, and also repairs installs made by older versions of this script
@@ -468,15 +636,63 @@ if [ "$HEALTHY" != "1" ]; then
 fi
 info "API is healthy"
 
+# ── 9b. The server is on the broker ─────────────────────────────────────────
+# /api/health answers as soon as uvicorn runs, broker or not. The mqtt
+# healthcheck logs in as `server` with the password the server was given, so
+# a passwd that does not match .env shows there; the server's own client is
+# subscribed once the broker's $SYS stats reach /api/health/detail/mqtt.
+step "Checking the server's MQTT connection"
+mqtt_detail() { # GET /api/health/detail/mqtt; an API key goes to curl on stdin, never argv
+  local key
+  key="$(env_get SPOREPRINT_API_KEY)"
+  if [ -n "$key" ]; then
+    key="${key//\\/\\\\}"; key="${key//\"/\\\"}"   # curl config string escapes
+    printf 'header = "Authorization: Bearer %s"\n' "$key" \
+      | curl -fsS -K - "http://localhost:8000/api/health/detail/mqtt" 2>/dev/null
+  else
+    curl -fsS "http://localhost:8000/api/health/detail/mqtt" 2>/dev/null
+  fi
+}
+MQTT_STATE="no broker container"
+MQTT_CID="$(dc compose ps -q mqtt 2>/dev/null | head -1 || true)"
+for _ in $(seq 1 30); do
+  [ -n "$MQTT_CID" ] || break
+  MQTT_STATE="$(dc inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$MQTT_CID" 2>/dev/null || true)"
+  case "$MQTT_STATE" in healthy|unhealthy) break ;; esac
+  printf '.'; sleep 2
+done
+SERVER_ON_MQTT=0
+if [ "$MQTT_STATE" = "healthy" ]; then
+  for _ in $(seq 1 15); do
+    case "$(mqtt_detail || true)" in *'"version"'*) SERVER_ON_MQTT=1; break ;; esac
+    printf '.'; sleep 2
+  done
+fi
+printf '\n'
+if [ "$SERVER_ON_MQTT" = "1" ]; then
+  info "The server is connected to the MQTT broker"
+else
+  warn "The server is NOT connected to the MQTT broker (broker health: ${MQTT_STATE:-unknown})."
+  warn "Nodes get no commands and their readings go nowhere until it is. Recent logs:"
+  dc compose logs --tail=20 mqtt server || true
+  warn "A broker login that does not match .env is the usual cause: rotate it with"
+  warn "./scripts/rotate-mqtt-creds.sh server, then check: $( [ -n "$DOCKER_SUDO" ] && echo 'sudo ' )docker compose logs -f mqtt server"
+fi
+
 # ── 10. Summary ──────────────────────────────────────────────────────────────
 PI_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "$PI_IP" ] || PI_IP="<pi-ip>"
 DC_PREFIX=""; [ -n "$DOCKER_SUDO" ] && DC_PREFIX="sudo "
 SCHED_TZ="$(env_get TZ)"; [ -n "$SCHED_TZ" ] || SCHED_TZ="UTC (set TZ in .env)"
+if [ "$SERVER_ON_MQTT" = "1" ]; then
+  RUNNING_LINE="${GREEN}${BOLD}✓ SporePrint is running.${NC}"
+else
+  RUNNING_LINE="${YELLOW}${BOLD}! SporePrint is up, but the server is not connected to the MQTT broker (see above).${NC}"
+fi
 
 cat <<EOF
 
-${GREEN}${BOLD}✓ SporePrint is running.${NC}
+${RUNNING_LINE}
 
   ${BOLD}Open the dashboard:${NC}  ${CYAN}http://${PI_IP}:3001${NC}
                         (or http://sporeprint.local:3001 if mDNS works on your network)
@@ -484,7 +700,8 @@ ${GREEN}${BOLD}✓ SporePrint is running.${NC}
   API health   http://${PI_IP}:8000/api/health
   MQTT broker  ${PI_IP}:1883   (TLS on 8883)   — ESP32 nodes connect here
                Secure MQTT nodes: use sporeprint.local (or ${PI_IP}) as the broker host
-  ntfy push    http://${PI_IP}:8080
+  ntfy push    http://${PI_IP}:8080   topic ${NTFY_TOPIC}$( [ "$NTFY_TOPIC_GUESSABLE" = "1" ] && echo '  (the guessable default: see the warning above)' )
+               (in the ntfy app, subscribe to that topic on http://${PI_IP}:8080)
   Schedules    ${SCHED_TZ} — photoperiod, time windows and cron rules follow it
 
 ${BOLD}Next steps${NC}
@@ -493,9 +710,11 @@ ${BOLD}Next steps${NC}
   • Command signing is on: the Pi signs every node command. Nodes accept signed
     commands without the key; to make a node reject forged ones, paste the key
     into its portal's "Command signing key" — print it with ./scripts/provision-node.sh
-  • Smart plugs (Shelly/Tasmota): MQTT user sp-3p, password SPOREPRINT_MQTT_3P_PASSWORD
-    in .env (Tasmota: FullTopic tasmota/%topic%/%prefix%/ and a unique Topic;
-    Shelly Plus/Pro/Mini/Gen3/Gen4: MQTT prefix shellies/<role>, e.g. shellies/humidifier).
+  • Smart plugs (Shelly/Tasmota): give each its own MQTT login with
+    ./scripts/add-plug-mqtt-user.sh <role> (or use the shared user sp-3p, password
+    SPOREPRINT_MQTT_3P_PASSWORD in .env, which every such plug then holds).
+    Tasmota: FullTopic tasmota/%topic%/%prefix%/ and Topic = the role;
+    Shelly Plus/Pro/Mini/Gen3/Gen4: MQTT prefix shellies/<role>, e.g. shellies/humidifier.
   • To pair with the cloud (premium remote access), generate a code in the app.
 
 ${BOLD}Manage the stack${NC}  (from ${REPO_DIR})

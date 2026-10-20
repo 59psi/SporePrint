@@ -19,9 +19,10 @@ from app.integrations._base import IntegrationHealth
 class _Drv:
     def __init__(self, state: str) -> None:
         self.state = state
+        self.error: str | None = None
 
     async def health(self) -> IntegrationHealth:
-        return IntegrationHealth(state=self.state)  # type: ignore[arg-type]
+        return IntegrationHealth(state=self.state, last_error=self.error)  # type: ignore[arg-type]
 
 
 @pytest.fixture
@@ -29,8 +30,10 @@ def one_driver(monkeypatch):
     drv = _Drv("ok")
     monkeypatch.setattr(sweeper._registry, "registered_drivers", lambda: {"aranet": drv})
     sweeper._last_state.clear()
+    sweeper._ok_streak.clear()
     yield drv
     sweeper._last_state.clear()
+    sweeper._ok_streak.clear()
 
 
 @pytest.fixture
@@ -42,11 +45,13 @@ def cloud(monkeypatch):
 
     c = _Cloud()
     c.sent = []
+    c.confirmed: list[bool] = []
 
-    async def fake_forward(event_type, data):
+    async def fake_forward(event_type, data, *, confirm=False):
         if not c.up:
             return False
         c.sent.append((event_type, data))
+        c.confirmed.append(confirm)
         return True
 
     monkeypatch.setattr(cloud_service, "forward_event", fake_forward)
@@ -90,6 +95,9 @@ async def test_transition_while_offline_is_delivered_after_reconnect(one_driver,
 
     await sweeper._sweep_once()          # no duplicate
     assert len(cloud.sent) == 1
+    # Delivered means acknowledged by the relay: an event sent into a link
+    # that died without closing must not count as sent.
+    assert cloud.confirmed == [True]
 
 
 async def test_error_to_disabled_resolves_escalation(one_driver, cloud):
@@ -109,3 +117,45 @@ async def test_ok_to_disabled_needs_no_event(one_driver, cloud):
     await sweeper._sweep_once()      # cloud down, but nothing to deliver
     assert cloud.sent == []
     assert sweeper._last_state["aranet"] == "disabled"
+
+
+async def test_disabled_to_ok_needs_no_event(one_driver, cloud):
+    # Every boot: the first sweep runs before the drivers are started, so it
+    # sees "disabled"; the next sees "ok". That used to send a "resolved"
+    # event the cloud pushed as "integration degraded" — on every reboot and
+    # every enable.
+    cloud.up = True
+    one_driver.state = "disabled"
+    await sweeper._sweep_once()
+    one_driver.state = "ok"
+    await sweeper._sweep_once()
+    assert cloud.sent == []
+    assert sweeper._last_state["aranet"] == "ok"
+
+
+async def test_degraded_event_carries_the_drivers_error_as_reason(one_driver, cloud):
+    cloud.up = True
+    await sweeper._sweep_once()
+    one_driver.state, one_driver.error = "error", "Quest: connect timeout"
+    await sweeper._sweep_once()
+    assert cloud.sent == [("vendor_health_degraded", {
+        "vendor": "aranet", "state": "error", "reason": "Quest: connect timeout", "resolved": False,
+    })]
+
+
+async def test_a_flapping_driver_is_one_incident(one_driver, cloud):
+    cloud.up = True
+    await sweeper._sweep_once()                      # baseline ok
+    for state in ("error", "ok", "error", "ok", "error"):
+        one_driver.state = state
+        await sweeper._sweep_once()
+    # One page, not one per flap; the incident is still open.
+    assert [d["resolved"] for _e, d in cloud.sent] == [False]
+
+    one_driver.state = "ok"
+    for _ in range(sweeper._RECOVERED_AFTER_SWEEPS - 1):
+        await sweeper._sweep_once()
+    assert len(cloud.sent) == 1, "a recovery must hold before it resolves"
+    await sweeper._sweep_once()
+    assert [d["resolved"] for _e, d in cloud.sent] == [False, True]
+    assert sweeper._last_state["aranet"] == "ok"

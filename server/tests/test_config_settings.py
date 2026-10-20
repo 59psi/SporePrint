@@ -19,17 +19,17 @@ from app.vision import service as vision_service
 def test_defaults_match_the_documented_behaviour():
     s = Settings()
     assert s.vision_auto_interval_min == 360          # spec §6: every 6 h
-    assert s.cloud_require_signed_integrations is False
+    assert s.cloud_require_signed_integrations is True   # the cloud signs every frame
     assert s.public_ui_url == "http://sporeprint.local:3001"
 
 
 def test_env_vars_reach_the_new_settings(monkeypatch):
     monkeypatch.setenv("SPOREPRINT_VISION_AUTO_INTERVAL_MIN", "30")
-    monkeypatch.setenv("SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS", "true")
+    monkeypatch.setenv("SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS", "false")
     monkeypatch.setenv("SPOREPRINT_PUBLIC_UI_URL", "http://192.168.1.20:3001")
     s = Settings()
     assert s.vision_auto_interval_min == 30
-    assert s.cloud_require_signed_integrations is True
+    assert s.cloud_require_signed_integrations is False
     assert s.public_ui_url == "http://192.168.1.20:3001"
 
 

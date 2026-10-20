@@ -93,4 +93,46 @@ private:
     AlertLatch latch_;
 };
 
+// Edge alerts (the reed switch's door opened / closed) are events, not
+// conditions: there is nothing left to re-check once the door has moved, so
+// an edge raised while MQTT was down used to be lost for good. EdgeAlertQueue
+// keeps the undelivered edges, in order, until a publish succeeds. At most
+// two are held — the first undelivered edge and the latest state: a third
+// edge that returns to the first one's state collapses the queue to it
+// (opened, closed, opened → "opened": the door was opened and is open now).
+// An edge whose delivery failed once is marked late, so its message can say
+// it is reported after the fact.
+class EdgeAlertQueue {
+public:
+    struct Edge {
+        bool high;  // the rising edge (door opened)
+        bool late;  // a delivery already failed: reported after the fact
+    };
+
+    void push(bool high) {
+        if (n_ > 0 && q_[n_ - 1].high == high) return;  // no state change
+        if (n_ == 2) {
+            n_ = 1;  // back at the first edge's state: it says it all
+            return;
+        }
+        q_[n_++] = {high, false};
+    }
+    bool pending() const { return n_ > 0; }
+    Edge front() const { return q_[0]; }
+    // The front edge was published.
+    void delivered() {
+        if (n_ == 0) return;
+        q_[0] = q_[1];
+        --n_;
+    }
+    // A publish failed: everything queued now goes out late.
+    void undeliverable() {
+        for (uint8_t i = 0; i < n_; ++i) q_[i].late = true;
+    }
+
+private:
+    Edge q_[2] = {};
+    uint8_t n_ = 0;
+};
+
 }  // namespace sp

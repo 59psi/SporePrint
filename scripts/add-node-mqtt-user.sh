@@ -24,6 +24,13 @@
 # The username MUST equal the node_id — the ACL patterns expand %u to scope
 # the node to its own topics. A relay-01 credential cannot write climate-01's
 # telemetry, which is the point.
+#
+# It refuses the broker's service accounts (server, sp-3p, sp-cmd,
+# sp-telemetry and the server's own SPOREPRINT_MQTT_USERNAME) and the plug
+# logins listed in SPOREPRINT_MQTT_PLUG_USERS, in any case: none is a node
+# (the server ignores node frames under those names), and a new password here
+# would lock out whatever logs in with it. scripts/rotate-mqtt-creds.sh
+# rotates the service accounts; add-plug-mqtt-user.sh re-keys a plug.
 
 set -euo pipefail
 
@@ -31,6 +38,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASSWD="$ROOT/config/mosquitto/passwd"
 # shellcheck source=scripts/lib/broker.sh
 . "$ROOT/scripts/lib/broker.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$ROOT/scripts/lib/host.sh"
 
 NODE_ID="${1:-}"
 if [ -z "$NODE_ID" ]; then
@@ -41,6 +50,26 @@ if ! [[ "$NODE_ID" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
   echo "✗ node_id must be alphanumeric/_/- (max 32 chars) — it doubles as the MQTT username and topic segment."
   exit 1
 fi
+ACCOUNT="$(sp_service_account "$ROOT" "$NODE_ID")"
+if [ -n "$ACCOUNT" ]; then
+  echo "✗ '$NODE_ID' is the broker's '$ACCOUNT' service account, not a node id. The"
+  echo "  server ignores node frames under that name, and a new password here would"
+  echo "  lock out what logs in with it ('server' is the Pi server's own login, sp-3p"
+  echo "  every smart plug's). Pick another node id; to rotate a service account's"
+  echo "  password use ./scripts/rotate-mqtt-creds.sh."
+  exit 1
+fi
+lowercase() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+IFS=', ' read -r -a PLUG_USERS <<< "$(sp_env_get "$ROOT/.env" SPOREPRINT_MQTT_PLUG_USERS),$(sp_env_get "$ROOT/server/.env" SPOREPRINT_MQTT_PLUG_USERS)"
+for plug in ${PLUG_USERS[@]+"${PLUG_USERS[@]}"}; do
+  if [ -n "$plug" ] && [ "$(lowercase "$plug")" = "$(lowercase "$NODE_ID")" ]; then
+    echo "✗ '$NODE_ID' is a smart plug's broker login (SPOREPRINT_MQTT_PLUG_USERS), not a"
+    echo "  node id: a new password here would cut that plug off the broker, and the"
+    echo "  server ignores node frames under that name. Pick another node id; to give the"
+    echo "  plug a new password use ./scripts/add-plug-mqtt-user.sh $NODE_ID."
+    exit 1
+  fi
+done
 if [ -d "$PASSWD" ]; then
   echo "✗ $PASSWD is a directory (Docker created it when the stack was started"
   echo "  before install.sh). Re-run ./install.sh — it repairs this — then retry."
@@ -53,9 +82,7 @@ if sp_docker_init; then
   printf '%s\n%s\n' "$NODE_ID" "$PASS" | sp_passwd_update "$ROOT"
 elif command -v mosquitto_passwd >/dev/null 2>&1 && { [ ! -e "$PASSWD" ] || [ -w "$PASSWD" ]; }; then
   # No docker here (e.g. a bare-metal dev broker): edit with the host tool.
-  [ -f "$PASSWD" ] || : > "$PASSWD"
-  mosquitto_passwd -b "$PASSWD" "$NODE_ID" "$PASS"
-  chmod 600 "$PASSWD"
+  sp_host_passwd_set "$PASSWD" "$NODE_ID" "$PASS"
 else
   echo "✗ Cannot edit $PASSWD: need a reachable docker daemon (the file belongs to"
   echo "  the broker's uid ${SP_BROKER_UID} on Linux), or mosquitto_passwd with write access."

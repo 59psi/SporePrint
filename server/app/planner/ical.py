@@ -6,17 +6,22 @@ proposer means the projection is driven by the species' real phases instead of a
 hardcoded phase order, and every event gets a deterministic, collision-free UID.
 """
 
+from datetime import timedelta
+
+from icalendar import Calendar, Event, vText
+
 from .models import ProposedCycle
 
 
 def cycle_to_ical(cycle: ProposedCycle) -> str:
     """Render a proposed cycle as an iCal (text/calendar) feed."""
-    from icalendar import Calendar, Event  # lazy — mirrors sessions.generate_ical
-
     cal = Calendar()
     cal.add("prodid", "-//SporePrint//Grow Cycle Proposal//EN")
     cal.add("version", "2.0")
-    cal.add("x-wr-calname", f"SporePrint plan — {cycle.common_name}")
+    # An X- property is not escaped unless it is given as TEXT: a custom
+    # profile's common name with a comma came out raw, one with a newline
+    # failed the whole feed.
+    cal.add("x-wr-calname", vText(f"SporePrint plan — {cycle.common_name}"))
 
     slug = cycle.species_id
     start_iso = cycle.start_date.isoformat()
@@ -45,7 +50,10 @@ def cycle_to_ical(cycle: ProposedCycle) -> str:
         ev = Event()
         ev.add("summary", f"{cycle.common_name} — Expected Harvest")
         ev.add("dtstart", cycle.harvest_date)
-        ev.add("dtend", cycle.harvest_date)
+        # A one-day all-day event: RFC 5545 makes DTEND exclusive and
+        # strictly later than DTSTART (equal dates are invalid, and strict
+        # clients drop the marker).
+        ev.add("dtend", cycle.harvest_date + timedelta(days=1))
         ev["uid"] = f"proposal-{slug}-{start_iso}-harvest@sporeprint"
         cal.add_component(ev)
 

@@ -10,8 +10,10 @@ PlatformIO env (``node_esp32``, ``cam``, ...) and ``sha256``/``size`` of its
 ``manifest`` and ``manifest_sig``. The Pi then:
 
 1. verifies it here — signature by the pinned key, canonical form, the
-   uploaded image's sha256 and size, and a version not older than the node's
-   heartbeat ``firmware_version`` — and refuses the push (400) otherwise;
+   uploaded image's sha256 and size, an artifact for this kind of node (a
+   ``cam*`` image only for a camera, a node image only for a climate / relay /
+   lighting node), and a version not older than the node's heartbeat
+   ``firmware_version`` — and refuses the push (400) otherwise;
 2. sends it to the node on ``cmd/ota_manifest`` {manifest_b64, sig_b64}
    (signed like every command) before inviting the node, and waits for the
    node's ``manifest_armed`` / ``manifest_rejected`` OTA event
@@ -42,6 +44,11 @@ MAX_NODE_MANIFEST_BYTES = 480
 # cmd/<suffix> on the node (firmware/lib/sp_core/ota_gate.h kOtaManifestSuffix).
 CMD_SUFFIX = "ota_manifest"
 
+# The heartbeat `type` of a camera (firmware src/cam/main.cpp); the camera
+# images' PlatformIO envs (the manifest artifact) all start with "cam".
+CAMERA_NODE_TYPE = "camera"
+CAMERA_ARTIFACT_PREFIX = "cam"
+
 
 class NodeManifestError(ValueError):
     """The manifest does not authorize this image for this node."""
@@ -59,8 +66,10 @@ class NodeManifest:
 
 
 def check_node_manifest(manifest_bytes: bytes, signature: bytes, image: bytes,
-                        node_firmware_version: str | None) -> NodeManifest:
-    """Verify a node image's signed manifest against the uploaded image."""
+                        node_firmware_version: str | None,
+                        node_type: str | None) -> NodeManifest:
+    """Verify a node image's signed manifest against the uploaded image and
+    the target node (`node_type`: its heartbeat type)."""
     if len(manifest_bytes) > MAX_NODE_MANIFEST_BYTES:
         raise NodeManifestError(
             f"manifest is {len(manifest_bytes)} bytes; a node takes at most "
@@ -75,6 +84,14 @@ def check_node_manifest(manifest_bytes: bytes, signature: bytes, image: bytes,
         raise NodeManifestError(str(e)) from None
     if manifest["artifact"] == ota_manifest.ARTIFACT_PI_SERVER:
         raise NodeManifestError("this manifest is for the Pi server, not a node image")
+    # A node built without the verify key flashes whatever the Pi sends, so
+    # the Pi binds the image to the kind of node: a camera image on a relay
+    # node would drive its MOSFET gate pins as camera bus lines.
+    camera_image = manifest["artifact"].startswith(CAMERA_ARTIFACT_PREFIX)
+    if camera_image != (node_type == CAMERA_NODE_TYPE):
+        raise NodeManifestError(
+            f"this manifest is for {manifest['artifact']}, not this "
+            f"{node_type or 'unknown'} node")
     if manifest["size"] != len(image) or manifest["sha256"] != hashlib.sha256(image).hexdigest():
         raise NodeManifestError(
             f"the uploaded image is not the one the manifest signs "

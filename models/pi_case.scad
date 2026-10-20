@@ -200,8 +200,8 @@ cooler_h        = AC_H;     // mm — Active Cooler envelope above PCB top
 intake_d        = 23;       // mm — intake grille / shroud bore (fan Ø21)
 shroud_t        = 1.2;      // mm
 shroud_gap      = 1.0;      // mm — shroud end above the cooler envelope
-fan_size        = 40;       // mm — cooling="fan40"
-fan_hole_pitch  = 32;       // mm
+// cooling="fan40": a 40 x 40 x 10 mm fan (the mode fixes the size)
+fan_hole_pitch  = 32;       // mm — its screw-hole pitch
 fan_screw_clear = 3.4;      // mm
 fan_grille_d    = 38;       // mm
 

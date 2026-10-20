@@ -8,9 +8,14 @@
 //   * temp_rh — only a CLIMATE-personality node is expected to carry a
 //     temp/RH sensor; one with no SHT on the bus lists `temp_rh` in
 //     expected_missing (relay/lighting banks are sensorless by design)
-//   * CO2 / lux found here are opportunistic: never listed when absent at
-//     boot, but once found, a sensor that stops delivering goes stale and
-//     raises a sensor_failure alert (freshness.h)
+//   * CO2 / lux are learned: absent at a node's first boots they are never
+//     listed; once found, the node remembers them (NVS, sp_core/
+//     sensor_memory.h). A remembered sensor that stops delivering goes stale
+//     and raises a sensor_failure alert (freshness.h); one that no longer
+//     answers at boot — it dropped off before a reboot, so it is not built —
+//     is listed in expected_missing and raises the same alert, until it is
+//     back or forgotten in the setup portal
+//     (factory reset forgets too)
 //   * the config-flag peripherals below are listed when enabled but not
 //     delivering (mhz19, hx711) — except the reed switch, which cannot be
 //     told apart from a closed door and is never listed
@@ -46,6 +51,7 @@
 namespace sp {
 
 enum class TempRhKind : uint8_t { None, Sht3x, Sht4x };
+// Values are stored in NVS (sensor_memory.h seen_co2): append only.
 enum class Co2Kind : uint8_t { None, Scd4x, Scd30 };
 
 struct DetectedSensors {

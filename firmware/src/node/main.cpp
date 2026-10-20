@@ -67,8 +67,9 @@
 #include "channel_runtime.h"
 #include "clamps.h"
 #include "cmd_router.h"
-#include "coredump_drain.h"
+#include "command_auth.h"
 #include "coredump_uploader.h"
+#include "deferred_restart.h"
 #include "freshness.h"
 #include "hmac_verify.h"
 #include "hx711.h"
@@ -91,7 +92,7 @@
 #include "scd30.h"
 #include "scd4x.h"
 #include "scene_table.h"
-#include "sha256.h"
+#include "sensor_memory.h"
 #include "sht3x.h"
 #include "sht4x.h"
 #include "stretch_i2c_bus.h"
@@ -120,7 +121,7 @@ static sp_device::WifiProvisioner provisioner(kv, /*peripheral_opts=*/true,
 // slot in the loop-WDT budget (sp_core/link_budget.h).
 static sp_device::BoundedDnsClient wifi_client;
 static sp_device::BoundedDnsSecureClient wifi_client_secure;
-// Transport selection + runtime CA-fetch retry (fw-node#2).
+// Transport selection + runtime CA-fetch retry.
 static sp_device::TlsSupervisor tls_link(cfg, kv, wifi_client,
                                          wifi_client_secure);
 static sp_device::MqttLink* mqtt = nullptr;
@@ -185,7 +186,17 @@ static bool mhz_warm = false;
 static uint32_t boot_ms = 0;
 // The MH-Z19C answers unreliably during its preheat; don't call it missing
 // before this much uptime.
-static constexpr uint32_t kMhz19WarmupMs = 3UL * 60UL * 1000UL;
+static constexpr uint32_t kMhz19WarmupMs = sp::Mhz19::kPreheatMs;
+// After a power-up the MH-Z19C's replies are discarded until its preheat has
+// run (mhz19.h reading_usable): they were published as live co2_ppm and drove
+// the Pi's CO2 rules. Cleared once, so a millis() wrap never re-arms it.
+static bool mhz_preheating = false;
+// A stale SCD4x is re-started once per staleness window (scd4x.h
+// restart_periodic): one that lost power wakes idle and never recovered.
+static sp::StaleRecovery scd_recovery;
+// Autodetected sensors found at an earlier boot that did not answer at this
+// one (sensor_memory.h): listed in expected_missing + a latched alert.
+static sp::SeenCheck seen_check;
 
 // Alert latches: entry + hourly reminder, with hysteresis — not one alert
 // per read pass (2,880/day per condition at the 30 s default).
@@ -197,6 +208,10 @@ static sp::ThresholdAlert co2_hi_alert(sp::ThresholdAlert::Dir::Above, 4000.0f, 
 static sp::AlertLatch temp_rh_fail_alert;
 static sp::AlertLatch scd_stale_alert, mhz_stale_alert, lux_stale_alert,
     hx_stale_alert, aht_stale_alert, baro_stale_alert;
+static sp::AlertLatch co2_gone_alert, lux_gone_alert;  // seen_check
+// Door edges wait here until published: one raised while MQTT is down used
+// to be lost (alert_latch.h EdgeAlertQueue).
+static sp::EdgeAlertQueue door_edges;
 // Secure MQTT on the plaintext fallback: entry + hourly, and at once when the
 // reason changes (tls_policy.h TlsDowngradeLatch).
 static sp::TlsDowngradeLatch tls_downgrade_alert;
@@ -222,18 +237,24 @@ static sp::ButtonHold boot_button;
 // Signed commands: each accepted (topic, MAC) once per replay window.
 static sp::ReplayGuard cmd_replay_guard;
 
-// OTA probation (fw-node#12) + deliberate, deferred restarts.
+// OTA probation + deliberate, deferred restarts.
 static sp::ImageConfirm image_confirm;
-static bool restart_pending = false;
-static uint32_t restart_requested_ms = 0;
-static constexpr uint32_t kRestartDelayMs = 1500;  // let logs/MQTT flush
+static sp_device::DeferredRestart restart;
+
+// Channels whose output stage failed (bit i = bank index i): the LEDC attach
+// at boot, or a duty write since. Their gate is held LOW as a plain GPIO and
+// their model is off and refuses commands (Channel::set_output_fault).
+static uint32_t ledc_failed_mask = 0;
+// The lighting bank's level report while ramps run (publish_cadence.h).
+static sp::DimReportThrottle dim_report;
 
 // ── helpers ─────────────────────────────────────────────────────
 
 static float c_to_f(float c) { return c * 9.0f / 5.0f + 32.0f; }
 
 static float dew_point_c(float t_c, float rh_pct) {
-    // Magnus formula — same constants as v1 so dashboards don't shift.
+    // Magnus formula — same constants as v1 so dashboards don't shift. NaN
+    // at 0 % RH (log 0): build_telemetry then omits dew_point_f.
     const float a = 17.27f, b = 237.7f;
     float alpha = (a * t_c) / (b + t_c) + logf(rh_pct / 100.0f);
     return (b * alpha) / (a - alpha);
@@ -242,8 +263,20 @@ static float dew_point_c(float t_c, float rh_pct) {
 // Arduino-ESP32 3.x LEDC API: channels are addressed by PIN. setup() binds
 // bank index i to LEDC channel i explicitly (ledcAttachChannel), the same
 // channel-per-index map the 2.x ledcSetup(i)/ledcAttachPin(pin, i) code had.
+// A refused write (ledcWrite returns false once the pin has no LEDC bus)
+// used to be ignored while the channel reported itself on: now the gate is
+// driven LOW, the channel faulted off, and the caller's report says off.
 static void write_channel_duty(int idx) {
-    ledcWrite(kChannelPins[idx], channels[idx].duty10());
+    if ((ledc_failed_mask & (1u << idx)) != 0) return;  // gate held LOW
+    if (ledcWrite(kChannelPins[idx], channels[idx].duty10())) return;
+    ledc_failed_mask |= (1u << idx);
+    pinMode(kChannelPins[idx], OUTPUT);
+    digitalWrite(kChannelPins[idx], LOW);
+    channels[idx].set_output_fault(millis(), sp::kChannelFaultLedcWrite);
+    SP_LOG(LOG_ERROR,
+           "[CH] %s: LEDC write FAILED on GPIO %d - output held LOW, channel "
+           "disabled until a reboot",
+           channels[idx].config().name, kChannelPins[idx]);
 }
 
 static void report_switch_channel(int idx, const char* trigger) {
@@ -262,8 +295,11 @@ static void report_dim_levels() {
         levels[i].name = channels[i].config().name;
         levels[i].level = channels[i].level10();
     }
-    sp::build_dim_levels(levels, channel_count, doc);
+    sp::build_dim_levels(
+        levels, channel_count,
+        sp::telemetry_ts((uint64_t)time(nullptr), millis() / 1000), doc);
     mqtt->publish(mqtt->topic("telemetry").c_str(), doc);
+    dim_report.reported(millis());  // any pending ramp step is covered
 }
 
 // Returns true only when the alert was actually published — alert latches
@@ -290,7 +326,7 @@ static uint32_t force_all_off(const char* reason, bool report) {
         SP_LOG(LOG_ERROR, "[SAFETY] %s forced off: %s",
                channels[i].config().name, reason);
         if (report && channels[i].config().mode == sp::ChannelMode::Switch)
-            report_switch_channel(i, "safety_cutoff");
+            report_switch_channel(i, sp::kTriggerSafetyCutoff);
     }
     if (report && cut != 0 && channel_count > 0 &&
         channels[0].config().mode == sp::ChannelMode::Dim)
@@ -309,8 +345,10 @@ static uint32_t force_all_off(const char* reason, bool report) {
 // bootloader boot the previous image (sp_device/image_rollback.h).
 extern "C" bool verifyRollbackLater() { return true; }
 
+// A confirm also raises the anti-rollback floor a manifest-verified push
+// left pending (OtaService::image_confirmed); a failed one is retried.
 static void confirm_running_image(const char* why) {
-    sp_device::confirm_running_image(image_confirm, why);
+    sp_device::confirm_running_image(image_confirm, ota, why);
 }
 
 // Before an operator-requested reboot (peripheral change, portal request,
@@ -318,18 +356,14 @@ static void confirm_running_image(const char* why) {
 // BOOT gesture an operator reaches for when a fresh OTA can't connect does
 // not lock that image in.
 static void confirm_before_deliberate_restart(const char* why) {
-    sp_device::confirm_before_deliberate_restart(image_confirm, mqtt, why);
+    sp_device::confirm_before_deliberate_restart(image_confirm, mqtt, ota, why);
 }
 
-// Operator-requested reboot. Deferred a moment so the log line reaches MQTT;
-// loop() measures the delay with a fresh millis() — a command handled inside
-// mqtt->loop() runs after that pass's `now` was taken. Boot step 1 drives
-// every channel off again.
+// Operator-requested reboot, deferred a moment so the log line reaches MQTT
+// (sp_device/deferred_restart.h, shared with the camera image). Boot step 1
+// drives every channel off again.
 static void request_restart(const char* why) {
-    SP_LOG(LOG_WARN, "[SYSTEM] restarting: %s", why);
-    confirm_before_deliberate_restart(why);
-    restart_pending = true;
-    restart_requested_ms = millis();
+    restart.request(why, image_confirm, mqtt, ota);
 }
 
 // Per-channel max-on override persistence: NVS key "mo_<channel>" (NVS keys
@@ -340,48 +374,6 @@ static bool max_on_nvs_key(const char* channel, char* out, size_t cap) {
 }
 
 // ── command handling ────────────────────────────────────────────
-
-// Clock-gated HMAC policy: with a provisioned key, frames verify strictly
-// (and only once NTP has a sane epoch). With NO key, accept + warn every
-// time — the v1 migration posture, except v2 can actually provision the
-// key (portal field), and an empty key really is empty (the build-flag
-// stringify corruption that silently armed garbage keys is gone).
-static bool verify_command(const char* raw, size_t raw_len,
-                           const char* suffix) {
-    // Policy (empty-key fail-open, clock gate, strict verify) is the pure,
-    // host-tested sp::command_auth_decision (test_core_hmac). Verification
-    // runs on the exact wire bytes MqttLink hands through — never on a
-    // re-serialized document (lexeme fidelity is what makes the canonicalizer
-    // byte-exact against Python).
-    //
-    // The arrival topic enables destination binding (a signed "topic"
-    // member must name exactly this topic — frames without the member still
-    // verify), and the replay guard rejects a second delivery of the same
-    // signed frame to the same topic inside the window (fw-node#11).
-    std::string topic = mqtt->topic("cmd/");
-    topic += suffix;
-    sp::CmdAuthResult r = sp::command_auth_decision(
-        raw, raw_len, cfg.hmac_key.c_str(), cfg.hmac_key.size(),
-        (uint64_t)time(nullptr), sp::hmac_sha256_host, topic.c_str(),
-        &cmd_replay_guard);
-    switch (r.decision) {
-        case sp::CmdAuthDecision::AcceptUnsigned:
-            SP_LOG(LOG_WARN,
-                   "[SEC] hmac_key not provisioned — accepting unsigned cmd/%s",
-                   suffix);
-            return true;
-        case sp::CmdAuthDecision::RejectClockUnsynced:
-            SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: clock not synced", suffix);
-            return false;
-        case sp::CmdAuthDecision::Reject:
-            SP_LOG(LOG_WARN, "[SEC] Rejecting cmd/%s: %s", suffix,
-                   sp::verify_status_str(r.status));
-            return false;
-        case sp::CmdAuthDecision::Accept:
-            return true;
-    }
-    return false;
-}
 
 static void handle_config_cmd(JsonDocument& doc) {
     if (doc["read_interval_ms"].is<uint32_t>()) {
@@ -486,7 +478,7 @@ static void handle_config_cmd(JsonDocument& doc) {
                    sp::ScaleCalibrator::kSamples, (double)known_g);
         }
     }
-    // Tier-3 peripheral switch (docs#0): {"peripherals": {"mhz19": true,
+    // Tier-3 peripheral switch: {"peripherals": {"mhz19": true,
     // "hx711": true, "reed": false, "reed_inv": true}} — only boolean
     // members present are applied. Persisted to the same NVS flags the setup
     // portal writes; the drivers are built only in setup(), so a change to
@@ -632,6 +624,21 @@ static void handle_channel_cmd(int idx, JsonDocument& doc) {
     uint32_t now = millis();
     sp::ChannelEvent ev = channels[idx].apply(cmd, now);
     if (ev == sp::ChannelEvent::Rejected) {
+        if (channels[idx].output_fault() != nullptr) {
+            // Its output stage failed: say so, and report the state the
+            // hardware really has (off) rather than leave the Pi assuming the
+            // command took effect.
+            SP_LOG(LOG_ERROR,
+                   "[CH] %s: command refused - output unavailable (%s, gate "
+                   "held LOW on GPIO %d)",
+                   channels[idx].config().name, channels[idx].output_fault(),
+                   kChannelPins[idx]);
+            if (channels[idx].config().mode == sp::ChannelMode::Switch)
+                report_switch_channel(idx, sp::kTriggerCommand);
+            else
+                report_dim_levels();
+            return;
+        }
         SP_LOG(LOG_WARN, "[CH] %s: %s", channels[idx].config().name,
                channels[idx].reason());
         return;
@@ -641,32 +648,22 @@ static void handle_channel_cmd(int idx, JsonDocument& doc) {
            channels[idx].config().name, channels[idx].is_on() ? "ON" : "OFF",
            channels[idx].pwm8(), channels[idx].level10());
     if (channels[idx].config().mode == sp::ChannelMode::Switch) {
-        report_switch_channel(idx, "command");
+        report_switch_channel(idx, sp::kTriggerCommand);
     } else {
         report_dim_levels();
     }
 }
 
-// An ack the node would accept right now: none is needed without a signing
-// key, and with one the frame only verifies once NTP has synced.
-static bool coredump_ack_verifiable() {
-    return cfg.hmac_key.empty() || (uint64_t)time(nullptr) >= sp::kMinValidEpoch;
-}
-
 static void on_command(const char* suffix, const char* raw, size_t raw_len,
                        JsonDocument& doc, void*) {
-    if (!verify_command(raw, raw_len, suffix)) return;
-    // The Pi stored the panic dump this node uploaded (coredump_uploader.h).
-    // A reserved name, so no channel can shadow it (channel_runtime.cpp).
-    if (strcmp(suffix, sp::kCoredumpAckSuffix) == 0) {
-        sp_device::coredump::on_ack(doc);
+    // Clock-gated HMAC check (destination binding + replay guard, and the
+    // previous key during a key rotation) and the reserved suffixes
+    // (coredump_ack, ota_manifest), shared with the camera image
+    // (sp_device/command_auth.h).
+    if (sp_device::command_prologue(*mqtt, cfg, kv, cmd_replay_guard, ota,
+                                    suffix, raw, raw_len, doc) !=
+        sp_device::CmdPrologue::Route)
         return;
-    }
-    // A signed release manifest for the push that follows (ota_service.h).
-    if (strcmp(suffix, sp::kOtaManifestSuffix) == 0) {
-        if (ota != nullptr) ota->on_manifest(doc);
-        return;
-    }
     sp::CmdRoute route = router.route(suffix);
     switch (route.target) {
         case sp::CmdTarget::Config:
@@ -688,12 +685,16 @@ static void on_command(const char* suffix, const char* raw, size_t raw_len,
 
 // One HX711 sample if a conversion is ready (a single pin read otherwise —
 // never a spin-wait). Feeds the read-pass cache AND any running tare /
-// calibration capture.
+// calibration capture. A rail code or a stuck line is not a sample
+// (hx711.h): it keeps nothing fresh, so the scale goes stale and is listed
+// missing instead of publishing a made-up weight.
 static void sample_hx711(uint32_t now) {
     if (hx711 == nullptr || !hx711->is_ready()) return;
+    int32_t raw = 0;
     noInterrupts();  // PD_SCK high >60 µs power-cycles the chip
-    int32_t raw = hx711->read_raw();
+    const bool ok = hx711->read(&raw);
     interrupts();
+    if (!ok) return;
     hx711_raw = raw;
     have_hx711 = true;
     hx_fresh.mark_ok(now);
@@ -810,6 +811,17 @@ static void read_sensors() {
         have_pressure = false;
     if (aht20 != nullptr) aht_fresh.check_stale(now, window);  // alert latch
 
+    // An SCD4x that lost power on its own (loose cable) wakes idle: its
+    // data_ready() is never true again and CO2 stayed stale until a reboot.
+    // While stale, periodic measurement is re-started once per window (this
+    // also finishes a begin() that failed at boot) — two short writes that a
+    // sensor still measuring NACKs harmlessly.
+    if (scd4x != nullptr &&
+        scd_recovery.due(scd_fresh.is_stale(), now, window) &&
+        scd4x->restart_periodic())
+        SP_LOG(LOG_WARN, "[SENSOR] SCD4x was idle (lost power?) - periodic "
+                         "measurement restarted");
+
     uint32_t took = millis() - t0;
     if (took > 50) {
         SP_LOG(LOG_WARN, "[SENSOR] read pass took %u ms (budget 50)",
@@ -884,7 +896,26 @@ static void check_alerts() {
                 bme280 != nullptr && bme280->has_humidity() ? "BME280"
                                                             : "BMP280");
 
-    // Secure MQTT asked for, plaintext in use (fw-node#2): entry + hourly
+    // An autodetected sensor found at an earlier boot that did not answer at
+    // this one (sensor_memory.h). It was never built, so no staleness clock
+    // runs for it — and every rule on its reading (the CO2 FAE / emergency
+    // exhaust) went quiet without a word.
+    if (co2_gone_alert.due(seen_check.co2_missing, now) &&
+        emit_alert("sensor_failure", 0.0f,
+                   "CO2 sensor found at an earlier boot is not answering - "
+                   "check its cable (or forget it in the setup portal)",
+                   seen_check.co2_missing_kind == (int32_t)sp::Co2Kind::Scd30
+                       ? "SCD30"
+                       : "SCD4x"))
+        co2_gone_alert.emitted(now);
+    if (lux_gone_alert.due(seen_check.lux_missing, now) &&
+        emit_alert("sensor_failure", 0.0f,
+                   "Light sensor found at an earlier boot is not answering - "
+                   "check its cable (or forget it in the setup portal)",
+                   "BH1750"))
+        lux_gone_alert.emitted(now);
+
+    // Secure MQTT asked for, plaintext in use: entry + hourly
     // until a fetched CA verifies on TLS and is pinned. The message says why
     // (no CA yet, cert name mismatch, 8883 unreachable, ...) and a new
     // reason is announced at once.
@@ -944,8 +975,18 @@ static void publish_telemetry() {
     bool sent = false;
     if (mqtt->connected()) {
         // Drain the backlog FIRST so the live reading is the newest frame to
-        // arrive (replayed frames are flagged and never become "latest").
-        offline_buffer.flush([](const char* t, const char* p) {
+        // arrive (replayed frames are flagged and never become "latest"). A
+        // frame buffered before the clock synced carries uptime as its ts:
+        // once synced it is dated here (wire_contract.h
+        // rebase_buffered_telemetry) — the Pi used to stamp the whole outage
+        // at one instant.
+        const uint64_t epoch_now = (uint64_t)time(nullptr);
+        const uint32_t uptime_now = millis() / 1000;
+        offline_buffer.flush([epoch_now, uptime_now](const char* t,
+                                                     const char* p) {
+            std::string dated;
+            if (sp::rebase_buffered_telemetry(p, epoch_now, uptime_now, &dated))
+                return mqtt->publish_raw(t, dated.c_str());
             return mqtt->publish_raw(t, p);
         });
         sent = mqtt->publish(topic.c_str(), doc);
@@ -998,7 +1039,7 @@ static void publish_heartbeat() {
     in.n_roles = n_roles;
     in.fw_image = "node";
     in.migrated_from = cfg.migrated_from.c_str();
-    // Additive keys: the MQTT transport actually in use (fw-node#2) and the
+    // Additive keys: the MQTT transport actually in use and the
     // board profile (which image an OTA push needs).
     in.emit_tls = true;
     in.tls = tls_link.tls();
@@ -1047,7 +1088,9 @@ static void publish_health() {
                          ? (uint16_t)ch.pwm8()
                          : ch.level10(),
                      ch.on_time_sec_live(now), ch.health().cycle_count,
-                     ch.health().safety_cutoffs};
+                     ch.health().safety_cutoffs, ch.health().max_on_trips};
+        // Additive: why a channel's output stage is unusable (null = fine).
+        cviews[i].fault = ch.output_fault();
     }
 
     // Declared-but-missing sensors (each also raises a latched
@@ -1058,16 +1101,23 @@ static void publish_health() {
     //   mhz19 / hx711 — config-enabled, but no fresh sample inside the
     //             staleness window (the driver object always exists once
     //             enabled, so the old `enabled && nullptr` test never fired).
+    //   scd4x / scd30 / bh1750 — autodetected at an earlier boot, not at
+    //             this one (sensor_memory.h): never built this boot, so no
+    //             staleness clock could flag it.
     //   The reed switch is not listed: a correctly wired switch on a door
     //   that stays shut legitimately produces no edges, so an unwired one is
     //   electrically indistinguishable.
-    const char* missing[4];
+    const char* missing[6];
     int nm = 0;
     if (cfg.personality == sp::Personality::Climate && !sht3x && !sht4x &&
         !aht20 && !(bme280 && bme280->has_humidity()))
         missing[nm++] = "temp_rh";
     if (mhz19 != nullptr && mhz_fresh.is_stale()) missing[nm++] = "mhz19";
     if (hx711 != nullptr && hx_fresh.is_stale()) missing[nm++] = "hx711";
+    if (seen_check.co2_missing)
+        missing[nm++] =
+            sp::co2_kind_str((sp::Co2Kind)seen_check.co2_missing_kind);
+    if (seen_check.lux_missing) missing[nm++] = "bh1750";
 
     sp::HealthInputs in;
     in.node_id = cfg.node_id.c_str();
@@ -1112,9 +1162,10 @@ void setup() {
     //    (same frequency + resolution). If the core refuses an attach (the
     //    frequency/resolution pair unachievable on this clock, the pin
     //    claimed by another peripheral), the gate is driven LOW as a plain
-    //    GPIO instead — off, never floating — and the failure is reported
-    //    once Serial is up.
-    uint32_t ledc_failed_mask = 0;
+    //    GPIO instead — off, never floating — the failure is reported once
+    //    Serial is up (and to the Pi once MQTT is), and the channel stays
+    //    off, refusing commands, with a `fault` in its health (step 4).
+    ledc_failed_mask = 0;
     for (int i = 0; i < SP_CHANNEL_COUNT; ++i) {
         if (!ledcAttachChannel(kChannelPins[i], SP_LEDC_FREQ_HZ,
                                SP_LEDC_RES_BITS, (uint8_t)i) ||
@@ -1143,35 +1194,15 @@ void setup() {
     if (!migrated.empty())
         Serial.printf("[CONFIG] Migrated v1 namespace '%s'\n", migrated.c_str());
 
-    // 3. Provisioning / WiFi — pre-WDT, deadline-bounded (boot_policy.h).
-    //    The setup AP is OPEN and its form rewrites the broker host, HMAC
-    //    key and OTA password, so a working node never falls into it on its
-    //    own: a router slow to return after a power blip used to park the
-    //    node in the portal for 10 minutes with anyone in range able to
-    //    re-provision it (fw-node#9).
-    bool portal_requested = kv.get_bool("portal_req", false);
-    if (portal_requested) kv.set_bool("portal_req", false);  // one-shot
-    if (sp::portal_at_boot(cfg.provisioned(), portal_requested)) {
-        provisioner.run_portal(cfg);  // never returns (10-min ceiling)
-    }
-    if (provisioner.connect(cfg)) {
-        if (!cfg.wifi_verified) {
-            cfg.wifi_verified = true;
-            kv.set_bool("wifi_ok", true);
-        }
-    } else if (sp::portal_after_connect_failure(cfg.wifi_verified)) {
-        // Credentials just typed in the portal never connected — likely a
-        // typo, and the operator is right there: give the form back.
-        provisioner.run_portal(cfg);  // never returns
-    } else {
-        // These credentials have worked before: boot offline. The link
-        // watchdog re-begins the STA connection every 60 s, telemetry
-        // buffers, and every channel stays off until MQTT commands arrive.
-        Serial.println("[WIFI] Network unreachable - booting offline and "
-                       "retrying. Hold BOOT 3-10 s (then release) to open "
-                       "the setup portal.");
-    }
-    provisioner.start_ntp(cfg);
+    // 3. Provisioning / WiFi — pre-WDT, deadline-bounded (boot_policy.h;
+    //    WifiProvisioner::bring_up, the same step as the camera image). The
+    //    setup AP is OPEN and its form rewrites the broker host, HMAC key and
+    //    OTA password, so a working node never falls into it on its own
+    //    Offline boot: the link watchdog re-begins the STA
+    //    connection every 60 s, telemetry buffers, and every channel stays
+    //    off until MQTT commands arrive.
+    provisioner.bring_up(cfg, "Hold BOOT 3-10 s (then release) to open the "
+                              "setup portal.");
 
     // 4. Channel bank from personality.
     sp::ChannelConfig channel_cfgs[4];
@@ -1180,6 +1211,10 @@ void setup() {
     router.enable_scene(cfg.personality == sp::Personality::LightingBank);
     for (int i = 0; i < channel_count; ++i) {
         channels[i].configure(channel_cfgs[i]);
+        // Still routed — a command gets a clear refusal and an "off" report,
+        // not "unknown endpoint" — but the channel never claims to be on.
+        if ((ledc_failed_mask & (1u << i)) != 0)
+            channels[i].set_output_fault(0, sp::kChannelFaultLedcAttach);
         router.add_channel(channels[i].config().name, i);
         // Operator max-on override (cmd/config max_on_sec), if persisted.
         char key[16];
@@ -1208,6 +1243,22 @@ void setup() {
                   sp::co2_kind_str(detected.co2), detected.bh1750,
                   detected.aht20, sp::baro_kind_str(detected.baro),
                   detected.baro_addr);
+    // A CO2 / light sensor found at an earlier boot that did not answer now
+    // is reported missing (health + a latched alert) instead of silently not
+    // being built (sensor_memory.h). NVS is written only on a change.
+    seen_check = sp::check_seen_sensors(sp::load_seen_sensors(kv),
+                                        (int32_t)detected.co2, detected.bh1750);
+    if (seen_check.changed) sp::store_seen_sensors(kv, seen_check.remember);
+    if (seen_check.co2_missing)
+        SP_LOG(LOG_ERROR,
+               "[SENSOR] %s found at an earlier boot did not answer - no CO2 "
+               "reading (forget it in the setup portal if it was removed)",
+               sp::co2_kind_str((sp::Co2Kind)seen_check.co2_missing_kind));
+    if (seen_check.lux_missing)
+        SP_LOG(LOG_ERROR,
+               "[SENSOR] bh1750 found at an earlier boot did not answer - no "
+               "light reading (forget it in the setup portal if it was "
+               "removed)");
     if (detected.temp_rh == sp::TempRhKind::Sht3x)
         sht3x = new sp::Sht3x(i2c_bus, sys_clock, detected.temp_rh_addr);
     if (detected.temp_rh == sp::TempRhKind::Sht4x)
@@ -1224,7 +1275,9 @@ void setup() {
     }
     if (detected.bh1750) {
         bh1750 = new sp::Bh1750(i2c_bus, detected.bh1750_addr);
-        bh1750->begin();
+        if (!bh1750->begin())  // read() re-arms it every pass
+            SP_LOG(LOG_ERROR, "[SENSOR] BH1750 begin failed - retried on "
+                              "every read pass");
     }
     if (detected.aht20) {
         if (sht3x == nullptr && sht4x == nullptr)
@@ -1246,6 +1299,16 @@ void setup() {
         Serial2.begin(9600, SERIAL_8N1, SP_UART_CO2_RX, SP_UART_CO2_TX);
         mhz19 = new sp::Mhz19(*co2_uart, sys_clock);
         mhz19->begin(false);  // ABC off — chamber air is never 400 ppm
+        // A power-up (or brown-out) reset means the sensor on this supply
+        // just powered up too: its replies are discarded until its preheat
+        // has run. A warm reset (OTA, watchdog, restart) kept it powered.
+        const esp_reset_reason_t rr = esp_reset_reason();
+        mhz_preheating = rr == ESP_RST_POWERON || rr == ESP_RST_BROWNOUT ||
+                         rr == ESP_RST_UNKNOWN;
+        if (mhz_preheating)
+            SP_LOG(LOG_INFO, "[SENSOR] MH-Z19C preheating - CO2 readings used "
+                             "from %u s after power-up",
+                   (unsigned)(sp::Mhz19::kPreheatMs / 1000UL));
     }
     if (cfg.hx711_enabled) {
         hx711 = new sp::Hx711(hx_dout, hx_sck, sp_device::hx711_delay_us);
@@ -1273,6 +1336,15 @@ void setup() {
     sp_device::logfwd::attach(mqtt);
     // Find + hash a panic dump; loop() uploads it and the Pi's ack erases it.
     sp_device::coredump::begin(*mqtt, kv);
+    // A boot-time LEDC failure was printed before MQTT existed: queue it for
+    // the Pi's node log too (health carries the channel's `fault`).
+    for (int i = 0; i < channel_count; ++i) {
+        if ((ledc_failed_mask & (1u << i)) != 0)
+            SP_LOG(LOG_ERROR,
+                   "[CH] %s: LEDC attach FAILED on GPIO %d - output held LOW, "
+                   "commands refused",
+                   channels[i].config().name, kChannelPins[i]);
+    }
 
     std::string hostname = "sporeprint-" + cfg.node_id;
     ota = new sp_device::OtaService(*mqtt, hostname.c_str(),
@@ -1281,6 +1353,14 @@ void setup() {
     // channel ticks — drive every output off before it starts.
     ota->on_start([](void*) { force_all_off("OTA update started", true); },
                   nullptr);
+    // A push while this image is on probation would overwrite the confirmed
+    // image in the other slot: confirm this one first if it reached MQTT,
+    // else refuse the push (sp_device/image_rollback.h).
+    ota->before_flash(
+        [](void*) {
+            return sp_device::clear_probation_for_ota(image_confirm, mqtt, ota);
+        },
+        nullptr);
     ota->configure_manifests(
         sp_device::ota_manifest_build_config(&kv, SPOREPRINT_FW_VERSION));
     ota->begin();
@@ -1329,11 +1409,12 @@ void loop() {
         case sp::ButtonHold::Action::FactoryReset:
             SP_LOG(LOG_ERROR, "[SYSTEM] Factory reset triggered");
             confirm_before_deliberate_restart("factory reset");
+            sp_device::logfwd::flush_now();  // the lines saying why
             sp_device::factory_reset_all();  // restarts
             break;
         case sp::ButtonHold::Action::OpenPortal:
-            if (!restart_pending) {
-                kv.set_bool("portal_req", true);
+            if (!restart.pending()) {
+                provisioner.request_portal_at_next_boot();
                 request_restart("setup portal requested (BOOT held 3-10 s)");
             }
             break;
@@ -1343,23 +1424,22 @@ void loop() {
 
     // Secure MQTT with no verified CA: judge a running trial (commit on a
     // CONNACK, else back to plaintext / fail-closed), or at most one bounded
-    // CA fetch per pass on a backoff (tls_policy.h). A pass that fetched
-    // starts no MQTT connect attempt — the two together would overrun the WDT
-    // (link_budget.h).
-    const bool ca_fetched = tls_link.loop(now, boot_down, *mqtt);
-    mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), ca_fetched, boot_down));
+    // CA fetch or probe of a fetched CA per pass on a backoff (tls_policy.h).
+    // Such a pass starts no MQTT connect attempt — the two together would
+    // overrun the WDT (link_budget.h).
+    const bool tls_blocked = tls_link.loop(now, boot_down, *mqtt);
+    mqtt->loop(now, sp::mqtt_may_connect(tls_link.mode(), tls_blocked, boot_down));
     ota->loop();
     sp_device::logfwd::loop(now);
-    sp_device::coredump::loop(now, coredump_ack_verifiable());
+    sp_device::coredump::loop(now, sp_device::coredump_ack_verifiable(cfg));
 
     // OTA probation: a new image proves itself with 60 s of continuous MQTT.
     if (image_confirm.update(now, mqtt->connected()))
         confirm_running_image("60 s of MQTT after boot");
 
-    if (restart_pending &&
-        sp::elapsed_ms(millis(), restart_requested_ms) >= kRestartDelayMs) {
-        ESP.restart();
-    }
+    // A requested restart, once its flush delay has passed (the queued log
+    // lines — the reason among them — go out first).
+    restart.loop();
 
     // Link-loss failsafe (CLAUDE.md §5c: 10-min MQTT watchdog → safe mode).
     sp::LinkWatchdog::Actions link =
@@ -1379,7 +1459,7 @@ void loop() {
         for (int i = 0; i < channel_count; ++i) {
             if ((safe_mode_cut_mask & (1u << i)) != 0 &&
                 channels[i].config().mode == sp::ChannelMode::Switch)
-                report_switch_channel(i, "safety_cutoff");
+                report_switch_channel(i, sp::kTriggerSafetyCutoff);
         }
         if (safe_mode_cut_mask != 0 && channel_count > 0 &&
             channels[0].config().mode == sp::ChannelMode::Dim)
@@ -1437,22 +1517,41 @@ void loop() {
         }
     }
 
-    // Channel safety ticks (duration / max-on / ramps).
+    // Channel safety ticks (duration / max-on / ramps), on a FRESH clock: a
+    // command handled inside mqtt->loop() above stamped its channel with a
+    // millis() later than this pass's `now`.
+    const uint32_t tick_now = millis();
     for (int i = 0; i < channel_count; ++i) {
-        if (channels[i].tick(now) == sp::ChannelEvent::Changed) {
+        if (channels[i].tick(tick_now) == sp::ChannelEvent::Changed) {
             write_channel_duty(i);
+            // A timed pulse ending on schedule is routine (trigger "timer",
+            // INFO); max-on is a firmware cutoff the operator must see.
+            const sp::ChannelCutoff cut = channels[i].last_cutoff();
             if (channels[i].config().mode == sp::ChannelMode::Switch) {
-                report_switch_channel(i, channels[i].last_change_was_cutoff()
-                                             ? "safety_cutoff"
-                                             : "report");
-                if (channels[i].last_change_was_cutoff())
-                    SP_LOG(LOG_ERROR, "[SAFETY] %s %s",
-                           channels[i].config().name, channels[i].reason());
+                report_switch_channel(
+                    i, cut == sp::ChannelCutoff::Timer ? sp::kTriggerTimer
+                       : cut != sp::ChannelCutoff::None
+                           ? sp::kTriggerSafetyCutoff
+                           : sp::kTriggerReport);
             } else {
-                report_dim_levels();
+                // The lighting level doc covers every channel: one report
+                // per pass at most, throttled while ramps step (below).
+                dim_report.note_change(channels[i].ramping());
             }
+            if (cut == sp::ChannelCutoff::Timer)
+                SP_LOG(LOG_INFO, "[CH] %s %s", channels[i].config().name,
+                       channels[i].reason());
+            else if (cut != sp::ChannelCutoff::None)
+                SP_LOG(LOG_ERROR, "[SAFETY] %s %s", channels[i].config().name,
+                       channels[i].reason());
         }
     }
+    // A ramp moves a level one LSB at a time (~17 steps a second per channel
+    // for 0→1023 over 60 s); every step's duty is written above, but the level
+    // report — a live telemetry frame on the Pi — goes out at most once a
+    // second while only ramp steps are pending, and at once when a ramp ends
+    // or a cutoff fires (publish_cadence.h DimReportThrottle).
+    if (dim_report.due(tick_now)) report_dim_levels();
 
     // AHT20 conversion pump: cheap until ~80 ms after read_sensors() started
     // it; the sample becomes the temp/RH reading at once (the AHT20 is only
@@ -1469,23 +1568,47 @@ void loop() {
         }
     }
 
-    // MH-Z19C reply pump.
+    // MH-Z19C reply pump. During the preheat after a power-up a reply is
+    // collected (the request/reply cycle keeps running) but not used.
     if (mhz19 != nullptr) {
+        if (mhz_preheating && sp::Mhz19::reading_usable(true, now)) {
+            mhz_preheating = false;
+            SP_LOG(LOG_INFO, "[SENSOR] MH-Z19C preheat done - CO2 readings in use");
+        }
         uint16_t ppm;
-        if (mhz19->update(now, &ppm)) {
+        if (mhz19->update(now, &ppm) && !mhz_preheating) {
             co2_ppm = ppm;
             have_co2 = true;
             mhz_fresh.mark_ok(now);
         }
     }
 
-    // Reed edges.
+    // Reed edges, queued until published: a door that opens or closes while
+    // MQTT is down is reported when it returns (alert_latch.h
+    // EdgeAlertQueue), marked as late, instead of never.
     if (reed != nullptr) {
-        sp::ReedSwitch::Event ev = reed->update(now);
-        if (ev == sp::ReedSwitch::Event::Opened)
-            emit_alert("door", 1.0f, "Chamber door opened", "reed");
-        else if (ev == sp::ReedSwitch::Event::Closed)
-            emit_alert("door", 0.0f, "Chamber door closed", "reed");
+        const sp::ReedSwitch::Event ev = reed->update(now);
+        if (ev != sp::ReedSwitch::Event::None)
+            door_edges.push(ev == sp::ReedSwitch::Event::Opened);
+        while (door_edges.pending()) {
+            const sp::EdgeAlertQueue::Edge e = door_edges.front();
+            const bool sent =
+                e.high ? emit_alert("door", 1.0f,
+                                    e.late ? "Chamber door opened while MQTT "
+                                             "was down"
+                                           : "Chamber door opened",
+                                    "reed")
+                       : emit_alert("door", 0.0f,
+                                    e.late ? "Chamber door closed while MQTT "
+                                             "was down"
+                                           : "Chamber door closed",
+                                    "reed");
+            if (!sent) {
+                door_edges.undeliverable();
+                break;
+            }
+            door_edges.delivered();
+        }
     }
 
     // Cadenced work.
@@ -1495,7 +1618,7 @@ void loop() {
         check_alerts();
     }
     // Telemetry + health at publish_interval_ms; the heartbeat on its own
-    // min(publish_interval_ms, 5 min) clock (srv-hw#22) — at the 60 s
+    // min(publish_interval_ms, 5 min) clock — at the 60 s
     // default all three still go out on the same pass.
     const sp::PublishCadence::Due due = cadence.update(now);
     if (due.telemetry) publish_telemetry();
@@ -1507,6 +1630,6 @@ void loop() {
         sp::elapsed_ms(now, last_switch_report_ms) >= 60000) {
         last_switch_report_ms = now;
         for (int i = 0; i < channel_count; ++i)
-            report_switch_channel(i, "report");
+            report_switch_channel(i, sp::kTriggerReport);
     }
 }

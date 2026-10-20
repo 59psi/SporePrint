@@ -1,6 +1,7 @@
+import math
 import time
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from .service import get_latest, get_history, store_bulk_readings
 
@@ -26,6 +27,23 @@ async def reading_history(
 @router.post("/ingest")
 async def manual_ingest(data: dict):
     node_id = data.pop("node_id", "manual")
-    ts = data.pop("ts", None) or time.time()
-    await store_bulk_readings(node_id, data, ts)
+    if not isinstance(node_id, str) or not node_id:
+        raise HTTPException(422, "node_id must be a non-empty string")
+    ts = data.pop("ts", None)
+    if ts is None:
+        ts = time.time()
+    # A string or NaN ts was stored as is: TEXT sorts above every REAL, so
+    # that row read as the node's newest reading for good.
+    elif not _finite_number(ts):
+        raise HTTPException(422, "ts must be a finite number (Unix seconds)")
+    await store_bulk_readings(node_id, data, float(ts))
     return {"status": "ok"}
+
+
+def _finite_number(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an integer too large for a float
+        return False

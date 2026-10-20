@@ -13,7 +13,9 @@ import logging
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
+from ...http_tls import tls_context
 from .models import AranetMeasurementsResponse
 
 
@@ -44,7 +46,7 @@ class AranetClient:
     async def _get(self, path: str) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         async with httpx.AsyncClient(
-            timeout=self._timeout_s, follow_redirects=False
+            timeout=self._timeout_s, follow_redirects=False, verify=tls_context()
         ) as client:
             try:
                 resp = await client.get(url, headers=self._headers())
@@ -72,4 +74,7 @@ class AranetClient:
     async def fetch_latest(self) -> AranetMeasurementsResponse:
         """Pull the latest reading per sensor."""
         raw = await self._get("/api/v1/measurements/last")
-        return AranetMeasurementsResponse.from_payload(raw)
+        try:
+            return AranetMeasurementsResponse.from_payload(raw)
+        except ValidationError as exc:
+            raise AranetError(f"unexpected response shape: {exc}") from exc

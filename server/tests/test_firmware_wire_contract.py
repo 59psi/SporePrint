@@ -217,6 +217,8 @@ def test_mqtt_ingest_reads_are_emitted():
         emitted |= set(_KEY_RE.findall(_read(path)))
     for lib in ("mqtt_link.cpp", "ota_service.cpp", "coredump_uploader.cpp", "log_forward.cpp"):
         emitted |= set(_KEY_RE.findall(_read(FIRMWARE / "lib" / "sp_device" / lib)))
+    # The log batch ({entries, dropped}) is built by the pure ring in sp_core.
+    emitted |= set(_KEY_RE.findall(_read(FIRMWARE / "lib" / "sp_core" / "log_ring.h")))
     assert len(emitted) > 20, f"suspiciously few emitted keys parsed: {sorted(emitted)}"
 
     reads = set(re.findall(r'\bpayload\.get\(\s*"([^"]+)"', src))

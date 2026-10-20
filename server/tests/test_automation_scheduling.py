@@ -26,7 +26,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.automation.engine import _eval_schedule
+from app.automation.engine import _eval_cron, _eval_schedule
 from app.automation.models import ScheduleCondition
 
 
@@ -78,7 +78,44 @@ def test_malformed_cron_does_not_fire():
     assert _eval_schedule(ScheduleCondition(cron="not a cron")) is False
 
 
+def _day(year, month, day, hour=8, minute=0):
+    return time.localtime(time.mktime((year, month, day, hour, minute, 0, 0, 0, -1)))
+
+
+def test_cron_with_both_day_fields_matches_either_day():
+    """POSIX / Vixie cron: day-of-month OR day-of-week when both are set."""
+    assert _eval_cron("0 8 1 * 1", _day(2026, 10, 5)) is True    # a Monday, the 5th
+    assert _eval_cron("0 8 1 * 1", _day(2026, 10, 1)) is True    # a Thursday, the 1st
+    assert _eval_cron("0 8 1 * 1", _day(2026, 10, 6)) is False   # a Tuesday, the 6th
+
+
+def test_cron_with_a_starred_day_field_needs_both_days():
+    """A day field starting with "*" (even "*/2") does not count as set."""
+    assert _eval_cron("0 8 */2 * 1", _day(2026, 10, 12)) is True   # Monday, even day
+    assert _eval_cron("0 8 */2 * 1", _day(2026, 10, 5)) is False   # Monday, odd day
+    assert _eval_cron("0 8 */2 * 1", _day(2026, 10, 6)) is False   # even day, Tuesday
+
+
 # ── species-driven photoperiod ──────────────────────────────────────────
+
+
+def test_photoperiod_reads_the_same_in_any_case():
+    sched = ScheduleCondition(photoperiod=" ON ")
+    assert sched.photoperiod == "on"
+    with _at(12):
+        assert _eval_schedule(sched, _phase(light_hours_on=12)) is True
+    with _at(22):
+        assert _eval_schedule(sched, _phase(light_hours_on=12)) is False
+
+
+def test_an_unreadable_photoperiod_never_matches():
+    """It used to read as "off": the rule ran through the dark period, and in
+    a dark phase all day."""
+    sched = ScheduleCondition(photoperiod="bogus")
+    for hours_on in (0, 12, 24):
+        for hour in (3, 12, 22):
+            with _at(hour):
+                assert _eval_schedule(sched, _phase(light_hours_on=hours_on)) is False
 
 
 def test_photoperiod_12_12_is_a_real_cycle():

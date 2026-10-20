@@ -6,10 +6,12 @@ Run ONCE, on a release-signing host that you trust. Outputs:
   - The base64-encoded **public** key — paste into every Pi's
     Settings → OTA verify key (or set SPOREPRINT_OTA_PUBKEY_B64=<value>
     in the SporePrint checkout's .env, then `docker compose up -d server`).
-    Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current (systemd)
-    layout self-update from signed bundles. The Docker install (install.sh)
-    refuses cloud OTA — it updates with `git pull && ./install.sh` — so the key
-    has no effect there.
+    Every install, Docker included, checks signed node-firmware manifests
+    against it: a node firmware push that carries a signed release manifest
+    is refused on a Pi with no key pinned. Bare-metal Pis on the
+    <SPOREPRINT_INSTALL_ROOT>/current (systemd) layout also verify their own
+    self-update bundles with it; the Docker install (install.sh) refuses cloud
+    self-update and updates with `git pull && ./install.sh`.
 
   - The base64-encoded **private** key — keep this on hardware you
     control (a YubiKey with PIV slot, an offline laptop, a sealed
@@ -137,9 +139,12 @@ def main() -> int:
     print()
     print(f"  {pub_b64}")
     print()
-    print("Only bare-metal Pis on the <SPOREPRINT_INSTALL_ROOT>/current (systemd)")
-    print("layout self-update. A Docker install (install.sh) refuses cloud OTA and")
-    print("updates with `git pull && ./install.sh`, so the key has no effect there.")
+    print("Every Pi, Docker installs included, checks signed node-firmware manifests")
+    print("against this key: without it, a node firmware push that carries a signed")
+    print("release manifest is refused. Bare-metal Pis on the")
+    print("<SPOREPRINT_INSTALL_ROOT>/current (systemd) layout also verify their own")
+    print("self-update with it; a Docker install (install.sh) refuses cloud self-update")
+    print("and updates with `git pull && ./install.sh`.")
     print()
     print("-" * 72)
     print("Private signing key — KEEP THIS OFFLINE. Never commit. Never email.")
