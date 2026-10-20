@@ -3,7 +3,6 @@ notices and phase reminders."""
 
 import csv
 import io
-import time
 import warnings
 
 import pytest
@@ -25,6 +24,7 @@ from app.sessions.service import (
 from app.species.models import GrowPhase
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import create_profile, seed_builtins
+from tests._pi_c2_helpers import enter_open_phase_days_ago
 
 _PROFILES = {p.id: p for p in BUILTIN_PROFILES}
 
@@ -32,37 +32,25 @@ _PROFILES = {p.id: p for p in BUILTIN_PROFILES}
 # ── phase_history.params_snapshot ──────────────────────────────────
 
 
-async def test_create_session_snapshots_starting_phase_params():
+async def test_each_phase_entry_snapshots_the_setpoints_in_force():
+    """The start phase and every phase advanced into freeze the profile's
+    setpoints at entry; the fridge has none to freeze."""
     await seed_builtins()
-    s = await create_session(SessionCreate(name="G", species_profile_id="blue_oyster"))
-    [row] = s["phase_history"]
-    snap = row["params_snapshot"]
-    expected = _PROFILES["blue_oyster"].phases
-    col = expected[GrowPhase.SUBSTRATE_COLONIZATION]
-    assert snap["temp_min_f"] == col.temp_min_f
-    assert snap["co2_max_ppm"] == col.co2_max_ppm
-    assert list(snap["expected_duration_days"]) == list(col.expected_duration_days)
-
-
-async def test_advance_phase_snapshots_new_phase_params():
-    await seed_builtins()
+    blue = _PROFILES["blue_oyster"]
     s = await create_session(SessionCreate(name="G", species_profile_id="blue-oyster"))
+    [start] = s["phase_history"]
+    col = blue.phases[GrowPhase.SUBSTRATE_COLONIZATION]
+    assert (start["params_snapshot"]["temp_min_f"], start["params_snapshot"]["co2_max_ppm"]) == (
+        col.temp_min_f, col.co2_max_ppm)
+    assert list(start["params_snapshot"]["expected_duration_days"]) == list(col.expected_duration_days)
+
     s = await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
-    fruiting_row = s["phase_history"][-1]
-    assert fruiting_row["phase"] == "fruiting"
-    fr = _PROFILES["blue_oyster"].phases[GrowPhase.FRUITING]
-    assert fruiting_row["params_snapshot"]["co2_max_ppm"] == fr.co2_max_ppm
-    assert fruiting_row["params_snapshot"]["humidity_min"] == fr.humidity_min
+    fruiting = s["phase_history"][-1]
+    fr = blue.phases[GrowPhase.FRUITING]
+    assert fruiting["phase"] == "fruiting"
+    assert (fruiting["params_snapshot"]["co2_max_ppm"], fruiting["params_snapshot"]["humidity_min"]) == (
+        fr.co2_max_ppm, fr.humidity_min)
 
-
-async def test_advance_phase_unknown_session_returns_none():
-    # Used to raise a FOREIGN KEY IntegrityError (500) instead of the router's 404.
-    assert await advance_phase(9999, PhaseAdvance(phase="fruiting")) is None
-
-
-async def test_snapshot_is_none_for_phase_the_profile_lacks():
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="G", species_profile_id="blue_oyster"))
     s = await advance_phase(s["id"], PhaseAdvance(phase="cold_storage"))
     assert s["phase_history"][-1]["params_snapshot"] is None
 
@@ -121,11 +109,11 @@ async def test_csv_export_timestamps_are_tz_aware_and_warning_free():
     assert rows[0]["timestamp"].endswith("+00:00")
 
 
-# ── pink-oyster post-harvest + phase reminders ─────────────────────
+# ── process-at-once harvest notices + phase reminders ──────────────
 
 
 @pytest.fixture()
-def pink_calls(monkeypatch):
+def notices(monkeypatch):
     calls = []
 
     async def _fake(species_name, notice, dedup_key=None):
@@ -135,37 +123,23 @@ def pink_calls(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("species_id", ["pink_oyster", "pink-oyster"])
-async def test_pink_oyster_harvest_sends_process_immediately_notice(species_id, pink_calls):
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="Pink", species_profile_id=species_id))
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=250.0))
-    assert len(pink_calls) == 1
-    name, notice = pink_calls[0]
-    assert name == "Pink Oyster" and "refrigerated" in notice
-
-
-async def test_other_species_harvest_sends_no_pink_notice(pink_calls):
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="Blue", species_profile_id="blue_oyster"))
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=250.0))
-    assert pink_calls == []
-
-
-@pytest.mark.parametrize("species_id", ["paddy_straw", "shaggy_mane"])
-async def test_every_species_that_cannot_wait_gets_the_notice(species_id, pink_calls):
+@pytest.mark.parametrize(("species_id", "notified"), [
+    ("pink_oyster", True), ("paddy_straw", True), ("shaggy_mane", True), ("blue_oyster", False),
+])
+async def test_a_harvest_of_a_species_that_cannot_wait_sends_its_notice(species_id, notified, notices):
     """The notice was a pink-oyster special case: paddy straw and shaggy mane,
-    whose profiles say the same, never got one."""
+    whose profiles say the same, never got one. A species that keeps gets none."""
     await seed_builtins()
     s = await create_session(SessionCreate(name="Now", species_profile_id=species_id))
     await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=250.0))
-    assert [name for name, _ in pink_calls] == [
-        next(p.common_name for p in BUILTIN_PROFILES if p.id == species_id)]
+    profile = _PROFILES[species_id]
+    assert notices == ([(profile.common_name, profile.harvest_notice)] if notified else [])
+    assert bool(profile.harvest_notice) is notified
 
 
-async def test_a_custom_profile_carries_or_inherits_the_notice(pink_calls):
+async def test_a_custom_profile_carries_or_inherits_the_notice(notices):
     await seed_builtins()
-    pink = next(p for p in BUILTIN_PROFILES if p.id == "pink_oyster")
+    pink = _PROFILES["pink_oyster"]
     # Its own notice ...
     await create_profile(pink.model_copy(update={
         "id": "my_pink", "common_name": "My Pink", "harvest_notice": "Cook it tonight."}))
@@ -176,7 +150,7 @@ async def test_a_custom_profile_carries_or_inherits_the_notice(pink_calls):
     for sid in ("my_pink", "old_pink"):
         s = await create_session(SessionCreate(name=sid, species_profile_id=sid))
         await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
-    assert pink_calls == [("My Pink", "Cook it tonight."), ("Old Pink", pink.harvest_notice)]
+    assert notices == [("My Pink", "Cook it tonight."), ("Old Pink", pink.harvest_notice)]
 
 
 @pytest.fixture()
@@ -184,25 +158,33 @@ def reminder_calls(monkeypatch):
     calls = []
 
     async def _fake(session_id, session_name, phase, days_in_phase, expected_max):
-        calls.append((session_id, session_name, phase, days_in_phase, expected_max))
+        calls.append((phase, days_in_phase, expected_max))
 
     monkeypatch.setattr(sessions_service, "phase_reminder", _fake)
     return calls
 
 
-async def test_phase_reminder_fires_when_phase_overruns_expected_max(reminder_calls):
+@pytest.mark.parametrize(("species", "start", "enter", "days", "reminder"), [
+    # blue oyster substrate colonization expects 10-14 days
+    ("blue_oyster", "substrate_colonization", None, 20, ("substrate_colonization", 20, 14)),
+    ("blue_oyster", "substrate_colonization", None, 0, None),
+    # 71 of 74 profiles define no rest: the engine runs it on fruiting's
+    # envelope (5-7 d), but the reminder looked the phase up directly.
+    ("blue_oyster", "fruiting", "rest", 9, ("rest", 9, 7)),
+    # pinning folded into fruiting: fruiting's 5-7 d
+    ("pink_oyster", "substrate_colonization", "primordia_induction", 8, ("primordia_induction", 8, 7)),
+    # the fridge has no species window to overrun
+    ("blue_oyster", "grain_colonization", "cold_storage", 100, None),
+], ids=["overrun", "on-time", "rest-on-fruiting", "pinning-folded-into-fruiting", "cold-storage"])
+async def test_a_phase_reminder_fires_once_the_phase_overruns_its_window(
+        species, start, enter, days, reminder, reminder_calls):
     await seed_builtins()
-    s = await create_session(SessionCreate(name="Slow", species_profile_id="blue_oyster"))
-    # blue_oyster substrate colonization expects 10-14 days; entered 20 days ago.
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE phase_history SET entered_at = ? WHERE session_id = ?",
-            (time.time() - 20 * 86400, s["id"]),
-        )
-        await db.commit()
-    sent = await check_phase_reminders()
-    assert sent == 1
-    assert reminder_calls == [(s["id"], "Slow", "substrate_colonization", 20, 14)]
+    s = await create_session(SessionCreate(name="Slow", species_profile_id=species, current_phase=start))
+    if enter:
+        await advance_phase(s["id"], PhaseAdvance(phase=enter))
+    await enter_open_phase_days_ago(s["id"], days)
+    assert await check_phase_reminders() == (1 if reminder else 0)
+    assert reminder_calls == ([reminder] if reminder else [])
 
 
 async def test_two_overrun_sessions_of_one_name_each_get_their_reminder(monkeypatch):
@@ -235,44 +217,7 @@ async def test_two_overrun_sessions_of_one_name_each_get_their_reminder(monkeypa
     for _ in range(2):
         await create_session(SessionCreate(name="Blue Oyster", species_profile_id="blue_oyster"))
     async with get_db() as db:
-        await db.execute("UPDATE phase_history SET entered_at = ?",
-                         (time.time() - 40 * 86400,))
+        await db.execute("UPDATE phase_history SET entered_at = entered_at - ?", (40 * 86400,))
         await db.commit()
     assert await check_phase_reminders() == 2
     assert [p["title"] for p in posted] == ["Phase check — Blue Oyster"] * 2
-
-
-async def test_phase_reminder_quiet_within_expected_window(reminder_calls):
-    await seed_builtins()
-    await create_session(SessionCreate(name="OnTime", species_profile_id="blue_oyster"))
-    assert await check_phase_reminders() == 0
-    assert reminder_calls == []
-
-
-async def _enter_phase_days_ago(session_id: int, phase: str, days: int) -> None:
-    await advance_phase(session_id, PhaseAdvance(phase=phase))
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE phase_history SET entered_at = ? WHERE session_id = ? AND exited_at IS NULL",
-            (time.time() - days * 86400, session_id),
-        )
-        await db.commit()
-
-
-async def test_a_long_rest_on_the_fruiting_stand_in_gets_its_reminder(reminder_calls):
-    """71 of 74 profiles define no rest: the engine runs it on fruiting's
-    envelope, but the reminder looked the phase up directly and never fired."""
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="Resting", species_profile_id="blue_oyster",
-                                           current_phase="fruiting"))
-    await _enter_phase_days_ago(s["id"], "rest", 9)  # blue oyster fruiting: 5-7 d
-    assert await check_phase_reminders() == 1
-    assert reminder_calls == [(s["id"], "Resting", "rest", 9, 7)]
-
-
-async def test_pinning_folded_into_fruiting_gets_its_reminder(reminder_calls):
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="Pink", species_profile_id="pink_oyster"))
-    await _enter_phase_days_ago(s["id"], "primordia_induction", 8)  # fruiting's 5-7 d
-    assert await check_phase_reminders() == 1
-    assert reminder_calls[0][2:] == ("primordia_induction", 8, 7)

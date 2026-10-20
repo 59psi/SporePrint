@@ -1,8 +1,9 @@
 """Sessions / chambers cross-cluster behaviour.
 
 - POST /phase refuses a phase that isn't a GrowPhase, or one the
-  species profile can't run (no setpoints and no fallback); next-phase skips
-  phases the profile doesn't define;
+  species profile can't run (no setpoints and no fallback); GET /next-phase
+  skips phases the profile doesn't define (the suggestion table:
+  test_lifecycle_cold_storage.py::test_suggested_next_phase);
 - CLAUDE.md §12: the chamber-aware active-session lookup lives in
   sessions.service (get_active_session_for_chambers / _for_node);
 - a chamberless session's telemetry still resolves a node after
@@ -11,6 +12,7 @@
 - chambers: linking a session through PATCH /api/chambers also binds it.
 """
 
+import importlib
 import time
 
 import pytest
@@ -51,11 +53,13 @@ from app.sessions.service import (
     handle_remote_command,
     phase_error,
     resolve_session_node_id,
-    suggested_next_phase,
 )
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins
 from app.telemetry.service import active_session_for_node
+from tests._pi_c2_helpers import age_grow, insert_rollup, register_node
+
+kasa_driver = importlib.import_module("app.integrations.kasa.driver")
 
 
 @pytest.fixture(autouse=True)
@@ -185,35 +189,6 @@ def test_phase_endpoint_returns_422_for_a_typo(client):
 # ── next-phase skips undefined phases ──────────────────────────────────────
 
 
-def test_suggestion_without_a_profile_is_unchanged():
-    assert suggested_next_phase("substrate_colonization", "grow_bag") == "primordia_induction"
-    assert suggested_next_phase("fruiting", "grow_bag") == "rest"
-
-
-def test_suggestion_skips_a_primordia_phase_the_profile_folds_into_fruiting():
-    pink = {"substrate_colonization", "fruiting"}
-    assert suggested_next_phase("substrate_colonization", "grow_bag", profile_phases=pink) == "fruiting"
-    # REST between flushes runs on fruiting's setpoints, so the loop is kept.
-    assert suggested_next_phase("fruiting", "grow_bag", profile_phases=pink) == "rest"
-    assert suggested_next_phase("rest", "grow_bag", True, profile_phases=pink) == "fruiting"
-    assert suggested_next_phase("rest", "grow_bag", False, profile_phases=pink) == "complete"
-    # Cold storage needs no species setpoints.
-    assert suggested_next_phase("grain_colonization", "jar", profile_phases=pink) == "cold_storage"
-
-
-def test_suggestion_ends_when_nothing_after_is_defined():
-    """psilocybe_tampanensis only defines grain_colonization (sclerotia)."""
-    grain_only = {"grain_colonization"}
-    assert suggested_next_phase("grain_colonization", "grow_bag", profile_phases=grain_only) == "complete"
-    assert suggested_next_phase("cold_storage", None, profile_phases=grain_only) == "complete"
-
-
-def test_suggestion_keeps_defined_primordia():
-    blue = {"substrate_colonization", "primordia_induction", "fruiting"}
-    assert suggested_next_phase("substrate_colonization", "grow_bag",
-                                profile_phases=blue) == "primordia_induction"
-
-
 def test_next_phase_endpoint_uses_the_species_profile(client):
     sid = client.post("/api/sessions", json={
         "name": "pink", "species_profile_id": "pink_oyster", "container_type": "grow_bag",
@@ -233,13 +208,6 @@ async def _link(chamber_id, session_id):
         await db.commit()
 
 
-async def _age(session_id, seconds):
-    async with get_db() as db:
-        await db.execute("UPDATE sessions SET created_at = created_at - ? WHERE id = ?",
-                         (seconds, session_id))
-        await db.commit()
-
-
 async def _bind(session_id, chamber_id):
     """Bind and link a session to a chamber the way older releases could,
     with another grow already bound there (create_session refuses that now)."""
@@ -253,11 +221,11 @@ async def _bind(session_id, chamber_id):
 async def test_session_for_chambers_prefers_bound_then_linked_then_unbound():
     a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"])))["id"]
     unbound_old = await _session("unit-a")
-    await _age(unbound_old["id"], 300)
+    await age_grow(unbound_old["id"], 300)
     bound = await _session("unit-c", chamber_id=a)
-    await _age(bound["id"], 100)
+    await age_grow(bound["id"], 100)
     linked = await _session("unit-b")
-    await _age(linked["id"], 200)
+    await age_grow(linked["id"], 200)
     # Linked after `bound` was created (creating a bound session links it too).
     await _link(a, linked["id"])
     newest_unbound = await _session("unit-d")
@@ -280,7 +248,7 @@ async def test_session_for_chambers_never_takes_another_chambers_grow():
 
 async def test_session_for_node_outside_any_chamber_is_the_newest():
     older = await _session("unit-a")
-    await _age(older["id"], 100)
+    await age_grow(older["id"], 100)
     newest = await _session("unit-b")
     assert (await get_active_session_for_node("climate-loose"))["id"] == newest["id"]
     assert (await get_active_session_for_chambers([]))["id"] == newest["id"]
@@ -290,7 +258,7 @@ async def test_session_for_node_outside_any_chamber_is_the_newest():
 async def test_unchambered_node_prefers_the_chamberless_grow_like_the_tagger():
     b = (await create_chamber(ChamberCreate(name="B", node_ids=["climate-b"])))["id"]
     closet = await _session("unit-a")
-    await _age(closet["id"], 100)
+    await age_grow(closet["id"], 100)
     await _session("unit-b", chamber_id=b)  # newer, but chamber B's
     assert (await get_active_session_for_node("climate-loose"))["id"] == closet["id"]
     assert await active_session_for_node("climate-loose", time.time() + 5) == closet["id"]
@@ -347,7 +315,7 @@ async def test_ending_one_of_two_grows_bound_to_a_chamber_relinks_the_other():
     chamber idle while its older grow still ran there."""
     a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"])))["id"]
     older = await _session("unit-a", chamber_id=a)
-    await _age(older["id"], 100)
+    await age_grow(older["id"], 100)
     newer = await _session("unit-b")
     await _bind(newer["id"], a)
     assert (await get_chamber(a))["active_session_id"] == newer["id"]
@@ -420,36 +388,26 @@ async def test_chambers_for_node_tolerates_malformed_node_ids():
 # ── chamberless session telemetry after raw rows age out ───────────────────
 
 
-async def _rollup(node, sensor, ts, value=70.0):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO telemetry_rollups (timestamp, node_id, sensor, resolution, avg_value, "
-            "min_value, max_value, count) VALUES (?, ?, ?, 'hourly', ?, ?, ?, 12)",
-            (ts, node, sensor, value, value, value),
-        )
-        await db.commit()
-
-
 async def test_chamberless_session_resolves_a_node_from_rollups():
     s = await _session("unit-a")
-    await _age(s["id"], 20 * 86400)
+    await age_grow(s["id"], 20 * 86400)
     start = (await get_session(s["id"]))["created_at"]
-    await _rollup("climate-1", "temp_f", start + 3600)
-    await _rollup("climate-1", "temp_f", start + 7200)
-    await _rollup("relay-1", "fae", start + 3600, 1)
+    await insert_rollup("climate-1", "temp_f", start + 3600, 70.0)
+    await insert_rollup("climate-1", "temp_f", start + 7200, 70.0)
+    await insert_rollup("relay-1", "fae", start + 3600, 1)
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-1"
 
 
 async def test_rollup_fallback_ignores_other_grows_nodes_and_other_windows():
     a = await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
     s = await _session("unit-a")
-    await _age(s["id"], 20 * 86400)
+    await age_grow(s["id"], 20 * 86400)
     await _session("unit-c", chamber_id=a["id"])  # chamber A runs its own grow
     start = (await get_session(s["id"]))["created_at"]
-    await _rollup("climate-a", "temp_f", start + 3600)      # another grow's node
-    await _rollup("climate-old", "temp_f", start - 86400)   # before this grow
+    await insert_rollup("climate-a", "temp_f", start + 3600, 70.0)      # another grow's node
+    await insert_rollup("climate-old", "temp_f", start - 86400, 70.0)   # before this grow
     assert await resolve_session_node_id(s["id"], "temp_f") is None
-    await _rollup("climate-1", "temp_f", start + 60)
+    await insert_rollup("climate-1", "temp_f", start + 60, 70.0)
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-1"
 
 
@@ -459,19 +417,19 @@ async def test_rollup_fallback_finds_the_chamber_a_chamberless_grow_runs():
     rollups its readings are still found in that chamber."""
     await create_chamber(ChamberCreate(name="A", node_ids=["climate-a"]))
     s = await _session("unit-a")
-    await _age(s["id"], 20 * 86400)
+    await age_grow(s["id"], 20 * 86400)
     start = (await get_session(s["id"]))["created_at"]
-    await _rollup("climate-a", "temp_f", start + 3600)
+    await insert_rollup("climate-a", "temp_f", start + 3600, 70.0)
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-a"
 
 
 async def test_rollup_fallback_prefers_the_node_with_most_data():
     s = await _session("unit-a")
-    await _age(s["id"], 20 * 86400)
+    await age_grow(s["id"], 20 * 86400)
     start = (await get_session(s["id"]))["created_at"]
-    await _rollup("climate-1", "temp_f", start + 3600)
+    await insert_rollup("climate-1", "temp_f", start + 3600, 70.0)
     for h in range(2, 5):
-        await _rollup("climate-2", "temp_f", start + h * 3600)
+        await insert_rollup("climate-2", "temp_f", start + h * 3600, 70.0)
     assert await resolve_session_node_id(s["id"], "temp_f") == "climate-2"
 
 
@@ -555,16 +513,38 @@ def _offs(json_publishes, mock_mqtt_raw):
             + [t for t, p in mock_mqtt_raw if p == "off"])
 
 
+@pytest.fixture()
+def kasa_wire(monkeypatch):
+    """What the Kasa driver would send on the LAN, as (ip, payload)."""
+    sent: list[tuple[str, dict]] = []
+
+    async def fake_query(ip, payload, timeout):
+        sent.append((ip, payload))
+        return {}
+
+    monkeypatch.setattr(kasa_driver, "_kasa_query", fake_query)
+    return sent
+
+
 async def test_ending_one_chambers_grow_safes_only_that_chambers_nodes(
-        mock_mqtt, mock_mqtt_raw, json_publishes):
+        mock_mqtt, mock_mqtt_raw, json_publishes, kasa_wire):
     """Chamber B still runs: ending A's grow used to skip safing entirely,
     leaving A's fan / light scene in the grow's last state."""
     a, b = await _two_chamber_rules()
+    # A vendor device serves every chamber: it stays as it is while B runs.
+    await create_rule(AutomationRule(
+        name="heat (kasa)", priority=1,
+        condition=RuleCondition(type=ConditionType.THRESHOLD,
+                                threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=0)),
+        action=RuleAction(target="vendor:kasa", vendor_slug="kasa", vendor_action="set_power",
+                          vendor_params={"ip": "10.0.0.20", "on": True}),
+    ))
     sa = await _session("unit-a", "fruiting", chamber_id=a)
     await _session("unit-b", "fruiting", chamber_id=b)
     await complete_session(sa["id"])
     # Never B's relay, an unlisted node, or a plug B's grow may be using.
     assert _offs(json_publishes, mock_mqtt_raw) == ["sporeprint/relay-a/cmd/fae"]
+    assert kasa_wire == []
 
 
 async def test_ending_a_grow_its_chamber_still_runs_safes_nothing(
@@ -573,21 +553,12 @@ async def test_ending_a_grow_its_chamber_still_runs_safes_nothing(
     older one leaves A run by the other."""
     a, b = await _two_chamber_rules()
     first = await _session("unit-a", "fruiting", chamber_id=a)
-    await _age(first["id"], 100)
+    await age_grow(first["id"], 100)
     second = await _session("unit-a2", "fruiting")
     await _bind(second["id"], a)
     await _session("unit-b", "fruiting", chamber_id=b)
     await complete_session(first["id"])
     assert _offs(json_publishes, mock_mqtt_raw) == []
-
-
-async def _register_node(node_id, node_type, seen_ago):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, last_seen, status) VALUES (?, ?, ?, 'online')",
-            (node_id, node_type, time.time() - seen_ago),
-        )
-        await db.commit()
 
 
 async def test_last_grow_ending_switches_a_placeholder_off_where_its_on_went(
@@ -597,8 +568,8 @@ async def test_last_grow_ending_switches_a_placeholder_off_where_its_on_went(
     chamber B's — and A's light stayed on its fruiting scene for good."""
     a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a", "light-a"])))["id"]
     await create_chamber(ChamberCreate(name="B", node_ids=["climate-b", "light-b"]))
-    await _register_node("light-a", "lighting", 300)
-    await _register_node("light-b", "lighting", 5)
+    await register_node("light-a", "lighting", seen_ago=300)
+    await register_node("light-b", "lighting", seen_ago=5)
     await create_rule(AutomationRule(
         name="lights", priority=1,
         condition=RuleCondition(type=ConditionType.THRESHOLD,

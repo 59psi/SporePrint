@@ -25,28 +25,9 @@ from app.species.models import GrowPhase
 from app.species.service import get_profile, seed_builtins
 from app.transcript import service as transcript_service
 from app.transcript.service import export_json, export_markdown
+from tests._pi_c2_helpers import fake_anthropic, insert_reading, insert_rollup
 
 DAY = 86400
-
-
-async def _raw(node, sensor, value, ts, session_id=None):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO telemetry_readings (timestamp, node_id, sensor, value, session_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (ts, node, sensor, value, session_id),
-        )
-        await db.commit()
-
-
-async def _rollup(node, sensor, resolution, ts, avg, mn, mx, count):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO telemetry_rollups (timestamp, node_id, sensor, resolution, "
-            "avg_value, min_value, max_value, count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (ts, node, sensor, resolution, avg, mn, mx, count),
-        )
-        await db.commit()
 
 
 async def _set_phase_window(session_id, entered, exited):
@@ -74,7 +55,7 @@ async def test_summary_uses_session_tagged_raw_rows():
     now = time.time()
     await _set_phase_window(s["id"], now - 3600, None)
     for v in (60.0, 62.0, 64.0):
-        await _raw("climate-01", "temp_f", v, now - 1800, session_id=s["id"])
+        await insert_reading("climate-01", "temp_f", v, now - 1800, session_id=s["id"])
 
     summary = await _single_phase_summary(s["id"])
     assert summary["temp_f"] == {"min": 60.0, "max": 64.0, "avg": 62.0, "count": 3}
@@ -88,12 +69,12 @@ async def test_summary_includes_rolled_up_history_for_old_phases():
     entered, exited = now - 40 * DAY, now - 20 * DAY
     await _set_phase_window(s["id"], entered, exited)
     # A session-tagged raw row from later in the grow identifies the node.
-    await _raw("climate-01", "temp_f", 70.0, now - 60, session_id=s["id"])
+    await insert_reading("climate-01", "temp_f", 70.0, now - 60, session_id=s["id"])
     # The phase window's data: a 5-min rollup and an hourly rollup.
-    await _rollup("climate-01", "temp_f", "5min", now - 25 * DAY, 72.0, 71.0, 74.0, 10)
-    await _rollup("climate-01", "temp_f", "hourly", now - 35 * DAY, 66.0, 60.0, 68.0, 30)
+    await insert_rollup("climate-01", "temp_f", now - 25 * DAY, 72.0, 71.0, 74.0, 10, resolution="5min")
+    await insert_rollup("climate-01", "temp_f", now - 35 * DAY, 66.0, 60.0, 68.0, 30, resolution="hourly")
     # Another node's data in the same window must not leak in.
-    await _rollup("other-node", "temp_f", "hourly", now - 35 * DAY, 99.0, 99.0, 99.0, 30)
+    await insert_rollup("other-node", "temp_f", now - 35 * DAY, 99.0, 99.0, 99.0, 30, resolution="hourly")
 
     summary = await _single_phase_summary(s["id"])
     assert summary["temp_f"]["min"] == 60.0
@@ -109,8 +90,8 @@ async def test_summary_uses_chamber_nodes_when_nothing_is_tagged():
                                            chamber_id=chamber["id"]))
     now = time.time()
     await _set_phase_window(s["id"], now - 3600, None)
-    await _raw("tent-sensor", "humidity", 90.0, now - 600)
-    await _raw("closet-node", "humidity", 40.0, now - 600)
+    await insert_reading("tent-sensor", "humidity", 90.0, now - 600)
+    await insert_reading("closet-node", "humidity", 40.0, now - 600)
 
     summary = await _single_phase_summary(s["id"])
     assert summary["humidity"]["avg"] == 90.0
@@ -123,7 +104,7 @@ async def test_summary_falls_back_to_all_nodes_in_single_closet():
     s = await create_session(SessionCreate(name="Old grow", species_profile_id="blue_oyster"))
     now = time.time()
     await _set_phase_window(s["id"], now - 60 * DAY, now - 45 * DAY)
-    await _rollup("climate-01", "co2_ppm", "hourly", now - 50 * DAY, 800.0, 600.0, 1100.0, 12)
+    await insert_rollup("climate-01", "co2_ppm", now - 50 * DAY, 800.0, 600.0, 1100.0, 12, resolution="hourly")
 
     summary = await _single_phase_summary(s["id"])
     assert summary["co2_ppm"] == {"min": 600.0, "max": 1100.0, "avg": 800.0, "count": 12}
@@ -134,8 +115,8 @@ async def test_summary_is_bounded_by_phase_window():
     s = await create_session(SessionCreate(name="Window", species_profile_id="blue_oyster"))
     now = time.time()
     await _set_phase_window(s["id"], now - 3600, now - 1800)
-    await _raw("climate-01", "temp_f", 65.0, now - 2000, session_id=s["id"])
-    await _raw("climate-01", "temp_f", 90.0, now - 100, session_id=s["id"])  # after exit
+    await insert_reading("climate-01", "temp_f", 65.0, now - 2000, session_id=s["id"])
+    await insert_reading("climate-01", "temp_f", 90.0, now - 100, session_id=s["id"])  # after exit
 
     summary = await _single_phase_summary(s["id"])
     assert summary["temp_f"]["count"] == 1
@@ -148,18 +129,13 @@ async def test_completed_session_last_phase_does_not_run_to_now():
     await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
     await complete_session(s["id"])
     # Telemetry recorded after completion belongs to the next grow.
-    await _raw("climate-01", "temp_f", 99.0, time.time() + 5)
+    await insert_reading("climate-01", "temp_f", 99.0, time.time() + 5)
     data = await export_json(s["id"])
     for pt in data["phase_telemetry"]:
         assert "temp_f" not in pt["telemetry_summary"]
 
 
 # ── missing profile / unknown session ────────────────────────────
-
-
-async def test_export_json_unknown_session_returns_none():
-    assert await export_json(987654) is None
-    assert await export_markdown(987654) is None
 
 
 async def test_markdown_survives_missing_species_profile():
@@ -169,17 +145,12 @@ async def test_markdown_survives_missing_species_profile():
     assert "deletedcustom" in md
 
 
-def test_transcript_endpoint_404_for_unknown_session(client):
+def test_transcript_and_analysis_routes_404_for_an_unknown_session(client, monkeypatch):
     for fmt in ("json", "markdown"):
         r = client.get("/api/transcript/sessions/987654/transcript", params={"format": fmt})
-        assert r.status_code == 404
-
-
-def test_analyze_endpoint_404_for_unknown_session(client, monkeypatch):
-    from app.config import settings
+        assert r.status_code == 404, fmt
     monkeypatch.setattr(settings, "claude_api_key", "sk-test")
-    r = client.post("/api/transcript/sessions/987654/analyze")
-    assert r.status_code == 404
+    assert client.post("/api/transcript/sessions/987654/analyze").status_code == 404
 
 
 # ── bounded vision summaries ─────────────────────────────────────
@@ -243,6 +214,11 @@ def test_vision_summaries_over_cap_with_mostly_flagged_days_keeps_newest():
     assert ts == sorted(ts) and len(set(ts)) == len(ts)
 
 
+def _sent_payload(captured: dict) -> dict:
+    content = captured["messages"][0]["content"]
+    return json.loads(content.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+
+
 async def test_analyze_sends_bounded_vision_summaries(monkeypatch):
     await seed_builtins()
     s = await create_session(SessionCreate(name="Long", species_profile_id="blue_oyster"))
@@ -257,62 +233,19 @@ async def test_analyze_sends_bounded_vision_summaries(monkeypatch):
         )
         await db.commit()
 
-    captured = {}
-
-    class _Messages:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-
-            class _Block:
-                text = '{"overall_score": 80, "summary": "ok"}'
-
-            class _Resp:
-                content = [_Block()]
-
-            return _Resp()
-
-    class _Client:
-        def __init__(self, *a, **k):
-            self.messages = _Messages()
-
-    from app.config import settings
+    captured: dict = {}
     monkeypatch.setattr(settings, "claude_api_key", "sk-test")
-    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", _Client)
+    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic",
+                        fake_anthropic({"overall_score": 80, "summary": "ok"}, captured=captured))
 
     result = await transcript_service.analyze_with_claude(s["id"])
     assert result.get("overall_score") == 80
-    content = captured["messages"][0]["content"]
-    payload = json.loads(content.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    payload = _sent_payload(captured)
     assert len(payload["vision_summaries"]) <= transcript_service._MAX_VISION_SUMMARIES
     assert payload["vision_summary_stats"]["total_analyses"] == 60 * 96
 
 
 # ── the analysis is told each phase's targets ───────────────────
-
-
-def _capturing_client(captured: dict):
-    class _Messages:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-
-            class _Block:
-                text = '{"overall_score": 70, "summary": "ok"}'
-
-            class _Resp:
-                content = [_Block()]
-
-            return _Resp()
-
-    class _Client:
-        def __init__(self, *a, **k):
-            self.messages = _Messages()
-
-    return _Client
-
-
-def _sent_payload(captured: dict) -> dict:
-    content = captured["messages"][0]["content"]
-    return json.loads(content.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
 
 
 async def test_analyze_sends_each_phases_targets_and_expected_duration(monkeypatch):
@@ -330,7 +263,7 @@ async def test_analyze_sends_each_phases_targets_and_expected_duration(monkeypat
 
     captured: dict = {}
     monkeypatch.setattr(settings, "claude_api_key", "sk-test")
-    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", _capturing_client(captured))
+    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", fake_anthropic({"overall_score": 70, "summary": "ok"}, captured=captured))
     assert (await transcript_service.analyze_with_claude(s["id"]))["overall_score"] == 70
 
     payload = _sent_payload(captured)
@@ -369,7 +302,7 @@ async def test_frozen_targets_win_over_a_later_profile_edit(monkeypatch):
 
     captured: dict = {}
     monkeypatch.setattr(settings, "claude_api_key", "sk-test")
-    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", _capturing_client(captured))
+    monkeypatch.setattr(transcript_service.anthropic, "AsyncAnthropic", fake_anthropic({"overall_score": 70, "summary": "ok"}, captured=captured))
     await transcript_service.analyze_with_claude(s["id"])
     (phase,) = _sent_payload(captured)["phase_telemetry"]
     assert phase["targets"]["temp_min_f"] == 61.5

@@ -5,7 +5,7 @@ import pytest
 from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import abort_session, create_session
-from app.species.models import GrowPhase, PhaseParams, SpeciesProfile, profile_problems
+from app.species.models import GrowPhase, SpeciesProfile, profile_problems
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import (
     BuiltinProfileReadOnly,
@@ -18,116 +18,33 @@ from app.species.service import (
     update_profile,
     delete_profile,
 )
+from tests._pi_c2_helpers import custom_profile
 
 
-def _make_custom_profile(**overrides):
-    defaults = dict(
-        id="custom_test",
-        common_name="Test Species",
-        scientific_name="Testus testii",
-        category="gourmet",
-        substrate_types=["straw"],
-        colonization_visual_description="White mycelium",
-        contamination_risk_notes="Watch for trich",
-        pinning_trigger_description="Cold shock",
-        phases={
-            GrowPhase.SUBSTRATE_COLONIZATION: PhaseParams(
-                temp_min_f=68, temp_max_f=75, humidity_min=70, humidity_max=80,
-                co2_max_ppm=2000, co2_tolerance="high", light_hours_on=0,
-                light_hours_off=24, light_spectrum="none", fae_mode="none",
-                expected_duration_days=(10, 14),
-            ),
-            GrowPhase.FRUITING: PhaseParams(
-                temp_min_f=55, temp_max_f=65, humidity_min=85, humidity_max=92,
-                co2_max_ppm=700, co2_tolerance="low", light_hours_on=12,
-                light_hours_off=12, light_spectrum="daylight_6500k", fae_mode="continuous",
-                expected_duration_days=(5, 7),
-            ),
-        },
-        flush_count_typical=3,
-        yield_notes="Test yield",
-    )
-    defaults.update(overrides)
-    return SpeciesProfile(**defaults)
-
-
-async def test_seed_builtins():
-    await seed_builtins()
-    profiles = await get_all_profiles()
-    assert len(profiles) == len(BUILTIN_PROFILES)
-
-
-async def test_seed_builtins_idempotent():
+async def test_seeding_twice_stores_each_builtin_once():
     await seed_builtins()
     await seed_builtins()
-    profiles = await get_all_profiles()
-    assert len(profiles) == len(BUILTIN_PROFILES)
-
-
-async def test_get_profile():
-    await seed_builtins()
-    profile = await get_profile("blue_oyster")
-    assert profile is not None
-    assert profile.common_name == "Blue Oyster"
-    assert profile.category == "gourmet"
-    assert GrowPhase.FRUITING in profile.phases
-
-
-async def test_get_profile_not_found():
-    result = await get_profile("nonexistent")
-    assert result is None
-
-
-async def test_create_custom_profile():
-    custom = _make_custom_profile()
-    created = await create_profile(custom)
-    assert created.id == "custom_test"
-    fetched = await get_profile("custom_test")
-    assert fetched is not None
-    assert fetched.common_name == "Test Species"
-
-
-async def test_update_profile():
-    custom = _make_custom_profile()
-    await create_profile(custom)
-    updated_data = _make_custom_profile(common_name="Updated Name")
-    result = await update_profile("custom_test", updated_data)
-    assert result.common_name == "Updated Name"
-    fetched = await get_profile("custom_test")
-    assert fetched.common_name == "Updated Name"
-
-
-async def test_delete_custom_profile():
-    custom = _make_custom_profile()
-    await create_profile(custom)
-    result = await delete_profile("custom_test")
-    assert result is True
-    assert await get_profile("custom_test") is None
-
-
-async def test_delete_builtin_prevented():
-    await seed_builtins()
-    result = await delete_profile("blue_oyster")
-    assert result is False
-    assert await get_profile("blue_oyster") is not None
+    assert sorted(p.id for p in await get_all_profiles()) == sorted(p.id for p in BUILTIN_PROFILES)
 
 
 # ── built-ins are read-only templates; custom rows survive seeding ──
 
 
-async def test_update_builtin_is_refused_instead_of_silently_reverting():
+async def test_a_builtin_is_read_only():
     """PUT on a built-in used to 200 and then be reverted by seed_builtins() on
-    the next restart. CLAUDE.md §4c: customize by cloning."""
+    the next restart. CLAUDE.md §4c: customize by cloning. Deleting one is
+    refused the same way."""
     await seed_builtins()
     stock = await get_profile("blue_oyster")
     edited = stock.model_copy(update={"common_name": "My Blue"})
     with pytest.raises(BuiltinProfileReadOnly):
         await update_profile("blue_oyster", edited)
+    assert await delete_profile("blue_oyster") is False
     assert (await get_profile("blue_oyster")).common_name == "Blue Oyster"
 
 
 async def test_seed_does_not_overwrite_custom_profile_sharing_builtin_id():
-    custom = _make_custom_profile(id="blue_oyster", common_name="My Own Blue")
+    custom = custom_profile(id="blue_oyster", common_name="My Own Blue")
     await create_profile(custom)
     await seed_builtins()
     assert (await get_profile("blue_oyster")).common_name == "My Own Blue"
@@ -140,7 +57,7 @@ async def test_seed_still_refreshes_builtin_rows():
     async with get_db() as db:
         await db.execute(
             "UPDATE species_profiles SET data = ? WHERE id = 'blue_oyster'",
-            (_make_custom_profile(id="blue_oyster", common_name="Stale").model_dump_json(),),
+            (custom_profile(id="blue_oyster", common_name="Stale").model_dump_json(),),
         )
         await db.commit()
     await seed_builtins()
@@ -148,9 +65,9 @@ async def test_seed_still_refreshes_builtin_rows():
 
 
 async def test_update_and_delete_resolve_hyphen_underscore_ids():
-    await create_profile(_make_custom_profile(id="my_strain"))
-    updated = await update_profile("my-strain", _make_custom_profile(id="my_strain", common_name="Renamed"))
-    assert updated is not None
+    await create_profile(custom_profile(id="my_strain"))
+    updated = await update_profile("my-strain", custom_profile(id="my_strain", common_name="Renamed"))
+    assert updated.common_name == "Renamed"
     assert (await get_profile("my_strain")).common_name == "Renamed"
     assert await delete_profile("my-strain") is True
     assert await get_profile("my_strain") is None
@@ -165,7 +82,23 @@ def test_put_builtin_endpoint_returns_409(client):
     assert client.get("/api/species/lions_mane").json()["common_name"] != "Edited"
 
 
-# ── A card agrees with itself (2026-10 browser audit) ────────────────
+def test_routes_on_an_unknown_profile_or_one_without_recipes(client):
+    body = custom_profile(id="no_such_species").model_dump(mode="json")
+    assert client.get("/api/species/no_such_species").status_code == 404
+    assert client.put("/api/species/no_such_species", json=body).status_code == 404
+    assert client.get("/api/species/no_such_species/shopping-list").status_code == 404
+    assert client.get("/api/species/no_such_species/substrate?volume_liters=5").status_code == 404
+    # DELETE answers 400 for both an unknown id and a built-in.
+    assert client.delete("/api/species/no_such_species").status_code == 400
+    assert client.delete("/api/species/blue_oyster").status_code == 400
+    # A custom profile with no substrate recipe has no shopping list or calculator.
+    assert client.post("/api/species", json=custom_profile().model_dump(mode="json")).status_code == 200
+    for route in ("shopping-list", "substrate?volume_liters=5"):
+        r = client.get(f"/api/species/custom_test/{route}")
+        assert r.status_code == 404 and "No substrate recipes" in r.json()["detail"], route
+
+
+# ── A card agrees with itself ────────────────────────────────────────
 # The Shiitake card said "Cold shock (38-50°F overnight) … 3-5 flushes" in
 # its summary while its pinning trigger said cold-water soak and its yield
 # said 3-6 flushes; king trumpet, yellow oyster, chestnut, pioppino and
@@ -174,13 +107,17 @@ def test_put_builtin_endpoint_returns_409(client):
 _FLUSH_RANGE = re.compile(r"(\d+)-(\d+) flushes")
 
 
-@pytest.mark.parametrize("profile", BUILTIN_PROFILES, ids=lambda p: p.id)
-def test_summary_and_yield_give_one_flush_range(profile):
-    ranges = {tuple(map(int, m)) for text in (profile.tldr or "", profile.yield_notes or "")
-              for m in _FLUSH_RANGE.findall(text)}
-    assert len(ranges) <= 1, f"{profile.id}: tldr and yield_notes disagree: {sorted(ranges)}"
-    for lo, hi in ranges:
-        assert lo <= profile.flush_count_typical <= hi, (profile.id, lo, hi)
+def test_every_card_gives_one_flush_range_around_its_typical_count():
+    problems = {}
+    for profile in BUILTIN_PROFILES:
+        ranges = {tuple(map(int, m)) for text in (profile.tldr or "", profile.yield_notes or "")
+                  for m in _FLUSH_RANGE.findall(text)}
+        if len(ranges) > 1:
+            problems[profile.id] = f"tldr and yield_notes disagree: {sorted(ranges)}"
+        for lo, hi in ranges:
+            if not lo <= profile.flush_count_typical <= hi:
+                problems[profile.id] = f"flush_count_typical {profile.flush_count_typical} outside {lo}-{hi}"
+    assert problems == {}
 
 
 def test_shiitake_summary_names_the_soak_it_reminds_about():
@@ -193,14 +130,10 @@ def test_shiitake_summary_names_the_soak_it_reminds_about():
 # ── setpoints automation can run (checked when a profile is written) ───────
 
 
-def _fruiting(**changes) -> PhaseParams:
-    base = _make_custom_profile().phases[GrowPhase.FRUITING]
-    return base.model_copy(update=changes)
-
-
 def _with_fruiting(**changes) -> SpeciesProfile:
-    profile = _make_custom_profile()
-    return profile.model_copy(update={"phases": {**profile.phases, GrowPhase.FRUITING: _fruiting(**changes)}})
+    profile = custom_profile()
+    fruiting = profile.phases[GrowPhase.FRUITING].model_copy(update=changes)
+    return profile.model_copy(update={"phases": {**profile.phases, GrowPhase.FRUITING: fruiting}})
 
 
 @pytest.mark.parametrize("changes", [
@@ -219,7 +152,7 @@ async def test_a_profile_automation_cannot_run_is_refused(changes):
     with pytest.raises(InvalidProfileError, match="fruiting"):
         await create_profile(bad)
     assert await get_profile(bad.id) is None
-    await create_profile(_make_custom_profile())
+    await create_profile(custom_profile())
     with pytest.raises(InvalidProfileError):
         await update_profile("custom_test", bad)
     assert (await get_profile("custom_test")).phases[GrowPhase.FRUITING].temp_min_f == 55
@@ -234,7 +167,7 @@ def test_species_endpoints_answer_422_for_unusable_setpoints(client):
     r = client.post("/api/species", json=body)
     assert r.status_code == 422, r.text
     assert "temp_min_f" in r.json()["detail"]
-    assert client.post("/api/species", json=_make_custom_profile().model_dump(mode="json")).status_code == 200
+    assert client.post("/api/species", json=custom_profile().model_dump(mode="json")).status_code == 200
     assert client.put("/api/species/custom_test", json=body).status_code == 422
 
 
@@ -245,13 +178,13 @@ async def test_put_with_another_profiles_id_in_the_body_is_refused():
     """The body was stored under the path's row: the listing then showed two
     'blue_oyster' entries and no 'custom_a' that GET/PUT could reach."""
     await seed_builtins()
-    await create_profile(_make_custom_profile(id="custom_a"))
+    await create_profile(custom_profile(id="custom_a"))
     with pytest.raises(InvalidProfileError, match="custom_a"):
-        await update_profile("custom_a", _make_custom_profile(id="blue_oyster", common_name="X"))
+        await update_profile("custom_a", custom_profile(id="blue_oyster", common_name="X"))
     ids = [p.id for p in await get_all_profiles()]
     assert ids.count("blue_oyster") == 1 and "custom_a" in ids
     # The other spelling of its own id is the same profile, stored under its row.
-    updated = await update_profile("custom-a", _make_custom_profile(id="custom-a", common_name="Renamed"))
+    updated = await update_profile("custom-a", custom_profile(id="custom-a", common_name="Renamed"))
     assert updated.id == "custom_a"
     assert (await get_profile("custom_a")).common_name == "Renamed"
 
@@ -262,7 +195,7 @@ async def test_put_with_another_profiles_id_in_the_body_is_refused():
 async def test_deleting_a_profile_an_active_grow_runs_on_is_refused():
     """The grow then resolved no profile: no setpoints and no stage alerts for
     the rest of its run."""
-    await create_profile(_make_custom_profile(id="my_strain"))
+    await create_profile(custom_profile(id="my_strain"))
     session = await create_session(SessionCreate(name="Mine", species_profile_id="my_strain"))
     assert session["species_profile_id"] == "my-strain"
     with pytest.raises(ProfileInUseError, match="Mine"):
@@ -274,7 +207,7 @@ async def test_deleting_a_profile_an_active_grow_runs_on_is_refused():
 
 
 def test_delete_endpoint_answers_409_while_in_use(client):
-    assert client.post("/api/species", json=_make_custom_profile().model_dump(mode="json")).status_code == 200
+    assert client.post("/api/species", json=custom_profile().model_dump(mode="json")).status_code == 200
     client.post("/api/sessions", json={"name": "S", "species_profile_id": "custom_test"})
     r = client.delete("/api/species/custom_test")
     assert r.status_code == 409, r.text
@@ -290,7 +223,7 @@ def test_the_listing_follows_every_profile_write(client):
     listed = lambda: {p["id"]: p for p in client.get("/api/species").json()}  # noqa: E731
     before = listed()
     assert "custom_test" not in before and "blue_oyster" in before
-    body = _make_custom_profile().model_dump(mode="json")
+    body = custom_profile().model_dump(mode="json")
     assert client.post("/api/species", json=body).status_code == 200
     assert listed()["custom_test"]["common_name"] == "Test Species"
     body["common_name"] = "Renamed"
@@ -308,7 +241,8 @@ async def test_an_unreadable_stored_row_does_not_hide_the_others():
     async with get_db() as db:
         await db.execute("INSERT INTO species_profiles (id, data, is_builtin) VALUES ('broken', '{}', 0)")
         await db.commit()
-    await create_profile(_make_custom_profile())  # a write: the cache re-reads
+    await create_profile(custom_profile())  # a write: the cache re-reads
     assert await get_profile("broken") is None
     assert (await get_profile("blue_oyster")).common_name == "Blue Oyster"
     assert len(await get_all_profiles()) == len(BUILTIN_PROFILES) + 1
+

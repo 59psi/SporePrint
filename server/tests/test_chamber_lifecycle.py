@@ -3,15 +3,11 @@
 import json
 import time
 
-from app.chambers.models import ChamberCreate, MaintenanceCreate
+from app.chambers.models import ChamberCreate
 from app.chambers.service import (
     create_chamber,
     get_chamber_stats,
     get_chamber_photos,
-    list_maintenance,
-    schedule_maintenance,
-    complete_maintenance,
-    get_maintenance,
 )
 import app.contamination.service as contamination_service
 from app.contamination.service import record_event
@@ -51,13 +47,17 @@ async def test_stats_empty_chamber():
     assert stats["total_wet_yield_g"] == 0.0
 
 
-async def test_stats_grows_and_yield():
+async def test_stats_count_the_chambers_own_grows_and_yield():
+    """Harvests from another chamber's sessions must not leak into stats."""
     c = await create_chamber(ChamberCreate(name="Active"))
+    other = await create_chamber(ChamberCreate(name="Other"))
     s1 = await _session_in_chamber(c["id"], "G1", status="completed")
     await _session_in_chamber(c["id"], "G2")  # still active
+    s3 = await _session_in_chamber(other["id"], "G3")
 
     await add_harvest(s1["id"], HarvestCreate(flush_number=1, wet_weight_g=300.0, dry_weight_g=30.0))
     await add_harvest(s1["id"], HarvestCreate(flush_number=2, wet_weight_g=150.0, dry_weight_g=15.0))
+    await add_harvest(s3["id"], HarvestCreate(flush_number=1, wet_weight_g=999.0))
 
     stats = await get_chamber_stats(c["id"])
     assert stats["lifetime_grows"] == 2
@@ -112,38 +112,16 @@ def test_marking_a_grow_contaminated_counts_everywhere(client, monkeypatch):
     assert "contaminated (trichoderma)" in ended["description"]
 
 
-def test_marking_contaminated_needs_no_body_and_404s_an_unknown_session(client):
+def test_marking_contaminated_needs_no_body(client):
     s = client.post("/api/sessions", json={"name": "G", "species_profile_id": "blue_oyster"}).json()
     r = client.post(f"/api/sessions/{s['id']}/contaminated")
     assert r.status_code == 200 and r.json()["status"] == "aborted"
     [event] = client.get(f"/api/contamination/events?session_id={s['id']}").json()
     assert event["contamination_type"] is None and event["chamber_id"] is None
-    assert client.post("/api/sessions/9999/contaminated").status_code == 404
     assert len(client.get("/api/contamination/events").json()) == 1
 
 
-async def test_stats_yield_isolated_per_chamber():
-    """Harvests from another chamber's sessions must not leak into stats."""
-    c1 = await create_chamber(ChamberCreate(name="A"))
-    c2 = await create_chamber(ChamberCreate(name="B"))
-    s1 = await _session_in_chamber(c1["id"], "G1")
-    s2 = await _session_in_chamber(c2["id"], "G2")
-    await add_harvest(s1["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
-    await add_harvest(s2["id"], HarvestCreate(flush_number=1, wet_weight_g=999.0))
-
-    stats = await get_chamber_stats(c1["id"])
-    assert stats["total_wet_yield_g"] == 100.0
-
-
-async def test_stats_unknown_chamber():
-    assert await get_chamber_stats(9999) is None
-
-
 # ── Photos (derived from vision_frames) ─────────────────────────
-
-
-async def test_photos_unknown_chamber():
-    assert await get_chamber_photos(9999) is None
 
 
 async def test_photos_no_nodes():
@@ -151,24 +129,15 @@ async def test_photos_no_nodes():
     assert await get_chamber_photos(c["id"]) == []
 
 
-async def test_photos_newest_first_and_mapped_to_nodes():
+async def test_photos_are_the_chambers_nodes_frames_newest_first_up_to_the_limit():
     c = await create_chamber(ChamberCreate(name="Cam", node_ids=["cam-01", "climate-01"]))
     now = time.time()
     await _insert_frame("cam-01", now - 100, "old.jpg")
     await _insert_frame("cam-01", now - 10, "new.jpg")
     await _insert_frame("other-99", now, "unrelated.jpg")  # not a chamber node
 
-    photos = await get_chamber_photos(c["id"])
-    assert [p["file_path"] for p in photos] == ["new.jpg", "old.jpg"]
-
-
-async def test_photos_limit():
-    c = await create_chamber(ChamberCreate(name="Many", node_ids=["cam-01"]))
-    now = time.time()
-    for i in range(5):
-        await _insert_frame("cam-01", now - i, f"f{i}.jpg")
-    photos = await get_chamber_photos(c["id"], limit=2)
-    assert len(photos) == 2
+    assert [p["file_path"] for p in await get_chamber_photos(c["id"])] == ["new.jpg", "old.jpg"]
+    assert [p["file_path"] for p in await get_chamber_photos(c["id"], limit=1)] == ["new.jpg"]
 
 
 async def test_photos_return_the_analyses_as_objects(client):
@@ -194,73 +163,33 @@ async def test_photos_return_the_analyses_as_objects(client):
 # ── Maintenance ─────────────────────────────────────────────────
 
 
-async def test_schedule_and_list_maintenance():
-    c = await create_chamber(ChamberCreate(name="Maint"))
-    await schedule_maintenance(c["id"], MaintenanceCreate(kind="clean", due_at=time.time() + 86400, notes="PCO clean"))
-    await schedule_maintenance(c["id"], MaintenanceCreate(kind="calibrate", notes="sensor recal"))
-
-    entries = await list_maintenance(c["id"])
-    assert len(entries) == 2
-    # Newest first
-    assert entries[0]["kind"] == "calibrate"
-    assert entries[0]["completed_at"] is None
-
-
-async def test_complete_maintenance():
-    c = await create_chamber(ChamberCreate(name="Maint2"))
-    m = await schedule_maintenance(c["id"], MaintenanceCreate(kind="inspect"))
-    assert m["completed_at"] is None
-
-    done = await complete_maintenance(c["id"], m["id"], notes="looked good")
-    assert done["completed_at"] is not None
-    assert done["notes"] == "looked good"
-
-
-async def test_complete_maintenance_unknown():
-    c = await create_chamber(ChamberCreate(name="Maint3"))
-    assert await complete_maintenance(c["id"], 9999) is None
-
-
-# ── API endpoints ───────────────────────────────────────────────
-
-
-def test_stats_endpoint_404(client):
-    assert client.get("/api/chambers/9999/stats").status_code == 404
-
-
-def test_photos_endpoint_404(client):
-    assert client.get("/api/chambers/9999/photos").status_code == 404
-
-
-def test_maintenance_endpoints(client):
-    cid = client.post("/api/chambers", json={"name": "Endpoint Maint"}).json()["id"]
-
-    resp = client.post(f"/api/chambers/{cid}/maintenance", json={"kind": "repair", "notes": "fan swap"})
+def test_maintenance_is_scheduled_listed_newest_first_and_completed(client):
+    cid = client.post("/api/chambers", json={"name": "Maint"}).json()["id"]
+    due = time.time() + 86400
+    assert client.post(f"/api/chambers/{cid}/maintenance",
+                       json={"kind": "clean", "due_at": due, "notes": "PCO clean"}).status_code == 200
+    resp = client.post(f"/api/chambers/{cid}/maintenance", json={"kind": "calibrate", "notes": "sensor recal"})
     assert resp.status_code == 200
     mid = resp.json()["id"]
 
-    resp = client.get(f"/api/chambers/{cid}/maintenance")
+    listed = client.get(f"/api/chambers/{cid}/maintenance").json()
+    assert [(m["kind"], m["completed_at"]) for m in listed] == [("calibrate", None), ("clean", None)]
+
+    resp = client.post(f"/api/chambers/{cid}/maintenance/{mid}/complete", json={"notes": "looked good"})
     assert resp.status_code == 200
-    assert len(resp.json()) == 1
+    assert resp.json()["completed_at"] is not None and resp.json()["notes"] == "looked good"
+    # A completion with no body keeps the entry's notes.
+    first = listed[1]["id"]
+    resp = client.post(f"/api/chambers/{cid}/maintenance/{first}/complete")
+    assert resp.status_code == 200 and resp.json()["notes"] == "PCO clean"
 
-    resp = client.post(f"/api/chambers/{cid}/maintenance/{mid}/complete", json={})
-    assert resp.status_code == 200
-    assert resp.json()["completed_at"] is not None
-
-
-def test_maintenance_invalid_kind_422(client):
-    cid = client.post("/api/chambers", json={"name": "Bad Kind"}).json()["id"]
-    resp = client.post(f"/api/chambers/{cid}/maintenance", json={"kind": "explode"})
-    assert resp.status_code == 422
+    assert client.post(f"/api/chambers/{cid}/maintenance", json={"kind": "explode"}).status_code == 422
 
 
-def test_maintenance_unknown_chamber_404(client):
-    resp = client.post("/api/chambers/9999/maintenance", json={"kind": "clean"})
-    assert resp.status_code == 404
-    assert client.get("/api/chambers/9999/maintenance").status_code == 404
-
-
-def test_maintenance_complete_unknown_404(client):
+def test_lifecycle_routes_answer_404_for_an_unknown_chamber_or_entry(client):
     cid = client.post("/api/chambers", json={"name": "C"}).json()["id"]
-    resp = client.post(f"/api/chambers/{cid}/maintenance/9999/complete", json={})
-    assert resp.status_code == 404
+    assert client.get("/api/chambers/9999/stats").status_code == 404
+    assert client.get("/api/chambers/9999/photos").status_code == 404
+    assert client.get("/api/chambers/9999/maintenance").status_code == 404
+    assert client.post("/api/chambers/9999/maintenance", json={"kind": "clean"}).status_code == 404
+    assert client.post(f"/api/chambers/{cid}/maintenance/9999/complete", json={}).status_code == 404

@@ -4,89 +4,47 @@ import pytest
 
 from app.species.models import SubstrateRecipe
 from app.species.profiles import BUILTIN_PROFILES
-from app.species.service import seed_builtins, get_profile
 from app.species.substrate import calculate_all_recipes, calculate_recipe
 
 _PROFILES = {p.id: p for p in BUILTIN_PROFILES}
 
 
-async def test_blue_oyster_returns_recipes_with_positive_values():
-    """Blue oyster substrate calc should return recipes with positive quantities."""
-    await seed_builtins()
-    profile = await get_profile("blue_oyster")
-    assert profile is not None
-    assert len(profile.substrate_recipes) > 0
+_RECIPE_KEYS = {"recipe_name", "suitability", "target_volume_liters", "ingredients", "water_liters",
+                "spawn_weight_g", "spawn_rate_percent", "sterilization", "notes"}
 
-    results = calculate_all_recipes(profile.substrate_recipes, 5.0)
-    assert len(results) > 0
-    for recipe in results:
+
+def test_the_substrate_endpoint_scales_every_recipe_to_the_volume(client):
+    r = client.get("/api/species/blue_oyster/substrate", params={"volume_liters": 5})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["species_id"], body["common_name"], body["volume_liters"]) == (
+        "blue_oyster", "Blue Oyster", 5.0)
+    assert len(body["recipes"]) == len(_PROFILES["blue_oyster"].substrate_recipes) > 0
+    for recipe in body["recipes"]:
+        assert _RECIPE_KEYS <= set(recipe), recipe["recipe_name"]
         assert recipe["target_volume_liters"] == 5.0
-        assert recipe["water_liters"] > 0
-        assert recipe["spawn_weight_g"] > 0
-        assert recipe["spawn_rate_percent"] > 0
-        assert recipe["sterilization"]["method"]
-        assert recipe["sterilization"]["time_minutes"] > 0
-        assert len(recipe["ingredients"]) > 0
+        assert recipe["water_liters"] > 0 and recipe["spawn_weight_g"] > 0 and recipe["spawn_rate_percent"] > 0
+        assert recipe["ingredients"]
+        assert recipe["sterilization"]["method"] and recipe["sterilization"]["time_minutes"] > 0
+        assert "temp_f" in recipe["sterilization"]
+    # No volume, or none a real grow uses (inf passed gt=0 and overflowed into a 500).
+    for volume in (0, -1, 1001, "inf"):
+        assert client.get("/api/species/blue_oyster/substrate",
+                          params={"volume_liters": volume}).status_code == 422, volume
 
 
-async def test_nonexistent_species_has_no_profile():
-    """get_profile should return None for a nonexistent species."""
-    await seed_builtins()
-    profile = await get_profile("nonexistent_species")
-    assert profile is None
-
-
-async def test_volume_scaling_is_proportional():
+def test_volume_scaling_is_proportional():
     """10L should produce ~2x the substrate weight of 5L."""
-    await seed_builtins()
-    profile = await get_profile("blue_oyster")
-    assert profile is not None
+    recipes = _PROFILES["blue_oyster"].substrate_recipes
+    results_5 = calculate_all_recipes(recipes, 5.0)
+    results_10 = calculate_all_recipes(recipes, 10.0)
 
-    results_5 = calculate_all_recipes(profile.substrate_recipes, 5.0)
-    results_10 = calculate_all_recipes(profile.substrate_recipes, 10.0)
-
-    assert len(results_5) == len(results_10)
+    assert len(results_5) == len(results_10) == len(recipes)
     for r5, r10 in zip(results_5, results_10):
         # Water should scale proportionally
         assert abs(r10["water_liters"] - r5["water_liters"] * 2) < 0.01
         # Spawn weight should scale proportionally
         assert abs(r10["spawn_weight_g"] - r5["spawn_weight_g"] * 2) < 0.1
-
-
-async def test_recipe_output_shape():
-    """Each recipe result should have the expected structure."""
-    await seed_builtins()
-    profile = await get_profile("blue_oyster")
-    assert profile is not None
-
-    results = calculate_all_recipes(profile.substrate_recipes, 5.0)
-    for recipe in results:
-        assert "recipe_name" in recipe
-        assert "suitability" in recipe
-        assert "target_volume_liters" in recipe
-        assert "ingredients" in recipe
-        assert "water_liters" in recipe
-        assert "spawn_weight_g" in recipe
-        assert "spawn_rate_percent" in recipe
-        assert "sterilization" in recipe
-        assert "notes" in recipe
-        assert "method" in recipe["sterilization"]
-        assert "time_minutes" in recipe["sterilization"]
-        assert "temp_f" in recipe["sterilization"]
-
-
-async def test_different_species_substrate():
-    """Test substrate calculation for a species with different recipes."""
-    await seed_builtins()
-    profile = await get_profile("blue_oyster")
-    assert profile is not None
-    assert len(profile.substrate_recipes) > 0
-
-    results = calculate_all_recipes(profile.substrate_recipes, 3.0)
-    assert len(results) == len(profile.substrate_recipes)
-    for recipe in results:
-        assert recipe["target_volume_liters"] == 3.0
-        assert recipe["spawn_weight_g"] > 0
 
 
 # ── unit classes (percent / ratio / depth / fraction) ──────────────────

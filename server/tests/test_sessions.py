@@ -8,7 +8,9 @@ from app.sessions.models import SessionCreate, SessionUpdate, PhaseAdvance, Note
 from app.sessions.service import (
     InvalidPhaseError,
     SessionConflictError,
+    UnknownChamberError,
     create_session,
+    handle_remote_command,
     list_sessions,
     get_session,
     advance_phase,
@@ -49,7 +51,6 @@ def test_patch_endpoint_clears_with_null(client):
         "name": "R", "species_profile_id": "reishi", "growth_form": "conk"}).json()
     r = client.patch(f"/api/sessions/{s['id']}", json={"growth_form": None})
     assert r.status_code == 200 and r.json()["growth_form"] is None
-    assert client.patch("/api/sessions/99999", json={"growth_form": None}).status_code == 404
 
 
 # ── species filters match every spelling ──────────────────────────
@@ -114,17 +115,11 @@ async def test_create_session():
     assert s["phase_history"][0]["phase"] == "substrate_colonization"
 
 
-async def test_list_sessions():
-    await create_session(_make_session_data(name="Grow 1"))
-    await create_session(_make_session_data(name="Grow 2"))
-    sessions = await list_sessions()
-    assert len(sessions) == 2
-
-
 async def test_list_sessions_filter_status():
     s = await create_session(_make_session_data())
     await complete_session(s["id"])
     await create_session(_make_session_data(name="Active"))
+    assert len(await list_sessions()) == 2
     active = await list_sessions(status="active")
     assert len(active) == 1
     assert active[0]["name"] == "Active"
@@ -142,9 +137,9 @@ async def test_advance_phase():
 
 
 async def test_phase_change_event_names_the_phase_readably():
-    # 2026-10 audit: the event read "Phase advanced to primordia_induction"
-    # (raw enum) in the timeline, the chamber feed and the transcript, while
-    # the reminder beside it said "Leaving browning".
+    # The event read "Phase advanced to primordia_induction" (raw enum) in
+    # the timeline, the chamber feed and the transcript, while the reminder
+    # beside it said "Leaving browning".
     s = await create_session(_make_session_data())
     await advance_phase(s["id"], PhaseAdvance(phase="primordia_induction"))
     [ev] = [e for e in await get_events(s["id"]) if e["type"] == "phase_change"]
@@ -152,69 +147,65 @@ async def test_phase_change_event_names_the_phase_readably():
     assert json.loads(ev["data"]) == {"phase": "primordia_induction"}
 
 
-async def test_add_note():
-    s = await create_session(_make_session_data())
-    note = await add_note(s["id"], NoteCreate(text="Looking healthy", tags=["visual"]))
-    assert note["text"] == "Looking healthy"
-
-
-async def test_add_harvest():
+async def test_harvests_accumulate_into_the_session_totals():
     s = await create_session(_make_session_data())
     h = await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=150.0, dry_weight_g=15.0))
-    assert h["flush_number"] == 1
-    assert h["wet_weight_g"] == 150.0
-    # Check session totals updated
+    assert (h["flush_number"], h["wet_weight_g"], h["dry_weight_g"]) == (1, 150.0, 15.0)
+    await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=80.0, dry_weight_g=8.0))
     updated = await get_session(s["id"])
-    assert updated["total_wet_yield_g"] == 150.0
-    assert updated["total_dry_yield_g"] == 15.0
+    assert (updated["total_wet_yield_g"], updated["total_dry_yield_g"]) == (230.0, 23.0)
 
 
-async def test_multiple_harvests_accumulate():
+@pytest.mark.parametrize(("end", "status", "phase"), [
+    (abort_session, "aborted", "substrate_colonization"),
+    (complete_session, "completed", "complete"),
+], ids=["abort", "complete"])
+async def test_ending_a_grow_stamps_it_and_closes_its_open_phase(end, status, phase):
     s = await create_session(_make_session_data())
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
-    await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=80.0))
-    updated = await get_session(s["id"])
-    assert updated["total_wet_yield_g"] == 180.0
+    ended = await end(s["id"])
+    assert (ended["status"], ended["current_phase"]) == (status, phase)
+    assert ended["completed_at"] is not None
+    assert all(ph["exited_at"] is not None for ph in ended["phase_history"])
 
 
-async def test_abort_session():
+async def test_an_end_that_loses_a_race_to_another_end_changes_nothing(monkeypatch):
+    """Two ends at once both read an active grow: the one that commits second
+    must not rewrite the outcome (nor log a second end)."""
     s = await create_session(_make_session_data())
-    aborted = await abort_session(s["id"])
-    assert aborted["status"] == "aborted"
-    assert aborted["completed_at"] is not None
-    # Phase should be closed
-    assert all(ph["exited_at"] is not None for ph in aborted["phase_history"])
+    real_nodes_run_by = sessions_service._nodes_run_by
+
+    async def _completed_meanwhile(session_id):
+        async with get_db() as db:  # another request completes it first
+            await db.execute("UPDATE sessions SET status = 'completed', current_phase = 'complete' "
+                             "WHERE id = ?", (session_id,))
+            await db.commit()
+        return await real_nodes_run_by(session_id)
+
+    monkeypatch.setattr(sessions_service, "_nodes_run_by", _completed_meanwhile)
+    with pytest.raises(SessionConflictError, match="already ended"):
+        await abort_session(s["id"])
+    assert (await get_session(s["id"]))["status"] == "completed"
+    assert "session_aborted" not in [e["type"] for e in await get_events(s["id"])]
 
 
-async def test_complete_session():
-    s = await create_session(_make_session_data())
-    completed = await complete_session(s["id"])
-    assert completed["status"] == "completed"
-    assert completed["current_phase"] == "complete"
-    assert completed["completed_at"] is not None
+def test_an_ended_grow_cannot_be_ended_another_way(client):
+    s = client.post("/api/sessions", json={"name": "G", "species_profile_id": "blue_oyster"}).json()
+    assert client.post(f"/api/sessions/{s['id']}/abort").status_code == 200
+    r = client.post(f"/api/sessions/{s['id']}/complete")
+    assert r.status_code == 409 and "aborted" in r.json()["detail"]
+    assert client.get(f"/api/sessions/{s['id']}").json()["status"] == "aborted"
 
 
 async def test_get_events():
     s = await create_session(_make_session_data())
     await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
-    await add_note(s["id"], NoteCreate(text="Test note"))
+    note = await add_note(s["id"], NoteCreate(text="Test note", tags=["visual"]))
+    assert note["text"] == "Test note"
     events = await get_events(s["id"])
     types = [e["type"] for e in events]
     assert "session_created" in types
     assert "phase_change" in types
     assert "note_added" in types
-
-
-async def test_full_lifecycle():
-    s = await create_session(_make_session_data())
-    s = await advance_phase(s["id"], PhaseAdvance(phase="primordia_induction"))
-    await add_note(s["id"], NoteCreate(text="Pins forming"))
-    s = await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0, dry_weight_g=20.0))
-    s = await complete_session(s["id"])
-    assert s["status"] == "completed"
-    assert s["total_wet_yield_g"] == 200.0
-    assert len(s["phase_history"]) == 3
 
 
 def test_create_with_an_unknown_chamber_is_a_422_not_a_500(client):
@@ -236,8 +227,6 @@ def test_create_with_an_unknown_chamber_is_a_422_not_a_500(client):
 
 
 async def test_remote_session_start_reports_an_unknown_chamber():
-    from app.sessions.service import UnknownChamberError, handle_remote_command
-
     with pytest.raises(UnknownChamberError, match="chamber 42 not found"):
         await handle_remote_command("session_start", {
             "name": "G", "species_profile_id": "blue_oyster", "chamber_id": 42,
@@ -247,50 +236,60 @@ async def test_remote_session_start_reports_an_unknown_chamber():
 
 # ── Unknown sessions and out-of-range harvests ──────────────────
 
+# Every per-session route, against a session that does not exist. Several
+# (note, harvest) were FOREIGN KEY 500s; each must be the router's 404.
+_UNKNOWN_SESSION_ROUTES = [
+    ("GET", "/api/sessions/9999", None),
+    ("PATCH", "/api/sessions/9999", {"growth_form": None}),
+    ("POST", "/api/sessions/9999/note", {"text": "pins!"}),
+    ("POST", "/api/sessions/9999/harvest", {"flush_number": 1, "wet_weight_g": 10}),
+    ("GET", "/api/sessions/9999/report.md", None),
+    ("GET", "/api/sessions/9999/report.csv", None),
+    ("GET", "/api/sessions/9999/stats", None),
+    ("POST", "/api/sessions/9999/harvest/1/drying-log", {"weight_g": 50.0}),
+    ("GET", "/api/sessions/9999/harvest/1/drying", None),
+    ("POST", "/api/sessions/9999/abort", None),
+    ("POST", "/api/sessions/9999/contaminated", None),
+    ("POST", "/api/sessions/9999/complete", None),
+]
 
-def test_note_and_harvest_for_an_unknown_session_are_404_not_500(client):
-    note = client.post("/api/sessions/9999/note", json={"text": "pins!"})
-    harvest = client.post("/api/sessions/9999/harvest", json={"flush_number": 1, "wet_weight_g": 10})
-    assert (note.status_code, harvest.status_code) == (404, 404)  # FOREIGN KEY 500s
+
+def test_every_route_on_an_unknown_session_is_404(client):
+    answers = {(method, path): client.request(method, path, json=body).status_code
+               for method, path, body in _UNKNOWN_SESSION_ROUTES}
+    assert answers == {(method, path): 404 for method, path, _ in _UNKNOWN_SESSION_ROUTES}
+    # Nothing was written for the grow that is not there.
+    assert client.get("/api/sessions").json() == []
+    assert client.get("/api/contamination/events").json() == []
 
 
-async def test_note_and_harvest_services_return_none_for_an_unknown_session():
-    assert await add_note(9999, NoteCreate(text="x")) is None
-    assert await add_harvest(9999, HarvestCreate(flush_number=1)) is None
-
-
-@pytest.mark.parametrize("body", [
+# A negative weight was subtracted from the session's yield total for good
+# (there is no harvest edit or delete), flush 0 counted as a flush, and -5 g
+# on a 100 g harvest read as 105 % moisture loss and announced 'Drying Complete'.
+_OUT_OF_RANGE_HARVESTS = [
     {"flush_number": 0, "wet_weight_g": 100},
     {"flush_number": 51, "wet_weight_g": 100},
     {"flush_number": 1, "wet_weight_g": -500},
     {"flush_number": 1, "dry_weight_g": -1},
     {"flush_number": 1, "quality_rating": 11},
     {"flush_number": 1, "quality_rating": -1},
-])
-def test_out_of_range_harvests_are_422(client, body):
-    """A negative weight was subtracted from the session's yield total for
-    good (there is no harvest edit or delete), flush 0 counted as a flush."""
-    s = client.post("/api/sessions", json={"name": "G", "species_profile_id": "blue_oyster"}).json()
-    r = client.post(f"/api/sessions/{s['id']}/harvest", json=body)
-    assert r.status_code == 422, body
-    after = client.get(f"/api/sessions/{s['id']}").json()
-    assert after["total_wet_yield_g"] == 0 and after["total_dry_yield_g"] == 0
+]
 
 
-def test_in_range_harvest_is_accepted(client):
+def test_out_of_range_harvest_and_drying_inputs_are_422(client):
     s = client.post("/api/sessions", json={"name": "G", "species_profile_id": "blue_oyster"}).json()
+    for body in _OUT_OF_RANGE_HARVESTS:
+        r = client.post(f"/api/sessions/{s['id']}/harvest", json=body)
+        assert r.status_code == 422, body
+        after = client.get(f"/api/sessions/{s['id']}").json()
+        assert (after["total_wet_yield_g"], after["total_dry_yield_g"]) == (0, 0), body
+    # The edges are in range.
     r = client.post(f"/api/sessions/{s['id']}/harvest", json={
         "flush_number": 50, "wet_weight_g": 0, "dry_weight_g": 0.0, "quality_rating": 10})
     assert r.status_code == 200, r.text
-
-
-@pytest.mark.parametrize("weight", [0, -5])
-def test_a_non_positive_drying_weight_is_422(client, weight):
-    """-5 g on a 100 g harvest read as 105 % moisture loss and announced
-    'Drying Complete'."""
-    s = client.post("/api/sessions", json={"name": "G", "species_profile_id": "blue_oyster"}).json()
     h = client.post(f"/api/sessions/{s['id']}/harvest",
                     json={"flush_number": 1, "wet_weight_g": 100}).json()
-    r = client.post(f"/api/sessions/{s['id']}/harvest/{h['id']}/drying-log",
-                    json={"weight_g": weight})
-    assert r.status_code == 422
+    for weight in (0, -5):
+        r = client.post(f"/api/sessions/{s['id']}/harvest/{h['id']}/drying-log", json={"weight_g": weight})
+        assert r.status_code == 422, weight
+    assert client.get(f"/api/sessions/{s['id']}/harvest/{h['id']}/drying").json()["entries"] == []

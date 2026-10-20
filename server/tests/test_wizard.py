@@ -3,19 +3,16 @@ import itertools
 import pytest
 
 from app.species.profiles import BUILTIN_PROFILES
-from app.species.service import seed_builtins, get_all_profiles
 from app.species.wizard import difficulty_levels, recommend, score_profile
 
 
-async def test_beginner_culinary_recommends_blue_oyster():
+def test_beginner_culinary_recommends_blue_oyster():
     """A first-time grower wanting culinary species should get blue_oyster.
 
     Blue oyster fruits at 55-65F so we use 'cool' temp range.
     """
-    await seed_builtins()
-    profiles = await get_all_profiles()
     results = recommend(
-        profiles,
+        BUILTIN_PROFILES,
         experience="first_time",
         environment="indoor_closet",
         temp_range="cool",
@@ -23,17 +20,12 @@ async def test_beginner_culinary_recommends_blue_oyster():
         goal="culinary",
         commitment="set_and_forget",
     )
-    assert len(results) == 5
-    species_ids = [r["species_id"] for r in results]
-    assert "blue_oyster" in species_ids
+    assert "blue_oyster" in [r["species_id"] for r in results]
 
 
-async def test_advanced_research_returns_results():
-    """An advanced grower with research goal should still get results."""
-    await seed_builtins()
-    profiles = await get_all_profiles()
+def test_recommend_returns_the_top_five_best_first_with_their_reasons():
     results = recommend(
-        profiles,
+        BUILTIN_PROFILES,
         experience="advanced",
         environment="indoor_tent",
         temp_range="warm",
@@ -42,61 +34,20 @@ async def test_advanced_research_returns_results():
         commitment="dedicated_hobbyist",
     )
     assert len(results) == 5
-    for r in results:
-        assert "species_id" in r
-        assert "score" in r
-        assert "reasons" in r
-        assert "tldr" in r
-        assert r["score"] >= 0
-
-
-async def test_scores_sorted_descending():
-    """Results must be sorted by score from highest to lowest."""
-    await seed_builtins()
-    profiles = await get_all_profiles()
-    results = recommend(
-        profiles,
-        experience="some_experience",
-        environment="indoor_tent",
-        temp_range="cool",
-        substrates=["sawdust", "straw"],
-        goal="culinary",
-        commitment="daily_attention",
-    )
     scores = [r["score"] for r in results]
     assert scores == sorted(scores, reverse=True)
-
-
-async def test_result_shape():
-    """Each result should have the expected fields."""
-    await seed_builtins()
-    profiles = await get_all_profiles()
-    results = recommend(
-        profiles,
-        experience="first_time",
-        environment="indoor_closet",
-        temp_range="moderate",
-        substrates=["straw"],
-        goal="culinary",
-        commitment="set_and_forget",
-    )
     for r in results:
-        assert isinstance(r["species_id"], str)
-        assert isinstance(r["common_name"], str)
-        assert isinstance(r["scientific_name"], str)
-        assert isinstance(r["category"], str)
-        assert isinstance(r["score"], int)
-        assert isinstance(r["reasons"], list)
-        assert isinstance(r["tldr"], str)
+        assert {k: type(r[k]) for k in ("species_id", "common_name", "scientific_name", "category",
+                                         "score", "reasons", "tldr")} == {
+            "species_id": str, "common_name": str, "scientific_name": str, "category": str,
+            "score": int, "reasons": list, "tldr": str}
         assert 0 <= r["score"] <= 100
 
 
-async def test_medicinal_goal_favors_medicinal_category():
+def test_medicinal_goal_favors_medicinal_category():
     """Medicinal goal should rank medicinal species higher."""
-    await seed_builtins()
-    profiles = await get_all_profiles()
     results = recommend(
-        profiles,
+        BUILTIN_PROFILES,
         experience="some_experience",
         environment="indoor_tent",
         temp_range="warm",
@@ -105,8 +56,7 @@ async def test_medicinal_goal_favors_medicinal_category():
         commitment="dedicated_hobbyist",
     )
     # At least one medicinal species should appear in the top 5
-    categories = [r["category"] for r in results]
-    assert "medicinal" in categories
+    assert "medicinal" in [r["category"] for r in results]
 
 
 _NOT_CULTIVABLE = {p.id for p in BUILTIN_PROFILES if not p.chamber_cultivable}

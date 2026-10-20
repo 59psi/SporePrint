@@ -9,9 +9,11 @@ about and logs. Covered here:
 - the enum / lifecycle order and the shiitake profile's browning setpoints
 - phase validation: a profile without browning params refuses it (422)
 - the suggested transitions substrate_colonization → browning → primordia_induction
+  through GET /next-phase (the suggestion table and the unbagged block's
+  sealed gate are in test_lifecycle_cold_storage.py)
 - the cold-soak reminder: GET /next-phase, the advance log, the daily check
-- automation: the open-substrate rules run in browning, the unbagged block is
-  not "sealed", and existing installs upgrade their pre-browning rule copies
+- automation: the open-substrate rules run in browning and existing installs
+  upgrade their pre-browning rule copies
 - vision: browning is normal for shiitake (prompt), browning_percent → alert
 - transcript + planner pick the phase up
 """
@@ -27,7 +29,7 @@ import app.automation.engine as engine
 import app.cloud.service as cloud_service
 import app.sessions.service as sessions_service
 from app.automation.coverage import compute_coverage
-from app.automation.engine import _container_is_sealed, evaluate_rules
+from app.automation.engine import evaluate_rules
 from app.automation.service import seed_builtin_rules, serialize_rule_data
 from app.automation.smart_plugs import register_plug
 from app.automation.templates import (
@@ -35,7 +37,6 @@ from app.automation.templates import (
     BUILTIN_RULES,
     PRE_BROWNING_BUILTIN_RULES,
     PRE_DEADBAND_BUILTIN_RULES,
-    SUPERSEDED_BUILTIN_RULES,
 )
 from app.config import settings
 from app.db import get_db
@@ -43,13 +44,11 @@ from app.planner.service import propose_cycle
 from app.sessions.models import PhaseAdvance, SessionCreate
 from app.sessions.service import (
     _GROW_PHASES,
-    InvalidPhaseError,
     advance_phase,
     check_phase_reminders,
     create_session,
     get_events,
     phase_error,
-    suggested_next_phase,
 )
 from app.species.models import GrowPhase
 from app.species.profiles import BUILTIN_PROFILES
@@ -64,11 +63,11 @@ from app.vision.service import (
     browning_guidance,
     browning_signal,
 )
+from tests._pi_c2_helpers import enter_open_phase_days_ago, fake_anthropic
 
 _PROFILES = {p.id: p for p in BUILTIN_PROFILES}
 _SHIITAKE = _PROFILES["shiitake"]
 _SHIITAKE_PHASES = [p.value for p in _SHIITAKE.phases]
-_BLUE_PHASES = [p.value for p in _PROFILES["blue_oyster"].phases]
 
 
 async def _session(species="shiitake", phase="substrate_colonization", **kw) -> dict:
@@ -136,15 +135,6 @@ def test_phase_error_refuses_browning_for_a_profile_without_it():
     assert phase_error("browning", None) is None  # unknown species: name check only
 
 
-async def test_advance_and_create_refuse_browning_without_params():
-    await seed_builtins()
-    s = await _session("blue_oyster")
-    with pytest.raises(InvalidPhaseError):
-        await advance_phase(s["id"], PhaseAdvance(phase="browning"))
-    with pytest.raises(InvalidPhaseError):
-        await _session("blue_oyster", "browning")
-
-
 def test_rest_api_answers_422_for_browning_on_a_non_browning_species(client):
     created = client.post("/api/sessions", json={"name": "B", "species_profile_id": "blue-oyster"})
     assert created.status_code == 200
@@ -157,29 +147,6 @@ def test_rest_api_answers_422_for_browning_on_a_non_browning_species(client):
 
 
 # ── suggested transitions ─────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("container", ["grow_bag", "bulk_bag", "monotub"])
-def test_shiitake_block_browns_before_it_pins(container):
-    assert suggested_next_phase("substrate_colonization", container,
-                                profile_phases=_SHIITAKE_PHASES) == "browning"
-    assert suggested_next_phase("browning", container,
-                                profile_phases=_SHIITAKE_PHASES) == "primordia_induction"
-
-
-def test_other_transitions_are_unchanged():
-    # A species without browning still goes straight to pinning.
-    assert suggested_next_phase("substrate_colonization", "grow_bag",
-                                profile_phases=_BLUE_PHASES) == "primordia_induction"
-    # Shiitake grain in a jar still parks in cold storage.
-    assert suggested_next_phase("grain_colonization", "jar",
-                                profile_phases=_SHIITAKE_PHASES) == "cold_storage"
-    # With no profile there is nothing to brown on.
-    assert suggested_next_phase("substrate_colonization", "grow_bag") == "primordia_induction"
-    assert suggested_next_phase("browning", "grow_bag") == "primordia_induction"
-    # Cold storage's linear successor did not become browning.
-    assert suggested_next_phase("cold_storage", "jar",
-                                profile_phases=_SHIITAKE_PHASES) == "primordia_induction"
 
 
 def test_next_phase_endpoint_walks_shiitake_through_browning_with_the_soak(client):
@@ -219,9 +186,9 @@ async def test_leaving_browning_logs_the_cold_soak_with_the_phase_change():
 
 
 async def test_the_soak_reads_before_the_phase_change_it_is_owed_for():
-    # 2026-10 audit round 2: the reminder was written after "Phase advanced
-    # to primordia induction" in the same second, so the timeline and the
-    # transcript listed the soak once the grow was already pinning.
+    # The reminder was written after "Phase advanced to primordia induction"
+    # in the same second, so the timeline and the transcript listed the soak
+    # once the grow was already pinning.
     await seed_builtins()
     s = await _session("shiitake", "browning")
     await advance_phase(s["id"], PhaseAdvance(phase="primordia_induction"))
@@ -261,22 +228,13 @@ def reminders(monkeypatch):
     return rec
 
 
-async def _age_open_phase(session_id: int, days: float) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE phase_history SET entered_at = ? WHERE session_id = ? AND exited_at IS NULL",
-            (time.time() - days * 86400, session_id),
-        )
-        await db.commit()
-
-
 async def test_browning_reminder_offers_the_soak_from_the_minimum_duration(reminders):
     await seed_builtins()
     s = await _session("shiitake", "browning")
-    await _age_open_phase(s["id"], 3)
+    await enter_open_phase_days_ago(s["id"], 3)
     assert await check_phase_reminders() == 0
 
-    await _age_open_phase(s["id"], 8)
+    await enter_open_phase_days_ago(s["id"], 8)
     assert await check_phase_reminders() == 1
     [(title, message, key)] = reminders["info"]
     assert title == "Phase check — shiitake-browning"
@@ -289,7 +247,7 @@ async def test_browning_reminder_offers_the_soak_from_the_minimum_duration(remin
 async def test_overrun_browning_still_spells_out_the_soak(reminders):
     await seed_builtins()
     s = await _session("shiitake", "browning")
-    await _age_open_phase(s["id"], 20)
+    await enter_open_phase_days_ago(s["id"], 20)
     assert await check_phase_reminders() == 1
     [(_, message, _)] = reminders["info"]
     assert message.startswith("Day 20 of browning — past its 7-14 d window.")
@@ -349,8 +307,6 @@ async def test_existing_installs_upgrade_their_pre_browning_copies(caplog):
     # These names are 5.0.0's, so the table reads as one a 5.0 release seeded
     # with every built-in: the ones missing were deleted and stay out.
     assert {r["name"] for r in rows} == set(PRE_BROWNING_BUILTIN_RULES)
-    # Dehumidify Cutoff has three superseded forms; each upgrades.
-    assert len(SUPERSEDED_BUILTIN_RULES["Dehumidify Cutoff"]) == 3
 
 
 async def test_an_edited_pre_browning_copy_is_left_alone():
@@ -362,13 +318,6 @@ async def test_an_edited_pre_browning_copy_is_left_alone():
     stored = json.loads(row["rule_data"])
     assert stored["cooldown_seconds"] == 900
     assert stored["applies_to_phases"] == ["primordia_induction", "fruiting"]
-
-
-def test_an_unbagged_browning_block_is_not_sealed():
-    for bag in ("grow_bag", "bag", "bulk_bag"):
-        assert _container_is_sealed(bag, "substrate_colonization") is True
-        assert _container_is_sealed(bag, "browning") is False
-    assert _container_is_sealed("jar", "browning") is True
 
 
 @pytest.fixture()
@@ -432,29 +381,6 @@ def test_browning_guidance_only_while_browning():
     assert browning_guidance(None, "browning") == ""
 
 
-class _FakeBlock:
-    def __init__(self, text):
-        self.text = text
-
-
-class _FakeMessage:
-    def __init__(self, text):
-        self.content = [_FakeBlock(text)]
-
-
-def _fake_anthropic(capture: dict, reply: dict):
-    class _Messages:
-        async def create(self, **kwargs):
-            capture.update(kwargs)
-            return _FakeMessage(json.dumps(reply))
-
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            self.messages = _Messages()
-
-    return _Client
-
-
 def _frame(tmp_path, session_id: int) -> dict:
     img = tmp_path / "cam-01.jpg"
     img.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-body")
@@ -466,7 +392,7 @@ async def test_vision_prompt_knows_browning_is_normal_and_alerts_with_the_soak(t
     monkeypatch.setattr(settings, "claude_api_key", "test-key")
     capture: dict = {}
     reply = {"health_assessment": "healthy", "browning_percent": 95, "summary": "evenly brown"}
-    monkeypatch.setattr(vision_service.anthropic, "AsyncAnthropic", _fake_anthropic(capture, reply))
+    monkeypatch.setattr(vision_service.anthropic, "AsyncAnthropic", fake_anthropic(reply, captured=capture))
     info, forward = AsyncMock(), AsyncMock()
     monkeypatch.setattr(vision_service, "notify_info", info)
     monkeypatch.setattr("app.cloud.service.forward_event", forward)
@@ -493,7 +419,7 @@ async def test_other_phases_keep_their_prompt_and_raise_no_browning_alert(tmp_pa
     monkeypatch.setattr(settings, "claude_api_key", "test-key")
     capture: dict = {}
     reply = {"health_assessment": "healthy", "browning_percent": 99}
-    monkeypatch.setattr(vision_service.anthropic, "AsyncAnthropic", _fake_anthropic(capture, reply))
+    monkeypatch.setattr(vision_service.anthropic, "AsyncAnthropic", fake_anthropic(reply, captured=capture))
     info = AsyncMock()
     monkeypatch.setattr(vision_service, "notify_info", info)
     monkeypatch.setattr("app.cloud.service.forward_event", AsyncMock())

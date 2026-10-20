@@ -5,80 +5,57 @@ yield). What was missing is the LIFECYCLE: fruit → harvest → rest → re-fru
 repeated until the bag has given its expected flushes, then complete. Without
 it, REST advanced linearly to COMPLETE and there was no way to loop back for a
 second flush, nor any signal that a bag was spent.
+
+The suggestion table itself (rest → fruiting / complete) is
+test_lifecycle_cold_storage.py::test_suggested_next_phase.
 """
 
-import pytest
-
 from app.sessions import service
-from app.sessions.models import SessionCreate, HarvestCreate
-
-
-async def _bag_session(species="pearl_oyster"):
-    from app.species.service import seed_builtins
-    await seed_builtins()  # get_profile reads the species_profiles table
-    s = await service.create_session(SessionCreate(
-        name="Flush test", species_profile_id=species,
-        container_type="grow_bag", current_phase="fruiting",
-    ))
-    return s["id"]
-
-
-# ── the flush-loop fork ────────────────────────────────────────────────────
-
-
-def test_rest_loops_back_to_fruiting_while_flushes_remain():
-    assert service.suggested_next_phase("rest", "grow_bag", more_flushes_expected=True) == "fruiting"
-
-
-def test_rest_completes_when_the_bag_is_spent():
-    assert service.suggested_next_phase("rest", "grow_bag", more_flushes_expected=False) == "complete"
-
-
-def test_fruiting_still_advances_to_rest():
-    """You rest after every flush before deciding whether to go again."""
-    assert service.suggested_next_phase("fruiting", "grow_bag") == "rest"
-
-
-# ── flush counting against the species' expected count ─────────────────────
+from app.sessions.models import HarvestCreate
+from app.species.service import seed_builtins
+from tests._pi_c2_helpers import start_grow
 
 
 async def test_flush_status_counts_distinct_flushes():
-    sid = await _bag_session()
-    await service.add_harvest(sid, HarvestCreate(flush_number=1, wet_weight_g=200))
-    await service.add_harvest(sid, HarvestCreate(flush_number=1, wet_weight_g=50))  # same flush, 2nd pick
-    await service.add_harvest(sid, HarvestCreate(flush_number=2, wet_weight_g=150))
+    await seed_builtins()  # the expected count comes from the species profile
+    s = await start_grow("Flush test", "pearl_oyster", container_type="grow_bag", current_phase="fruiting")
+    await service.add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200))
+    await service.add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=50))  # same flush, 2nd pick
+    await service.add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=150))
 
-    st = await service.flush_status(sid)
+    st = await service.flush_status(s["id"])
     assert st["flushes_harvested"] == 2   # distinct flush numbers, not harvest rows
     assert st["latest_flush"] == 2
 
 
-async def test_more_expected_true_until_the_species_count_is_reached():
-    from app.species.service import get_profile
-    sid = await _bag_session("pearl_oyster")
-    expected = (await get_profile("pearl_oyster")).flush_count_typical
-    assert expected and expected >= 2
+def test_a_bag_loops_back_to_fruiting_until_its_expected_flushes_are_in(client):
+    """End to end through /flushes and /next-phase: rest offers another flush
+    while the species expects more, and COMPLETE once the bag is spent."""
+    sid = client.post("/api/sessions", json={
+        "name": "Pearls", "species_profile_id": "pearl_oyster",
+        "container_type": "grow_bag", "current_phase": "fruiting",
+    }).json()["id"]
 
-    # One flush in — more expected.
-    await service.add_harvest(sid, HarvestCreate(flush_number=1, wet_weight_g=200))
-    assert (await service.flush_status(sid))["more_expected"] is True
+    def harvest(flush):
+        assert client.post(f"/api/sessions/{sid}/harvest",
+                           json={"flush_number": flush, "wet_weight_g": 100}).status_code == 200
 
-    # Harvest up to the expected count — bag is now spent.
-    for f in range(2, expected + 1):
-        await service.add_harvest(sid, HarvestCreate(flush_number=f, wet_weight_g=100))
-    st = await service.flush_status(sid)
-    assert st["flushes_harvested"] == expected
-    assert st["more_expected"] is False
+    def rest_then_suggestion():
+        assert client.post(f"/api/sessions/{sid}/phase", json={"phase": "rest"}).status_code == 200
+        return client.get(f"/api/sessions/{sid}/next-phase").json()["suggested_next_phase"]
 
+    harvest(1)
+    flushes = client.get(f"/api/sessions/{sid}/flushes").json()
+    expected = flushes["expected_flushes"]
+    assert expected >= 2 and flushes["more_expected"] is True
+    assert rest_then_suggestion() == "fruiting"
 
-async def test_next_phase_from_rest_reflects_flush_status():
-    """End to end: a spent bag at REST is suggested COMPLETE, not another flush."""
-    from app.species.service import get_profile
-    sid = await _bag_session("pearl_oyster")
-    expected = (await get_profile("pearl_oyster")).flush_count_typical
-    for f in range(1, expected + 1):
-        await service.add_harvest(sid, HarvestCreate(flush_number=f, wet_weight_g=100))
-    await service.advance_phase(sid, __import__("app.sessions.models", fromlist=["PhaseAdvance"]).PhaseAdvance(phase="rest", trigger="test"))
+    assert client.post(f"/api/sessions/{sid}/phase", json={"phase": "fruiting"}).status_code == 200
+    for flush in range(2, expected + 1):
+        harvest(flush)
+    flushes = client.get(f"/api/sessions/{sid}/flushes").json()
+    assert (flushes["flushes_harvested"], flushes["more_expected"]) == (expected, False)
+    assert rest_then_suggestion() == "complete"
 
-    st = await service.flush_status(sid)
-    assert service.suggested_next_phase("rest", "grow_bag", st["more_expected"]) == "complete"
+    for route in ("flushes", "next-phase"):
+        assert client.get(f"/api/sessions/9999/{route}").status_code == 404

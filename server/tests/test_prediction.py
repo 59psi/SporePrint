@@ -59,22 +59,15 @@ def test_predict():
     assert abs(result - 65.7) < 0.01
 
 
-async def test_predict_indoor_no_model():
-    """Without a trained model, returns empty list."""
-    forecast = [{"timestamp": time.time() + 3600, "temp_f": 90, "humidity": 50}]
-    result = await predict_indoor_conditions(forecast)
-    assert result == []
-
-
-async def test_model_status_learning():
+async def test_with_no_data_there_is_no_model_and_no_prediction():
+    """Retraining on an empty history trains nothing; the status stays
+    'learning' and a forecast gets no indoor prediction."""
+    await retrain_models()
     status = await get_model_status()
     assert status["status"] == "learning"
     assert "days_collected" in status
-
-
-async def test_retrain_no_data():
-    """Retrain with no data should not crash."""
-    await retrain_models()
+    forecast = [{"timestamp": time.time() + 3600, "temp_f": 90, "humidity": 50}]
+    assert await predict_indoor_conditions(forecast) == []
 
 
 async def test_training_data_spans_rolled_up_telemetry():
