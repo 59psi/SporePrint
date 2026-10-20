@@ -13,7 +13,7 @@ friendly target is NOT the row's plug_id — only its role. Resolving by plug_id
 alone found nothing and no-op'd even though the plug was paired and
 target_is_present reported it available. These tests pair plugs the way the
 hardware actually does — by role, under a hardware id — so the resolution is
-proven, not masked. (V3-1)
+proven, not masked.
 """
 
 from app.automation.smart_plugs import send_plug_command, target_is_present

@@ -1,5 +1,5 @@
-"""Background poller — fetches Aranet readings on a schedule and publishes
-them into the existing telemetry pipeline.
+"""One Aranet PRO poll: fetch each sensor's latest sample and store the new
+ones in telemetry history.
 
 Aranet measurement types we map into SporePrint sensor names:
 
@@ -9,36 +9,48 @@ Aranet measurement types we map into SporePrint sensor names:
   humidity              | humidity
   co2                   | co2_ppm
 
+The PRO serves each sensor's latest sample, and an Aranet4 radios one only
+every 1-10 minutes, so most polls return a sample that is already stored.
+A new sample is stored once, at the time the sensor took it, and a sensor
+whose sample stops changing is reported stale instead of being stored again
+as if it were fresh (SampleTracker, ``_samples.py``). A temperature the PRO
+reports in °F is converted to °C.
+
 Other types (atmospheric_pressure, radiation_dose_rate, soil_*) are
 returned by ``GET /api/integrations/aranet/discover`` so the operator
-can see them, but they don't drive automation in this phase. Adding
-them is a one-line entry in `_TYPE_MAP` once the chamber UI grows
-support for the corresponding sensor name.
+can see them, but they are not stored. Adding them is a one-line entry
+in `_TYPE_MAP` once the chamber UI grows support for the corresponding
+sensor name.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Awaitable, Callable
 
-from ...telemetry.service import store_reading
-from .client import AranetClient, AranetError
+from ...telemetry.service import store_readings
+from .._samples import PollResult, SampleTracker, finite, is_fahrenheit
+from .client import AranetClient
 from .config import AranetConfig
-from .models import AranetMeasurementsResponse, AranetSensor
+from .models import AranetMeasurementsResponse
 
 
 logger = logging.getLogger(__name__)
 
 
-# Aranet measurement-type → SporePrint sensor name. Aranet returns
-# Celsius/percent/ppm natively, so no unit conversion is needed.
+# Aranet measurement-type → SporePrint sensor name.
 _TYPE_MAP: dict[str, str] = {
     "temperature": "temp_c",
     "humidity": "humidity",
     "co2": "co2_ppm",
 }
+
+# An Aranet4 radios a sample every 1-10 minutes, so a healthy sensor's latest
+# sample can be 10 minutes old: it is stale only after three of those.
+STALE_FLOOR_SECONDS = 30 * 60
+
+Writer = Callable[[list[tuple[float, str, str, float]]], Awaitable[int]]
 
 
 def _node_id_for(sensor_id: str) -> str:
@@ -46,98 +58,60 @@ def _node_id_for(sensor_id: str) -> str:
     return f"aranet:{sensor_id}"
 
 
-async def _publish_sensor(
-    sensor: AranetSensor,
-    chamber_id: str | None,
-    *,
-    publisher: Callable[[str, str, float, float], Awaitable[None]],
-) -> int:
-    """Publish all mapped measurements for one sensor. Returns count
-    written. Unknown measurement types are skipped (logged at debug).
-    """
-    written = 0
-    now = time.time()
-    node_id = _node_id_for(sensor.id)
-    for m in sensor.measurements:
-        sp_sensor = _TYPE_MAP.get(m.type)
-        if sp_sensor is None:
-            logger.debug(
-                "aranet: skipping unmapped measurement type %r on sensor %s",
-                m.type,
-                sensor.id,
-            )
-            continue
-        try:
-            await publisher(node_id, sp_sensor, float(m.value), now)
-            written += 1
-        except Exception:  # noqa: BLE001 — must not poison sibling sensors
-            logger.exception(
-                "aranet: failed to persist %s/%s for sensor %s",
-                sp_sensor,
-                m.value,
-                sensor.id,
-            )
-    return written
+def mapped_readings(
+    response: AranetMeasurementsResponse,
+) -> list[tuple[str, str, float, object]]:
+    """(node id, SporePrint sensor, value, sample timestamp) for every
+    measurement of a mapped type that carries a number. Unknown measurement
+    types are skipped (logged at debug)."""
+    readings: list[tuple[str, str, float, object]] = []
+    for sensor in response.sensors:
+        node_id = _node_id_for(sensor.id)
+        for m in sensor.measurements:
+            sp_sensor = _TYPE_MAP.get(m.type)
+            if sp_sensor is None:
+                logger.debug(
+                    "aranet: skipping unmapped measurement type %r on sensor %s",
+                    m.type,
+                    sensor.id,
+                )
+                continue
+            value = finite(m.value)
+            if value is None:
+                continue
+            if sp_sensor == "temp_c" and is_fahrenheit(m.unit):
+                value = (value - 32.0) * 5.0 / 9.0
+            readings.append((node_id, sp_sensor, value, m.timestamp))
+    return readings
 
 
 async def run_one_poll(
     cfg: AranetConfig,
     *,
     client: AranetClient | None = None,
-    publisher: Callable[[str, str, float, float], Awaitable[None]] | None = None,
-) -> tuple[int, AranetMeasurementsResponse]:
-    """One poll cycle. Returns (rows_written, raw_response).
+    tracker: SampleTracker | None = None,
+    writer: Writer | None = None,
+    now: float | None = None,
+) -> PollResult:
+    """One poll cycle: fetch, keep the new samples, store them in one
+    transaction.
 
-    Both `client` and `publisher` are injectable so the poller can be
-    driven from a unit test without an HTTP server.
+    `client`, `tracker` and `writer` are injectable so the poller can be
+    driven from a unit test without an HTTP server or a database. Without a
+    tracker every sample counts as new.
     """
-    own_client = client is None
-    if own_client:
+    if client is None:
         client = AranetClient(
             cfg.base_url, cfg.api_key, timeout_s=cfg.request_timeout_seconds
         )
-    if publisher is None:
-        publisher = store_reading
-
-    try:
-        response = await client.fetch_latest()
-    except AranetError:
-        raise
-
-    written = 0
-    for sensor in response.sensors:
-        chamber_id = cfg.sensor_mappings.get(sensor.id)
-        written += await _publish_sensor(
-            sensor, chamber_id, publisher=publisher
-        )
-    return written, response
-
-
-async def poll_loop(
-    cfg_provider: Callable[[], AranetConfig],
-    *,
-    record_outcome: Callable[[bool, str | None], None],
-    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-) -> None:
-    """Long-running poll task. Reads config on each tick so config
-    edits take effect within one interval without restarting the task.
-    """
-    while True:
-        cfg = cfg_provider()
-        # Defensive: an empty base_url means the operator disabled the
-        # driver mid-loop. Sleep one interval and re-check.
-        if not cfg.base_url or not cfg.api_key:
-            await sleep(cfg.poll_seconds)
-            continue
-        try:
-            await run_one_poll(cfg)
-            record_outcome(True, None)
-        except AranetError as exc:
-            logger.warning("aranet poll failed: %s", exc)
-            record_outcome(False, str(exc))
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("aranet poll crashed")
-            record_outcome(False, str(exc))
-        await sleep(cfg.poll_seconds)
+    if tracker is None:
+        tracker = SampleTracker(STALE_FLOOR_SECONDS)
+    response = await client.fetch_latest()
+    readings = mapped_readings(response)
+    rows, stale = tracker.keep_new(
+        readings,
+        poll_seconds=cfg.poll_seconds,
+        now=time.time() if now is None else now,
+    )
+    written = await (writer or store_readings)(rows) if rows else 0
+    return PollResult(written, len({node_id for node_id, *_ in readings}), stale)

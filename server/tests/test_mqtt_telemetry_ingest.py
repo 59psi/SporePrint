@@ -16,6 +16,7 @@ import time
 
 import pytest
 
+from app.automation import engine
 from app.chambers.models import ChamberCreate
 from app.chambers.service import create_chamber
 from app.db import get_db
@@ -46,7 +47,7 @@ def cloud_forwards():
 def rules_spy(monkeypatch, cloud_forwards):
     calls: list[tuple[str, dict]] = []
 
-    async def _spy(node_id, readings, sio=None):
+    async def _spy(node_id, readings, sio=None, **kwargs):
         calls.append((node_id, dict(readings)))
 
     async def _record_forward(node_id, payload):
@@ -72,7 +73,7 @@ def _latest(rows, sensor):
     return next(r["value"] for r in rows if r["sensor"] == sensor)
 
 
-# ── session tagging (srv-auto#10) ────────────────────────────────
+# ── session tagging ──────────────────────────────────────────────
 
 
 async def test_live_telemetry_is_tagged_with_active_session(rules_spy):
@@ -141,11 +142,28 @@ async def test_node_in_idle_chamber_is_not_tagged_with_another_chambers_grow(rul
     assert (await _rows("node-idle", "temp_f"))[0]["session_id"] is None
 
 
-async def test_chambered_node_is_not_claimed_by_a_chamberless_grow(rules_spy):
+async def test_chambered_node_is_tagged_with_the_chamberless_grow_it_drives(rules_spy):
+    """A chamber with no grow of its own runs the newest chamberless session
+    (sessions.service.get_active_session_for_chambers), and the readings the
+    engine runs that grow on belong to its history. A stricter second copy of
+    the rule stored them untagged, and the grow's charts stayed empty."""
     await create_chamber(ChamberCreate(name="Tent", node_ids=["node-tent"]))
-    await create_session(SessionCreate(name="Loose", species_profile_id="blue_oyster"))
+    loose = await create_session(SessionCreate(name="Loose", species_profile_id="blue_oyster"))
+    await _chambered_session("Closet", ["node-closet"])  # a grow of its own
     await _feed("node-tent", temp_f=70.0)
-    assert (await _rows("node-tent", "temp_f"))[0]["session_id"] is None
+    await _feed("node-closet", temp_f=50.0)
+    assert (await _rows("node-tent", "temp_f"))[0]["session_id"] == loose["id"]
+    assert (await _rows("node-closet", "temp_f"))[0]["session_id"] != loose["id"]
+    summary = (await export_json(loose["id"]))["phase_telemetry"][0]["telemetry_summary"]
+    assert summary["temp_f"]["count"] == 1
+    # Once the raw rows have aged into rollups (which carry no session_id),
+    # the grow still resolves to the chamber it runs, not to every node.
+    async with get_db() as db:
+        await db.execute("UPDATE telemetry_readings SET session_id = NULL")
+        await db.commit()
+    assert await resolve_session_node_id(loose["id"], "temp_f") == "node-tent"
+    summary = (await export_json(loose["id"]))["phase_telemetry"][0]["telemetry_summary"]
+    assert summary["temp_f"]["min"] == 70.0
 
 
 async def test_unchambered_node_goes_to_chamberless_grow_not_a_chambered_one(rules_spy):
@@ -172,7 +190,40 @@ async def test_malformed_chamber_node_ids_do_not_break_ingest(rules_spy):
     assert len(rules_spy) == 1
 
 
-# ── replay / stale frames (srv-hw#11) ────────────────────────────
+async def test_a_live_frame_resolves_its_grow_once_for_the_tag_and_the_rules(
+        monkeypatch, cloud_forwards, ntfy_posts):
+    """The readings' tag and the rules engine share one lookup of the node's
+    grow: the ingest hands the grow it tagged with to evaluate_rules, which
+    used to resolve it again (two more database connections on every frame)."""
+    grow = await _chambered_session("Tent", ["node-tent"])
+    lookups, handed = [], []
+    resolve, run_rules = engine._session_for_node, engine.evaluate_rules
+
+    async def _counted(node_id):
+        lookups.append(node_id)
+        return await resolve(node_id)
+
+    async def _rules(node_id, readings, sio=None, *, node_session=None):
+        handed.append(node_session)
+        await run_rules(node_id, readings, sio, node_session=node_session)
+
+    async def _forward(node_id, payload):
+        cloud_forwards.append((node_id, dict(payload)))
+
+    monkeypatch.setattr("app.automation.engine._session_for_node", _counted)
+    monkeypatch.setattr("app.automation.engine.evaluate_rules", _rules)
+    monkeypatch.setattr("app.mqtt.forward_telemetry", _forward)
+    monkeypatch.setattr("app.weather.service.get_current_weather", lambda: None)
+
+    await _feed("node-tent", temp_f=70.0)
+
+    assert lookups == ["node-tent"]
+    ((session, chamber_nodes),) = handed
+    assert session["id"] == grow["id"] and chamber_nodes == ["node-tent"]
+    assert (await _rows("node-tent", "temp_f"))[0]["session_id"] == grow["id"]
+
+
+# ── replay / stale frames ────────────────────────────────────────
 
 
 async def test_synced_replay_frame_stored_at_its_time_not_evaluated(rules_spy, cloud_forwards):
@@ -286,12 +337,33 @@ async def test_locked_database_does_not_skip_rules(rules_spy, monkeypatch):
     async def _locked(*args, **kwargs):
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr("app.mqtt.store_bulk_readings", _locked)
+    monkeypatch.setattr("app.mqtt.insert_readings", _locked)
+    await _register_node("climate-01", time.time() - 3600)
+    before = time.time()
     sio = _Sio()
     await _handle_message(sio, "sporeprint/climate-01/telemetry",
                           {"temp_f": 95.0, "ts": time.time()})
     assert [r["temp_f"] for _, r in rules_spy] == [95.0]
     assert len(sio.named("telemetry")) == 1
+    # The failed insert does not take the node's liveness with it.
+    assert (await _node_row("climate-01"))["last_seen"] >= before
+
+
+async def test_a_reading_that_is_not_a_number_does_not_cost_the_frame(rules_spy):
+    """A NaN dew point arrives as JSON null (RH read 0): it is skipped, and
+    the frame's other readings are stored. One NOT NULL failure used to roll
+    back the whole frame."""
+    await _handle_message(_Sio(), "sporeprint/climate-01/telemetry", {
+        "ts": time.time(), "temp_f": 71.0, "humidity": 0.0, "dew_point_f": None,
+        "co2_ppm": 812, "lux": float("nan"), "weight_g": "heavy",
+        "pressure_hpa": 10 ** 400,
+    })
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT sensor, value FROM telemetry_readings WHERE node_id = 'climate-01'")
+        stored = {r["sensor"]: r["value"] for r in await cursor.fetchall()}
+    assert stored == {"temp_f": 71.0, "humidity": 0.0, "co2_ppm": 812.0}
+    assert get_reliability_counters()["skipped_readings"] >= 4
 
 
 async def test_replay_history_lands_in_the_past(rules_spy):
@@ -302,7 +374,7 @@ async def test_replay_history_lands_in_the_past(rules_spy):
     assert len(hist) == 1 and hist[0]["value"] == 70.0
 
 
-# ── node alerts reach ntfy (srv-hw#12) ───────────────────────────
+# ── node alerts reach ntfy ───────────────────────────────────────
 
 
 @pytest.fixture()
@@ -408,7 +480,7 @@ async def test_door_open_is_info_and_close_is_silent(ntfy_posts):
     assert ntfy_posts[0]["priority"] == "3"
 
 
-# ── Liveness: telemetry refreshes last_seen (srv-hw#22 hardening) ─────────
+# ── Liveness: telemetry refreshes last_seen ───────────────────────────────
 #
 # The liveness sweeper (main._node_liveness_sweeper) pages node_offline once
 # hardware_nodes.last_seen is 15 min stale. Only status/* frames used to touch
@@ -482,3 +554,54 @@ async def test_alert_still_emitted_to_socket(ntfy_posts):
     assert sio.named("alert") == [
         {"node_id": "climate-01", "type": "temperature", "value": 93.0, "message": "hot"}
     ]
+
+
+# ── lighting channel-level reports ────────────────────────────────
+# A lighting bank publishes its channel levels on the bare telemetry topic
+# (on every command and every ramp step). They are live actuator state, not
+# readings: each used to run the full sensor path (session lookup, store,
+# weather enrichment, rules).
+
+
+@pytest.mark.parametrize("payload", [
+    # Current firmware: marked, with the node's ts.
+    {"ts": 1_760_000_000, "report": "dim_levels", "white": 800, "blue": 0,
+     "red": 120, "far_red": 40},
+    # Earlier images: channel keys only, no ts.
+    {"white": 800, "blue": 0, "red": 120, "far_red": 40},
+])
+async def test_level_report_is_forwarded_live_but_never_evaluated_or_stored(
+        rules_spy, cloud_forwards, payload, monkeypatch):
+    sessions_looked_up = []
+
+    async def _no_session_lookup(node_id, ts):
+        sessions_looked_up.append(node_id)
+        return None
+
+    monkeypatch.setattr("app.mqtt.active_session_for_node", _no_session_lookup)
+    await _register_node("light-01", time.time() - 3600)
+    sio = _Sio()
+    before = time.time()
+    await _handle_message(sio, "sporeprint/light-01/telemetry", dict(payload))
+
+    assert rules_spy == []            # no rules evaluated on it
+    assert sessions_looked_up == []   # no grow to tag it with
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM telemetry_readings WHERE node_id = 'light-01'")
+        assert (await cursor.fetchone())[0] == 0
+    # Still live: the socket and the cloud get it, with a usable ts.
+    (emitted,) = sio.named("telemetry")
+    assert emitted["node_id"] == "light-01" and emitted["white"] == 800
+    assert emitted["ts"] >= 1_000_000_000
+    assert [n for n, _ in cloud_forwards] == ["light-01"]
+    assert (await _node_row("light-01"))["last_seen"] >= before
+
+
+async def test_sensorless_periodic_frame_still_drives_the_rules(rules_spy):
+    # A relay or lighting node's periodic frame carries only its ts. The rules
+    # engine runs per telemetry frame, so schedule rules (photoperiod, the
+    # scheduled FAE cycle) in a chamber without a climate node depend on it.
+    await _handle_message(_Sio(), "sporeprint/light-01/telemetry",
+                          {"ts": time.time()})
+    assert [n for n, _ in rules_spy] == ["light-01"]

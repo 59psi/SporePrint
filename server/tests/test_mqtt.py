@@ -69,7 +69,7 @@ async def test_handle_message_bad_json_is_contained(caplog):
     # Calling _handle_message directly with a raising dependency — the
     # containment happens inside `async for message` in start_mqtt, but
     # _handle_message itself doesn't raise on these paths.
-    with patch("app.mqtt.store_bulk_readings", _boom):
+    with patch("app.mqtt.insert_readings", _boom):
         with caplog.at_level("ERROR"):
             try:
                 await _handle_message(

@@ -1,19 +1,14 @@
-import base64
 import logging
 
-import anthropic
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, Request
+from starlette.datastructures import FormData, UploadFile
 
 from ..config import settings
-from ..vision.service import (
-    CLAUDE_MAX_TOKENS,
-    claude_response_text,
-    claude_stop_reason,
-    parse_claude_json,
-    sniff_image_media_type,
-)
+from ..db import UnknownReferenceError
+from ..vision.service import sniff_image_media_type
 from . import service
-from .library import CONTAMINANTS, IDENTIFICATION_SYSTEM_PROMPT
+from .identify import IdentifyUpstreamError, identify_image
+from .library import CONTAMINANTS
 from .models import ContaminationEventCreate, RootCauseUpdate
 
 log = logging.getLogger(__name__)
@@ -21,6 +16,80 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+# Room for the multipart boundary, the part headers and the two id fields
+# around a max-size image.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_TOO_LARGE = "Image too large. Maximum size is 10 MB."
+
+# The multipart body the route parses itself (see _read_identify_upload), as
+# FastAPI documented it for the File/Form parameters it used to declare.
+_IDENTIFY_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["file"],
+                    "properties": {
+                        "file": {"type": "string", "format": "binary"},
+                        "session_id": {"type": "integer"},
+                        "chamber_id": {"type": "integer"},
+                    },
+                }
+            }
+        },
+    }
+}
+
+
+def _form_id(form: FormData, field: str) -> int | None:
+    value = form.get(field)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(422, f"{field} must be an integer")
+    try:
+        return int(value)
+    except ValueError:
+        raise HTTPException(422, f"{field} must be an integer")
+
+
+async def _read_identify_upload(request: Request) -> tuple[bytes, int | None, int | None]:
+    """(image bytes, session_id, chamber_id) of the multipart upload, never
+    reading past the 10 MB cap.
+
+    A declared Content-Length over the cap is refused before the form is
+    parsed: Starlette spools a file part to disk whatever its size, and the
+    whole upload used to be read into memory before the size check (the
+    server's port is reachable past nginx's body limit). A chunked body
+    declares no length, so one is required. The image part is then read only
+    up to the cap.
+    """
+    media_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if media_type != "multipart/form-data":
+        raise HTTPException(422, "Upload the image as multipart/form-data with a 'file' part")
+    declared = request.headers.get("content-length")
+    if declared is None:
+        raise HTTPException(411, "Content-Length required for the image upload")
+    if not declared.strip().isdigit():
+        raise HTTPException(400, "Invalid Content-Length")
+    if int(declared) > _MAX_IMAGE_SIZE + _MULTIPART_OVERHEAD_BYTES:
+        raise HTTPException(413, _TOO_LARGE)
+
+    form = await request.form(max_files=1, max_fields=8)
+    try:
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile):
+            raise HTTPException(422, "The upload has no 'file' part")
+        content = await upload.read(_MAX_IMAGE_SIZE + 1)
+        session_id = _form_id(form, "session_id")
+        chamber_id = _form_id(form, "chamber_id")
+    finally:
+        await form.close()
+    if len(content) > _MAX_IMAGE_SIZE:
+        raise HTTPException(413, _TOO_LARGE)
+    return content, session_id, chamber_id
 
 
 @router.get("/library")
@@ -38,13 +107,10 @@ async def get_contaminant(contaminant_id: str):
     raise HTTPException(404, f"Contaminant '{contaminant_id}' not found")
 
 
-@router.post("/identify")
-async def identify_contamination(
-    file: UploadFile = File(...),
-    session_id: int | None = Form(None),
-    chamber_id: int | None = Form(None),
-):
-    """Upload an image for Claude Vision contamination identification.
+@router.post("/identify", openapi_extra=_IDENTIFY_BODY)
+async def identify_contamination(request: Request):
+    """Upload an image (multipart `file`, optional `session_id` /
+    `chamber_id` fields) for Claude Vision contamination identification.
 
     On a positive detection the result is also persisted as a
     `source='identify'` contamination event (linked to session_id/chamber_id
@@ -53,12 +119,7 @@ async def identify_contamination(
     if not settings.claude_api_key:
         raise HTTPException(503, "Claude API key not configured")
 
-    content = await file.read()
-
-    if len(content) > _MAX_IMAGE_SIZE:
-        raise HTTPException(
-            413, f"Image too large ({len(content)} bytes). Maximum size is 10 MB."
-        )
+    content, session_id, chamber_id = await _read_identify_upload(request)
 
     # The bytes decide the type: the Messages API accepts only JPEG/PNG/GIF/WebP
     # and rejects a declared media_type that doesn't match the image. A HEIC
@@ -68,75 +129,22 @@ async def identify_contamination(
         raise HTTPException(
             415, "Unsupported image type. Upload a JPEG, PNG, WebP or GIF image."
         )
-    image_data = base64.standard_b64encode(content).decode("utf-8")
+    # Before the paid call: an unknown session or chamber could not be linked.
+    try:
+        await service.check_event_references(session_id=session_id, chamber_id=chamber_id)
+    except UnknownReferenceError as e:
+        raise HTTPException(422, str(e))
 
     try:
-        client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
-        message = await client.messages.create(
-            model=settings.claude_model,
-            max_tokens=CLAUDE_MAX_TOKENS,
-            system=IDENTIFICATION_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": image_data,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": "Analyze this mushroom cultivation image for contamination. Respond with JSON only.",
-                        },
-                    ],
-                }
-            ],
+        return await identify_image(
+            content, media_type, session_id=session_id, chamber_id=chamber_id,
         )
-
-        stop_reason = claude_stop_reason(message)
-        if stop_reason == "refusal":
-            raise HTTPException(
-                502, "Contamination identification failed: Claude declined to analyze this image"
-            )
-        truncated = stop_reason == "max_tokens"
-        if truncated:
-            log.warning("Contamination identify response truncated at max_tokens")
-        raw_text = claude_response_text(message)
-        result = parse_claude_json(raw_text)
-
-        if "raw_response" in result:
-            parse_error = {"parse_error": True, "raw_response": result["raw_response"]}
-            if truncated:
-                parse_error["truncated"] = True
-            return parse_error
-
-        # Persist positive detections. A DB hiccup must not turn a successful
-        # identification into a 500 — the identify response contract is unchanged.
-        detection = service.detection_from_identify(result)
-        if detection is not None:
-            try:
-                await service.record_event(
-                    source="identify",
-                    session_id=session_id,
-                    chamber_id=chamber_id,
-                    contamination_type=detection["contamination_type"],
-                    confidence=detection["confidence"],
-                )
-            except Exception as e:
-                log.warning("Failed to persist contamination event: %s", e)
-
-        return result
-
-    except HTTPException:
-        raise
+    except IdentifyUpstreamError as e:
+        log.error("Contamination identification failed: %s", e)
+        raise HTTPException(502, f"Contamination identification failed: {e}")
     except Exception as e:
         log.error("Contamination identification failed: %s", e)
-        status = 502 if "API" in type(e).__name__ else 500
-        raise HTTPException(status, f"Contamination identification failed: {e}")
+        raise HTTPException(500, f"Contamination identification failed: {e}")
 
 
 @router.get("/events")
@@ -152,7 +160,10 @@ async def list_contamination_events(
 @router.post("/events")
 async def create_contamination_event(data: ContaminationEventCreate):
     """Manually log a contamination event (the page's manual-mark flow)."""
-    return await service.create_manual_event(data)
+    try:
+        return await service.create_manual_event(data)
+    except UnknownReferenceError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.post("/events/{event_id}/root-cause")

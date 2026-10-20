@@ -1,4 +1,4 @@
-"""Automation hardware-coverage endpoint (V2-1).
+"""Automation hardware-coverage endpoint.
 
 Mounted under /api/chambers (not /api/automation) because the verdict is
 scoped to a chamber + species: GET /api/chambers/{id}/automation-coverage.

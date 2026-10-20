@@ -1,8 +1,8 @@
 """Auto contamination/harvest detection actually fires on camera ingest (H4-1).
 
-The local CNN (`analyze_frame_local`) is a permanent stub — it scores every
-ingested frame "healthy" 0.0 — so auto contamination/harvest detection never
-ran on ingest: green mold and overdue flushes went unflagged unless an operator
+The local CNN (`analyze_frame_local`) is not built — it scores no frame — so
+auto contamination/harvest detection never ran on ingest: green mold and
+overdue flushes went unflagged unless an operator
 manually hit `POST /frames/{id}/analyze`. The fix runs the REAL detector
 (`analyze_frame_claude`, which already routes contamination + the harvest-window
 signal through the alert + cloud-forward plumbing) as a background task on
@@ -10,12 +10,11 @@ ingest, cost-gated so Anthropic spend stays bounded:
 
   - only with a Claude key present (BYOK — the Pi's AI paygate),
   - only for a frame tied to an active grow session, and
-  - at most once per session per cadence window.
+  - at most once per camera of a session per cadence window.
 
 These tests pin the gating and the wire-up.
 """
 
-import json
 import re
 import time
 from unittest.mock import AsyncMock
@@ -76,33 +75,55 @@ async def _insert_frame_with_file(tmp_path, session_id: int, node_id: str = "cam
 
 
 def test_default_auto_cadence_matches_spec_six_hours():
-    """srv-rest#32: spec §6 — Claude Vision runs every 6h (+ on demand), not on
+    """Spec §6 — Claude Vision runs every 6h (+ on demand), not on
     every 15-minute capture (~24x the specified API spend on a BYOK key)."""
     assert _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS == 6 * 3600
 
 
-def test_claim_slot_throttles_per_session_and_expires():
+def test_claim_slot_throttles_per_camera_and_expires():
     base = 1_000_000.0
-    # first frame for the session claims the slot
-    assert _claim_auto_analysis_slot(1, now=base) is True
+    # first frame for the session's camera claims the slot
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base) is True
     # subsequent frames inside the cadence window are refused
-    assert _claim_auto_analysis_slot(1, now=base + 60) is False
-    assert _claim_auto_analysis_slot(1, now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS - 1) is False
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + 60) is False
+    assert _claim_auto_analysis_slot(
+        1, "cam-01", now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS - 1) is False
     # a different session throttles independently
-    assert _claim_auto_analysis_slot(2, now=base + 60) is True
-    # once the window elapses, the session is eligible again
-    assert _claim_auto_analysis_slot(1, now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS) is True
+    assert _claim_auto_analysis_slot(2, "cam-01", now=base + 60) is True
+    # once the window elapses, the camera is eligible again
+    assert _claim_auto_analysis_slot(
+        1, "cam-01", now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS) is True
+
+
+def test_each_camera_of_a_session_has_its_own_window():
+    """Two cameras on one grow (front + top-down) used to share one slot per
+    window: whichever frame landed first after the window took it, so the
+    other view could go unread indefinitely."""
+    base = 1_000_000.0
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base) is True
+    assert _claim_auto_analysis_slot(1, "cam-02", now=base + 30) is True
+    # each is throttled on its own window ...
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + 900) is False
+    assert _claim_auto_analysis_slot(1, "cam-02", now=base + 930) is False
+    # ... and each gets its read when its own window comes round, whatever
+    # order their frames arrive in.
+    window = _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS
+    assert _claim_auto_analysis_slot(1, "cam-02", now=base + window + 30) is True
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + window + 40) is True
 
 
 def test_phase_transition_bypasses_the_cadence_window():
     """Spec §6: Claude Vision also runs on phase transitions. With the 6h
     cadence, the first frame after a phase change is analysed straight away
-    (once) instead of waiting out the window."""
+    (once per camera) instead of waiting out the window."""
     base = 1_000_000.0
-    assert _claim_auto_analysis_slot(1, now=base, phase="primordia_induction") is True
-    assert _claim_auto_analysis_slot(1, now=base + 60, phase="primordia_induction") is False
-    assert _claim_auto_analysis_slot(1, now=base + 120, phase="fruiting") is True
-    assert _claim_auto_analysis_slot(1, now=base + 180, phase="fruiting") is False
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base, phase="primordia_induction") is True
+    assert _claim_auto_analysis_slot(1, "cam-02", now=base, phase="primordia_induction") is True
+    assert _claim_auto_analysis_slot(
+        1, "cam-01", now=base + 60, phase="primordia_induction") is False
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + 120, phase="fruiting") is True
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + 180, phase="fruiting") is False
+    assert _claim_auto_analysis_slot(1, "cam-02", now=base + 240, phase="fruiting") is True
 
 
 async def test_first_frame_after_phase_change_is_analysed(tmp_path, monkeypatch):
@@ -170,8 +191,7 @@ async def test_ingest_schedules_and_persists_when_byok_and_untrottled(tmp_path, 
     # The real detector's output is persisted so the frame row + the harvest
     # corroboration query (which reads analysis_claude) can see it.
     row = await get_frame_by_id(frame_id)
-    assert row["analysis_claude"] is not None
-    assert json.loads(row["analysis_claude"]) == analysis
+    assert row["analysis_claude"] == analysis
 
 
 async def test_second_frame_within_window_is_not_scheduled(tmp_path, monkeypatch):
@@ -199,6 +219,26 @@ async def test_second_frame_within_window_is_not_scheduled(tmp_path, monkeypatch
     mock.assert_awaited_once()  # only the first frame reached Claude
 
 
+async def test_second_camera_of_the_grow_is_analysed_in_the_same_window(tmp_path, monkeypatch):
+    """A grow watched by two cameras gets a read of each view: the second
+    camera's frame is not throttled by the first camera's analysis."""
+    monkeypatch.setattr(settings, "claude_api_key", "test-key")
+    sid = await _make_active_session()
+    front, front_path = await _insert_frame_with_file(tmp_path, sid, node_id="cam-01")
+    top, top_path = await _insert_frame_with_file(tmp_path, sid, node_id="cam-02")
+    mock = AsyncMock(return_value={"health_assessment": "healthy", "summary": "ok"})
+    monkeypatch.setattr(service, "analyze_frame_claude", mock)
+
+    t1 = await maybe_schedule_auto_analysis(
+        frame_id=front, session_id=sid, node_id="cam-01", file_path=front_path)
+    t2 = await maybe_schedule_auto_analysis(
+        frame_id=top, session_id=sid, node_id="cam-02", file_path=top_path)
+    assert t1 is not None and t2 is not None
+    await t1
+    await t2
+    assert sorted(c.args[0]["node_id"] for c in mock.await_args_list) == ["cam-01", "cam-02"]
+
+
 async def test_free_tier_without_claude_key_is_not_scheduled(tmp_path, monkeypatch):
     """No Claude key (free / no BYOK) ⇒ no analysis, and the throttle slot is
     left untouched so it fires immediately once a key is added."""
@@ -214,7 +254,7 @@ async def test_free_tier_without_claude_key_is_not_scheduled(tmp_path, monkeypat
     )
     assert task is None
     mock.assert_not_awaited()
-    assert sid not in service._last_auto_analysis
+    assert (sid, "cam-01") not in service._last_auto_analysis
 
 
 async def test_frame_without_active_session_is_not_scheduled(monkeypatch):
@@ -257,5 +297,5 @@ def test_ingest_endpoint_invokes_auto_analysis(client, monkeypatch, tmp_path):
     assert kwargs["frame_id"] == body["frame_id"]
     assert kwargs["node_id"] == "cam-01"
     assert kwargs["session_id"] is None  # fresh DB → no active session
-    # Stored names are unique per frame (srv-rest#7): node + ts + random suffix.
+    # Stored names are unique per frame: node + ts + random suffix.
     assert re.search(r"cam-01_1752300000_[0-9a-f]{12}\.jpg$", kwargs["file_path"])

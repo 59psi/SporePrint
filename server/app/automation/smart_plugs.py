@@ -55,9 +55,6 @@ import time
 
 from .. import mqtt as _mqtt
 from ..db import get_db
-# Not called here (plug frames go out raw through _publish_raw), but the test
-# suite's mock_mqtt fixture patches this module attribute.
-from ..mqtt import mqtt_publish  # noqa: F401
 
 log = logging.getLogger(__name__)
 
@@ -74,10 +71,35 @@ PLUG_TYPE_TASMOTA = "tasmota"
 _GEN2_REPLY_SEGMENT = "sporeprint"
 _gen2_rpc_ids = itertools.count(1)
 
-# The only prefixes a Gen2 command can reach: the server's ACL grant is
-# shellies/+/rpc (one level; no MQTT wildcards in the name).
+# The only prefixes a plug command can reach. The server's ACL grants are
+# shellies/+/relay/0/command (Gen1), shellies/+/rpc (Gen2+) and
+# tasmota/+/cmnd/POWER: one level under the vendor tree, no MQTT wildcards in
+# the name. Mosquitto drops a publish anywhere else without telling the client,
+# so a command there would read as sent while no relay moved.
 _GEN2_PREFIX_RE = re.compile(r"shellies/[^/#+]+")
+_PLUG_PREFIX_RES = {
+    PLUG_TYPE_SHELLY: _GEN2_PREFIX_RE,
+    PLUG_TYPE_SHELLY_GEN2: _GEN2_PREFIX_RE,
+    PLUG_TYPE_TASMOTA: re.compile(r"tasmota/[^/#+]+"),
+}
 _GEN2_SWITCH_RE = re.compile(r"switch:([0-9]{1,3})")
+
+# A report on another transport than a plug's stored one (another plug type or
+# prefix under the same plug id) re-points the row only once the stored
+# transport has gone quiet: offline, never seen, or no report for this long.
+# Until then the report comes from a second device claiming the id (or a
+# forged one) and is ignored, so commands keep reaching the plug that is live.
+# Long enough to span Tasmota's default 300 s TelePeriod.
+_TRANSPORT_STALE_SECONDS = 600
+# Newest such conflict logged per plug id, so a second device reporting every
+# 30 s is named in the log every _CONFLICT_LOG_SECONDS, not every report.
+_transport_conflict_logged: dict[str, float] = {}
+_CONFLICT_LOG_SECONDS = 900
+
+# A report that changes nothing (the same state, power and config from a plug
+# already online) refreshes last_seen at most this often instead of writing a
+# row on every report: Shelly Gen1 republishes its relay and power every 30 s.
+_LAST_SEEN_REFRESH_SECONDS = 300
 
 # Newest Gen2 `errors` list logged per plug: a status republished every minute
 # logs an overpower / overtemp trip once, not every frame.
@@ -88,6 +110,11 @@ _GEN2_ERRORS_TRACK_CAP = 256
 async def handle_plug_message(sio, topic: str, payload):
     """Route incoming Shelly/Tasmota MQTT messages."""
     parts = topic.split("/")
+    # The ACL's per-plug patterns (tasmota/%u/#, shellies/%u/#) apply to every
+    # broker login, so a service account can publish "plug" state under its
+    # own name. That is never a plug.
+    if len(parts) > 1 and _mqtt.is_service_account(parts[1]):
+        return
 
     if topic.startswith("shellies/"):
         await _handle_shelly_message(sio, parts, payload)
@@ -99,9 +126,9 @@ async def handle_plug_message(sio, topic: str, payload):
 
         if parts[2] == "stat" and parts[3] == "POWER":
             state = payload if isinstance(payload, str) else str(payload)
-            await _update_plug_state(plug_id, PLUG_TYPE_TASMOTA, prefix, state.lower(),
-                                     name=device_id)
-            await sio.emit("plug_state", {"plug_id": plug_id, "state": state.lower()})
+            if await _update_plug_state(plug_id, PLUG_TYPE_TASMOTA, prefix, state.lower(),
+                                        name=device_id):
+                await sio.emit("plug_state", {"plug_id": plug_id, "state": state.lower()})
 
         elif (parts[2], parts[3]) in (("stat", "RESULT"), ("tele", "STATE")):
             # A command reply (stat/RESULT) and the periodic status (tele/STATE)
@@ -109,16 +136,15 @@ async def handle_plug_message(sio, topic: str, payload):
             # firmware. A plug whose SetOption kept stat/POWER quiet reported
             # its state nowhere else, so last_state went stale.
             state = _tasmota_json_power(payload)
-            if state is not None:
-                await _update_plug_state(plug_id, PLUG_TYPE_TASMOTA, prefix, state,
-                                         name=device_id)
+            if state is not None and await _update_plug_state(
+                    plug_id, PLUG_TYPE_TASMOTA, prefix, state, name=device_id):
                 await sio.emit("plug_state", {"plug_id": plug_id, "state": state})
 
         elif parts[2] == "tele" and parts[3] == "SENSOR":
             energy = payload.get("ENERGY") if isinstance(payload, dict) else None
             power = _watts(energy.get("Power")) if isinstance(energy, dict) else None
             if power is not None:
-                await _update_plug_power(plug_id, power)
+                await _update_plug_power(plug_id, PLUG_TYPE_TASMOTA, prefix, power)
 
         elif parts[2] == "tele" and parts[3] == "LWT":
             online = _online_flag(payload)
@@ -154,12 +180,13 @@ async def _handle_shelly_message(sio, parts: list[str], payload) -> None:
         plug_id = f"plug-{device_id}"
         if len(tail) == 2:
             state = (payload if isinstance(payload, str) else str(payload)).lower()
-            await _update_plug_state(plug_id, PLUG_TYPE_SHELLY, prefix, state, name=device_id)
-            await sio.emit("plug_state", {"plug_id": plug_id, "state": state})
+            if await _update_plug_state(plug_id, PLUG_TYPE_SHELLY, prefix, state,
+                                        name=device_id):
+                await sio.emit("plug_state", {"plug_id": plug_id, "state": state})
         elif tail[2:] == ["power"]:
             power = _watts(payload)
             if power is not None:
-                await _update_plug_power(plug_id, power)
+                await _update_plug_power(plug_id, PLUG_TYPE_SHELLY, prefix, power)
         return
 
     # Gen2+. <prefix>/rpc is a REQUEST — the server hears its own commands
@@ -221,12 +248,13 @@ async def _apply_gen2_switches(sio, device_id: str, switches: dict[int, dict]) -
         plug_id = _gen2_plug_id(device_id, switch_id)
         output = status.get("output")
         state = ("on" if output else "off") if isinstance(output, bool) else None
-        await _update_plug_state(
+        if not await _update_plug_state(
             plug_id, PLUG_TYPE_SHELLY_GEN2, prefix, state,
             name=plug_id.removeprefix("plug-"),
             power=_watts(status.get("apower")),
             config={"switch_id": switch_id},
-        )
+        ):
+            continue
         if "errors" in status:
             _note_gen2_errors(plug_id, status["errors"])
         if state is not None:
@@ -337,16 +365,11 @@ async def target_is_present(target: str) -> bool:
     (by id or device_role), or a node channel the firmware has reported in its
     health doc. Used for capability-aware fallbacks (vent when no dehumidifier).
     """
+    # Smart plug: a real row, matched by id or by assigned role
+    # (plug-dehumidifier ⇢ device_role 'dehumidifier'), as a command resolves it.
+    if await paired_plug(target) is not None:
+        return True
     async with get_db() as db:
-        # Smart plug: a real row, matched by id or by assigned role
-        # (plug-dehumidifier ⇢ device_role 'dehumidifier').
-        role = target[len("plug-"):] if target.startswith("plug-") else None
-        cursor = await db.execute(
-            "SELECT 1 FROM smart_plugs WHERE plug_id = ? OR device_role = ? LIMIT 1",
-            (target, role),
-        )
-        if await cursor.fetchone() is not None:
-            return True
         # Node channel: does any node report a channel by this name?
         cursor = await db.execute(
             "SELECT channels FROM hardware_nodes WHERE channels IS NOT NULL"
@@ -365,17 +388,9 @@ async def plug_aliases(target: str) -> set[str]:
 
     A rule can name a plug by its id (`plug-a1b2c3`) or by its role
     (`plug-heater`); both reach one physical plug, resolved exactly as
-    send_plug_command resolves it. Always includes `target` itself.
+    send_plug_command resolves it (paired_plug). Always includes `target` itself.
     """
-    role = target[len("plug-"):] if target.startswith("plug-") else None
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT plug_id, device_role FROM smart_plugs "
-            "WHERE plug_id = ? OR device_role = ? "
-            "ORDER BY (plug_id = ?) DESC LIMIT 1",
-            (target, role, target),
-        )
-        row = await cursor.fetchone()
+    row = await paired_plug(target)
     aliases = {target}
     if row:
         aliases.add(row["plug_id"])
@@ -388,7 +403,10 @@ async def paired_plug(plug_id: str) -> dict | None:
     """The paired smart_plugs row a command to `plug_id` reaches, or None.
 
     Matched by plug_id OR device_role (`plug-heater` → role 'heater'), the exact
-    id winning a tie — the same resolution target_is_present uses.
+    id winning a tie. The one resolution of a command naming a plug:
+    send_plug_command, target_is_present, plug_aliases and the engine's plug
+    state read all use it. A rule's target resolves for the nodes the rule
+    runs on through chamber_plug, among these same plugs.
     """
     role = plug_id[len("plug-"):] if plug_id.startswith("plug-") else None
     async with get_db() as db:
@@ -400,6 +418,82 @@ async def paired_plug(plug_id: str) -> dict | None:
         )
         row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+# Ids listed in any chamber's node_ids (which may list plug ids as well as
+# node ids); an invalid node_ids value lists none.
+_CHAMBER_LISTED_IDS_SQL = (
+    "SELECT j.value FROM chambers c, "
+    "json_each(CASE WHEN json_valid(c.node_ids) THEN c.node_ids ELSE '[]' END) j"
+)
+
+
+async def chamber_plug(
+    target: str, chamber_ids: list[str] | None = None, *, grow_id: int | None = None,
+) -> dict | None:
+    """The paired plug a rule reaches through `target` for the nodes it runs
+    on, or None when no such plug is paired.
+
+    The plugs `target` names are paired_plug's: the plug with that id and
+    every plug of the role (``plug-heater`` → device_role 'heater'), so a
+    plug named after its role (Tasmota Topic ``heater`` is ``plug-heater``)
+    is one of the role's plugs. A chamber may list its plugs' ids among its
+    node ids. For a chamber's nodes (``chamber_ids``: the ids the chamber
+    lists) a rule reaches the chamber's own plug, else one no chamber lists,
+    never another chamber's: two chambers each with a heater drive their
+    own. For nodes in no chamber it reaches one no chamber lists, else one
+    of a chamber that runs the same grow (``grow_id``, the grow those nodes
+    run; sessions.service.chamber_nodes_running names those chambers' ids),
+    never one of a chamber that runs a grow of its own. With no grow given
+    (the coverage verdict, nodes in no chamber that run no grow) that last
+    step takes any of them, as paired_plug picks. The exact id comes first,
+    then the plug paired first.
+    """
+    role = target[len("plug-"):] if target.startswith("plug-") else None
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT *, plug_id IN ({_CHAMBER_LISTED_IDS_SQL}) AS chamber_listed "
+            "FROM smart_plugs WHERE plug_id = ? OR device_role = ? "
+            "ORDER BY (plug_id = ?) DESC, rowid",
+            (target, role, target),
+        )
+        rows = [dict(r) for r in await cursor.fetchall()]
+    own: list[dict] = []
+    unlisted: list[dict] = []
+    for row in rows:
+        if not row.pop("chamber_listed"):
+            unlisted.append(row)
+        if chamber_ids and row["plug_id"] in chamber_ids:
+            own.append(row)
+    if chamber_ids:
+        found = own or unlisted
+        return found[0] if found else None
+    if unlisted:
+        return unlisted[0]
+    if not rows:
+        return None
+    if grow_id is None:
+        return await paired_plug(target)
+    # sessions.service imports this module at its top: a module-level import
+    # here would be circular.
+    from ..sessions.service import chamber_nodes_running
+    same_grow = set(await chamber_nodes_running(grow_id))
+    return next((row for row in rows if row["plug_id"] in same_grow), None)
+
+
+async def plugs_for_target(target: str) -> list[dict]:
+    """Every paired plug a rule naming `target` can switch, whichever nodes
+    it runs on (chamber_plug): the plug with that id and every plug of the
+    role, by plug_id; [] when none is paired. Session-end safing switches
+    them off when no grow is left: one resolution (paired_plug) reached one
+    plug of the role, while each chamber switches its own on."""
+    role = target[len("plug-"):] if target.startswith("plug-") else None
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM smart_plugs WHERE plug_id = ? OR device_role = ? ORDER BY plug_id",
+            (target, role),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
 
 
 async def send_plug_command(plug_id: str, state: str) -> bool:
@@ -424,7 +518,7 @@ async def send_plug_command(plug_id: str, state: str) -> bool:
     naming convention, published into the void, and returned True — which made
     the engine log the firing status='sent': the rule fired, the audit read
     clean, and no actuator moved. That masked the exact missing-actuator no-op
-    this function exists to surface. Report it honestly instead. (V2-3)
+    this function exists to surface. Report it honestly instead.
 
     Resolution matches `target_is_present` EXACTLY — by plug_id OR device_role —
     so the two never disagree. Per the build guide a heater/humidifier gets an
@@ -432,7 +526,7 @@ async def send_plug_command(plug_id: str, state: str) -> bool:
     seeded rule fires the friendly target `plug-heater` (which is only a role,
     not that row's id). Resolving by id alone found nothing and no-op'd even
     though the plug was paired and `target_is_present` reported it available.
-    The exact-id match wins the ORDER BY tie-break when both exist. (V3-1)
+    The exact-id match wins the ORDER BY tie-break when both exist.
     """
     row = await paired_plug(plug_id)
     if not row:
@@ -447,33 +541,47 @@ async def send_plug_command(plug_id: str, state: str) -> bool:
         return False
 
     prefix = row["mqtt_topic_prefix"]
+    if row["plug_type"] not in _PLUG_PREFIX_RES:
+        log.warning("Unknown plug_type %r for plug %s", row["plug_type"], plug_id)
+        return False
+    if error := plug_prefix_error(row["plug_type"], prefix):
+        # Nothing published: the broker would drop it and the firing would
+        # read 'sent' while no relay moved.
+        log.warning("Smart plug %s: %s — command %r not sent", row["plug_id"], error, state)
+        return False
     if row["plug_type"] == PLUG_TYPE_SHELLY:
         return await _publish_raw(f"{prefix}/relay/0/command", state.lower())
     if row["plug_type"] == PLUG_TYPE_TASMOTA:
         return await _publish_raw(f"{prefix}/cmnd/POWER", state.upper())
-    if row["plug_type"] == PLUG_TYPE_SHELLY_GEN2:
-        return await _send_gen2_command(row, state)
+    return await _send_gen2_command(row, state)
 
-    log.warning("Unknown plug_type %r for plug %s", row["plug_type"], plug_id)
-    return False
+
+def plug_prefix_error(plug_type: str, prefix: str | None) -> str | None:
+    """Why a plug of `plug_type` cannot be commanded under MQTT `prefix`, or None.
+
+    Each transport's commands reach only one level under its vendor tree
+    (_PLUG_PREFIX_RES): shellies/<id> for Shelly, tasmota/<topic> for Tasmota.
+    POST /api/automation/plugs refuses such a registration (422) and
+    send_plug_command never publishes to one.
+    """
+    pattern = _PLUG_PREFIX_RES.get(plug_type)
+    if pattern is None:
+        return (f"Unknown plug_type {plug_type!r}: expected one of "
+                f"{', '.join(sorted(_PLUG_PREFIX_RES))}")
+    if pattern.fullmatch(prefix or ""):
+        return None
+    tree = "tasmota" if plug_type == PLUG_TYPE_TASMOTA else "shellies"
+    return (f"MQTT prefix {prefix!r} is not one level under {tree}/: set the device's "
+            f"prefix to {tree}/<role> (the broker drops a command anywhere else)")
 
 
 async def _send_gen2_command(row: dict, state: str) -> bool:
     """Switch a Shelly Gen2+ plug: a JSON-RPC Switch.Set (or Switch.Toggle) frame.
 
-    False — nothing published — for a state the Switch API has no meaning for,
-    or a prefix outside shellies/<name>: the server may only publish
-    shellies/+/rpc, and Mosquitto drops anything else without an error, so a
-    publish there would read as sent while no relay moved.
+    False — nothing published — for a state the Switch API has no meaning for.
+    The caller has checked the prefix (plug_prefix_error).
     """
     prefix = row["mqtt_topic_prefix"]
-    if not _GEN2_PREFIX_RE.fullmatch(prefix or ""):
-        log.warning(
-            "Shelly plug %s has MQTT prefix %r — set the device's prefix to "
-            "shellies/<role> (one level under shellies/); the broker drops a "
-            "command anywhere else", row["plug_id"], prefix,
-        )
-        return False
     switch_id = _gen2_switch_id(row)
     wanted = state.lower()
     if wanted in ("on", "off"):
@@ -520,7 +628,13 @@ async def register_plug(
     to 'shelly', so assigning a role to an auto-registered Gen2 plug would
     otherwise switch its commands to the Gen1 topic (shellies/<id>/relay/0/
     command), which a Gen2 device never reads.
+
+    Raises ValueError for a plug type or prefix no command could reach
+    (plug_prefix_error): the plug would look paired while every command to it
+    was dropped by the broker.
     """
+    if error := plug_prefix_error(plug_type, mqtt_topic_prefix):
+        raise ValueError(error)
     async with get_db() as db:
         await db.execute(
             """INSERT INTO smart_plugs (plug_id, name, plug_type, mqtt_topic_prefix, device_role)
@@ -554,17 +668,52 @@ async def _update_plug_state(
     name: str,
     power: float | None = None,
     config: dict | None = None,
-):
+) -> bool:
     """Upsert the plug a report came from, registering it on first sight.
 
     The report's topic proves the device's transport, so plug_type and
     mqtt_topic_prefix follow it: a row registered by hand under the wrong type,
     or a Gen1 plug swapped for a Gen2 one under the same name, heals on the
     next report instead of being commanded on topics the device never reads.
+    Only once the stored transport has gone quiet, though
+    (_TRANSPORT_STALE_SECONDS): while it is live, a report on another
+    transport comes from a second device claiming the same plug id, or from
+    anything else holding the plug login, and re-pointing the row would send
+    the Pi's commands (a safety OFF included) to the wrong device. Such a
+    report is ignored and named in the log; returns False for it, True when
+    the report was recorded.
+
     The operator's name and device_role are kept. A None state, power or
-    config keeps the stored value. A report proves the plug is online.
+    config keeps the stored value. A report proves the plug is online. A report
+    that changes nothing is not written, except to refresh last_seen every
+    _LAST_SEEN_REFRESH_SECONDS.
     """
+    now = time.time()
+    config_json = json.dumps(config) if config is not None else None
     async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT plug_type, mqtt_topic_prefix, config, status, last_state, last_power_w, "
+            "last_seen FROM smart_plugs WHERE plug_id = ?",
+            (plug_id,),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            stored = (row["plug_type"], row["mqtt_topic_prefix"])
+            seen = row["last_seen"]
+            if stored != (plug_type, prefix):
+                live = (row["status"] == "online" and seen is not None
+                        and now - seen < _TRANSPORT_STALE_SECONDS)
+                if live:
+                    _log_transport_conflict(plug_id, stored, (plug_type, prefix), now)
+                    return False
+                log.warning("Smart plug %s now reports as %s on %s (was %s on %s): "
+                            "commands follow it there", plug_id, plug_type, prefix, *stored)
+            elif (row["status"] == "online"
+                    and (state is None or state == row["last_state"])
+                    and (power is None or power == row["last_power_w"])
+                    and (config_json is None or config_json == row["config"])
+                    and seen is not None and now - seen < _LAST_SEEN_REFRESH_SECONDS):
+                return True
         await db.execute(
             """INSERT INTO smart_plugs (plug_id, name, plug_type, mqtt_topic_prefix, config,
                                         status, last_state, last_power_w, last_seen)
@@ -577,11 +726,27 @@ async def _update_plug_state(
                  last_state=COALESCE(excluded.last_state, smart_plugs.last_state),
                  last_power_w=COALESCE(excluded.last_power_w, smart_plugs.last_power_w),
                  last_seen=excluded.last_seen""",
-            (plug_id, name, plug_type, prefix,
-             json.dumps(config) if config is not None else None,
-             state, power, time.time()),
+            (plug_id, name, plug_type, prefix, config_json, state, power, now),
         )
         await db.commit()
+    return True
+
+
+def _log_transport_conflict(plug_id: str, stored: tuple, reported: tuple, now: float) -> None:
+    """Name a report ignored by _update_plug_state, at most once per
+    _CONFLICT_LOG_SECONDS per plug."""
+    last = _transport_conflict_logged.get(plug_id)
+    if last is not None and now - last < _CONFLICT_LOG_SECONDS:
+        return
+    if len(_transport_conflict_logged) >= _GEN2_ERRORS_TRACK_CAP:
+        _transport_conflict_logged.clear()
+    _transport_conflict_logged[plug_id] = now
+    log.warning(
+        "Smart plug %s is live as %s on %s, but a report for the same id arrived as %s "
+        "on %s and was ignored: two devices use this id (give each its own Topic / "
+        "prefix), or something else is publishing with the plug login",
+        plug_id, *stored, *reported,
+    )
 
 
 async def _update_plug_online(sio, prefix: str, online: bool) -> None:
@@ -615,10 +780,19 @@ async def _update_plug_online(sio, prefix: str, online: bool) -> None:
         await sio.emit("plug_online", {"plug_id": row["plug_id"], "online": online})
 
 
-async def _update_plug_power(plug_id: str, power: float):
+async def _update_plug_power(plug_id: str, plug_type: str, prefix: str, power: float):
+    """Record a power report for a plug already registered on that transport.
+
+    Written only when the reading changed or last_seen is due a refresh
+    (_LAST_SEEN_REFRESH_SECONDS): Gen1 republishes its power every 30 s.
+    """
+    now = time.time()
     async with get_db() as db:
-        await db.execute(
-            "UPDATE smart_plugs SET last_power_w = ?, last_seen = ? WHERE plug_id = ?",
-            (power, time.time(), plug_id),
+        cursor = await db.execute(
+            "UPDATE smart_plugs SET last_power_w = ?, last_seen = ? "
+            "WHERE plug_id = ? AND plug_type = ? AND mqtt_topic_prefix = ? "
+            "AND (last_power_w IS NOT ? OR last_seen IS NULL OR last_seen <= ?)",
+            (power, now, plug_id, plug_type, prefix, power, now - _LAST_SEEN_REFRESH_SECONDS),
         )
-        await db.commit()
+        if cursor.rowcount:
+            await db.commit()

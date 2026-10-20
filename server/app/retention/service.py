@@ -14,6 +14,9 @@ Also nightly:
   - automation_firings rows older than 90 days that belong to no session.
     Session-tagged firings are that grow's automation event log (its
     transcript's automation summary counts them), so they stay with it.
+  - actuator_events (relay switch reports, one per channel a minute) older
+    than 7 days. Their lifetime totals live in actuator_event_counts, which
+    the ingest keeps in step, so pruning never lowers the Grafana counter.
   - A vision-frame thinning pass (vision.service.prune_vision_frames), which
     ingest otherwise triggers at most once a day while cameras are posting.
 
@@ -33,6 +36,8 @@ from pathlib import Path
 
 from ..config import settings
 from ..db import get_db
+from ..health.service import update_task
+from ..node_clock import MAX_FUTURE_SKEW_SECONDS
 from ..vision.service import prune_vision_frames
 
 log = logging.getLogger(__name__)
@@ -41,6 +46,14 @@ RAW_RETENTION_DAYS = 7
 FIVEMIN_RETENTION_DAYS = 30
 HOURLY_RETENTION_DAYS = 365
 FIRINGS_RETENTION_DAYS = 90
+
+# Each rollup tier's bucket width in seconds, by the label stored in
+# telemetry_rollups.resolution. The rollups below build their buckets at these
+# widths, and history (telemetry/service.get_history) re-buckets at them.
+RESOLUTION_BUCKETS = {"5min": 300, "hourly": 3600, "daily": 86400}
+_FIVEMIN_S = RESOLUTION_BUCKETS["5min"]
+_HOURLY_S = RESOLUTION_BUCKETS["hourly"]
+_DAILY_S = RESOLUTION_BUCKETS["daily"]
 
 # The one-time conversion VACUUM writes a full copy of the database (a temp
 # file, then the new pages through the WAL), so it only runs with room for
@@ -63,7 +76,12 @@ _CONVERT_MIN_FREE_PAGES = 256
 
 
 async def start_retention_task():
-    """Background task: run retention at 3 AM daily."""
+    """Background task: run retention at 3 AM daily.
+
+    Reports running / idle / error (with the error) to the task registry
+    (GET /api/health/detail/tasks), so a run that fails every night shows as
+    failing rather than as the "running" it was registered with at boot.
+    """
     while True:
         try:
             now = time.time()
@@ -74,11 +92,14 @@ async def start_retention_task():
             log.info("Retention: next run in %.1f hours", wait / 3600)
             await asyncio.sleep(wait)
 
+            update_task("retention", "running")
             await run_retention()
+            update_task("retention", "idle")
 
         except asyncio.CancelledError:
             return
         except Exception as e:
+            update_task("retention", "error", error=str(e))
             log.error("Retention task failed: %s", e)
             await asyncio.sleep(3600)
 
@@ -88,11 +109,13 @@ async def run_retention():
     log.info("Retention: starting data compression run")
     t0 = time.time()
 
+    await _restamp_future_readings()
     await _rollup_telemetry_5min()
     await _rollup_telemetry_hourly()
     await _rollup_weather_hourly()
     await _cleanup_old_rollups()
     await _prune_automation_firings()
+    await _prune_actuator_events()
     try:
         await prune_vision_frames()
     except Exception as e:
@@ -105,6 +128,29 @@ async def run_retention():
     log.info("Retention: completed in %.1fs", elapsed)
 
 
+async def _restamp_future_readings():
+    """Move raw readings stamped far in the future to the time they arrived.
+
+    The ingest now stamps a node clock running more than
+    MAX_FUTURE_SKEW_SECONDS ahead of the Pi with its arrival time. Readings
+    stored before that kept the node's ts: each read as the latest reading
+    until real time caught up with it (a year, for a bogus sync) and no
+    retention cutoff ever reached it. created_at is when the Pi stored the
+    row; one that is itself in the future is left alone.
+    """
+    horizon = time.time() + MAX_FUTURE_SKEW_SECONDS
+    async with get_db() as db:
+        result = await db.execute(
+            "UPDATE telemetry_readings SET timestamp = created_at "
+            "WHERE timestamp > ? AND created_at IS NOT NULL AND created_at <= ?",
+            (horizon, horizon),
+        )
+        await db.commit()
+    if result.rowcount > 0:
+        log.warning("Retention: restamped %d readings dated in the future with "
+                    "their arrival time", result.rowcount)
+
+
 async def _rollup_telemetry_5min():
     """Aggregate raw telemetry older than 7 days into 5-minute rollups, then delete raw."""
     cutoff = time.time() - RAW_RETENTION_DAYS * 86400
@@ -112,13 +158,13 @@ async def _rollup_telemetry_5min():
         await db.execute("BEGIN")
         try:
             await db.execute(
-                """INSERT INTO telemetry_rollups
+                f"""INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
-                    SELECT CAST(timestamp / 300 AS INT) * 300, node_id, sensor, '5min',
+                    SELECT CAST(timestamp / {_FIVEMIN_S} AS INT) * {_FIVEMIN_S}, node_id, sensor, '5min',
                            AVG(value), MIN(value), MAX(value), COUNT(*)
                       FROM telemetry_readings
                      WHERE timestamp < ?
-                     GROUP BY CAST(timestamp / 300 AS INT), node_id, sensor
+                     GROUP BY CAST(timestamp / {_FIVEMIN_S} AS INT), node_id, sensor
                     ON CONFLICT(timestamp, node_id, sensor, resolution) DO UPDATE SET
                       avg_value = (
                         COALESCE(telemetry_rollups.avg_value, 0) * COALESCE(telemetry_rollups.count, 0)
@@ -146,14 +192,14 @@ async def _rollup_telemetry_hourly():
         await db.execute("BEGIN")
         try:
             await db.execute(
-                """INSERT INTO telemetry_rollups
+                f"""INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
-                    SELECT CAST(timestamp / 3600 AS INT) * 3600, node_id, sensor, 'hourly',
+                    SELECT CAST(timestamp / {_HOURLY_S} AS INT) * {_HOURLY_S}, node_id, sensor, 'hourly',
                            COALESCE(SUM(avg_value * count) / NULLIF(SUM(count), 0), AVG(avg_value)),
                            MIN(min_value), MAX(max_value), SUM(count)
                       FROM telemetry_rollups
                      WHERE resolution = '5min' AND timestamp < ?
-                     GROUP BY CAST(timestamp / 3600 AS INT), node_id, sensor
+                     GROUP BY CAST(timestamp / {_HOURLY_S} AS INT), node_id, sensor
                     ON CONFLICT(timestamp, node_id, sensor, resolution) DO UPDATE SET
                       avg_value = (
                         COALESCE(telemetry_rollups.avg_value, 0) * COALESCE(telemetry_rollups.count, 0)
@@ -182,13 +228,13 @@ async def _rollup_weather_hourly():
         await db.execute("BEGIN")
         try:
             await db.execute(
-                """INSERT INTO weather_rollups
+                f"""INSERT INTO weather_rollups
                       (timestamp, resolution, avg_temp_f, min_temp_f, max_temp_f, avg_humidity, count)
-                    SELECT CAST(timestamp / 3600 AS INT) * 3600, 'hourly',
+                    SELECT CAST(timestamp / {_HOURLY_S} AS INT) * {_HOURLY_S}, 'hourly',
                            AVG(temp_f), MIN(temp_f), MAX(temp_f), AVG(humidity), COUNT(*)
                       FROM weather_readings
                      WHERE timestamp < ?
-                     GROUP BY CAST(timestamp / 3600 AS INT)
+                     GROUP BY CAST(timestamp / {_HOURLY_S} AS INT)
                     ON CONFLICT(timestamp, resolution) DO UPDATE SET
                       avg_temp_f = (
                         COALESCE(weather_rollups.avg_temp_f, 0) * COALESCE(weather_rollups.count, 0)
@@ -220,14 +266,14 @@ async def _cleanup_old_rollups():
         await db.execute("BEGIN")
         try:
             await db.execute(
-                """INSERT INTO telemetry_rollups
+                f"""INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
-                    SELECT CAST(timestamp / 86400 AS INT) * 86400, node_id, sensor, 'daily',
+                    SELECT CAST(timestamp / {_DAILY_S} AS INT) * {_DAILY_S}, node_id, sensor, 'daily',
                            COALESCE(SUM(avg_value * count) / NULLIF(SUM(count), 0), AVG(avg_value)),
                            MIN(min_value), MAX(max_value), SUM(count)
                       FROM telemetry_rollups
                      WHERE resolution = 'hourly' AND timestamp < ?
-                     GROUP BY CAST(timestamp / 86400 AS INT), node_id, sensor
+                     GROUP BY CAST(timestamp / {_DAILY_S} AS INT), node_id, sensor
                     ON CONFLICT(timestamp, node_id, sensor, resolution) DO UPDATE SET
                       avg_value = (
                         COALESCE(telemetry_rollups.avg_value, 0) * COALESCE(telemetry_rollups.count, 0)
@@ -270,6 +316,26 @@ async def _prune_automation_firings():
     if result.rowcount > 0:
         log.info("Retention: pruned %d automation firings older than %d days",
                  result.rowcount, FIRINGS_RETENTION_DAYS)
+
+
+async def _prune_actuator_events():
+    """Delete relay switch reports older than the raw-telemetry window.
+
+    The firmware re-reports every switch channel each minute, so the table
+    grew without bound. Nothing reads old rows: the Grafana counter reads
+    the lifetime totals in actuator_event_counts, which the ingest bumps in
+    the same transaction as each row, so they already include every row
+    deleted here.
+    """
+    cutoff = time.time() - RAW_RETENTION_DAYS * 86400
+    async with get_db() as db:
+        result = await db.execute(
+            "DELETE FROM actuator_events WHERE timestamp < ?", (cutoff,)
+        )
+        await db.commit()
+    if result.rowcount > 0:
+        log.info("Retention: pruned %d actuator events older than %d days",
+                 result.rowcount, RAW_RETENTION_DAYS)
 
 
 def _vacuum_has_room() -> bool:

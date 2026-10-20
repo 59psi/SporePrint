@@ -73,8 +73,12 @@ enclosures) and [firmware/CHANGELOG.md](firmware/CHANGELOG.md) (ESP32 images).
     physically; point nodes at `sporeprint.local` or update their firmware
     first. Current firmware pins only after a working TLS connection.
   - The API answers only for LAN host names (DNS-rebinding guard). Reach the
-    Pi by a public DNS name, such as a Tailscale `*.ts.net` name? Add it to
+    Pi by another name, such as a Tailscale `*.ts.net` name or your router's
+    own LAN domain (`sporeprint.fritz.box`)? Add it to
     `SPOREPRINT_ALLOWED_HOSTS` in `.env`, then `docker compose up -d server`.
+    A camera node whose portal "Pi host" is such a name needs the same: its
+    frames are refused until the name is listed (the Pi logs it and pages
+    once a day), so its vision checks stop although it still shows online.
 - **Node firmware:** push the new image to each node from the dashboard's
   Firmware page, as before. From `firmware-v5.1.0` on, each
   `firmware-vX.Y.Z` GitHub Release has a signed zip per board:
@@ -149,11 +153,11 @@ sporeprint.ai to your Home Screen to get browser notifications.
 ### Key Highlights
 
 - **74 built-in species profiles**, each with per-phase environmental targets, TEK guides, substrate recipes and photo references ([Species Library](#species-library) lists the categories)
-- **20 server modules** with 150 API operations (REST + a Prometheus `/metrics` exporter)
+- **20 server modules** with 152 API operations (REST + a Prometheus `/metrics` exporter)
 - **Pre-built Pi dashboard** -- chambers overview, sessions, species library, vision, automation, hardware builder, grow planner, contamination guide, cultures, experiments, integrations and settings. It ships here as a bundle; its source is not in this repo (see [Open Source](#open-source))
-- **33 SQLite tables** with tiered data retention (~120 MB/year)
-- **Claude camera analysis** -- every camera frame is stored; with your own Anthropic API key, Claude checks them every 6 h per grow, on each phase change and on demand. The local CNN layer is still a stub.
-- **Weather failover** -- Open-Meteo first (free, no key), then the US National Weather Service, then OpenWeatherMap if you add its API key
+- **35 SQLite tables** with tiered data retention (~120 MB/year)
+- **Claude camera analysis** -- every camera frame is stored; with your own Anthropic API key, Claude checks each camera of a grow every 6 h, on each phase change and on demand. The local CNN layer is still a stub.
+- **Weather failover** -- the provider you choose first (Open-Meteo by default: free, no key), then the others: Open-Meteo, the US National Weather Service, and OpenWeatherMap if you add its API key
 - **Weather-predictive alerts** up to 72 hours in advance
 - **10 OpenSCAD 3D-printable enclosure models** -- parametric, fit-checked against sourced part drawings, joined with brass heat-set inserts
 - **5 SVG diagrams** -- a colour-coded wiring diagram per hardware tier (inside vs outside the chamber, power strip, fused 12 V distribution, wire gauges, the common ground), a whole-system overview and an architecture overview
@@ -204,15 +208,20 @@ need. `install.sh` is safe to run again. It:
 
 1. Detects the OS and installs Docker Engine + the Compose plugin (via
    `get.docker.com`), plus `chrony` (NTP) and `openssl`, if they are missing.
+   chrony replaces `systemd-timesyncd` and also answers NTP from the LAN
+   (udp/123), so nodes in a room without internet can take their time from
+   the Pi.
 2. Clones the repo into `~/SporePrint` (or pulls it if it is already there;
    run from inside a checkout, it uses that checkout as is).
 3. Writes a LAN-trust `.env` with the secrets the stack needs — the MQTT broker
    credentials (`server`, plus `sp-3p` for smart plugs), the command-signing
-   key `SPOREPRINT_MQTT_HMAC_KEY` and the host's time zone as `TZ` — and
-   creates the broker's TLS certificates (IP and DNS SANs for every host IPv4).
-   Values you already set are kept; no secret is committed.
+   key `SPOREPRINT_MQTT_HMAC_KEY`, an ntfy alert topic nobody can guess
+   (`SPOREPRINT_NTFY_TOPIC`, new installs) and the host's time zone as `TZ` —
+   and creates the broker's TLS certificates (IP and DNS SANs for every host
+   IPv4). Values you already set are kept; no secret is committed.
 4. Builds and starts everything with `docker compose up -d --build`, then waits
-   for the API to report healthy.
+   for the API to report healthy and for the server to log in to the MQTT
+   broker (it warns, with the broker log, when the server cannot).
 5. Prints the dashboard URL, the schedule time zone, the command-signing status,
    the smart-plug credential and the common ops commands.
 
@@ -257,7 +266,9 @@ aliases, and an unknown zone silently runs on UTC.
 **Security — LAN-trust by default.** The Pi's own dashboard calls the API
 same-origin with no token, so the stack ships with HTTP auth off
 (`SPOREPRINT_ALLOW_UNAUTHENTICATED=true`). That is safe on a home LAN behind a
-router/NAT — keep the Pi there and never port-forward it. To reach the
+router/NAT — keep the Pi there and never port-forward it. The stack publishes
+its ports on IPv4 only, so a Pi that also has a global IPv6 address (which no
+NAT hides) does not expose them over IPv6. To reach the
 dashboard away from home, use your own VPN, such as Tailscale. The MQTT broker is
 still credentialed, and the API answers only for LAN host names, so a web
 page cannot reach it by DNS rebinding (`SPOREPRINT_ALLOWED_HOSTS` adds
@@ -287,7 +298,7 @@ SPOREPRINT_SKIP_START=1 ./install.sh   # writes .env + broker creds + TLS certs,
 docker compose up -d --build
 ```
 
-Services:
+Services (every port published on IPv4 only):
 - **UI**: http://localhost:3001  (nginx — serves the dashboard, proxies `/api` + `/socket.io`)
 - **API**: http://localhost:8000  (also serves `/metrics` when the Grafana integration is on)
 - **MQTT**: port 1883, TLS on 8883 — published on the LAN, credentialed and ACL-scoped; ESP32 nodes connect here
@@ -297,11 +308,14 @@ Services:
 ### Manual Development Setup
 
 ```bash
-./setup.sh                              # DEVELOPER workstation only: .venv, .env, broker creds + certs
-source .venv/bin/activate
+./setup.sh                              # DEVELOPER workstation only: server/.venv (uv), .env, broker creds + certs
 docker compose up -d mqtt               # the credentialed broker, on localhost:1883
-cd server && uvicorn app.main:socket_app --reload    # API on :8000
+cd server && uv run uvicorn app.main:socket_app --reload    # API on :8000
 ```
+
+`setup.sh` needs [uv](https://docs.astral.sh/uv/) and `openssl`: it installs
+the server's locked dependencies (`server/uv.lock`, what the image installs)
+with `uv sync --python 3.12 --extra dev`.
 
 Run from `server/`, the API reads `server/.env`, not the repo-root `.env`.
 Copy the `SPOREPRINT_*` settings you need there (for example
@@ -330,7 +344,11 @@ Once the Pi is running, open the Builder page (`http://<pi-ip>:3001/builder`)
 and scroll to **ESP32 Firmware**. Two images cover everything: the
 **unified node** (climate / relay / lighting — pick the personality in the
 node's setup portal) and the **camera**. The ZIP buttons download
-self-contained PlatformIO projects. Unzip, then flash with:
+self-contained PlatformIO projects built from the Pi's `firmware/` tree. Its
+`platformio.ini` is published with upload settings and credential-like
+options (`upload_port`, `upload_flags = --auth=…`, a password in
+`build_flags`) replaced by a "withheld" comment: keep those in a local
+`extra_configs` ini, which the Pi never publishes. Unzip, then flash with:
 
 ```bash
 cd firmware
@@ -383,11 +401,11 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Declarative rules engine** -- threshold, schedule, and compound conditions with species-aware targets and per-chamber scoping; the highest-priority rule whose condition holds owns an actuator
 - **Safety ceilings** -- `safety_max_on_seconds` counts from the first ON; a tripped held-ON ceiling switches the device off and locks automation out of it for 15 min
 - **Weather-aware virtual sensors** -- the system learns the correlation between outdoor weather and indoor conditions over time
-- **Multi-provider weather failover** -- the Pi gets weather from Open-Meteo (free, no key), falls back to the US National Weather Service (US only), and then to OpenWeatherMap if you add its API key. Set the Pi's location through `/api/settings` or `.env`; the order is fixed
+- **Multi-provider weather failover** -- the Pi gets weather from Open-Meteo (free, no key), falls back to the US National Weather Service (US only), and then to OpenWeatherMap if you add its API key. Set the Pi's location through `/api/settings` or `.env`; `weather_provider` (`SPOREPRINT_WEATHER_PROVIDER`) picks the provider tried first, and the others follow as failover
 - **Predictive alerts** -- warns up to 72 hours ahead when species targets will be violated based on weather forecasts
 - **Smart plug integration** -- Tasmota, Shelly Gen1 and Shelly Gen2+ (Plus, Pro, Mini, Gen3, Gen4) control via MQTT (Tasmota needs Full Topic `tasmota/%topic%/%prefix%/`; a Gen2+ Shelly needs MQTT prefix `shellies/<role>`)
 - **Third-party integrations** -- Aranet, Pulse, Kasa, Tapo, Wemo, Grafana/Prometheus and more under [docs/integrations/](docs/integrations/), all free on the Pi. Kasa, Tapo and Wemo plugs are switched through integration actions, not the built-in climate rules. The Agrowtek, Quest, Anden, BIOS, Trane, Fluence and Fohse drivers, and Pulse Grow's local mode, are written from vendor docs and not yet tested on hardware ([details](docs/integrations/lighting-hvac-skeletons.md), [Pulse](docs/integrations/pulse/README.md))
-- **Tiered data retention** -- raw (7 days), 5-min averages (30 days), hourly (1 year), daily (forever); ~120 MB/year on Pi
+- **Tiered data retention** -- raw (7 days), 5-min averages (30 days), hourly (1 year), daily (forever); relay switch reports are kept 7 days; ~120 MB/year on Pi
 
 ### Grow Session Management
 
@@ -397,7 +415,7 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 - **Session reports** -- Markdown (`report.md`) and CSV (`report.csv`) downloads per session
 - **iCal calendar feed** -- subscribe in Google Calendar or Apple Calendar for session milestones and phase reminders
 - **Session transcripts** -- structured JSON and narrative markdown exports with Claude analysis scoring
-- **Actuator safing** -- ending a grow switches the actuators it drove off (per chamber when several grows run)
+- **Actuator safing** -- ending a grow switches the actuators it drove off, every plug of a role and vendor integration devices included (only the nodes and plugs that no other grow drives when several grows run); an actuator under a manual hold is left as it is
 
 ### Species Library (74 profiles)
 
@@ -437,8 +455,8 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 
 ### Multi-Chamber Management
 
-- **Named chambers** -- each chamber runs to the targets of its active grow's species profile (a chamber stores no targets of its own)
-- **Node assignment** -- assign ESP32 nodes to specific chambers through the API (`POST /api/chambers`, `PATCH /api/chambers/{id}` with `node_ids`; neither dashboard edits chambers yet). With grows in more than one chamber, list every node (climate, relay, light, camera) in its chamber: an unlisted node then belongs to neither grow
+- **Named chambers** -- each chamber runs to the targets of its active grow's species profile (a chamber stores no targets of its own). A chamber runs one grow at a time: starting or linking a second grow to a chamber that still runs one is refused (409) until that grow ends or goes to cold storage
+- **Node assignment** -- the Setup wizard's § IV First chamber step claims a node into a chamber, an existing one or a new one it creates; otherwise assign ESP32 nodes to specific chambers through the API (`POST /api/chambers`, `PATCH /api/chambers/{id}` with `node_ids`; neither dashboard renames chambers or moves nodes yet). Once a grow is bound to a chamber, list every node (climate, relay, light, camera) in its chamber: a node listed in no chamber runs only a grow bound to no chamber (the single-closet setup)
 - **Per-chamber automation** -- rules scoped to individual chambers
 - **Chamber comparison API** -- `GET /api/chambers/compare?ids=…` returns side-by-side chamber metrics (API only; the dashboard has no comparison view)
 
@@ -457,7 +475,7 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 ### Vision Pipeline
 
 - **Camera node** -- AI-Thinker ESP32-CAM (OV2640 or OV3660, OV5640 also supported, auto-detected) takes a flash-lit UXGA still every 15 minutes (and on demand) and POSTs it to the Pi. The same image builds for the ESP32-S3 camera boards earlier BOMs listed (no flash LED). There is no live MJPEG stream
-- **Claude camera analysis** -- morphology analysis with species-specific context: every 6 h per session (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`), on the first frame after a phase change, and on demand. It uses your own Anthropic API key (`SPOREPRINT_CLAUDE_API_KEY` or Settings), and frames go from the Pi straight to Anthropic
+- **Claude camera analysis** -- morphology analysis with species-specific context: every 6 h per camera of a session (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`; two cameras on one grow mean two reads per window), on each camera's first frame after a phase change, and on demand. It uses your own Anthropic API key (`SPOREPRINT_CLAUDE_API_KEY` or Settings), and frames go from the Pi straight to Anthropic
 - **Contamination alerts** -- a confident contamination read (≥ 0.6) pages CRITICAL and is recorded as a contamination event; 0.3–0.6 sends one "Possible contamination" WARNING
 - **Local CNN** -- the fast first-pass layer is a stub today, so Claude auto-analysis is the only automatic contamination detector (worst-case latency = the auto-analysis interval)
 - **Frame retention** -- frames are kept 30 days, then thinned to one per camera per day (flagged, labelled and referenced frames are always kept)
@@ -473,7 +491,8 @@ Only needed for manual dev — `install.sh` handles everything on a Pi
 ### Notifications
 
 - **3-tier ntfy alerts** -- critical (immediate; identical pages collapse for 15 min), warning (5-min dedup), info (the same message at most once an hour)
-- **Delivery** -- the bundled ntfy server runs on the Pi (port 8080). In the ntfy app, subscribe to the topic (`sporeprint` by default) on `http://<pi-ip>:8080`. The phone has to reach the Pi, on your network or over your own VPN. On an iPhone, alerts can arrive late while the ntfy app is in the background, because the Pi's ntfy server doesn't forward to Apple's push service
+- **Delivery** -- the bundled ntfy server runs on the Pi (port 8080). In the ntfy app, subscribe to the topic `install.sh` prints (`SPOREPRINT_NTFY_TOPIC` in `.env`) on `http://<pi-ip>:8080`. The phone has to reach the Pi, on your network or over your own VPN. On an iPhone, alerts can arrive late while the ntfy app is in the background, because the Pi's ntfy server doesn't forward to Apple's push service
+- **Topic as the lock** -- the bundled ntfy server has no logins, so anyone who can reach port 8080 and knows the topic can read the alerts or post fake ones. A new install gets a random `sporeprint-<hex>` topic; an install still on the old default `sporeprint` is warned at every `./install.sh` until it sets its own
 - **Weather-predictive notifications** -- alerts up to 72 hours before conditions deteriorate
 - **Phase reminders** -- a daily 09:00 (local `TZ`) INFO notice for every grow past its phase's expected duration, and the shiitake cold-water soak once browning has run its minimum time
 - **Configurable topic** -- one ntfy topic (`SPOREPRINT_NTFY_TOPIC`, or Settings → Notifications) for every tier; the tiers map to ntfy priorities
@@ -513,8 +532,8 @@ server stores no unit preference. Every species profile's targets are in °F.
 ```
 ESP32 nodes ──MQTT──> Pi server <──────────REST──────────> Pi dashboard
   (sensors,            (FastAPI, SQLite,                    (pre-built in ui/dist,
-   relays,              20 modules, 150 endpoints,           served by nginx)
-   lighting,            33 tables, automation engine,
+   relays,              20 modules, 152 endpoints,           served by nginx)
+   lighting,            35 tables, automation engine,
    camera)              weather failover,
                         ntfy notifications)
 ```
@@ -544,7 +563,7 @@ SporePrint/
 │   └── app/
 │       ├── main.py            # App entrypoint + Socket.IO + background tasks
 │       ├── config.py          # Pydantic settings (env vars)
-│       ├── db.py              # SQLite schema (33 tables) + connection manager
+│       ├── db.py              # SQLite schema (35 tables) + connection manager
 │       ├── mqtt.py            # MQTT subscriber, command signing, weather enrichment
 │       ├── auth.py            # Optional API-key gate + public paths
 │       ├── provision.py       # Broker CA download for Secure-MQTT nodes
@@ -585,9 +604,9 @@ SporePrint/
 
 | Page | Description |
 |------|-------------|
-| Chambers (dashboard, `/`) | Per-chamber readings against the grow's targets and the recent event feed (loaded when the page opens; reload to refresh), Pi system + broker health (polled every 15 s), cloud status, quick overrides |
+| Chambers (dashboard, `/`) | Per-chamber readings against the grow's targets and the recent event feed (re-read every 30 s while the page is visible), Pi system + broker health (polled every 15 s), cloud status, quick overrides |
 | Chamber detail + history | One chamber's conditions, nodes, overrides and long-range charts |
-| Chamber inventory (`/inventory`) | Chamber list with maintenance log, lifetime stats and photos (creating chambers and assigning nodes are API-only: `POST`/`PATCH /api/chambers`) |
+| Chamber inventory (`/inventory`) | Chamber list with maintenance log, lifetime stats and photos (renaming chambers and moving nodes are API-only: `POST`/`PATCH /api/chambers`; Setup claims a node into a new or existing chamber) |
 | Sessions | Grow session list with detail view, phase timeline, next-phase action (with the exit reminder), yield stats, a finished session's report.md (the drying log and report.csv are API-only) |
 | Species | Species library with TEK guides, substrate recipes, photo references |
 | Species Wizard | Guided species selector questionnaire with compatibility scoring |
@@ -604,7 +623,7 @@ SporePrint/
 | Hardware | Node registry and health |
 | Integrations | Third-party integration settings (Grafana, Aranet, Pulse, plugs, lighting, HVAC) |
 | Settings | Claude key, OTA verify key, ntfy topic, system info, cloud link (weather settings are API-only: `PUT /api/settings/{key}`) |
-| Setup | First-run wizard: node discovery and claim, cloud pairing code |
+| Setup | First-run wizard: node discovery and claim into a new or existing chamber, cloud pairing code |
 
 ### Server Modules
 
@@ -614,10 +633,10 @@ each module's `/api/<module>` prefix.
 | Module | Endpoints | Description |
 |--------|-----------|-------------|
 | `telemetry` | 3 | Sensor data ingest and rollup-aware history queries |
-| `sessions` | 19 | Grow session CRUD, validated phase management, yield stats, drying tracker, reports, iCal feed |
+| `sessions` | 20 | Grow session CRUD, validated phase management, yield stats, drying tracker, contamination marks, reports, iCal feed |
 | `species` | 8 | Species profiles, wizard scoring, substrate calculator, shopping list generator |
-| `automation` | 13 | Declarative rules engine, smart plug control, overrides (24h TTL, auto-resume), firing history |
-| `weather` | 5 | Multi-provider weather API with failover (Open-Meteo, then NWS, then OpenWeatherMap with a key), 7-day forecast, prediction model, history aggregation |
+| `automation` | 14 | Declarative rules engine, smart plug control, overrides (24h TTL, auto-resume), firing history |
+| `weather` | 5 | Multi-provider weather API with failover (the chosen provider first, then Open-Meteo, NWS and OpenWeatherMap with a key), 7-day forecast, prediction model, history aggregation |
 | `vision` | 5 | Camera frame ingest, Claude camera analysis, active-learning labels |
 | `builder` | 13 | 3-tier hardware guide, wiring diagrams, firmware bundles, 3D models, Claude guide generator |
 | `hardware` | 11 | Node registry, command dispatch, peripherals, OTA push, logs, coredumps, LAN discovery + claim |
@@ -641,16 +660,16 @@ Two more routers are single files, not packages:
 | `settings_router.py` (`/api/settings`) | 5 | User settings persistence (weather location and key, Claude key, ntfy topic, OTA verify key, setup status) |
 | `provision.py` (`/api/provision`) | 1 | Broker CA for Secure-MQTT nodes |
 
-### Database Schema (33 SQLite tables)
+### Database Schema (35 SQLite tables)
 
-Telemetry (`telemetry_readings`, `telemetry_rollups`, `actuator_events`),
-sessions (`sessions`, `phase_history`, `session_notes`, `session_events`,
+Telemetry (`telemetry_readings`, `telemetry_rollups`, `actuator_events`,
+`actuator_event_counts`), sessions (`sessions`, `phase_history`, `session_notes`, `session_events`,
 `harvests`, `drying_log`), species (`species_profiles`), automation
 (`automation_rules`, `automation_firings`, `safety_watchdogs`,
 `manual_overrides`, `smart_plugs`), vision (`vision_frames`,
 `contamination_events`), hardware (`hardware_nodes`, `node_logs`), weather
 (`weather_readings`, `weather_forecasts`, `weather_rollups`, `weather_history`,
-`prediction_models`), cloud (`cloud_command_replay`), builder
+`prediction_models`), cloud (`cloud_command_replay`, `cloud_sync_pending`), builder
 (`builder_guides`), and the v3+ modules (`cultures`, `chambers`,
 `chamber_maintenance`, `experiments`, `planned_events`, `user_settings`,
 `integration_settings`). New databases use incremental auto-vacuum.
@@ -780,8 +799,8 @@ connect to it; it is there for other local clients.
 ### MQTT Topics
 
 ```
-sporeprint/{node_id}/telemetry           # Sensor readings (JSON, ts = epoch once NTP-synced)
-sporeprint/{node_id}/telemetry/{channel} # Actuator switch/level reports
+sporeprint/{node_id}/telemetry           # Sensor readings (JSON, ts = epoch once NTP-synced); a lighting bank's channel levels ("report": "dim_levels")
+sporeprint/{node_id}/telemetry/{channel} # Actuator switch reports (trigger: command | report | timer | safety_cutoff)
 sporeprint/{node_id}/status              # online/offline (retained, LWT)
 sporeprint/{node_id}/status/heartbeat    # Heartbeat every min(publish interval, 5 min)
 sporeprint/{node_id}/health              # Per-sensor driver health
@@ -804,13 +823,17 @@ tasmota/{topic}/cmnd/POWER               # Tasmota plug command
 Tasmota's default Full Topic `%prefix%/%topic%/` publishes `stat/<topic>/POWER`,
 which the broker ACL silently drops: set **Full Topic**
 `tasmota/%topic%/%prefix%/`, a unique **Topic** (the plug's role, e.g.
-`humidifier`), and the broker login **User** `sp-3p` / **Password**
-`SPOREPRINT_MQTT_3P_PASSWORD` from `.env`.
+`humidifier`), and a broker login: preferably the plug's own, which
+`./scripts/add-plug-mqtt-user.sh humidifier` prints (User = the Topic) and
+which reaches only that plug's topics, or the shared **User** `sp-3p` /
+**Password** `SPOREPRINT_MQTT_3P_PASSWORD` from `.env`, which every plug set
+up with it holds, so any one of them can switch the others.
 
 A Shelly Gen2+ plug (Plus, Pro, Mini, Gen3, Gen4) speaks JSON-RPC under a
 configurable MQTT prefix whose factory value is its device id, a topic tree
 the broker drops. In its web UI, **Settings → Connectivity → MQTT**: enable
-MQTT, server `<pi-ip>:1883`, user `sp-3p` with the same password, **MQTT
+MQTT, server `<pi-ip>:1883`, the login (its own, from
+`./scripts/add-plug-mqtt-user.sh <role>`, or `sp-3p`), **MQTT
 prefix** `shellies/<role>` (e.g. `shellies/humidifier` → plug id
 `plug-humidifier`), and turn on "RPC status notifications over MQTT" and
 "Generic status update over MQTT". Saving reboots the plug. Details:
@@ -834,26 +857,27 @@ server only if `docker-compose.yml` forwards it, and changes apply with
 | `SPOREPRINT_MQTT_USERNAME` | *(empty)* | MQTT broker username (`server`, generated by `install.sh`; the broker refuses anonymous clients) |
 | `SPOREPRINT_MQTT_PASSWORD` | *(empty)* | MQTT broker password (generated by `install.sh`; rotate with `scripts/rotate-mqtt-creds.sh`) |
 | `SPOREPRINT_MQTT_3P_PASSWORD` | *(generated)* | The `sp-3p` smart-plug broker password. Documentation only — enter it in each plug; the server doesn't read it |
+| `SPOREPRINT_MQTT_PLUG_USERS` | *(empty)* | Per-plug broker logins, comma-separated; `scripts/add-plug-mqtt-user.sh` adds each. The server never takes node frames from these names |
 | `SPOREPRINT_MQTT_HMAC_KEY` | *(generated)* | Signs every `cmd/*` frame. `install.sh` creates it; `./scripts/provision-node.sh` prints it, `--rotate` replaces it |
 | `SPOREPRINT_MQTT_REQUIRE_SIGNING` | `auto` | `auto` (refuse unsigned commands once cloud-paired) / `always` / `never`. Must not be empty |
 | `SPOREPRINT_API_KEY` | *(empty)* | Bearer-token gate for `/api/*` and Socket.IO. Empty = LAN-trust (needs `SPOREPRINT_ALLOW_UNAUTHENTICATED=true`). See [docs/auth.md](docs/auth.md) |
 | `SPOREPRINT_ALLOW_UNAUTHENTICATED` | `false` | Explicit opt-in to run with no API key (`install.sh` sets `true`) |
 | `SPOREPRINT_NTFY_URL` | `http://localhost:8080` | ntfy base URL (Docker: `http://ntfy:80`) |
-| `SPOREPRINT_NTFY_TOPIC` | `sporeprint` | ntfy notification topic |
+| `SPOREPRINT_NTFY_TOPIC` | `sporeprint` | ntfy notification topic. `install.sh` writes a random `sporeprint-<hex>` one on a new install: the ntfy server has no logins, so the topic is what keeps others from reading or faking the alerts |
 | `SPOREPRINT_VISION_STORAGE` | `data/vision` | Vision frame storage path |
 | `SPOREPRINT_INTEGRATION_KEY_PATH` | `data/db/.integration-key` | Key that encrypts stored vendor credentials (Docker: `/data/db/.integration-key`). Losing it means re-entering every vendor credential |
-| `SPOREPRINT_VISION_AUTO_INTERVAL_MIN` | `360` | Minutes between automatic Claude analyses per session (≤ 0 falls back to 6 h) |
+| `SPOREPRINT_VISION_AUTO_INTERVAL_MIN` | `360` | Minutes between automatic Claude analyses of each camera of a session, so spend scales with the cameras (≤ 0 falls back to 6 h) |
 | `SPOREPRINT_CLAUDE_API_KEY` | *(empty)* | Anthropic API key (vision, contamination ID, transcripts, experiments, builder assistant) |
 | `SPOREPRINT_CLAUDE_MODEL` | `claude-sonnet-5` | Model for every Claude feature; blank = default |
-| `SPOREPRINT_WEATHER_PROVIDER` | `openmeteo` | Stored, but nothing reads it yet: the Pi always tries Open-Meteo, then NWS (US only), then OpenWeatherMap when `SPOREPRINT_WEATHER_API_KEY` is set |
-| `SPOREPRINT_WEATHER_API_KEY` | *(empty)* | OpenWeatherMap API key; setting it adds OpenWeatherMap as the last fallback |
+| `SPOREPRINT_WEATHER_PROVIDER` | `openmeteo` | Provider tried first: `openmeteo`, `nws` (US only) or `openweathermap` (needs `SPOREPRINT_WEATHER_API_KEY`; skipped without one). The others follow as failover, in that order |
+| `SPOREPRINT_WEATHER_API_KEY` | *(empty)* | OpenWeatherMap API key; setting it adds OpenWeatherMap to the failover (first when it is the chosen provider) |
 | `SPOREPRINT_WEATHER_LAT` | *(empty)* | Latitude for weather data |
 | `SPOREPRINT_WEATHER_LON` | *(empty)* | Longitude for weather data |
 | `SPOREPRINT_WEATHER_POLL_MINUTES` | `10` | Weather polling interval |
 | `SPOREPRINT_CLOUD_URL` | *(empty)* | Cloud relay URL (opt-in; `https://`, plain `http://` only to a LAN/loopback dev relay). Pairing writes `cloud.env` beside the DB, which overrides these |
 | `SPOREPRINT_CLOUD_TOKEN` | *(empty)* | Device auth token for cloud pairing |
-| `SPOREPRINT_CLOUD_DEVICE_ID` | *(empty)* | Unique device identifier |
-| `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` | `false` | Reject every unsigned cloud `integrations_request` from the start |
+| `SPOREPRINT_CLOUD_DEVICE_ID` | *(empty)* | Unique device identifier (the connector needs all three of URL, token and device id) |
+| `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` | `true` | Reject every unsigned cloud `integrations_request` (the cloud signs them all). `false` accepts them until the Pi has verified its first signed one |
 | `SPOREPRINT_PUBLIC_UI_URL` | `http://sporeprint.local:3001` | Where browsers reach the dashboard (set `http://<pi-ip>:3001` without mDNS). Its host is also an allowed Host name |
 | `SPOREPRINT_ALLOWED_HOSTS` | *(empty)* | DNS-rebinding guard: extra Host names the API answers to (comma list of names, `*.suffix`, IPs or CIDRs; `*` = off). Private IPs, `localhost`, `*.local` / `*.lan` / `*.home.arpa` / `*.internal` and dotless names are always allowed; any other Host gets 421 |
 | `SPOREPRINT_OTA_PUBKEY_B64` | *(empty)* | Pinned Ed25519 release key: verifies signed node-firmware manifests (any install) and Pi self-update (bare-metal only). Also Settings → OTA verify key |
@@ -902,12 +926,14 @@ rsync -a --delete --checksum frontend/packages/pi-ui/dist/ <SporePrint checkout>
 ```
 
 A change here to the BOM, a model header, a wiring SVG or a PlatformIO env
-makes the built-in copy stale, and anyone can refresh it inside the bundle:
-`cd server && uv run python ../scripts/sync_ui_builder_data.py`. Add
-`--check` to verify without writing. The script only rewrites that data. If
-the bundle has stopped reading `/api/builder/*` live, or still has the old
-static Builder's dead `hardware/3d` / `hardware/wiring` links, it exits 1 and
-asks for a rebuild, which only a maintainer can do.
+makes the built-in copy stale. Anyone can refresh the BOM, model and env data
+inside the bundle: `cd server && uv run python ../scripts/sync_ui_builder_data.py`.
+Add `--check` to verify without writing. The script only rewrites that data.
+If the bundle has stopped reading `/api/builder/*` live, still has the old
+static Builder's dead `hardware/3d` / `hardware/wiring` links, or embeds tier
+SVGs that are not the current `docs/wiring-tier*.svg` (the tier-card
+thumbnails and the offline diagram draw from that embedded copy), it exits 1
+and asks for a rebuild, which only a maintainer can do.
 
 ### Dependencies
 
@@ -941,7 +967,8 @@ The cloud connector links a Pi to a Premium account on
 [sporeprint.ai](https://sporeprint.ai). It is opt-in and stays dormant until
 the Pi is paired; the Pi works the same without it, and its dashboard keeps
 working when the internet or the cloud is down. Once configured
-(`SPOREPRINT_CLOUD_URL` and `SPOREPRINT_CLOUD_TOKEN`), the Pi opens an
+(`SPOREPRINT_CLOUD_URL`, `SPOREPRINT_CLOUD_TOKEN` and
+`SPOREPRINT_CLOUD_DEVICE_ID`, which pairing writes together), the Pi opens an
 outbound Socket.IO connection to the cloud relay, sends telemetry, alerts,
 grow sessions, contamination events and Claude's analysis results up, and
 receives remote commands. Camera frames and your weather location never
@@ -955,12 +982,24 @@ and the Pi rejects every command not marked premium.
 1. Give the Pi a public HTTPS address for the next few minutes, for example a
    Tailscale Funnel or a Cloudflare Tunnel to port 3001. The cloud refuses
    private and LAN addresses because it calls the Pi back to finish pairing.
-   Add that host name to `SPOREPRINT_ALLOWED_HOSTS` in `~/SporePrint/.env`,
-   then run `docker compose up -d server`.
-2. On the Pi dashboard, open **Setup → § III Cloud link** and click
-   **generate pairing code →**. The 6-digit code is valid for 10 minutes and
-   works once; after 8 wrong tries pairing locks for 10 minutes.
-3. On your network, trade the code for a configure token:
+   Switch on API-key mode for that window, so the address answers only the
+   pairing calls: in LAN-trust mode it would serve the whole API to anyone
+   who finds the name ([docs/auth.md](docs/auth.md)). In
+   `~/SporePrint/.env` set `SPOREPRINT_API_KEY` to a long random value
+   (`openssl rand -hex 32`) and add the host name to
+   `SPOREPRINT_ALLOWED_HOSTS`, then run `docker compose up -d server`.
+2. Make the pairing code. The dashboard sends no key, so while the key is
+   set use curl; it is the code **Setup → § III Cloud link** →
+   **generate pairing code →** makes in LAN-trust mode:
+
+   ```bash
+   curl -s -X POST http://<pi-ip>:3001/api/cloud/pairing-code \
+     -H 'Authorization: Bearer <your SPOREPRINT_API_KEY>'
+   ```
+
+   The 6-digit code is valid for 10 minutes and works once; after 8 wrong
+   tries pairing locks for 10 minutes.
+3. On your network, trade the code for a configure token (no key needed):
 
    ```bash
    curl -s -X POST http://<pi-ip>:3001/api/cloud/pair \
@@ -972,12 +1011,15 @@ and the Pi rejects every command not marked premium.
 4. In the web app, open **Devices → Pair new device** and enter the Pi's
    public address (`https://…`, no path), the configure token, the cloud
    device id and a name.
-5. Restart the server so it connects:
-   `docker compose up -d --force-recreate server`. The Pi then shows as
-   online in the web app, and its connection to
-   sporeprint.ai is outbound, so close the public address: stop the tunnel,
-   remove the name from `SPOREPRINT_ALLOWED_HOSTS` and run
-   `docker compose up -d server`.
+5. Close the public address and go back to LAN-trust: stop the tunnel, and in
+   `.env` remove the name from `SPOREPRINT_ALLOWED_HOSTS` and blank
+   `SPOREPRINT_API_KEY` again (the dashboard needs it blank). Then restart the
+   server, which also connects it: `docker compose up -d --force-recreate
+   server`. The Pi shows as online in the web app; its connection to
+   sporeprint.ai is outbound.
+
+Rotating the device token from the web app takes the same window: a public
+address and a fresh configure token (steps 1–3).
 
 Behind step 4, the cloud checks the session with the Pi
 (`GET /api/cloud/pair-verify`), mints a device token and calls
@@ -985,11 +1027,20 @@ Behind step 4, the cloud checks the session with the Pi
 credentials. Values containing `\n`, `\r` or `=` are rejected (newline-injection
 defense). The credentials are written atomically to `cloud.env` beside the
 database (Docker: `/data/db/cloud.env`, mode 0600) and survive container
-rebuilds. Delete that file to unpair.
+rebuilds. Delete that file to unpair. A Pi that is already connected (a
+re-pair, or a token rotation from the web app) takes the new credentials into
+use at once and reconnects; only a Pi that was unpaired when its server
+started needs the restart in step 5.
+
+While the cloud refuses the Pi for a reason only you can clear, the Pi stops
+buffering readings for it and retries every 15 minutes, and its cloud status
+says why: `paused — subscription required`, or `unauthorized — re-pair this
+Pi with the cloud` when the device token was revoked or rotated without
+reaching the Pi.
 
 ### Commands from the cloud
 
-Inbound commands from the cloud are rejected unless they carry a valid HMAC-SHA256 signature over a `ts` within ±30 s of the Pi's clock, a unique `id` (no replay; accepted ids survive a server restart), `tier == "premium"`, a `target_kind` of `climate`, `relay`, `lighting` or `camera` that resolves to a registered node (or the Pi-internal `system` / `automation` targets), and a channel matching `^[a-zA-Z0-9_-]{1,64}$`. See [docs/cloud-relay-flow.md](docs/cloud-relay-flow.md).
+Inbound commands from the cloud are rejected unless they carry a valid HMAC-SHA256 signature over a `ts` within ±30 s of the Pi's clock, a unique `id` (no replay; accepted ids survive a server restart), `tier == "premium"`, a `target_kind` of `climate`, `relay`, `lighting` or `camera` that resolves to exactly one registered node with that channel (or the Pi-internal `system` / `automation` targets; a command two nodes could take, as on a Pi with two relay nodes, is refused rather than guessed), and a channel matching `^[a-zA-Z0-9_-]{1,32}\Z`. See [docs/cloud-relay-flow.md](docs/cloud-relay-flow.md).
 
 The sporeprint.ai cloud and web app are proprietary and not in this repo.
 The cloud can't update the Pi: update it on the Pi ([Update](#update)).
@@ -1000,14 +1051,15 @@ The cloud can't update the Pi: update it on the Pi ([Update](#update)).
 
 SporePrint is designed for a single operator on a trusted home LAN. Defense-in-depth covers the cross-trust surfaces that break that premise:
 
-- **MQTT broker**: anonymous clients are **refused**. The broker reads a `password_file` and a per-role `acl.conf`; `install.sh` provisions the `server` and `sp-3p` (smart plug) logins, and `scripts/add-node-mqtt-user.sh <node_id>` gives each ESP32 its own login, scoped by the ACL to `sporeprint/<node_id>/…`. Frames under a service account's name (`server`, `sp-3p`, `sp-cmd`, `sp-telemetry`) are dropped, so a leaked smart-plug credential cannot pose as a node. Ports **1883** and **8883 (TLS)** are published on the LAN by `docker-compose.yml` — never port-forward them to the internet.
+- **MQTT broker**: anonymous clients are **refused**. The broker reads a `password_file` and a per-role `acl.conf`; `install.sh` provisions the `server` and `sp-3p` (smart plug) logins, `scripts/add-node-mqtt-user.sh <node_id>` gives each ESP32 its own login, scoped by the ACL to `sporeprint/<node_id>/…`, and `scripts/add-plug-mqtt-user.sh <name>` gives a smart plug its own, scoped to `tasmota/<name>/…` and `shellies/<name>/…` (the shared `sp-3p` password, readable from any plug's web page, switches every plug). Frames under a service account's name (`server`, `sp-3p`, `sp-cmd`, `sp-telemetry`) or a per-plug login are dropped, so a leaked smart-plug credential cannot pose as a node. Ports **1883** and **8883 (TLS)** are published on the LAN by `docker-compose.yml`, on IPv4 only like every port of the stack — never port-forward them to the internet.
 - **Command signing**: every `sporeprint/<node>/cmd/*` frame the Pi publishes is HMAC-SHA256 signed and carries the topic it was sent on plus a random nonce. Nodes holding the key reject unsigned, forged, replayed or redirected frames. See [docs/firmware-security.md](docs/firmware-security.md).
 - **DNS rebinding**: the API and Socket.IO answer only for Host names an outside web page cannot point at the Pi — private and loopback IP literals, `localhost`, `*.local` and other private-use suffixes, dotless names, the host of `SPOREPRINT_PUBLIC_UI_URL` and anything listed in `SPOREPRINT_ALLOWED_HOSTS`. Any other Host gets 421 (`GET /api/health` and `GET /api/provision/ca` excepted), so a rebinding page cannot drive the API in LAN-trust mode.
-- **Backend API**: set `SPOREPRINT_API_KEY` to require `Authorization: Bearer <key>` on all `/api/*` routes plus the Socket.IO `connect` handshake. Public in that mode: `/api/health`, `POST /api/cloud/pair` and `GET /api/provision/ca` (the broker's public CA). `POST /api/vision/frame` is accepted without a bearer only from a camera registered in `hardware_nodes`, with a declared Content-Length of at most 20 MB. `/metrics` sits outside `/api` and has its own optional bearer (Grafana integration). See [docs/auth.md](docs/auth.md).
+- **Cross-site requests**: a `POST`, `PUT`, `PATCH` or `DELETE` that a page on another site sends through your browser gets 403 unless its `Origin` is the dashboard's own host or a name the Host allow-list admits, and the Socket.IO handshake checks the `Origin` the same way, so such a page can neither change anything on the Pi nor read its live stream. Requests without an `Origin` (curl, scripts, the camera) are unaffected.
+- **Backend API**: set `SPOREPRINT_API_KEY` to require `Authorization: Bearer <key>` on all `/api/*` routes plus the Socket.IO `connect` handshake. Public in that mode: `/api/health`, `POST /api/cloud/pair`, the cloud's pairing calls `GET /api/cloud/pair-verify` and `POST /api/cloud/configure` (both refuse anything but the single-use configure token `/pair` issues), and `GET /api/provision/ca` (the broker's public CA). `POST /api/vision/frame` is accepted without a bearer only from a camera registered in `hardware_nodes`, with a declared Content-Length of at most 20 MB. `/metrics` sits outside `/api` and has its own optional bearer (Grafana integration). See [docs/auth.md](docs/auth.md).
 - **OTA**: a node's OTA listener (port 3232, `firmware/lib/sp_device/ota_service.cpp`, the espota handshake the Pi's push speaks) stays disabled until a password of at least 12 characters is set in the node's setup portal. A new image is on probation and rolls back if it never holds an MQTT connection for 60 s. A Pi-pushed image goes only to the node being flashed: the connect-back listener on TCP 3233 serves that node's address and closes any other peer. Optionally, a push can carry a signed release manifest (`POST /api/hardware/nodes/{id}/ota` with `manifest` + `manifest_sig`): the Pi checks it against its pinned key and the uploaded `.bin`, and a node image built with that key flashes only the exact image the manifest names. A push without a manifest still flashes, unless the image was built with `SPOREPRINT_OTA_REQUIRE_MANIFEST=1`. This repo's firmware releases from `firmware-v5.1.0` on are built with the key and ship each image's `<env>.manifest.json` + `.sig`; local builds and Builder ZIPs carry no key, so their images ignore manifests. How the signing key is kept out of the build, and how to verify a download: [docs/firmware-security.md](docs/firmware-security.md#signed-firmware-releases).
 - **Secure MQTT**: a node pins the Pi's CA only after a TLS connection with it succeeds, and reports the pinned CA's SHA-256 as `ca_fp` in its heartbeat. See [docs/firmware-security.md](docs/firmware-security.md#secure-mqtt-tls).
 
-CORS on the backend is LAN-scoped via `allow_origin_regex` (localhost, `*.local`, RFC1918 ranges, `capacitor://localhost`). Settings-mutation routes (`PUT /api/settings/*`) sit behind the same bearer-token gate as every other write path. Vision uploads validate `X-Node-Id` against `^[a-zA-Z0-9_-]{1,32}$` and assert the resolved write path stays inside `vision_storage`.
+CORS on the backend is LAN-scoped via `allow_origin_regex` (localhost, `*.local`, RFC1918 ranges, `capacitor://localhost`). Settings-mutation routes (`PUT /api/settings/*`) sit behind the same bearer-token gate as every other write path, and `GET /api/settings` never returns the Claude or OpenWeatherMap key itself: only a fingerprint and `is_set`. Vision uploads validate `X-Node-Id` against `^[a-zA-Z0-9_-]{1,32}$` and assert the resolved write path stays inside `vision_storage`.
 
 Hardware command routing (`POST /api/hardware/nodes/{id}/command`) strips any caller-supplied `topic` field and reconstructs the topic from the URL path, so nothing on the LAN can address a sibling node through your Pi.
 

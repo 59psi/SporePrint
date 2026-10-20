@@ -294,6 +294,11 @@ async def test_rpc_vendor_action_dispatches(fresh_keystore, monkeypatch):
     """The cloud-bound RPC handler should accept action='vendor_action'
     and forward the inner action to the dispatcher."""
     from app.cloud import integrations_proxy
+    from app.config import settings
+
+    # Dispatch only: an unsigned frame with strict signing off (the gate has
+    # its own suite, test_cloud_integrations_signing.py).
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
 
     class FakeSio:
         def __init__(self):
@@ -323,9 +328,12 @@ async def test_rpc_vendor_action_dispatches(fresh_keystore, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rpc_vendor_action_without_inner_action_returns_400(
-    fresh_keystore,
+    fresh_keystore, monkeypatch,
 ):
     from app.cloud import integrations_proxy
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
 
     class FakeSio:
         def __init__(self):

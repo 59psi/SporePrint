@@ -1,4 +1,4 @@
-"""PlatformIO pre-script: embed the firmware version (docs#28).
+"""PlatformIO pre-script: embed the firmware version.
 
 SPOREPRINT_FW_VERSION reaches the images as a C string macro, taken from:
 

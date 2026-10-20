@@ -1,6 +1,8 @@
-import aiosqlite
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+import aiosqlite
 
 from .config import settings
 
@@ -16,7 +18,11 @@ CREATE TABLE IF NOT EXISTS telemetry_readings (
     created_at REAL DEFAULT (unixepoch('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_telemetry_time ON telemetry_readings(timestamp);
-CREATE INDEX IF NOT EXISTS idx_telemetry_node ON telemetry_readings(node_id, sensor);
+-- (node, sensor, time): a node's history, its newest readings and its newest
+-- timestamp are index seeks. It replaces idx_telemetry_node (node, sensor),
+-- dropped in init_db, with which those read the node's whole raw history.
+CREATE INDEX IF NOT EXISTS idx_telemetry_node_sensor_time
+    ON telemetry_readings(node_id, sensor, timestamp);
 CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry_readings(session_id);
 CREATE INDEX IF NOT EXISTS idx_telemetry_sensor_time ON telemetry_readings(sensor, timestamp);
 
@@ -31,6 +37,17 @@ CREATE TABLE IF NOT EXISTS actuator_events (
     trigger TEXT NOT NULL,
     session_id INTEGER REFERENCES sessions(id),
     created_at REAL DEFAULT (unixepoch('now'))
+);
+-- Lifetime number of actuator_events rows per (node, channel, action). The
+-- MQTT ingest bumps it in the same transaction as each row and the Grafana
+-- exporter's counter reads it, so the nightly retention can prune old rows
+-- without the counter going backwards (or rescanning the table per scrape).
+CREATE TABLE IF NOT EXISTS actuator_event_counts (
+    node_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    action TEXT NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (node_id, channel, action)
 );
 
 -- Grow sessions
@@ -104,7 +121,11 @@ CREATE TABLE IF NOT EXISTS session_events (
     description TEXT,
     data TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
+-- Every read is one session's events in (timestamp, id) order, the dashboard
+-- feeds the newest N of them: an index range scan, never a sort of the whole
+-- session (a grow logs thousands of rule firings). Replaces the
+-- session_id-only idx_events_session (init_db drops it).
+CREATE INDEX IF NOT EXISTS idx_events_session_ts ON session_events(session_id, timestamp);
 
 -- Species profiles (user-created/modified)
 CREATE TABLE IF NOT EXISTS species_profiles (
@@ -140,6 +161,11 @@ CREATE TABLE IF NOT EXISTS vision_frames (
     analysis_claude TEXT,
     created_at REAL DEFAULT (unixepoch('now'))
 );
+-- Frames are read newest first per camera (chamber photos, GET
+-- /api/vision/frames?node_id=) and per session (the frame list, harvest
+-- corroboration, reports, transcripts).
+CREATE INDEX IF NOT EXISTS idx_vision_node_time ON vision_frames(node_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_vision_session_time ON vision_frames(session_id, timestamp);
 
 -- Automation rule firings log
 CREATE TABLE IF NOT EXISTS automation_firings (
@@ -187,6 +213,18 @@ CREATE TABLE IF NOT EXISTS cloud_command_replay (
 CREATE INDEX IF NOT EXISTS idx_cloud_command_replay_received
     ON cloud_command_replay(received_at);
 
+-- Grow sessions / contamination events changed since the cloud last
+-- acknowledged them (app.cloud.session_sync). Kept on disk so a change made
+-- while the link is down still reaches the cloud after a restart, whatever
+-- the session's age. kind: 'session' (sessions.id) | 'contamination'
+-- (contamination_events.id).
+CREATE TABLE IF NOT EXISTS cloud_sync_pending (
+    kind TEXT NOT NULL,
+    local_id INTEGER NOT NULL,
+    queued_at REAL NOT NULL DEFAULT (unixepoch('now')),
+    PRIMARY KEY (kind, local_id)
+);
+
 -- Manual overrides
 CREATE TABLE IF NOT EXISTS manual_overrides (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,6 +233,9 @@ CREATE TABLE IF NOT EXISTS manual_overrides (
     locked INTEGER DEFAULT 1,
     reason TEXT,
     expires_at REAL,
+    -- 'on' / 'off' when the hold pins a manual command's state, else NULL
+    -- (automation.models.ManualOverride.held_state).
+    held_state TEXT,
     created_at REAL DEFAULT (unixepoch('now'))
 );
 
@@ -235,6 +276,14 @@ CREATE TABLE IF NOT EXISTS hardware_nodes (
     channels TEXT,
     reset_reason INTEGER,
     mqtt_reconnects INTEGER,
+    tls INTEGER,
+    tls_fallback INTEGER,
+    board TEXT,
+    ca_fp TEXT,
+    ca_fp_match INTEGER,
+    -- When the liveness sweeper (main.py) paged this node offline; cleared by
+    -- its next heartbeat or live 'online' status, so each silence pages once.
+    offline_notified_at REAL,
     created_at REAL DEFAULT (unixepoch('now'))
 );
 
@@ -266,7 +315,9 @@ CREATE TABLE IF NOT EXISTS weather_readings (
 );
 CREATE INDEX IF NOT EXISTS idx_weather_time ON weather_readings(timestamp DESC);
 
--- Weather forecasts (stored hourly forecast entries for prediction training)
+-- Weather forecasts: no longer written. The forecast lives in memory
+-- (weather.service), and the prediction model trains on weather_readings;
+-- the table stays so existing databases keep their schema.
 CREATE TABLE IF NOT EXISTS weather_forecasts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fetched_at REAL NOT NULL,
@@ -473,21 +524,46 @@ CREATE INDEX IF NOT EXISTS idx_planned_events_date ON planned_events(date);
 """
 
 
-async def _add_column_if_missing(db, pragma_sql: str, column: str, alter_sql: str):
-    """Add a column to an existing table if it doesn't exist yet."""
+async def _add_column_if_missing(db, pragma_sql: str, column: str, alter_sql: str) -> bool:
+    """Add a column to an existing table if it doesn't exist yet; True if added.
+
+    Runs after SCHEMA has created every table, so the table is always there.
+    A failed ALTER (disk full, an I/O error, a locked database) raises and
+    stops boot: swallowing it started a server whose writes then failed with
+    "no such column" until a restart. Only a column another process added
+    between the check and the ALTER is tolerated.
+    """
+    cursor = await db.execute(pragma_sql)
+    columns = {row[1] for row in await cursor.fetchall()}
+    if column in columns:
+        return False
     try:
-        cursor = await db.execute(pragma_sql)
-        columns = {row[1] for row in await cursor.fetchall()}
-        if column not in columns:
-            await db.execute(alter_sql)
-    except Exception:
-        pass  # Table doesn't exist yet (will be created by SCHEMA)
+        await db.execute(alter_sql)
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            return False
+        raise
+    return True
+
+
+async def _table_exists(db, name: str) -> bool:
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    )
+    return await cursor.fetchone() is not None
 
 
 async def _apply_connection_pragmas(db):
-    """Apply durability + concurrency + FK pragmas on every connection."""
+    """Apply durability + concurrency + FK pragmas on every connection.
+
+    synchronous is per connection, not stored in the database: every
+    connection that skipped it ran FULL and fsynced the WAL on each commit
+    (one per telemetry frame). NORMAL is durable in WAL mode across a crash
+    of the server; only a power cut can lose the last commits.
+    """
     await db.execute("PRAGMA foreign_keys=ON")
     await db.execute("PRAGMA busy_timeout=5000")
+    await db.execute("PRAGMA synchronous=NORMAL")
 
 
 async def init_db():
@@ -500,11 +576,26 @@ async def init_db():
         # VACUUM — see retention.service.ensure_incremental_auto_vacuum, which
         # the lifespan runs at boot).
         await db.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        # journal_mode + synchronous are persistent, set once at init
+        # journal_mode is stored in the database, set once here; synchronous
+        # is per connection (_apply_connection_pragmas).
         await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute("PRAGMA synchronous=NORMAL")
         await _apply_connection_pragmas(db)
+        had_actuator_counts = await _table_exists(db, "actuator_event_counts")
         await db.executescript(SCHEMA)
+        if not had_actuator_counts:
+            # First boot with the lifetime counts: start them from the rows
+            # this database already holds, so the Grafana counter carries on
+            # instead of dropping to zero (which Prometheus reads as a reset).
+            await db.execute(
+                """INSERT INTO actuator_event_counts (node_id, channel, action, n)
+                   SELECT node_id, channel, action, COUNT(*) FROM actuator_events
+                    GROUP BY node_id, channel, action"""
+            )
+        # idx_events_session_ts leads with session_id, so the older
+        # session_id-only index only cost writes.
+        await db.execute("DROP INDEX IF EXISTS idx_events_session")
+        # Replaced by idx_telemetry_node_sensor_time (see SCHEMA).
+        await db.execute("DROP INDEX IF EXISTS idx_telemetry_node")
         # Migrations for databases created before v3.0
         await _add_column_if_missing(
             db, "PRAGMA table_info(weather_readings)", "provider",
@@ -514,6 +605,15 @@ async def init_db():
             db, "PRAGMA table_info(sessions)", "chamber_id",
             "ALTER TABLE sessions ADD COLUMN chamber_id INTEGER REFERENCES chambers(id)",
         )
+        # The location fields joined the sessions table right after the first
+        # release; a database created by that release had no such columns,
+        # and every session create failed with "no such column".
+        for column, sql_type in (("tub_number", "TEXT"), ("shelf_number", "INTEGER"),
+                                 ("shelf_side", "TEXT")):
+            await _add_column_if_missing(
+                db, "PRAGMA table_info(sessions)", column,
+                f"ALTER TABLE sessions ADD COLUMN {column} {sql_type}",
+            )
         # v3.3.0: reverse rule-fire ordering
         await _add_column_if_missing(
             db, "PRAGMA table_info(automation_firings)", "status",
@@ -551,6 +651,33 @@ async def init_db():
             db, "PRAGMA table_info(hardware_nodes)", "mqtt_reconnects",
             "ALTER TABLE hardware_nodes ADD COLUMN mqtt_reconnects INTEGER",
         )
+        # The node's transport security from its heartbeat: tls / tls_fallback
+        # (1/0), the board profile, the fingerprint of the CA its TLS link
+        # pinned, and whether that is the CA this Pi serves (mqtt.py).
+        for column, sql_type in (("tls", "INTEGER"), ("tls_fallback", "INTEGER"),
+                                 ("board", "TEXT"), ("ca_fp", "TEXT"),
+                                 ("ca_fp_match", "INTEGER")):
+            await _add_column_if_missing(
+                db, "PRAGMA table_info(hardware_nodes)", column,
+                f"ALTER TABLE hardware_nodes ADD COLUMN {column} {sql_type}",
+            )
+        # The state a manual hold pins (automation.models ManualOverride).
+        await _add_column_if_missing(
+            db, "PRAGMA table_info(manual_overrides)", "held_state",
+            "ALTER TABLE manual_overrides ADD COLUMN held_state TEXT",
+        )
+        # The liveness sweeper's page marker (main._sweep_stale_nodes). Nodes
+        # the dashboard already shows offline count as paged, so the upgrade
+        # does not page every node that went quiet before it; nodes that go
+        # silent from now on page once each.
+        if await _add_column_if_missing(
+            db, "PRAGMA table_info(hardware_nodes)", "offline_notified_at",
+            "ALTER TABLE hardware_nodes ADD COLUMN offline_notified_at REAL",
+        ):
+            await db.execute(
+                "UPDATE hardware_nodes SET offline_notified_at = unixepoch('now') "
+                "WHERE status = 'offline'"
+            )
         # v4.2: container type drives the colonization→(fruiting|cold-storage)
         # fork and gates environmental control for sealed vessels.
         await _add_column_if_missing(
@@ -569,3 +696,32 @@ async def get_db():
         yield db
     finally:
         await db.close()
+
+
+class UnknownReferenceError(ValueError):
+    """A write names a row by id that does not exist (the REST routes answer
+    422): with foreign_keys=ON the INSERT failed with an IntegrityError, a
+    bare 500 that never said which id was wrong."""
+
+
+# Tables a write may reference by id. The name goes into the SQL, so it comes
+# from this fixed set, never from a request.
+_REFERENCE_TABLES = frozenset({"chambers", "sessions", "vision_frames"})
+
+
+async def check_references(db, **refs: tuple[str, int | None]) -> None:
+    """Raise UnknownReferenceError naming every ``field=(table, id)`` whose id
+    is set but has no row in ``table``. Run it inside the transaction that
+    writes the references."""
+    missing = []
+    for field, (table, row_id) in refs.items():
+        if row_id is None:
+            continue
+        if table not in _REFERENCE_TABLES:
+            raise ValueError(f"{table!r} is not a referenceable table")
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — the table name comes from the fixed _REFERENCE_TABLES set; the id is a bound parameter
+        cursor = await db.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,))
+        if await cursor.fetchone() is None:
+            missing.append(f"{field} {row_id}")
+    if missing:
+        raise UnknownReferenceError(f"Not found: {', '.join(missing)}")

@@ -40,3 +40,10 @@ def test_hard_ceiling_is_profile_independent_and_far_above_any_grow():
     assert r.condition.threshold.value == 40000     # above a 10-40k colonization
     assert r.applies_to_phases is None              # fires with no profile at all
     assert r.condition.threshold.profile_ref is None
+
+
+def test_hard_ceiling_trips_at_the_sensors_full_scale():
+    """An SCD30 / SCD4x reports a saturated reading as exactly 40000, so the
+    ceiling must include it ("> 40000" could never fire)."""
+    r = next(x for x in BUILTIN_RULES if x.name == "CO2 Hard Ceiling")
+    assert r.condition.threshold.operator == "gte"

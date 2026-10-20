@@ -124,11 +124,15 @@ class KlapSession:
         sig = hashlib.sha256(self.sig_key + seq_bytes + ct).digest()
         return sig + ct, seq
 
-    def decrypt(self, frame: bytes) -> bytes:
+    def decrypt(self, frame: bytes, seq: int) -> bytes:
         """Reverse of encrypt — strip leading 32-byte sig, AES-CBC decrypt,
-        strip PKCS7 padding. Caller is responsible for the seq used to
-        derive the IV; KLAP convention is the frame's seq comes back
-        echoed in the URL query string `?seq=`.
+        strip PKCS7 padding.
+
+        ``seq`` is the sequence number of the request this frame answers
+        (the one ``encrypt`` returned and the request carried as
+        ``?seq=``): the device encrypts its reply under that request's IV.
+        Never the session's current counter — another request encrypted
+        while this one was in flight has already moved it on.
         """
         if len(frame) < 32 + 16:
             raise ValueError("klap frame too short")
@@ -136,7 +140,7 @@ class KlapSession:
         # response side because Tapo's documented protocol only signs
         # client-bound traffic.
         ct = frame[32:]
-        iv = self.iv_prefix + self.seq.to_bytes(4, "big", signed=True)
+        iv = self.iv_prefix + seq.to_bytes(4, "big", signed=True)
         cipher = Cipher(algorithms.AES(self.encrypt_key), modes.CBC(iv))
         decryptor = cipher.decryptor()
         padded = decryptor.update(ct) + decryptor.finalize()

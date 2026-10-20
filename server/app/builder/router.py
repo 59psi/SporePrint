@@ -24,7 +24,9 @@ async def list_tiers():
             "species_support": t.species_support,
             "capability_groups": [g.model_dump() for g in t.capability_groups],
             "limitations": t.limitations,
-            "component_count": sum(c.quantity for c in t.components),
+            # BOM lines. Summing quantities added feet of wire, grams of
+            # solder and screws into one meaningless figure.
+            "component_count": len(t.components),
         }
         for t in TIERS
     ]

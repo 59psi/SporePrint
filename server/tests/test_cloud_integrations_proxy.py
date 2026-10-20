@@ -1,13 +1,27 @@
-"""Tests for the Pi-side integrations RPC handler."""
+"""Tests for the Pi-side integrations RPC handler.
+
+These exercise dispatch, so they send unsigned frames with strict signing
+turned off; the signature and replay gate (on by default) has its own suite,
+test_cloud_integrations_signing.py.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
+import app.cloud.service as cloud_service
+from app.automation.models import AutomationRule
+from app.automation.service import create_rule
 from app.cloud import integrations_proxy
+from app.config import settings
+from app.db import get_db
 from app.integrations import _registry
 
 
@@ -24,6 +38,14 @@ class _FakeSio:
 @pytest.fixture
 def fake_sio() -> _FakeSio:
     return _FakeSio()
+
+
+@pytest.fixture(autouse=True)
+def _dispatch_only(monkeypatch):
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
+    cloud_service._seen_command_ids.clear()
+    yield
+    cloud_service._seen_command_ids.clear()
 
 
 @pytest.mark.asyncio
@@ -455,3 +477,65 @@ async def test_planner_propose_bad_date_400(fake_sio):
     payload = fake_sio.emits[0][1]
     assert payload["success"] is False
     assert payload["status"] == 400
+
+
+# ── rules saved from the cloud get the LAN editor's checks ──────────────
+#
+# A rule for a channel its node does not have looks armed and never moves
+# anything (the node drops cmd/<unknown>). The LAN route refuses it with 422;
+# the relay path stored it. Driven with real signed frames, strict mode on.
+
+_KEY = "unit-test-cloud-token"
+
+
+def _signed(frame: dict) -> dict:
+    frame = {**frame, "ts": time.time()}
+    body = json.dumps(frame, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {**frame, "signature": hmac.new(_KEY.encode(), body, hashlib.sha256).hexdigest()}
+
+
+def _mister_rule(name: str) -> dict:
+    return {
+        "name": name,
+        "condition": {
+            "type": "threshold",
+            "threshold": {"sensor": "humidity", "operator": "lt", "value": 85},
+        },
+        # The relay bank is fae / exhaust / circulation / aux: no "mister".
+        "action": {"target": "relay-01", "channel": "mister", "state": "on"},
+    }
+
+
+async def _rule_rows() -> list[tuple]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT id, name, rule_data FROM automation_rules ORDER BY id")
+        return [tuple(r) for r in await cursor.fetchall()]
+
+
+@pytest.mark.asyncio
+async def test_relay_rule_writes_refuse_a_channel_the_node_lacks(monkeypatch, fake_sio):
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", True)
+    monkeypatch.setattr(settings, "cloud_token", _KEY)
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) VALUES (?, ?, ?, ?)",
+            ("node-relay-1", "relay", json.dumps(["aux", "circulation", "exhaust", "fae"]), time.time()),
+        )
+        await db.commit()
+    good = _mister_rule("fan")
+    good["action"]["channel"] = "fae"
+    rule_id = await create_rule(AutomationRule(**good))
+    before = await _rule_rows()
+
+    await integrations_proxy.handle_request(fake_sio, _signed(
+        {"id": "create-1", "action": "automation_create", "payload": {"rule": _mister_rule("mist")}}))
+    await integrations_proxy.handle_request(fake_sio, _signed(
+        {"id": "update-1", "action": "automation_update",
+         "payload": {"rule_id": rule_id, "rule": _mister_rule("fan")}}))
+
+    for _event, payload in fake_sio.emits:
+        assert payload["success"] is False, payload
+        assert payload["status"] == 422, payload
+        assert "mister" in payload["error"]
+    assert len(fake_sio.emits) == 2
+    assert await _rule_rows() == before, "a refused rule must not be written"

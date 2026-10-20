@@ -3,18 +3,22 @@ import base64
 import json
 import logging
 import math
+import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
 
 from ..config import settings
-from ..contamination.service import record_event
+from ..contamination.service import as_confidence, record_event
 from ..db import get_db
+from ..node_clock import MAX_FUTURE_SKEW_SECONDS, SYNCED_TS_MIN
 from ..notifications.service import contamination_alert, harvest_ready, notify_info, notify_warning
-from ..species.models import GrowPhase
+from ..species.models import COLONIZATION_PHASES, FRUITING_PHASES, GrowPhase, SpeciesProfile
 from ..species.service import get_profile
 
 log = logging.getLogger(__name__)
@@ -143,10 +147,11 @@ def sniff_image_media_type(data: bytes) -> str | None:
 # Contract with the cam firmware: X-Timestamp carries Unix-epoch seconds only
 # when the cam is NTP-synced. A missing value, or one below 1e9 (the uptime
 # counter older firmware sends when unsynced), is stamped with arrival time.
-_EPOCH_SYNCED_MIN = 1_000_000_000
+# The bounds are the shared node clock contract (app/node_clock.py).
+_EPOCH_SYNCED_MIN = SYNCED_TS_MIN
 # A synced clock far ahead of the Pi is as wrong as an unsynced one: it would
 # sort as the newest frame forever and break the harvest-corroboration query.
-_MAX_FUTURE_SKEW_SECONDS = 300
+_MAX_FUTURE_SKEW_SECONDS = MAX_FUTURE_SKEW_SECONDS
 
 
 def resolve_frame_timestamp(raw: str | None, now: float | None = None) -> float:
@@ -178,83 +183,129 @@ def frame_storage_name(node_id: str, ts: float, media_type: str) -> str:
     return f"{node_id}_{int(ts)}_{uuid.uuid4().hex[:12]}{ext}"
 
 
+class FrameStorageError(Exception):
+    """A frame could not be written under the storage directory."""
+
+
+class InvalidFramePathError(FrameStorageError):
+    """The frame's file name would resolve outside the storage directory."""
+
+
+def write_frame_file(storage_dir: str, node_id: str, ts: float, media_type: str,
+                     content: bytes) -> Path:
+    """Write a frame's bytes to a new file under ``storage_dir``; its path.
+
+    Blocking file I/O (up to the 20 MB upload cap), so ingest runs it in a
+    worker thread. The file is opened exclusively, so an existing frame is
+    never overwritten: a name collision draws a new random suffix. Raises
+    InvalidFramePathError when the name would resolve outside the storage
+    dir, FrameStorageError when no unique name is found.
+    """
+    storage = Path(storage_dir).resolve()
+    storage.mkdir(parents=True, exist_ok=True)
+    for _ in range(3):
+        file_path = (storage / frame_storage_name(node_id, ts, media_type)).resolve()
+        if not file_path.is_relative_to(storage):
+            raise InvalidFramePathError("Invalid frame path")
+        try:
+            with file_path.open("xb") as fh:  # exclusive: never overwrite a frame
+                fh.write(content)
+            return file_path
+        except FileExistsError:
+            continue
+    raise FrameStorageError("Could not allocate a unique frame filename")
+
+
 async def analyze_frame_local(file_path: Path) -> dict | None:
     """Run local CNN inference on a frame.
 
-    Returns classification result or None if model not available.
-    In production this loads a TFLite/ONNX model. For now, returns a stub.
+    Returns the classification result, or None while no model is available.
+    No local model is built yet (docs/feature-status.md), so this returns
+    None and ingest stores nothing in analysis_local: a placeholder result
+    on every frame was a fake "healthy" read plus a second write per frame.
+    Claude auto-analysis is the automatic detector.
     """
-    try:
-        # Stub — real implementation loads TFLite model:
-        # interpreter = tflite.Interpreter(model_path="models/weights/contam_detector.tflite")
-        # interpreter.allocate_tensors()
-        # ... preprocess image, run inference ...
+    return None
 
-        return {
-            "model": "stub",
-            "prediction": "healthy",
-            "confidence": 0.0,
-            "classes": {
-                "healthy": 0.0,
-                "trich_early": 0.0,
-                "trich_green": 0.0,
-                "cobweb": 0.0,
-                "bacterial": 0.0,
-                "other_contam": 0.0,
-                "no_change": 0.0,
-            },
-            "note": "Local CNN not built yet; Claude analysis is the automatic detector",
-        }
-    except Exception as e:
-        log.error("Local vision analysis failed: %s", e)
+
+def _load_image_for_claude(file_path: Path) -> tuple[str, str]:
+    """(media type, base64 data) of a stored frame, for a Messages API image block.
+
+    Blocking (a read and a base64 encode of up to the 20 MB upload cap), so
+    analyze_frame_claude runs it in a worker thread. The bytes decide the
+    media type; the suffix only covers a file that sniffs as none of the four.
+    """
+    raw_image = file_path.read_bytes()
+    media_type = (sniff_image_media_type(raw_image)
+                  or _MEDIA_BY_SUFFIX.get(file_path.suffix.lower(), "image/jpeg"))
+    return media_type, base64.standard_b64encode(raw_image).decode("utf-8")
+
+
+@dataclass(frozen=True)
+class _FrameGrow:
+    """The grow session a frame belongs to, read once per analysis: the
+    prompt's context and every alert the reply raises use the same row."""
+    session: dict
+    profile: SpeciesProfile | None
+    species_name: str
+
+
+async def _load_frame_grow(session_id: int | None) -> _FrameGrow | None:
+    """The session row and species profile a frame's analysis runs under."""
+    if not session_id:
         return None
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        )).fetchone()
+    if not row:
+        return None
+    session = dict(row)
+    species_id = session.get("species_profile_id")
+    # Resolve the species profile through the tolerant lookup instead of a raw
+    # `JOIN ... ON s.species_profile_id = sp.id`: the UI stores hyphenated ids
+    # ("blue-oyster") while species_profiles is seeded with the underscored
+    # builtin ids ("blue_oyster"), so the literal join missed ~63/74 species
+    # and dropped the species context from auto-analysis. get_profile()
+    # absorbs the drift via species_id_candidates. See app.species.profiles.
+    profile = await get_profile(species_id) if species_id else None
+    species_name = profile.common_name if profile else (species_id or "Unknown")
+    return _FrameGrow(session=session, profile=profile, species_name=species_name)
 
 
 async def analyze_frame_claude(frame: dict) -> dict | None:
-    """Send frame to Claude Vision API for deep analysis."""
+    """Send frame to Claude Vision API for deep analysis.
+
+    Only the Claude call and its parsing can turn the result into an
+    {"error": ...}. The alerts the reply raises run after it, each on its own
+    guard (_route_vision_signals): a failing alert (a database lock held past
+    busy_timeout, say) used to replace the paid analysis with an error, which
+    callers never store — and the auto path then could not retry the frame
+    for a whole cadence window.
+    """
     if not settings.claude_api_key:
         return {"error": "Claude API key not configured"}
 
     file_path = Path(frame["file_path"])
+    grow = None
 
     try:
         client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
 
-        raw_image = file_path.read_bytes()
-        media_type = (sniff_image_media_type(raw_image)
-                      or _MEDIA_BY_SUFFIX.get(file_path.suffix.lower(), "image/jpeg"))
-        image_data = base64.standard_b64encode(raw_image).decode("utf-8")
+        media_type, image_data = await asyncio.to_thread(_load_image_for_claude, file_path)
 
+        grow = await _load_frame_grow(frame.get("session_id"))
+        species_name = grow.species_name if grow is not None else "Unknown"
         session_context = ""
-        species_name = "Unknown"
-        chamber_id = None
-        if frame.get("session_id"):
-            async with get_db() as db:
-                cursor = await db.execute(
-                    "SELECT * FROM sessions WHERE id = ?",
-                    (frame["session_id"],),
-                )
-                row = await cursor.fetchone()
-            if row:
-                session = dict(row)
-                chamber_id = session.get("chamber_id")
-                species_id = session.get("species_profile_id")
-                # Resolve the species profile through the tolerant lookup instead
-                # of a raw `JOIN ... ON s.species_profile_id = sp.id`: the UI stores
-                # hyphenated ids ("blue-oyster") while species_profiles is seeded
-                # with the underscored builtin ids ("blue_oyster"), so the literal
-                # join missed ~63/74 species and dropped the species context from
-                # auto-analysis. get_profile() absorbs the drift via
-                # species_id_candidates. See app.species.profiles.
-                profile = await get_profile(species_id) if species_id else None
-                species_name = profile.common_name if profile else (species_id or "Unknown")
-                colonization_visual = (
-                    profile.colonization_visual_description if profile else "N/A"
-                )
-                contamination_notes = (
-                    profile.contamination_risk_notes if profile else "N/A"
-                )
-                session_context = f"""
+        if grow is not None:
+            session, profile = grow.session, grow.profile
+            colonization_visual = (
+                profile.colonization_visual_description if profile else "N/A"
+            )
+            contamination_notes = (
+                profile.contamination_risk_notes if profile else "N/A"
+            )
+            session_context = f"""
 Session: {session.get('name', 'Unknown')}
 Species: {species_name}
 Current Phase: {session.get('current_phase', 'Unknown')}
@@ -329,22 +380,43 @@ Provide a structured analysis in JSON format with these fields:
             if "raw_response" in result:
                 # An error result is never persisted over the frame's last good analysis.
                 return {"error": "Claude response was cut off at max_tokens", "raw_response": text}
-
-        tier, contam_type, confidence = contamination_signal(result)
-        if tier:
-            await _handle_contamination(
-                frame, tier, contam_type, confidence, species_name, chamber_id,
-            )
-
-        await _maybe_harvest_alert(frame, result, species_name)
-        await _maybe_colonization_alert(frame, result, species_name)
-        await _maybe_browning_alert(frame, result, species_name)
-
-        return result
+        if "raw_response" in result:
+            # A complete reply with no JSON object in it (prose about a dark or
+            # empty frame, say) is no analysis either: as an error it is never
+            # persisted over the frame's last good analysis, where it would drop
+            # health_assessment and let retention prune a flagged frame.
+            return {"error": "Claude returned no JSON analysis", "raw_response": text}
 
     except Exception as e:
         log.error("Claude vision analysis failed: %s", e)
         return {"error": str(e)}
+
+    await _route_vision_signals(frame, result, grow)
+    return result
+
+
+async def _route_vision_signals(frame: dict, result: dict, grow: _FrameGrow | None) -> None:
+    """Raise the alerts a parsed analysis calls for: contamination, then the
+    harvest window, full colonization and finished browning. Each runs on its
+    own guard, so one failing neither skips the others nor costs the analysis."""
+    tier, contam_type, confidence = contamination_signal(result)
+    if tier:
+        try:
+            await _handle_contamination(
+                frame, tier, contam_type, confidence,
+                grow.species_name if grow is not None else "Unknown",
+                grow.session.get("chamber_id") if grow is not None else None,
+            )
+        except Exception as e:
+            log.warning("Vision contamination alert for frame %s failed: %s", frame.get("id"), e)
+    if grow is None:
+        return
+    for check in (_maybe_harvest_alert, _maybe_colonization_alert, _maybe_browning_alert):
+        try:
+            await check(frame, result, grow)
+        except Exception as e:
+            log.warning("%s for frame %s failed: %s",
+                        getattr(check, "__name__", "vision alert"), frame.get("id"), e)
 
 
 # Claude's per-detection confidence at/above which a vision contamination read
@@ -353,22 +425,46 @@ _CONTAM_ALERT_MIN_CONFIDENCE = 0.6
 # Borderline reads (at/above this, below the alert bar) get one deduped WARNING
 # so a plausible early detection isn't silently dropped.
 _CONTAM_WARN_MIN_CONFIDENCE = 0.3
-# `contamination_detected` objects that mean "nothing found".
-_NO_CONTAMINATION_TYPES = {"", "none", "null", "n/a", "na", "no", "false", "healthy"}
+# First words of a `contamination_detected` type that mean "nothing found":
+# "none", but also "None detected", "No contamination", "not present",
+# "N/A". Whole words only, so a real type that merely begins with the same
+# letters ("nocardia") still counts.
+_NO_CONTAMINATION_WORDS = frozenset({
+    "none", "null", "n/a", "na", "no", "not", "nothing", "false", "negative", "clean",
+    "healthy",
+})
+# What separates the words of a type ("none_detected", "no-contamination").
+_TYPE_WORD_SPLIT = re.compile(r"[\s_,.;:!?()\[\]-]+")
+_SIGNAL_TIER_RANK = {None: 0, "warning": 1, "critical": 2}
 # The same contamination (session + type) is paged/logged at most once per window.
 _CONTAM_DEDUP_SECONDS = 12 * 3600
 
 
-def _as_confidence(value) -> float | None:
-    try:
-        conf = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(conf):
-        return None
-    if 1.0 < conf <= 100.0:  # percentage-style ("85")
-        conf /= 100.0
-    return max(0.0, min(conf, 1.0))
+def _means_no_contamination(contam_type: str) -> bool:
+    """A `contamination_detected` type that says nothing was found."""
+    words = [w for w in _TYPE_WORD_SPLIT.split(contam_type.lower()) if w]
+    return not words or words[0] in _NO_CONTAMINATION_WORDS
+
+
+def _detection_signal(contam: dict, result: dict) -> tuple[str | None, str, float]:
+    """(tier, type, confidence) of one `contamination_detected` entry."""
+    health = str(result.get("health_assessment") or "").strip().lower()
+    contam_type = str(contam.get("type") or "unknown").strip()
+    if _means_no_contamination(contam_type):
+        return None, contam_type, 0.0
+    confidence = as_confidence(contam.get("confidence"))
+    if confidence is None and health == "contaminated":
+        confidence = as_confidence(result.get("confidence"))
+    confidence = confidence or 0.0
+    if confidence >= _CONTAM_ALERT_MIN_CONFIDENCE:
+        # A detection inside a read Claude calls healthy overall is a possible
+        # early spot: worth the deduped WARNING, not a CRITICAL page.
+        tier = "warning" if health == "healthy" else "critical"
+    elif confidence >= _CONTAM_WARN_MIN_CONFIDENCE:
+        tier = "warning"
+    else:
+        tier = None
+    return tier, contam_type, confidence
 
 
 def contamination_signal(result) -> tuple[str | None, str, float]:
@@ -377,24 +473,32 @@ def contamination_signal(result) -> tuple[str | None, str, float]:
     Returns (tier, type, confidence) where tier is "critical", "warning" or
     None. Any object in `contamination_detected` used to page CRITICAL —
     including {type: "none", confidence: 0} — with no threshold at all.
+
+    `contamination_detected` may be one object, a list of them (the
+    strongest entry counts: tier first, then confidence) or a bare type
+    string. A type whose first word says nothing was found ("None detected",
+    "No contamination") is no detection; a confident detection in a read
+    whose health_assessment is "healthy" is downgraded to a warning; and a
+    read Claude calls "contaminated" without naming what counts as an
+    unnamed detection at the read's own confidence.
     """
     if not isinstance(result, dict):
         return None, "", 0.0
     contam = result.get("contamination_detected")
-    if not isinstance(contam, dict):
-        return None, "", 0.0
-    contam_type = str(contam.get("type") or "unknown").strip()
-    if contam_type.lower() in _NO_CONTAMINATION_TYPES:
-        return None, contam_type, 0.0
-    confidence = _as_confidence(contam.get("confidence"))
-    if confidence is None and str(result.get("health_assessment", "")).lower() == "contaminated":
-        confidence = _as_confidence(result.get("confidence"))
-    confidence = confidence or 0.0
-    if confidence >= _CONTAM_ALERT_MIN_CONFIDENCE:
-        return "critical", contam_type, confidence
-    if confidence >= _CONTAM_WARN_MIN_CONFIDENCE:
-        return "warning", contam_type, confidence
-    return None, contam_type, confidence
+    if isinstance(contam, dict):
+        entries = [contam]
+    elif isinstance(contam, list):
+        entries = [c for c in contam if isinstance(c, dict)]
+    elif isinstance(contam, str):
+        entries = [{"type": contam}]
+    else:
+        entries = []
+    if not entries:
+        if str(result.get("health_assessment") or "").strip().lower() != "contaminated":
+            return None, "", 0.0
+        entries = [{}]  # contaminated, nothing named: type "unknown"
+    signals = [_detection_signal(entry, result) for entry in entries]
+    return max(signals, key=lambda s: (_SIGNAL_TIER_RANK[s[0]], s[2]))
 
 
 async def _handle_contamination(
@@ -412,7 +516,9 @@ async def _handle_contamination(
     contamination rates see auto-detected contamination too — then paged
     CRITICAL and forwarded. It's deduped per session + type via that same
     table, so an unresolved contamination re-seen on every analysis doesn't
-    re-page. Borderline reads only get a deduped WARNING.
+    re-page. Borderline reads only get a deduped WARNING. A dedup lookup that
+    fails (a locked database) does not swallow the detection: it is still
+    recorded if it can be and paged (the notifier dedups the page itself).
     """
     session_id = frame.get("session_id")
     scope = session_id if session_id is not None else frame.get("node_id")
@@ -430,12 +536,16 @@ async def _handle_contamination(
             log.warning("possible-contamination notify failed: %s", e)
         return
 
-    async with get_db() as db:
-        existing = await (await db.execute(
-            "SELECT 1 FROM contamination_events WHERE source = 'vision' "
-            "AND session_id IS ? AND lower(contamination_type) = ? AND detected_at > ? LIMIT 1",
-            (session_id, contam_type.lower(), time.time() - _CONTAM_DEDUP_SECONDS),
-        )).fetchone()
+    try:
+        async with get_db() as db:
+            existing = await (await db.execute(
+                "SELECT 1 FROM contamination_events WHERE source = 'vision' "
+                "AND session_id IS ? AND lower(contamination_type) = ? AND detected_at > ? LIMIT 1",
+                (session_id, contam_type.lower(), time.time() - _CONTAM_DEDUP_SECONDS),
+            )).fetchone()
+    except Exception as e:
+        log.warning("Vision contamination dedup lookup failed, alerting anyway: %s", e)
+        existing = None
     if existing:
         return
 
@@ -462,24 +572,74 @@ async def _handle_contamination(
     except Exception as e:
         log.warning("contamination_alert failed: %s", e)
     # Also forward to cloud so premium mobile subscribers get the push.
+    await _forward_to_cloud("contamination_alert", {
+        "node_id": frame.get("node_id"),
+        # Names the recorded event: the cloud stores it from the event
+        # sync (app.cloud.session_sync), so the alert must not add a copy.
+        "pi_event_id": recorded["id"] if recorded else None,
+        "session_id": session_id,
+        "species": species_name,
+        "contamination_type": contam_type,
+        "confidence": confidence,
+        "frame_id": frame.get("id"),
+    })
+
+
+async def _forward_to_cloud(event_type: str, payload: dict) -> None:
+    """cloud.service.forward_event, never raising: the cloud link is optional."""
     try:
+        # Imported here: app.cloud.service imports this module through its own
+        # imports, so a module-level import would be circular.
         from ..cloud.service import forward_event
-        await forward_event("contamination_alert", {
-            "node_id": frame.get("node_id"),
-            # Names the recorded event: the cloud stores it from the event
-            # sync (app.cloud.session_sync), so the alert must not add a copy.
-            "pi_event_id": recorded["id"] if recorded else None,
-            "session_id": session_id,
-            "species": species_name,
-            "contamination_type": contam_type,
-            "confidence": confidence,
-            "frame_id": frame.get("id"),
-        })
+        await forward_event(event_type, payload)
     except Exception as e:
-        log.warning("forward_event(contamination_alert) failed: %s", e)
+        log.warning("forward_event(%s) failed: %s", event_type, e)
 
 
-_FRUITING_PHASES = {"primordia_induction", "fruiting"}
+# A vision milestone (harvest window, colonization or browning complete) is
+# logged, notified and forwarded at most once per session and kind per window.
+_MILESTONE_DEDUP_SECONDS = 12 * 3600
+
+
+async def _record_vision_milestone(
+    session_id: int,
+    event_type: str,
+    description: str,
+    data: dict,
+    notify: Callable[[], Awaitable[object]],
+    forward_type: str,
+    forward_payload: dict,
+) -> bool:
+    """Log a vision milestone on its session, then notify and forward it.
+
+    Deduped on session_events itself (one per session and event type per
+    _MILESTONE_DEDUP_SECONDS), checked and written in one transaction.
+    `notify` sends the notification; a failed notify or forward is logged,
+    never raised. False when an earlier event of the kind deduped this one.
+    """
+    async with get_db() as db:
+        existing = await (await db.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND type = ? "
+            "AND timestamp > unixepoch('now') - ? LIMIT 1",
+            (session_id, event_type, _MILESTONE_DEDUP_SECONDS),
+        )).fetchone()
+        if existing:
+            return False
+        await db.execute(
+            "INSERT INTO session_events (session_id, type, source, description, data) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, event_type, "vision", description, json.dumps(data)),
+        )
+        await db.commit()
+    try:
+        await notify()
+    except Exception as e:
+        log.warning("%s notify failed: %s", event_type, e)
+    await _forward_to_cloud(forward_type, forward_payload)
+    return True
+
+
+_FRUITING_PHASES = FRUITING_PHASES
 _HARVEST_READY = {"ready", "overdue"}
 _GROWTH_SLOWED = {"slowing", "stalled"}
 
@@ -528,10 +688,10 @@ def browning_signal(current_phase: str, browning_percent) -> tuple[bool, str | N
         return True, f"block is {pct:.0f}% browned — browning looks complete"
     return False, None
 
-# Phases where the culture is still running (mirrors sessions.service). Full
-# colonization is the "ready to fruit" milestone; only meaningful before the
-# bag/jar/plate is opened to fruit.
-_COLONIZATION_PHASES = {"agar", "liquid_culture", "grain_colonization", "substrate_colonization"}
+# Phases where the culture is still running (species.models, as sessions
+# reads them). Full colonization is the "ready to fruit" milestone; only
+# meaningful before the bag/jar/plate is opened to fruit.
+_COLONIZATION_PHASES = COLONIZATION_PHASES
 # The visible surface must be essentially fully run before we page the operator.
 _COLONIZATION_COMPLETE_PERCENT = 95.0
 
@@ -594,215 +754,159 @@ def harvest_signal(current_phase: str, recent_analyses: list[dict]) -> tuple[boo
     return False, None
 
 
-async def _maybe_harvest_alert(frame: dict, result: dict, species_name: str) -> None:
-    """Fire a deduped harvest alert when fruiting has slowed / the fruit is ready."""
-    if not isinstance(result, dict):
-        return
-    session_id = frame.get("session_id")
-    if not session_id:
-        return
+async def _harvest_history(frame: dict, session_id: int) -> list[dict] | None:
+    """The camera's earlier Claude reads in this session, oldest→newest, that
+    `frame`'s read is judged against; None when a newer frame of the same
+    camera is already analysed (this read is not the latest one).
 
+    Only frames before this one count, by (timestamp, id): a re-analysis of a
+    frame used to find its own stored read as "the frame before it", and a
+    re-read old frame was taken as the newest read, so one image could make
+    the two-frame plateau. One camera's reads only: the plateau is the same
+    view twice, and another camera that cannot see the fruit (a top-down
+    colonization view) would never corroborate it.
+    """
+    frame_id = frame.get("id")
     async with get_db() as db:
-        srow = await (await db.execute(
-            "SELECT name, current_phase FROM sessions WHERE id = ?", (session_id,)
+        own = await (await db.execute(
+            "SELECT node_id, timestamp FROM vision_frames WHERE id = ?", (frame_id,)
         )).fetchone()
-        if not srow:
-            return
-        phase = srow["current_phase"]
-        session_name = srow["name"]
-
-        # Pull the last few Claude analyses for this session (oldest→newest).
+        params = {
+            "session_id": session_id,
+            "node_id": own["node_id"] if own else frame.get("node_id"),
+            "frame_id": frame_id,
+            "ts": own["timestamp"] if own else time.time(),
+        }
+        newer = await (await db.execute(
+            "SELECT 1 FROM vision_frames WHERE session_id = :session_id "
+            "AND node_id IS :node_id AND id IS NOT :frame_id AND analysis_claude IS NOT NULL "
+            "AND (timestamp > :ts OR (timestamp = :ts AND id > COALESCE(:frame_id, 0))) LIMIT 1",
+            params,
+        )).fetchone()
+        if newer:
+            return None
         rows = await (await db.execute(
-            "SELECT analysis_claude FROM vision_frames "
-            "WHERE session_id = ? AND analysis_claude IS NOT NULL "
-            "ORDER BY timestamp DESC LIMIT 4",
-            (session_id,),
+            "SELECT analysis_claude FROM vision_frames WHERE session_id = :session_id "
+            "AND node_id IS :node_id AND id IS NOT :frame_id AND analysis_claude IS NOT NULL "
+            "AND (timestamp < :ts OR (timestamp = :ts AND id < COALESCE(:frame_id, 0))) "
+            "ORDER BY timestamp DESC, id DESC LIMIT 3",
+            params,
         )).fetchall()
-    recent = []
+    history = []
     for r in reversed(rows):
         try:
-            recent.append(json.loads(r["analysis_claude"]))
+            analysis = json.loads(r["analysis_claude"])
         except (json.JSONDecodeError, TypeError):
             continue
-    recent.append(result)  # the frame we just analysed (may not be persisted yet)
+        if isinstance(analysis, dict):
+            history.append(analysis)
+    return history
 
-    should, reason = harvest_signal(phase, recent)
+
+async def _maybe_harvest_alert(frame: dict, result: dict, grow: _FrameGrow) -> None:
+    """Fire a deduped harvest alert when fruiting has slowed / the fruit is ready."""
+    session_id = grow.session["id"]
+    phase = grow.session["current_phase"]
+    if phase not in _FRUITING_PHASES:
+        return
+    history = await _harvest_history(frame, session_id)
+    if history is None:
+        return
+    should, reason = harvest_signal(phase, [*history, result])
     if not should:
         return
-
-    async with get_db() as db:
-        # Dedup: at most one harvest alert per session per 12h.
-        existing = await (await db.execute(
-            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'harvest_ready' "
-            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
-            (session_id,),
-        )).fetchone()
-        if existing:
-            return
-        await db.execute(
-            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
-            (session_id, "harvest_ready", "vision", f"Harvest window: {reason}",
-             json.dumps({"reason": reason, "frame_id": frame.get("id")})),
-        )
-        await db.commit()
-
-    try:
+    await _record_vision_milestone(
+        session_id, "harvest_ready", f"Harvest window: {reason}",
+        {"reason": reason, "frame_id": frame.get("id")},
         # INFO tier per spec §6 ("harvest readiness"); the session_events row
-        # above already limits it to one per session per 12 h.
-        await harvest_ready(species_name, session_name, reason=reason,
-                            dedup_key=f"harvest:{session_id}")
-    except Exception as e:
-        log.warning("harvest notify failed: %s", e)
-    try:
-        from ..cloud.service import forward_event
-        await forward_event("harvest_ready", {
+        # already limits it to one per session per 12 h.
+        lambda: harvest_ready(grow.species_name, grow.session["name"], reason=reason,
+                              dedup_key=f"harvest:{session_id}"),
+        "harvest_ready",
+        {
             "node_id": frame.get("node_id"),
             "session_id": session_id,
-            "species": species_name,
+            "species": grow.species_name,
             "reason": reason,
             "frame_id": frame.get("id"),
-        })
-    except Exception as e:
-        log.warning("forward_event(harvest_ready) failed: %s", e)
+        },
+    )
 
 
-async def _maybe_colonization_alert(frame: dict, result: dict, species_name: str) -> None:
+async def _maybe_colonization_alert(frame: dict, result: dict, grow: _FrameGrow) -> None:
     """Fire a deduped colonization-complete alert when the culture is fully run.
 
-    Mirrors _maybe_harvest_alert: gate on the session's phase, dedup one alert
-    per session per 12h via session_events, then notify + forward to the cloud.
+    Gated on the session's phase, one alert per session per 12 h
+    (_record_vision_milestone), then notify + forward to the cloud.
     """
-    if not isinstance(result, dict):
-        return
-    session_id = frame.get("session_id")
-    if not session_id:
-        return
-
-    async with get_db() as db:
-        srow = await (await db.execute(
-            "SELECT current_phase, species_profile_id FROM sessions WHERE id = ?", (session_id,)
-        )).fetchone()
-        if not srow:
-            return
-        phase = srow["current_phase"]
-
-    if not colonization_signal(phase, result.get("colonization_percent"))[0]:
-        return
+    session_id = grow.session["id"]
+    phase = grow.session["current_phase"]
     # A species that browns before it can fruit (shiitake) moves to browning next.
-    profile = await get_profile(srow["species_profile_id"]) if srow["species_profile_id"] else None
-    browns_next = profile is not None and GrowPhase.BROWNING in profile.phases
-    _, reason = colonization_signal(phase, result.get("colonization_percent"),
-                                    ready_to="brown" if browns_next else "fruit")
-
-    async with get_db() as db:
-        # Dedup: at most one colonization-complete alert per session per 12h.
-        existing = await (await db.execute(
-            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'colonization_complete' "
-            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
-            (session_id,),
-        )).fetchone()
-        if existing:
-            return
-        await db.execute(
-            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
-            (session_id, "colonization_complete", "vision", f"Colonization complete: {reason}",
-             json.dumps({"reason": reason,
-                         "colonization_percent": result.get("colonization_percent"),
-                         "surface": result.get("surface"),
-                         "frame_id": frame.get("id")})),
-        )
-        await db.commit()
-
-    try:
-        await notify_warning(
-            f"Colonization complete — {species_name}",
+    browns_next = grow.profile is not None and GrowPhase.BROWNING in grow.profile.phases
+    should, reason = colonization_signal(phase, result.get("colonization_percent"),
+                                         ready_to="brown" if browns_next else "fruit")
+    if not should:
+        return
+    await _record_vision_milestone(
+        session_id, "colonization_complete", f"Colonization complete: {reason}",
+        {"reason": reason,
+         "colonization_percent": result.get("colonization_percent"),
+         "surface": result.get("surface"),
+         "frame_id": frame.get("id")},
+        lambda: notify_warning(
+            f"Colonization complete — {grow.species_name}",
             f"Vision: {reason}. Ready to move to {'browning' if browns_next else 'fruiting'}.",
             dedup_key=f"colonization:{session_id}",
-        )
-    except Exception as e:
-        log.warning("colonization notify failed: %s", e)
-    try:
-        from ..cloud.service import forward_event
-        await forward_event("colonization_complete", {
+        ),
+        "colonization_complete",
+        {
             "node_id": frame.get("node_id"),
             "session_id": session_id,
-            "species": species_name,
+            "species": grow.species_name,
             "reason": reason,
             "colonization_percent": result.get("colonization_percent"),
             "surface": result.get("surface"),
             "frame_id": frame.get("id"),
-        })
-    except Exception as e:
-        log.warning("forward_event(colonization_complete) failed: %s", e)
+        },
+    )
 
 
-async def _maybe_browning_alert(frame: dict, result: dict, species_name: str) -> None:
+async def _maybe_browning_alert(frame: dict, result: dict, grow: _FrameGrow) -> None:
     """Fire a deduped browning-complete alert when a browning block is done.
 
-    Mirrors _maybe_colonization_alert (phase gate, one alert per session per
-    12h via session_events). The INFO notification carries the phase's exit
+    Gated on the browning phase, one alert per session per 12 h
+    (_record_vision_milestone). The INFO notification carries the phase's exit
     step — shiitake's cold-water soak — since that is what the operator does
     next; the cloud gets it as a phase_reminder (a type it already pushes).
     """
-    if not isinstance(result, dict):
-        return
-    session_id = frame.get("session_id")
-    if not session_id:
-        return
-
-    async with get_db() as db:
-        srow = await (await db.execute(
-            "SELECT current_phase, species_profile_id FROM sessions WHERE id = ?", (session_id,)
-        )).fetchone()
-        if not srow:
-            return
-        phase = srow["current_phase"]
-
+    session_id = grow.session["id"]
+    phase = grow.session["current_phase"]
     should, reason = browning_signal(phase, result.get("browning_percent"))
     if not should:
         return
-    profile = await get_profile(srow["species_profile_id"]) if srow["species_profile_id"] else None
-    step = profile.phase_exit_reminder(phase) if profile is not None else None
-
-    async with get_db() as db:
-        existing = await (await db.execute(
-            "SELECT 1 FROM session_events WHERE session_id = ? AND type = 'browning_complete' "
-            "AND timestamp > unixepoch('now') - 43200 LIMIT 1",
-            (session_id,),
-        )).fetchone()
-        if existing:
-            return
-        await db.execute(
-            "INSERT INTO session_events (session_id, type, source, description, data) VALUES (?, ?, ?, ?, ?)",
-            (session_id, "browning_complete", "vision", f"Browning complete: {reason}",
-             json.dumps({"reason": reason,
-                         "browning_percent": result.get("browning_percent"),
-                         "frame_id": frame.get("id")})),
-        )
-        await db.commit()
-
-    try:
-        await notify_info(
-            f"Browning complete — {species_name}",
+    step = grow.profile.phase_exit_reminder(phase) if grow.profile is not None else None
+    await _record_vision_milestone(
+        session_id, "browning_complete", f"Browning complete: {reason}",
+        {"reason": reason,
+         "browning_percent": result.get("browning_percent"),
+         "frame_id": frame.get("id")},
+        lambda: notify_info(
+            f"Browning complete — {grow.species_name}",
             f"Vision: {reason}. " + (f"Next: {step}" if step else "Ready to move on to pinning."),
             dedup_key=f"browning:{session_id}",
-        )
-    except Exception as e:
-        log.warning("browning notify failed: %s", e)
-    try:
-        from ..cloud.service import forward_event  # inline: cloud.service imports this module
-        await forward_event("phase_reminder", {
+        ),
+        "phase_reminder",
+        {
             "node_id": frame.get("node_id"),
             "session_id": session_id,
-            "species": species_name,
+            "species": grow.species_name,
             "phase": phase,
             "reason": reason,
             "reminder": step,
             "browning_percent": result.get("browning_percent"),
             "frame_id": frame.get("id"),
-        })
-    except Exception as e:
-        log.warning("forward_event(phase_reminder) failed: %s", e)
+        },
+    )
 
 
 async def get_frames(
@@ -871,10 +975,11 @@ async def update_analysis_claude(frame_id: int, analysis: dict) -> None:
 
 
 async def get_frame_by_id(frame_id: int) -> dict | None:
+    """One vision_frames row, its analysis fields decoded like get_frames'."""
     async with get_db() as db:
         cursor = await db.execute("SELECT * FROM vision_frames WHERE id = ?", (frame_id,))
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        return _deserialize_frame(row) if row else None
 
 
 async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> bool:
@@ -902,9 +1007,9 @@ async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> b
 
 # ─── Auto-analysis on camera ingest (H4-1) ─────────────────────────────
 #
-# The local CNN (analyze_frame_local) is a permanent stub — every ingested
-# frame it scores comes back "healthy" 0.0, so auto contamination/harvest
-# detection never actually fired: green mold and overdue flushes went
+# The local CNN (analyze_frame_local) is not built — it scores no frame, so
+# without this auto contamination/harvest detection never fired: green mold
+# and overdue flushes went
 # unflagged unless an operator manually hit POST /frames/{id}/analyze. Rather
 # than ship a local model, we run the REAL detector (analyze_frame_claude) on
 # ingest — it already routes contamination (green mold/Trichoderma) and the
@@ -916,16 +1021,22 @@ async def apply_user_label(frame_id: int, label: str | None, correct: bool) -> b
 #     own key IS the premium/BYOK gate (the Pi has no tier concept of its own);
 #   - only for frames tied to an active grow session (nothing to monitor
 #     between grows), and
-#   - at most once per session per _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS, so a
-#     camera streaming a frame every few seconds can't run up a bill.
+#   - at most once per camera of a session per
+#     _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS, so a camera streaming a frame every
+#     few seconds can't run up a bill.
 # The default is the spec's 6h cadence (CLAUDE.md §6 "Layer 2 — every 6h +
 # on-demand"); at 15 min every capture was analysed, ~24x the specified spend.
 # `settings.vision_auto_interval_min`, when the config defines it, overrides it.
+# The window is per camera, not per session: with one slot per session the
+# cameras of a chamber (front and top-down) raced for it, and whichever
+# camera's frame landed first after each window took every slot, so the other
+# view could go unread indefinitely. Spend is one call per camera per window.
 # A phase transition (the spec's other Layer-2 trigger) bypasses the window
-# once, so the first frame of a new phase is read straight away.
+# once per camera, so the first frame of a new phase is read straight away.
 _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS = 6 * 3600
-_last_auto_analysis: dict[int, float] = {}
-_last_auto_phase: dict[int, str] = {}
+# Keyed by (session id, camera node id).
+_last_auto_analysis: dict[tuple[int, str], float] = {}
+_last_auto_phase: dict[tuple[int, str], str] = {}
 # Strong refs to in-flight background tasks so the event loop can't GC them
 # mid-run (per asyncio.create_task docs). Cleared via the done-callback.
 _auto_analysis_tasks: set[asyncio.Task] = set()
@@ -942,10 +1053,11 @@ def _auto_analysis_interval_seconds() -> float:
 
 
 def _claim_auto_analysis_slot(
-    session_id: int, now: float | None = None, phase: str | None = None,
+    session_id: int, node_id: str, now: float | None = None, phase: str | None = None,
 ) -> bool:
-    """Atomically claim this session's throttle slot; True iff outside the window
-    or the session's phase changed since the last auto analysis.
+    """Atomically claim this camera's throttle slot in the session; True iff
+    outside the window or the session's phase changed since this camera's
+    last auto analysis.
 
     Check-and-record with no ``await`` in between, so under the single-threaded
     event loop two frames arriving back-to-back can't both claim the slot. The
@@ -953,14 +1065,15 @@ def _claim_auto_analysis_slot(
     still counts against the budget — the throttle strictly bounds API calls.
     """
     now = time.time() if now is None else now
-    last = _last_auto_analysis.get(session_id, 0.0)
-    seen_phase = _last_auto_phase.get(session_id)
+    key = (session_id, node_id)
+    last = _last_auto_analysis.get(key, 0.0)
+    seen_phase = _last_auto_phase.get(key)
     phase_changed = phase is not None and seen_phase is not None and phase != seen_phase
     if not phase_changed and now - last < _auto_analysis_interval_seconds():
         return False
-    _last_auto_analysis[session_id] = now
+    _last_auto_analysis[key] = now
     if phase is not None:
-        _last_auto_phase[session_id] = phase
+        _last_auto_phase[key] = phase
     return True
 
 
@@ -978,7 +1091,7 @@ async def _run_auto_analysis(frame: dict) -> None:
     analyze_frame_claude fires the contamination + harvest alert/forward
     plumbing itself; here we only persist the analysis blob so the frame row
     carries it and the harvest-corroboration query (which reads analysis_claude
-    across recent frames) can see this frame next time.
+    across the camera's recent frames) can see this frame next time.
     """
     try:
         result = await analyze_frame_claude(frame)
@@ -1004,7 +1117,7 @@ async def maybe_schedule_auto_analysis(
 
     Returns the scheduled task (so callers/tests can await it) or None when
     gating declines: no active session, no Claude key (free / no BYOK), or
-    still inside the per-session throttle window. Non-blocking — the analysis
+    this camera still inside its throttle window. Non-blocking — the analysis
     runs in the background so the ingest response returns immediately.
     """
     if session_id is None:
@@ -1013,7 +1126,8 @@ async def maybe_schedule_auto_analysis(
     # analyze_frame_claude would just return an error and waste a task).
     if not settings.claude_api_key:
         return None
-    if not _claim_auto_analysis_slot(session_id, phase=await _session_phase(session_id)):
+    if not _claim_auto_analysis_slot(session_id, node_id,
+                                     phase=await _session_phase(session_id)):
         return None
 
     frame = {
@@ -1029,7 +1143,7 @@ async def maybe_schedule_auto_analysis(
     return task
 
 
-# ─── Frame retention (srv-rest#9) ───────────────────────────────────────
+# ─── Frame retention ────────────────────────────────────────────────────
 #
 # Each camera writes ~96 UXGA frames/day onto the same volume as the SQLite
 # DB, and nothing ever deleted them. Frames younger than

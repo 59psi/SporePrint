@@ -1,8 +1,7 @@
 """The docs must describe the code, firmware and BOM that actually ship.
 
-Every check here pins a claim that had drifted before the 2026-09 docs pass
-(docs#2/#10-#13/#15/#16/#18/#19/#22/#24/#30, srv-auto#13, srv-hw#9/#15,
-deps-infra#11/#21, fw-node#13/#15, fw-drivers-cam#15/#16): tier prices,
+Every check here pins a claim that had drifted before the 2026-09 docs pass:
+tier prices,
 wiring-diagram labels, MQTT topics that never existed, the Tasmota FullTopic,
 the S3 pin map, the secure-boot recipe, the Grafana port. When one fails, fix
 the doc (or the code) so the two agree again; don't loosen the check.
@@ -15,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from app import auth as auth_module
 from app.automation import templates as rule_templates
 from app.automation.templates import BUILTIN_RULES
 from app.builder.hardware_guides import TIERS, TIER_ALL, TIER_RECOMMENDED
@@ -103,7 +103,7 @@ def test_svg_footers_carry_no_release_number(svg):
     assert not stale, f"{svg.name}: {stale}"
 
 
-# ── Tier prices (docs#10) ────────────────────────────────────────────
+# ── Tier prices ──────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("doc", [README, GUIDE], ids=lambda p: p.name)
@@ -117,7 +117,7 @@ def test_tier_prices_match_the_bom(doc):
     assert {name for name, _ in found} == set(expected), f"{doc.name} misses a tier price"
 
 
-# ── Wiring diagrams (docs#11, docs#13, bom SVG notes) ───────────────
+# ── Wiring diagrams (and the BOM's SVG notes) ───────────────────────
 
 
 @pytest.mark.parametrize("svg", TIER_SVGS, ids=lambda p: p.name)
@@ -181,7 +181,7 @@ def test_climate_node_is_a_stemma_qt_chain(svg):
     assert "4397" in labels and "4210" in labels, f"{svg.name} misses the STEMMA QT cables"
 
 
-# ── MQTT topics (docs#12) ────────────────────────────────────────────
+# ── MQTT topics ──────────────────────────────────────────────────────
 
 # A topic with no node segment (sporeprint/tele/#, sporeprint/cmd/#) never
 # existed: the contract is sporeprint/<node_id>/<type>[/...].
@@ -219,7 +219,7 @@ def test_camera_sensor_is_not_ov2640_only(path):
     assert not bad, f"{path.name}: {bad}"
 
 
-# ── Smart plugs (docs#2, srv-auto#13, srv-hw#9, deps-infra#11) ──────
+# ── Smart plugs ──────────────────────────────────────────────────────
 
 FULL_TOPIC = "tasmota/%topic%/%prefix%/"
 
@@ -240,7 +240,7 @@ def test_build_guide_smart_plug_section_has_the_full_topic_and_troubleshooting_r
     assert FULL_TOPIC in trouble, "no troubleshooting row for the default FullTopic"
 
 
-# ── Provisioning / install (docs#16, docs#18, docs#3 docs half) ─────
+# ── Provisioning / install ───────────────────────────────────────────
 
 
 @pytest.mark.parametrize("doc", [README, GUIDE], ids=lambda p: p.name)
@@ -261,7 +261,7 @@ def test_build_guide_node_id_follows_the_broker_username():
     assert "blank" in provision and "add-node-mqtt-user.sh" in provision
 
 
-# ── Firmware facts (docs#15, fw-node#15, srv-hw#15, fw-drivers-cam) ──
+# ── Firmware facts ───────────────────────────────────────────────────
 
 
 def _board_pin(header: str, name: str) -> str:
@@ -292,27 +292,63 @@ def test_build_guide_documents_reed_com_nc_and_the_invert_flag():
 
 
 def test_door_bring_up_tip_names_the_floating_state():
-    # fw-drivers-cam#15: without the pull-up, the OPEN door floats.
+    # Without the pull-up, the OPEN door floats.
     checklist = _section(_read(GUIDE), "Bring-up checklist")
     assert "flickers with the door\n   shut" not in checklist
     assert re.search(r"flickers[^.]*OPEN", checklist)
 
 
 def test_camera_reset_gesture_is_documented():
-    # fw-drivers-cam#16: GPIO 13, no button on the AI-Thinker board.
+    # GPIO 13, no button on the AI-Thinker board.
     guide = _read(GUIDE)
     assert "IO13" in guide and "GPIO 13" in guide
 
 
-# ── Security docs (docs#19, deps-infra#21, docs#22, fw-node#13) ──────
+# ── Security docs ────────────────────────────────────────────────────
 
 
 def test_readme_security_section_matches_compose_and_auth():
     sec = _section(_read(README), "Security")
     assert "127.0.0.1" not in sec, "the broker is published on the LAN (1883/8883), not loopback"
     for public in ("/api/health", "POST /api/cloud/pair", "GET /api/provision/ca",
+                   "GET /api/cloud/pair-verify", "POST /api/cloud/configure",
                    "/api/vision/frame"):
         assert public in sec, f"README Security misses public path {public}"
+
+
+def test_every_public_route_is_documented():
+    """auth.py's public paths, as README Security and docs/auth.md's table
+    state them (the cloud's pairing callbacks were missing from the gate's
+    list, so pairing could not finish in API-key mode)."""
+    sec = _section(_read(README), "Security")
+    table = _read(DOCS / "auth.md")
+    for method, path in sorted(auth_module._PUBLIC_ROUTES):
+        route = f"{method} {path}"
+        assert route in sec, f"README Security misses {route}"
+        assert f"| `{route}` |" in table, f"docs/auth.md's public-path table misses {route}"
+    for path in auth_module._PUBLIC_PATHS:
+        assert f"| `{path}` (any method) |" in table
+
+
+def test_docs_that_send_nodes_to_the_pi_for_ntp_have_a_pi_that_serves_it():
+    """The portal hint, the build guide and the security doc send nodes in a
+    room without internet to the Pi for their time, and a node holding the
+    signing key refuses every command until its clock is set. The Pi answers
+    NTP only because install.sh sets chrony up to: timesyncd, the Pi's
+    default, serves no clients, and neither does chrony as installed."""
+    hints = {
+        FW_SECURITY: "point NTP at the Pi",
+        GUIDE: "the Pi's address for a room with no internet",
+        ROOT / "firmware" / "lib" / "sp_device" / "wifi_provisioner.cpp":
+            "set to the Pi's address for airgapped rooms",
+    }
+    sending = [p.name for p, hint in hints.items() if hint in re.sub(r"\s+", " ", _read(p))]
+    assert sending, "no doc sends nodes to the Pi for NTP any more: drop this check"
+    install = _read(ROOT / "install.sh")
+    for directive in ("allow 10.0.0.0/8", "allow 172.16.0.0/12", "allow 192.168.0.0/16",
+                      "local stratum 10"):
+        assert directive in install, f"{sending} send nodes to the Pi for NTP; install.sh lacks {directive!r}"
+    assert "apt_install chrony" in install and "chrony_serve_lan ||" in install
 
 
 def test_firmware_security_doc_has_no_recipe_for_the_arduino_build():
@@ -328,10 +364,46 @@ def test_firmware_security_doc_has_no_recipe_for_the_arduino_build():
     assert "ota_service.cpp" in text and "[esp32_base]" in text
 
 
+def test_firmware_security_doc_rotates_the_signing_key_the_way_the_firmware_does():
+    # provision-node.sh --rotate sends the operator here to retire a node's
+    # previous key at once: an empty command to a real route (it goes out as
+    # cmd/config, which neither image acts on without a field it knows). The
+    # NVS key and the log lines named are the firmware's own.
+    flat = re.sub(r"\s+", " ", _section(_read(FW_SECURITY), "Rotating the key"))
+    m = re.search(r"curl -s -X POST http://<pi-ip>:3001(/api/hardware/nodes/)<node_id>(/command)"
+                  r" \\ -H 'Content-Type: application/json' -d '\{\}'", flat)
+    assert m, "the empty-command recipe moved"
+    assert "post" in server_app.openapi()["paths"][f"{m.group(1)}{{node_id}}{m.group(2)}"]
+    firmware = re.sub(r'"\s*"', "",  # adjacent C string literals, joined as C reads them
+                      _read(ROOT / "firmware" / "lib" / "sp_device" / "command_auth.cpp")
+                      + _read(ROOT / "firmware" / "lib" / "sp_core" / "hmac_verify.h"))
+    for named in ("verified with the PREVIOUS signing key", "previous key retired",
+                  "hmac_key_prev"):
+        assert named in flat and named in firmware, named
+
+
 def test_firmware_changelog_knows_the_pi_signs_topic_and_nonce():
     text = _read(ROOT / "firmware" / "CHANGELOG.md")
     unreleased = text.split("## [5.0.0]")[0]
     assert "Until the Pi adds a per-frame nonce" not in unreleased
+
+
+@pytest.mark.parametrize("changelog", ["CHANGELOG.md", "firmware/CHANGELOG.md"])
+def test_unreleased_entries_sit_above_every_release(changelog):
+    """New entries go in the `## [Unreleased]` list at the top (AGENTS.md).
+    The version bump turns the top section into the release; entries under
+    an `## [Unreleased]` left below a release miss it, and the firmware
+    page's notes would list them as a release named "Unreleased"."""
+    text = _read(ROOT / changelog)
+    parts = re.split(r"^(## \[[^\]]+\].*)$", text, flags=re.M)
+    sections = list(zip(parts[1::2], parts[2::2]))
+    assert sections, f"{changelog} has no release sections"
+    stranded = [n for n, (heading, body) in enumerate(sections)
+                if heading.startswith("## [Unreleased]") and n > 0 and body.strip()]
+    assert not stranded, (
+        f"{changelog}: entries under an `## [Unreleased]` below {sections[stranded[0] - 1][0]!r}; "
+        "move them to the one `## [Unreleased]` at the top")
+    assert "append to the one `## [Unreleased]` list at the top of" in _read(AGENTS)
 
 
 def test_grafana_doc_points_at_the_api_port():
@@ -340,7 +412,7 @@ def test_grafana_doc_points_at_the_api_port():
     assert ":8000/metrics" in text
 
 
-# ── Counts and paths (docs#30) ───────────────────────────────────────
+# ── Counts and paths ─────────────────────────────────────────────────
 
 
 def test_readme_and_agents_counts_match_the_code():
@@ -630,6 +702,8 @@ _CABLING_ROWS = {
     "USB-A to USB-C Data Cable": "USB-A → USB-C",
     "USB-A to Micro-USB": "USB-A → micro-USB",
     "USB Wall Charger": "USB wall chargers",
+    "STEMMA QT": "STEMMA QT cables",
+    "Dupont": "Dupont jumpers",
     "18 AWG 2-Conductor": "18 AWG 2-conductor red/black wire",
     "22 AWG Stranded Hookup": "22 AWG stranded hookup wire",
     "22 AWG 4-Conductor": "22 AWG 4-conductor cable",
@@ -708,6 +782,40 @@ def test_models_readme_matches_the_model_headers():
     scd_row = next(line for line in readme.splitlines() if "SCD-41 / **5187**" in line)
     assert re.findall(r"([\d.]+) mm tall", scd_row) == [header_h], scd_row
     assert not re.search(r"mm tall \(page: [\d.]+\)", scd_row), scd_row
+
+
+def _top_level_names(scad: str) -> set[str]:
+    return set(re.findall(r"^([A-Za-z_]\w*)\s*=(?!=)", _read(MODELS / scad), re.M))
+
+
+def test_sensor_bracket_takes_the_enclosure_footprint_knobs():
+    # Every knob the README says to pass identically to both files must mean
+    # the same thing in both. The enclosure's `wall` reaches the bracket as
+    # `enc_wall`: the bracket's own `wall` is its clip ring and rim, so the
+    # same -D wall=... on both moved the enclosure's ear holes and not the
+    # bracket's saddle inserts.
+    section = re.sub(r"\s+", " ", _section(_read(MODELS_README), "sensor_mount.scad"))
+    m = re.search(r"footprint knobs (.*?) must be passed identically to both files", section)
+    assert m, "models/README.md no longer lists the shared footprint knobs"
+    knobs = re.findall(r"`(\w+)`", m.group(1))
+    assert knobs and "wall" not in knobs, knobs
+    for name in ("sensor_mount.scad", "sensor_bracket.scad"):
+        assert set(knobs) <= _top_level_names(name), name
+    bracket = _read(MODELS / "sensor_bracket.scad")
+    assert re.search(r"sm_outer_w\([^)]*\bwall = enc_wall\b", bracket)
+    assert "`enc_wall`" in section
+    mount_knob_note = re.search(r"^// Footprint knobs.*?(?=^\w)", _read(MODELS / "sensor_mount.scad"),
+                                re.M | re.S).group(0)
+    assert "enc_wall" in mount_knob_note
+
+
+def test_fan_duct_tie_length_is_the_boms():
+    duct_tie = next(c for c in TIER_ALL.components if "fan_duct" in c.role and "Zip Ties" in c.name)
+    inches, mm = re.search(r'(\d+)" \((\d+) mm\)', duct_tie.name).groups()
+    section = re.sub(r"\s+", " ", _section(_read(MODELS_README), "fan_duct.scad"))
+    assert f'{inches}" ({mm} mm)' in section
+    # Every tie length the section credits to the BOM is the BOM's own.
+    assert set(re.findall(r"BOM(?:'s)?(?: buys)? (\d+)\"", section)) == {inches}, section
 
 
 def test_agents_md_firmware_constraints_match_v2():
@@ -1152,6 +1260,7 @@ _RULE_SCOPE_PHASES = {
     "open": ("browning", "primordia_induction", "fruiting"),
     "primordia": ("primordia_induction",), "fruiting": ("fruiting",),
     "substrate": ("substrate_colonization",), "grain": ("grain_colonization",),
+    "rest": ("rest",),
 }
 
 
@@ -1195,6 +1304,34 @@ def test_automation_rules_doc_names_every_superseded_table():
     assert "LEGACY_BUILTIN_RULES" in text and "PRE_<change>_BUILTIN_RULES" in text
     assert "SUPERSEDED_BUILTIN_RULES" in text and "SUPERSEDED_BUILTIN_RULES" in agents
     assert "docs/automation-rules.md#changing-a-built-in-rule" in agents
+
+
+_AUTOMATION_SRC = ROOT / "server" / "app" / "automation"
+
+
+def _rules_read(field: str, source: str) -> bool:
+    """A rule names the field as its profile_ref, or the engine reads it off
+    the phase parameters (a keyword argument that sets it is not a read)."""
+    return bool(re.search(rf'profile_ref="{field}"|getattr\([^)]*"{field}"|\.{field}\b', source))
+
+
+def test_rules_doc_names_only_the_profile_fields_the_rules_read():
+    """docs/automation-rules.md lists the profile fields the generic rules
+    read for species quirks, and says which ones no rule reads. A field
+    listed as read that nothing in automation/ reads is a quirk the operator
+    is told is honoured but never is (light_spectrum was one)."""
+    source = "\n".join(p.read_text(encoding="utf-8") for p in sorted(_AUTOMATION_SRC.glob("*.py")))
+    text = re.sub(r"\s+", " ", _read(AUTOMATION_RULES))
+    m = re.search(r"Species quirks live in profile data the generic rules read \((.*?)\)\.", text)
+    assert m, "the species-quirks sentence moved: update this check"
+    read = re.findall(r"`([a-z_0-9]+)`", m.group(1))
+    assert read, m.group(1)
+    for field in read:
+        assert _rules_read(field, source), f"{field}: documented as read by the rules, but no rule reads it"
+    unread = re.findall(r"No rule reads `([a-z_0-9]+)`", text)
+    assert "light_spectrum" in unread
+    for field in unread:
+        assert not _rules_read(field, source), f"a rule now reads {field}: update docs/automation-rules.md"
 
 
 _STATUSES = ("Not built", "Partial", "Not needed")
@@ -1355,13 +1492,16 @@ def test_readme_version_line_is_the_one_bump_sh_rewrites():
 
 
 def test_cloud_command_docs_match_the_pi_gate():
-    from app.cloud.service import _SAFE_ID_RE, _VALID_TARGET_KINDS
+    from app.cloud.service import _VALID_TARGET_KINDS
+    from app.node_ids import NODE_ID_RE
 
     flow = _read(DOCS / "cloud-relay-flow.md")
     cloud = _section(_read(README), "Cloud Connector")
     for text, name in ((flow, "cloud-relay-flow.md"), (cloud, "README Cloud Connector")):
-        assert _SAFE_ID_RE.pattern in text, f"{name} misses the channel pattern {_SAFE_ID_RE.pattern}"
-        assert "{1,32}" not in text, name
+        assert NODE_ID_RE.pattern in text, f"{name} misses the channel pattern {NODE_ID_RE.pattern}"
+        # The cloud gate once allowed 64 characters; it shares the node id
+        # syntax now.
+        assert "{1,64}" not in text, name
         for kind in _VALID_TARGET_KINDS:
             assert f"`{kind}`" in text, f"{name} misses target_kind {kind}"
     assert "{ device_id, target_kind, channel, payload, id }" in flow
@@ -1587,17 +1727,23 @@ def test_partition_tables_name_the_envs_that_build_with_them():
 
 
 def test_readme_chamber_rows_claim_only_what_the_pages_do():
-    # The Chambers page loads chamber readings and events once (only the Pi
-    # system panel polls); the inventory page cannot create chambers or
-    # assign nodes; a chamber has no targets of its own.
+    # The Chambers page re-reads chamber readings, holds and events every
+    # 30 s while it is visible, and the Pi system panel every 15 s (FleetPage
+    # in the dashboard source, which lives in the monorepo); the inventory
+    # page cannot create chambers or assign nodes (only the Setup wizard
+    # claims a node into a chamber); a chamber has no targets of its own.
     chambers = _ui_pages_row("Chambers (dashboard, `/`)")
     assert "live readings" not in chambers and "live event feed" not in chambers
-    assert "reload to refresh" in chambers and "polled every 15 s" in chambers
+    assert "reload to refresh" not in chambers
+    assert "re-read every 30 s while the page is visible" in chambers and "polled every 15 s" in chambers
     inventory = _ui_pages_row("Chamber inventory (`/inventory`)")
     assert "management and node assignment" not in inventory and "API-only" in inventory
+    assert "claim into a new or existing chamber" in _ui_pages_row("Setup")
     multi = _section(_read(README), "Multi-Chamber Management")
     assert "independent environment targets" not in multi
-    assert "active grow's species profile" in multi and "neither dashboard edits chambers yet" in multi
+    assert "active grow's species profile" in multi
+    assert "§ IV First chamber step claims a node into a chamber" in multi
+    assert "neither dashboard renames chambers or moves nodes yet" in multi
     for model in (ChamberCreate, ChamberUpdate):
         assert not [f for f in model.model_fields if re.search(r"temp|humid|co2|target", f)], model.__name__
     assert "node_ids" in ChamberUpdate.model_fields
@@ -1615,11 +1761,67 @@ def test_agrowtek_doc_says_where_its_readings_go():
     poll = driver[driver.index("async def poll_once"):]
     poll = poll[: poll.index("\n    async def ", 1)]
     assert "sensor_mappings" not in poll, "the driver now uses sensor_mappings: update the Agrowtek notes"
-    assert 'f"agrowtek:{sensor_id}"' in poll and "store_reading(" in poll
+    # One batch per poll (store_readings), not a commit per reading.
+    assert 'f"agrowtek:{sensor_id}"' in poll and "store_readings(" in poll
     text = re.sub(r"\s+", " ", _read(DOCS / "integrations" / "lighting-hvac-skeletons.md"))
     assert "merges them into your chambers" not in text
     assert "`agrowtek:<sensor id>`" in text
     assert "`sensor_mappings` is accepted in the config but not used yet" in text
+
+
+def test_aranet_and_pulse_docs_say_their_mappings_are_unused():
+    # The poller stores every reading under aranet:<id> / pulse:<id> in no
+    # chamber; the docs used to walk the operator through filling the
+    # mapping as if it tagged readings with a chamber.
+    for slug, field in (("aranet", "sensor_mappings"), ("pulse", "device_mappings")):
+        poller = _read(ROOT / "server" / "app" / "integrations" / slug / "poller.py")
+        assert f".{field}" not in poller, f"{slug} now reads {field}: update its README"
+        text = re.sub(r"\s+", " ", _read(DOCS / "integrations" / slug / "README.md"))
+        assert f"`{field}` (" in text and "is accepted in the config but not used yet" in text, slug
+        assert f"`{slug}:" in text, slug
+        assert "Use the IDs to populate" not in text and "Map `device_mappings`" not in text, slug
+
+
+def test_integration_docs_present_every_driver_as_free():
+    # The Pi has no paygate: every driver runs free on it (the vendor-cloud
+    # ones too, with the operator's own account).
+    for doc in (DOCS / "integrations" / "lighting-hvac-skeletons.md",
+                DOCS / "integrations" / "pulse" / "README.md"):
+        text = _read(doc)
+        assert "| premium |" not in text and "(premium)" not in text, doc.name
+        assert "Why premium" not in text, doc.name
+
+
+# Chamber and mapping fields the vendor configs accept but no driver reads:
+# readings are stored under "<vendor>:<id>" in no chamber. When a driver
+# starts reading one, its note (and the dashboard form, which stopped asking
+# for these) has to move with it.
+_UNREAD_VENDOR_FIELDS = [
+    ("quest", "chamber_id", "`quest:<host>`"),
+    ("anden", "chamber_id", "`anden:<host>`"),
+    ("fluence", "fixture_mappings", "`fluence:<fixture id>`"),
+    ("fohse", "fixture_mappings", "`fohse:<fixture id>`"),
+    ("bios", "fixture_mappings", "`bios:<fixture id>`"),
+    ("trane", "device_mappings", "`trane:<thermostat id>`"),
+]
+
+
+@pytest.mark.parametrize("slug,field,node_ids", _UNREAD_VENDOR_FIELDS, ids=lambda v: str(v))
+def test_vendor_docs_name_the_mapping_fields_no_driver_reads(slug, field, node_ids):
+    driver = _read(ROOT / "server" / "app" / "integrations" / slug / "driver.py")
+    assert f".{field}" not in driver, f"{slug} now reads {field}: update its notes"
+    text = re.sub(r"\s+", " ", _read(DOCS / "integrations" / "lighting-hvac-skeletons.md"))
+    assert f"`{field}` is accepted in the config but not used yet" in text, slug
+    assert node_ids in text, slug
+
+
+def test_smart_plug_doc_says_device_chamber_fields_are_unused():
+    for slug in ("kasa", "wemo", "tapo"):
+        driver = _read(ROOT / "server" / "app" / "integrations" / slug / "driver.py")
+        assert ".chamber_id" not in driver and ".actuator" not in driver, slug
+    text = re.sub(r"\s+", " ", _read(SMART_PLUGS))
+    assert "Optional chamber tagging for telemetry" not in text
+    assert "`chamber_id` and `actuator` fields are accepted but not used yet" in text
 
 
 def test_worktrees_get_the_operator_claude_md():

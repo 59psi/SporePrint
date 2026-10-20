@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from .models import SpeciesProfile
 from . import service
@@ -8,11 +9,17 @@ from .shopping import generate_shopping_list
 
 router = APIRouter()
 
+# Upper bounds for the calculators' query parameters: past them nothing is a
+# real grow, and a float like inf (which gt=0 lets through) overflowed the
+# arithmetic into a 500.
+MAX_CONTAINER_LITERS = 1000.0
+MAX_GROWS = 100
+
 
 @router.get("")
 async def list_profiles():
-    profiles = await service.get_all_profiles()
-    return [p.model_dump() for p in profiles]
+    # Rendered once per profile change (species.service caches it).
+    return Response(content=await service.profiles_listing_json(), media_type="application/json")
 
 
 @router.get("/recommend")
@@ -52,7 +59,12 @@ async def get_profile(profile_id: str):
 
 @router.post("")
 async def create_profile(profile: SpeciesProfile):
-    return (await service.create_profile(profile)).model_dump()
+    try:
+        return (await service.create_profile(profile)).model_dump()
+    except service.ProfileExistsError as e:
+        raise HTTPException(409, str(e))
+    except service.InvalidProfileError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.put("/{profile_id}")
@@ -61,6 +73,8 @@ async def update_profile(profile_id: str, profile: SpeciesProfile):
         result = await service.update_profile(profile_id, profile)
     except service.BuiltinProfileReadOnly as e:
         raise HTTPException(409, str(e))
+    except service.InvalidProfileError as e:
+        raise HTTPException(422, str(e))
     if not result:
         raise HTTPException(404, "Species profile not found")
     return result.model_dump()
@@ -68,7 +82,10 @@ async def update_profile(profile_id: str, profile: SpeciesProfile):
 
 @router.delete("/{profile_id}")
 async def delete_profile(profile_id: str):
-    deleted = await service.delete_profile(profile_id)
+    try:
+        deleted = await service.delete_profile(profile_id)
+    except service.ProfileInUseError as e:
+        raise HTTPException(409, str(e))
     if not deleted:
         raise HTTPException(400, "Cannot delete built-in profile or profile not found")
     return {"status": "deleted"}
@@ -77,8 +94,9 @@ async def delete_profile(profile_id: str):
 @router.get("/{species_id}/shopping-list")
 async def shopping_list(
     species_id: str,
-    grows: int = Query(1, ge=1, description="Number of grows"),
-    container_liters: float = Query(5.0, gt=0, description="Container volume in liters"),
+    grows: int = Query(1, ge=1, le=MAX_GROWS, description="Number of grows"),
+    container_liters: float = Query(
+        5.0, gt=0, le=MAX_CONTAINER_LITERS, description="Container volume in liters"),
 ):
     profile = await service.get_profile(species_id)
     if not profile:
@@ -92,7 +110,8 @@ async def shopping_list(
 @router.get("/{species_id}/substrate")
 async def substrate_calculator(
     species_id: str,
-    volume_liters: float = Query(gt=0, description="Target substrate volume in liters"),
+    volume_liters: float = Query(
+        gt=0, le=MAX_CONTAINER_LITERS, description="Target substrate volume in liters"),
 ):
     profile = await service.get_profile(species_id)
     if not profile:

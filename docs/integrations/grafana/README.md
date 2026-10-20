@@ -57,12 +57,20 @@ All metrics are prefixed with `sporeprint_` for easy filtering.
 | `sporeprint_node_dewpoint_celsius` | gauge | node_id, chamber_id | Converted from F at scrape time |
 | `sporeprint_node_weight_grams` | gauge | node_id, chamber_id | Calibrated HX711 scale reading |
 | `sporeprint_node_door_open` | gauge | node_id, chamber_id | Door reed: 1 = open, 0 = shut |
+| `sporeprint_node_reading_timestamp_seconds` | gauge | node_id, chamber_id, sensor | Unix time of each exported reading; only with `include_sensor_history=true` |
 | `sporeprint_chamber_session_active` | gauge | chamber_id, species_profile_id, phase | 1 if active session |
-| `sporeprint_actuator_event_count` | counter | node_id, channel, action | Lifetime events |
+| `sporeprint_actuator_event_count` | counter | node_id, channel, action | Lifetime relay switch reports (commands, cutoffs and the per-minute state report); kept as totals, so the nightly cleanup of old reports never lowers it |
 | `sporeprint_contamination_events_total` | counter | chamber_id | Lifetime contamination events (vision detections + manual marks), plus older sessions marked contaminated that have no event row |
 | `sporeprint_build_info` | info | version | Pi build metadata |
 
 `chamber_id` is `""` when a sensor is not yet mapped to a chamber.
+
+A sensor gauge carries a node's latest reading only while the node is
+reporting: a node silent for 15 minutes (the Pi's offline threshold) drops
+out of the scrape, so a dead sensor shows as a gap in Grafana rather than a
+flat line. A vendor integration's readings (node ids such as
+`trane:<thermostat>`) stay for three of that driver's poll intervals, and
+never less than 30 minutes.
 
 ## Cardinality tuning
 
@@ -72,7 +80,10 @@ Prometheus cardinality is a concern:
 - `include_actuator_state=false` — drops the actuator counter.
 - `include_contamination_metrics=false` — drops the contamination counter.
 
-Both flags live in the same Pi LAN UI page.
+Both flags live in the same Pi LAN UI page. `include_sensor_history=true`
+(off by default, a diagnostic) adds the reading-timestamp gauge, one series
+per node and sensor, so a panel can show how old each value is
+(`time() - sporeprint_node_reading_timestamp_seconds`).
 
 ## Troubleshooting
 

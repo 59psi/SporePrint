@@ -177,3 +177,11 @@ def test_root_cause_endpoint_missing_body(client):
     created = client.post("/api/contamination/events", json={}).json()
     resp = client.post(f"/api/contamination/events/{created['id']}/root-cause", json={})
     assert resp.status_code == 422
+
+
+def test_manual_event_with_unknown_references_is_422_not_500(client):
+    for ref in ({"session_id": 9999}, {"chamber_id": 9999}, {"frame_id": 9999}):
+        resp = client.post("/api/contamination/events", json={"contamination_type": "cobweb", **ref})
+        assert resp.status_code == 422, resp.text  # was a FOREIGN KEY 500
+        assert "9999" in resp.json()["detail"]
+    assert client.get("/api/contamination/events").json() == []

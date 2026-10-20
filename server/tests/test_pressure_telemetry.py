@@ -23,7 +23,7 @@ class _Sio:
 
 @pytest.fixture()
 def quiet_ingest(monkeypatch):
-    async def _no_rules(node_id, readings, sio=None):
+    async def _no_rules(node_id, readings, sio=None, **kwargs):
         return None
 
     async def _no_forward(node_id, payload):

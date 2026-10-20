@@ -50,7 +50,7 @@ def forwards():
 def rules(monkeypatch, forwards):
     calls: list[tuple[str, dict]] = []
 
-    async def _spy(node_id, readings, sio=None):
+    async def _spy(node_id, readings, sio=None, **kwargs):
         calls.append((node_id, dict(readings)))
 
     async def _forward(node_id, payload):

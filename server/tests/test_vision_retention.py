@@ -1,4 +1,4 @@
-"""Vision frame retention (srv-rest#9).
+"""Vision frame retention.
 
 Nothing ever deleted a vision frame: ~96 UXGA JPEGs/day per camera accumulated
 forever on the SD card that also holds the SQLite DB. Frames older than the
@@ -171,7 +171,7 @@ def test_ingest_endpoint_schedules_retention(client, monkeypatch, storage):
 
 
 async def test_legacy_uptime_timestamps_are_aged_by_arrival_time(storage):
-    """Before srv-rest#7, an unsynced cam's uptime X-Timestamp (e.g. 900) was
+    """Before arrival-time stamping, an unsynced cam's uptime X-Timestamp (e.g. 900) was
     stored verbatim. Such a frame looks like 1970 by `timestamp`, so a prune
     keyed on it alone deleted frames ingested minutes ago. Age = arrival time
     (created_at) when that is later than the capture timestamp."""

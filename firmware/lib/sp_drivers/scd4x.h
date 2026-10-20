@@ -58,6 +58,16 @@ public:
     // periodic mode either way.
     bool recalibrate(uint16_t reference_ppm);
 
+    // Runtime recovery for a reading that went stale: a sensor that lost
+    // power on its own (loose cable) wakes IDLE, where data_ready() is never
+    // true again, and one whose begin() failed at boot never started. Writes
+    // ASC off (RAM — power-up reloads the stored setting) and starts periodic
+    // measurement: two short writes, ~1 ms. A sensor that is already
+    // periodic NACKs both (neither command is allowed in periodic mode) —
+    // expected, so neither counts as a health failure. Returns true when the
+    // start was accepted (the sensor was idle and is measuring again).
+    bool restart_periodic();
+
     const DriverHealth& health() const { return health_; }
 
 private:

@@ -45,11 +45,11 @@ def fresh_keystore(tmp_path, monkeypatch):
     "slug,tier,secret_keys",
     [
         ("agrowtek", "free", {"api_key"}),
-        ("trane", "premium", {"password"}),
-        ("fluence", "premium", {"password"}),
+        ("trane", "free", {"password"}),
+        ("fluence", "free", {"password"}),
         ("quest", "free", set()),
         ("anden", "free", set()),
-        ("fohse", "premium", {"password"}),
+        ("fohse", "free", {"password"}),
         ("bios", "free", {"api_key"}),
     ],
 )
@@ -58,6 +58,13 @@ def test_driver_registered_with_correct_tier(slug, tier, secret_keys):
     assert drv is not None, f"{slug!r} not registered"
     assert drv.tier_required == tier
     assert drv.secret_fields == secret_keys
+
+
+def test_every_driver_runs_free_on_the_pi():
+    # The Pi has no paygate: a "premium" chip on a driver that runs free
+    # (the vendor-cloud ones included) told operators they needed a plan.
+    tiers = {slug: drv.tier_required for slug, drv in _registry.registered_drivers().items()}
+    assert set(tiers.values()) == {"free"}, tiers
 
 
 # ── Empty-config test_connection returns error ────────────────────────

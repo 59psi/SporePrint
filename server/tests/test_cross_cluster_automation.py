@@ -98,7 +98,9 @@ async def test_temperature_emergencies_on_two_nodes_both_reach_ntfy(ntfy, mock_m
     await evaluate_rules("climate-a", {"temp_f": 120})
     await evaluate_rules("climate-b", {"temp_f": 120})
     titles = [p["title"] for p in ntfy if p["priority"] == 5]
-    assert titles.count("Temperature EMERGENCY") == 2, ntfy
+    # Each page also names its node.
+    assert sorted(titles) == ["Temperature EMERGENCY on climate-a",
+                              "Temperature EMERGENCY on climate-b"], ntfy
 
 
 async def test_opposite_direction_emergency_is_not_swallowed(ntfy, mock_mqtt):
@@ -110,7 +112,7 @@ async def test_opposite_direction_emergency_is_not_swallowed(ntfy, mock_mqtt):
     await evaluate_rules("climate-a", {"temp_f": 120})
     await evaluate_rules("climate-a", {"temp_f": 30})
     titles = [p["title"] for p in ntfy if p["priority"] == 5]
-    assert titles.count("Temperature EMERGENCY") == 2, ntfy
+    assert titles == ["Temperature EMERGENCY on climate-a"] * 2, ntfy
 
 
 async def test_emergency_dedup_key_names_node_param_and_direction(monkeypatch):

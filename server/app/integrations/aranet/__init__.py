@@ -7,9 +7,8 @@ stores the readings in telemetry history (telemetry API, Grafana exporter).
 They never reach the rules engine or the safety alerts, which run only on
 MQTT node telemetry (mqtt.py).
 
-Tier rationale: traffic stays on the LAN — operator's Pi → operator's
-PRO base station. No SporePrint cloud roundtrip. Per
-``feedback_tier_model``, this is free.
+Traffic stays on the LAN — operator's Pi → operator's PRO base station,
+no SporePrint cloud roundtrip.
 
 Requires Aranet PRO base-station firmware ≥ 2.0; older firmware was
 Aranet-Cloud-only with no local API. The driver surfaces this version

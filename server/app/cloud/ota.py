@@ -38,6 +38,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -95,8 +96,8 @@ _DOCKERENV = Path("/.dockerenv")
 
 class OTAError(Exception):
     """OTA pipeline failure. The running install is never touched on
-    failure — a failure state is persisted to state.json and the staged
-    tree is left in place for inspection."""
+    failure — a failure state is persisted to state.json, and a staging tree
+    whose extraction failed is removed (it was never live)."""
 
 
 class OTANotFound(OTAError):
@@ -113,6 +114,13 @@ def _load_pinned_pubkey() -> Ed25519PublicKey:
             "(set SPOREPRINT_OTA_PUBKEY or settings.ota_pubkey_b64 to the "
             "base64-encoded 32-byte Ed25519 public key)"
         )
+    return parse_ota_pubkey(raw)
+
+
+def parse_ota_pubkey(raw: str) -> Ed25519PublicKey:
+    """The Ed25519 key a base64 OTA verify key encodes; OTAError when it is
+    not one. The Settings page checks a key with this before saving it, so a
+    saved key is one the OTA paths accept."""
     try:
         decoded = base64.b64decode(raw, validate=True)
     except Exception as e:
@@ -244,13 +252,19 @@ def _check_rollback(version: str) -> None:
         )
 
 
+def running_in_docker() -> bool:
+    """True inside a container — the shipped install.sh / docker compose
+    deployment, which can neither self-update nor reboot the host."""
+    return _DOCKERENV.exists()
+
+
 def self_update_unsupported_reason() -> str | None:
     """Why this install cannot self-update, or None when it can.
 
     Checked before the OTA command is acknowledged so the cloud gets a clear
     failure instead of an accepted update that never happens.
     """
-    if _DOCKERENV.exists():
+    if running_in_docker():
         return (
             "Pi self-update is not supported in the Docker deployment — update "
             "on the Pi with `git pull && ./install.sh`"
@@ -465,12 +479,64 @@ def _safe_extract_tar(bundle_path: Path, dest: Path) -> None:
 
 
 def _stage_install(bundle_path: Path, version: str) -> Path:
-    staging = _DEFAULT_INSTALL_ROOT / "staging" / version
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True, exist_ok=True)
-    _safe_extract_tar(bundle_path, staging)
+    """Extract the bundle into a new staging directory and return it.
+
+    Always a fresh directory (``staging/<version>.<random>``), never an
+    existing one: once a Pi has self-updated, ``current`` points INTO
+    staging/, so re-extracting over ``staging/<version>`` for a same-version
+    request (a retry after a lost ack or a failed restart) deleted the tree
+    the server was running from, and a failed extraction (full SD card,
+    power loss) then left ``current`` on a partial tree. A failed extraction
+    removes only its own new directory.
+    """
+    staging_root = _DEFAULT_INSTALL_ROOT / "staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"{version}.", dir=staging_root))
+    try:
+        staging.chmod(0o755)
+        _safe_extract_tar(bundle_path, staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return staging
+
+
+def _prune_after_promote(live: Path, previous: Path | None) -> None:
+    """Free the SD card once ``live`` is promoted.
+
+    Keeps the staging tree ``current`` now points at and the one it pointed
+    at before (for a manual rollback); removes every older staging tree and
+    the downloaded release files (incoming/), which are spent once
+    extracted. Best effort: a leftover file must never fail an update that
+    has already been promoted.
+    """
+    keep = {live.resolve()}
+    if previous is not None:
+        keep.add(previous.resolve())
+    staging_root = _DEFAULT_INSTALL_ROOT / "staging"
+    try:
+        entries = list(staging_root.iterdir())
+    except OSError as e:
+        log.warning("OTA: could not list %s for pruning: %s", staging_root, e)
+        entries = []
+    for entry in entries:
+        try:
+            if entry.resolve() in keep or entry.is_symlink() or not entry.is_dir():
+                continue
+            shutil.rmtree(entry)
+            log.info("OTA: removed old staging tree %s", entry)
+        except OSError as e:
+            log.warning("OTA: could not remove old staging tree %s: %s", entry, e)
+    incoming = _DEFAULT_STATE_DIR / "incoming"
+    try:
+        downloads = [p for p in incoming.iterdir() if p.is_file()]
+    except OSError:
+        downloads = []
+    for path in downloads:
+        try:
+            path.unlink()
+        except OSError as e:
+            log.warning("OTA: could not remove %s: %s", path, e)
 
 
 def _promote(staging: Path, version: str) -> None:
@@ -678,10 +744,13 @@ async def run_ota_update(version: str, channel: str) -> dict:
 
         state["step"] = "promote"
         _write_state(state)
+        current = _DEFAULT_INSTALL_ROOT / "current"
+        previous = current.resolve() if current.is_symlink() else None
         await asyncio.to_thread(_promote, staging, version)
         # The new tree is live: it is the floor for the next OTA (also after
         # an operator-allowed downgrade, which lowers it on purpose).
         _write_version_floor(version)
+        await asyncio.to_thread(_prune_after_promote, staging, previous)
         await _emit_step("promote_complete", version=version, channel=channel)
 
         state["step"] = "restart"

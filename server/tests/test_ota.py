@@ -406,3 +406,109 @@ async def test_emit_step_swallows_cloud_failures(monkeypatch):
     monkeypatch.setattr(_svc, "forward_event", _boom)
 
     await ota._emit_step("download_started", version="3.4.10", channel="stable")
+
+
+# ─── Staging never touches the live tree; old trees are pruned ───────
+
+
+def _installed_tree(install_root: Path, name: str) -> Path:
+    tree = install_root / "staging" / name
+    (tree / "server").mkdir(parents=True)
+    (tree / "server" / "main.py").write_text(f"# {name}")
+    return tree
+
+
+def test_a_failed_same_version_stage_leaves_the_running_tree(monkeypatch, tmp_path):
+    """After one OTA `current` points into staging/. Re-sending the same
+    version (a retry after a lost ack or a failed restart) deleted that tree
+    before extracting; a failure mid-extract then left `current` on a
+    partial tree and the next boot failed."""
+    install_root = tmp_path / "opt"
+    live = _installed_tree(install_root, "5.2.3")
+    (install_root / "current").symlink_to(live, target_is_directory=True)
+    monkeypatch.setattr(ota, "_DEFAULT_INSTALL_ROOT", install_root)
+
+    def _disk_full(bundle_path, dest):
+        (dest / "server").mkdir(parents=True)
+        (dest / "server" / "first.py").write_text("partial")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ota, "_safe_extract_tar", _disk_full)
+    with pytest.raises(OSError):
+        ota._stage_install(tmp_path / "bundle.tar.gz", "5.2.3")
+
+    assert (install_root / "current" / "server" / "main.py").read_text() == "# 5.2.3"
+    assert sorted(p.name for p in (install_root / "staging").iterdir()) == ["5.2.3"], \
+        "the failed extraction's own directory is removed"
+
+
+def test_each_stage_extracts_into_a_new_directory(monkeypatch, tmp_path):
+    install_root = tmp_path / "opt"
+    live = _installed_tree(install_root, "5.2.3")
+    monkeypatch.setattr(ota, "_DEFAULT_INSTALL_ROOT", install_root)
+    bundle = _build_tar([("server/main.py", b"# new")], tmp_path)
+
+    staged = ota._stage_install(bundle, "5.2.3")
+
+    assert staged.resolve() != live.resolve()
+    assert staged.parent.resolve() == (install_root / "staging").resolve()
+    assert staged.name.startswith("5.2.3.")
+    assert (staged / "server" / "main.py").read_bytes() == b"# new"
+    assert (live / "server" / "main.py").read_text() == "# 5.2.3"
+
+
+@pytest.mark.asyncio
+async def test_promote_keeps_two_trees_and_no_downloads(monkeypatch, tmp_path):
+    """Each OTA left a full extracted tree and its bundle on the SD card."""
+    sk = _seed_pubkey(monkeypatch)
+    install_root = tmp_path / "opt"
+    state_dir = tmp_path / "state"
+    _installed_tree(install_root, "3.4.8")                 # an older leftover
+    running = _installed_tree(install_root, "3.4.9")
+    (install_root / "current").symlink_to(running, target_is_directory=True)
+    monkeypatch.setattr(ota, "_DEFAULT_INSTALL_ROOT", install_root)
+    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", state_dir)
+    monkeypatch.setattr(ota, "_restart_unit", lambda: None)
+    monkeypatch.setattr(ota, "server_version", lambda: "3.4.9")
+
+    async def _quiet(*args, **kwargs):
+        return True
+
+    from app.cloud import service as _svc
+    monkeypatch.setattr(_svc, "forward_event", _quiet)
+
+    served: dict[str, bytes] = {}
+
+    async def _fake_download(url, dest, *, max_bytes=ota._MAX_BUNDLE_BYTES):
+        dest.write_bytes(served[url.rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(ota, "_download_to", _fake_download)
+
+    for version in ("3.4.10", "3.4.11"):
+        members = tmp_path / f"src-{version}"
+        members.mkdir()
+        bundle = _build_tar([("server/main.py", f"# {version}".encode())], members)
+        sha256, size = ota_manifest.file_digest(bundle)
+        manifest, manifest_sig = ota_manifest.sign(
+            ota_manifest.build(
+                artifact=ota_manifest.ARTIFACT_PI_SERVER, version=version,
+                channel="stable", sha256=sha256, size=size,
+                published_at="2026-10-05T12:00:00Z",
+            ),
+            sk,
+        )
+        served.update({
+            f"{version}.manifest.json": manifest,
+            f"{version}.manifest.json.sig": manifest_sig,
+            f"{version}.tar.gz": bundle.read_bytes(),
+        })
+        previous = (install_root / "current").resolve()
+
+        result = await ota.run_ota_update(version, "stable")
+        assert result["ok"] is True, result
+
+        live = (install_root / "current").resolve()
+        assert (live / "server" / "main.py").read_text() == f"# {version}"
+        trees = sorted(p.resolve() for p in (install_root / "staging").iterdir())
+        assert trees == sorted([live, previous])
+        assert [p for p in (state_dir / "incoming").iterdir() if p.is_file()] == []

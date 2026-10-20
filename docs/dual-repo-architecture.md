@@ -9,7 +9,7 @@ Open-source Pi-side core + private commercial cloud layer. The commercial repo c
 ```mermaid
 flowchart TB
     subgraph Public["PUBLIC · sporeprint · AGPL-3.0 · github.com/59psi/SporePrint"]
-        Server["Pi Server<br/>Python 3.11+ · FastAPI<br/>20 modules · 150 endpoints<br/>SQLite · aiomqtt · Socket.IO<br/>Bearer-token gate (v3.3.0)"]
+        Server["Pi Server<br/>Python 3.11+ · FastAPI<br/>20 modules · 152 endpoints<br/>SQLite · aiomqtt · Socket.IO<br/>Bearer-token gate (v3.3.0)"]
         Firmware["Firmware<br/>C++ · PlatformIO · Arduino-ESP32 core 3.3<br/>Unified node (climate · relay · lighting) + camera<br/>(AI-Thinker + 3 ESP32-S3 camera boards)<br/>Auth'd MQTT · signed commands · OTA pwd + rollback<br/>signed OTA manifests · offline buffer · health · coredump ack"]
         WebUI["Web UI (compiled bundle in ui/dist)<br/>React 19 · Vite 8 · Tailwind v4<br/>21 pages · @sporeprint/design · REST<br/>Chambers · Sessions · Species<br/>Automation · Vision · Builder"]
     end

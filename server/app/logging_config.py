@@ -1,4 +1,4 @@
-"""Pi-side structured logging — v3.4.9 Debt 5.
+"""Pi-side structured logging.
 
 Matches the cloud's JSON log shape so an operator debugging at 3am can
 grep both sides on the same `request_id`. Before this, the Pi wrote

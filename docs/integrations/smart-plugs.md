@@ -11,12 +11,29 @@ SporePrint drives two kinds of smart plug:
 
 ## MQTT plugs: Tasmota and Shelly
 
-Both authenticate to the Pi's broker as the smart-plug user **`sp-3p`**. Its
-password is `SPOREPRINT_MQTT_3P_PASSWORD` in the `.env` in the Pi's SporePrint
-folder (`install.sh` generates it; `scripts/rotate-mqtt-creds.sh` rotates it).
-The broker ACL lets `sp-3p` use `tasmota/#` and `shellies/#` only; the
-server may publish only `tasmota/+/cmnd/POWER`, `shellies/+/relay/0/command`
-and `shellies/+/rpc` there (`config/mosquitto/acl.conf`).
+Each plug logs in to the Pi's broker with one of two logins:
+
+- **Its own login (recommended).** On the Pi, in the SporePrint folder, run
+  `./scripts/add-plug-mqtt-user.sh <name>` with the plug's topic level as the
+  name: its Tasmota Topic, its Shelly Gen2+ role (the `<role>` of
+  `shellies/<role>`) or a Shelly Gen1's device id. It prints the User (the
+  name) and a new Password. The ACL lets that login use only
+  `tasmota/<name>/…` and `shellies/<name>/…`, so the password, which anyone
+  can read off the plug's own web page, reaches that one plug. The script also
+  lists the name in `SPOREPRINT_MQTT_PLUG_USERS`, and the server never takes
+  node frames from it. Re-running it gives the plug a new password.
+- **The shared smart-plug user `sp-3p`.** Its password is
+  `SPOREPRINT_MQTT_3P_PASSWORD` in the `.env` in the Pi's SporePrint folder
+  (`install.sh` generates it; `scripts/rotate-mqtt-creds.sh sp-3p` rotates
+  it, and each plug stays off the broker until you enter the new one). Every
+  plug set up with it holds that one password, which switches and fakes the
+  state of every other plug.
+
+The broker ACL lets `sp-3p` use `tasmota/#` and `shellies/#`, and a per-plug
+login its own tree under each; the server may publish only
+`tasmota/+/cmnd/POWER`, `shellies/+/relay/0/command` and `shellies/+/rpc`
+there (`config/mosquitto/acl.conf`). The tables below show `sp-3p`; with a
+per-plug login enter its User and Password instead.
 
 ### Tasmota (Athom plugs)
 
@@ -28,7 +45,7 @@ In the Tasmota web UI, **Configuration → MQTT**:
 | Port | 1883 |
 | User | `sp-3p` |
 | Password | `SPOREPRINT_MQTT_3P_PASSWORD` from `.env` |
-| Topic | the plug's role: `humidifier`, `dehumidifier`, `heater` or `cooler` (must be unique) |
+| Topic | the plug's role: `humidifier`, `dehumidifier`, `heater` or `cooler` (must be unique; chambers with plugs of their own: [a plug for each chamber](#a-plug-for-each-chamber)) |
 | Full Topic | **`tasmota/%topic%/%prefix%/`** |
 
 Or in the Tasmota console:
@@ -64,8 +81,10 @@ payloads, such as a retained message being cleared, are ignored.
 
 Shelly Gen1 plugs work with their default topics: they publish
 `shellies/<device_id>/relay/0` (`on` / `off`) and `…/relay/0/power`, and take
-`shellies/<device_id>/relay/0/command`. Enter the `sp-3p` login in the Shelly's
-MQTT settings. The plug id is `plug-<device_id>`; assign its role in the app.
+`shellies/<device_id>/relay/0/command`. Enter a per-plug login named after
+the device id (`./scripts/add-plug-mqtt-user.sh <device_id>`), or the `sp-3p`
+login, in the Shelly's MQTT settings. The plug id is `plug-<device_id>`;
+assign its role in the app.
 
 ### Shelly Gen2+ (Plus, Pro, Mini, Gen3, Gen4)
 
@@ -82,7 +101,7 @@ the Shelly web UI, **Settings → Connectivity → MQTT**:
 | Server | the Pi's IP and port: `<pi-ip>:1883` |
 | Username | `sp-3p` |
 | Password | `SPOREPRINT_MQTT_3P_PASSWORD` from `.env` |
-| MQTT prefix | **`shellies/<role>`**: `shellies/humidifier`, `shellies/dehumidifier`, `shellies/heater` or `shellies/cooler` (one level under `shellies/`, unique per plug) |
+| MQTT prefix | **`shellies/<role>`**: `shellies/humidifier`, `shellies/dehumidifier`, `shellies/heater` or `shellies/cooler` (one level under `shellies/`, unique per plug; chambers with plugs of their own: [a plug for each chamber](#a-plug-for-each-chamber)) |
 | RPC status notifications over MQTT | on |
 | Generic status update over MQTT | on |
 
@@ -107,6 +126,21 @@ missing key means unchanged, never off. An overpower or overtemp entry in
 `errors` is logged. On a multi-channel device, `switch:0` is
 `plug-<role>` and `switch:<n>` is `plug-<role>-<n>`.
 
+### A plug for each chamber
+
+A chamber can list its plugs' ids among its node ids, and its rules then
+switch its own plug of each role ([automation rules](../automation-rules.md),
+Targets). Name each such plug after its chamber, not its role: Tasmota Topic
+`heater-a` (plug id `plug-heater-a`) or Gen2+ prefix `shellies/heater-a`,
+with its role (`heater`) assigned in the app and its plug id listed in its
+chamber; a per-plug login takes the same name
+(`./scripts/add-plug-mqtt-user.sh heater-a`). A manual hold, and the
+15-minute lockout a safety cutoff places, are kept under the plug's id, and
+`plug-heater` is also the name every chamber's heater rules use: a hold or a
+lockout on a plug with that id pauses the heater rules of every chamber, not
+only its own. With one plug of each role, naming the plug after its role is
+all it takes.
+
 ### Online / offline
 
 `<prefix>/online` (Shelly, both generations) and `tasmota/<topic>/tele/LWT`
@@ -114,7 +148,11 @@ missing key means unchanged, never off. An overpower or overtemp entry in
 pushed to Socket.IO clients as `plug_online`. Any state report also marks its
 plug online. A report arriving on a plug's topics also corrects its stored
 plug type and prefix, so a Gen1 Shelly replaced by a Gen2 one under the same
-name needs no re-registration.
+name needs no re-registration, once the old device has gone quiet (offline,
+or no report for 10 minutes; a plug added by hand and never seen counts as
+quiet). While the stored device is still reporting, a report for the same
+plug id on another type or prefix is ignored and logged as a warning: two
+devices share the id, and the Pi keeps commanding the one it has.
 
 ### Commands and safety
 
@@ -122,6 +160,12 @@ name needs no re-registration.
 returns 409 for an unknown or unpaired plug and 503 when the broker is down or
 the publish failed. A manual OFF also clears a running `safety_max_on_seconds`
 ceiling for that plug.
+
+The broker lets the Pi command a plug only one level under its vendor tree:
+`tasmota/<topic>`, `shellies/<id>` (Gen1) or `shellies/<role>` (Gen2+).
+`POST /api/automation/plugs` refuses any other prefix, or an unknown plug
+type, with 422, and the Pi never sends a command to a stored plug outside
+those (the broker would drop it silently while the firing read as sent).
 
 Keep plugs outside the humid chamber. The Athom plugs are not UL/ETL listed:
 keep a space heater ≤ 1500 W (≤ 1200 W preferred) on one plug.
@@ -141,15 +185,28 @@ automation rule can switch them too: its action sets `vendor_slug`,
 `vendor_action` (`set_power`, `set_dim`) and `vendor_params`, and its
 `target` names the override key `vendor:{slug}:{ip-or-id}`; a
 `safety_max_on_seconds` ceiling switches them off through the same
-dispatcher.
+dispatcher. A manual OFF through the write actions below (on the Pi or from
+cloud-web) clears a running ceiling for that device, as a manual plug OFF
+does, so the rule's next ON is timed from scratch.
+
+Each poll reads every listed device and keeps going past one that does not
+answer: the integration's health is `degraded` while some devices fail (the
+failing ones are named under the status) and `error` when all of them do, so
+an unplugged plug raises the integration-health alert. Readings are stored
+under `wemo:<ip>`, `kasa:<ip>` and `tapo:<ip>`, in no chamber; a device's
+`chamber_id` and `actuator` fields are accepted but not used yet (to show a
+plug with a chamber, add its node id to the chamber's `node_ids`).
+
+A command the device refuses (a Kasa `err_code` or Tapo `error_code` in its
+reply, such as `set_dim` on a plug that is not a dimmer) fails the action
+with 502, the same as an unreachable device: it never counts as delivered.
 
 ### Wemo
 
 | Field | Notes |
 |---|---|
 | `devices[].ip` | Per-device LAN address — a host, or `host:port` to pin the port. |
-| `devices[].chamber_id` | Optional chamber tagging for telemetry. |
-| `devices[].is_insight` | True for the Wemo Insight (enables power-monitoring poll). |
+| `devices[].is_insight` | True for the Wemo Insight (enables power-monitoring poll; its standby state reads as on). |
 
 Wemo firmware moves its control port around. Without a pinned port the driver
 tries 49153, 49152, 49154, 49155 and 49151 when a connection is refused, and
@@ -188,14 +245,22 @@ The Kasa XOR cipher is implemented inline (`_encrypt` / `_decrypt` in
 
 Tapo uses the local KLAP (v2) handshake. `transport=cloud` does not collect
 telemetry yet (health reports it; switch to `transport=local`), and writes
-(`set_power` / `set_dim`) always need the device's LAN IP.
+(`set_power` / `set_dim`) always need the device's LAN IP. The driver talks
+to one plug one request at a time. With `has_emeter`, `power_w` is the
+plug's current draw in watts. A cloud login TP-Link refuses is not resent
+on every poll (repeated failures lock the account) until the settings are
+saved again; *Test connection* always logs in.
 
 ### Input rules (every vendor action)
 
 - Boolean params accept `true`/`false`, `on`/`off`, `yes`/`no`, `1`/`0` (also as
   strings); anything else is 400.
+- Number params (`percent`, `humidity_pct`, `target_c`) accept a number or a
+  numeric string (`"50"`); Agrowtek's `value` takes a boolean or a number in
+  the same forms. Anything else is 400, as is a missing required param.
 - Device IPs must be a host or `host:port`; vendor ids must match
   `[A-Za-z0-9_.:~-]{1,128}`. Invalid values get 400.
+- A vendor that fails or answers with something unreadable is 502.
 
 ## Reaching write actions from cloud-web
 

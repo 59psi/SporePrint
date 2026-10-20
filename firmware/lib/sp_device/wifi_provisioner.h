@@ -20,13 +20,22 @@
 //     has no channel bank and ignores it, so its portal doesn't show it)
 //   OTA password (optional but recommended, min 12 chars enforced at use)
 //   HMAC signing key (optional; empty keeps the warn+accept migration
-//     posture — the operator sees a warning per accepted command)
+//     posture — the operator sees a warning per accepted command). A save
+//     that changes the key keeps the replaced one (hmac_key_prev) until the
+//     new key verifies a frame: the key-rotation grace (sp_core/hmac_verify.h
+//     prev_key_after_rekey)
 //   Secure MQTT (tls_en) + Require TLS (tls_req: with no pinned Pi CA, stay
 //     offline instead of the loud plaintext fallback — tls_policy.h)
 //   NTP host (default pool.ntp.org; set to the Pi for airgapped rooms)
 //   Optional peripherals (node image only): MH-Z19C, HX711 scale, reed
-//     door switch — the NVS flags the node's setup() reads (docs#0) — and
-//     the reed invert option (reed_inv: contact wired on its NO lead)
+//     door switch — the NVS flags the node's setup() reads — and
+//     the reed invert option (reed_inv: contact wired on its NO lead), plus
+//     "forget removed sensors": clears the I²C CO2 / light sensors the node
+//     remembers having found (sp_core/sensor_memory.h), so one removed on
+//     purpose is no longer reported missing
+//
+// A save that changes the Pi address also drops a camera's stored upload
+// URL (sp::portal_save_resets_server_url): frames follow the new address.
 //
 // Form policy (sp_core/provisioning.h, host-tested): every pre-filled value
 // is HTML-escaped; blank password fields keep the stored secret (WiFi only
@@ -40,7 +49,7 @@
 // When the portal opens is the composition root's call. The node image
 // follows sp_core/boot_policy.h: a provisioned node whose WiFi has worked
 // before no longer falls into this open AP just because the router was slow
-// to come back (fw-node#9).
+// to come back.
 
 #include <Arduino.h>
 
@@ -61,6 +70,22 @@ public:
         : kv_(kv),
           peripheral_opts_(peripheral_opts),
           personality_opt_(personality_opt) {}
+
+    // Boot step 3, shared by both images (pre-WDT, deadline-bounded —
+    // boot_policy.h): the one-shot portal request (BOOT / reset gesture), the
+    // portal for an unprovisioned node, then the WiFi connect — marking the
+    // credentials verified on success; the portal again when freshly typed
+    // credentials never connected; otherwise an offline boot that keeps
+    // retrying — and finally SNTP. `offline_hint` (how to reopen the portal
+    // on this board) ends the offline-boot line. The open setup AP rewrites
+    // the broker host, HMAC key and OTA password, so a working node never
+    // falls into it on its own (a router slow to return after a power blip
+    // used to park the node in the portal for 10 minutes).
+    void bring_up(NodeConfig& cfg, const char* offline_hint);
+
+    // The portal gesture: reboot into the portal (a one-shot NVS flag
+    // bring_up() consumes). The caller schedules the restart.
+    void request_portal_at_next_boot();
 
     // Try the stored credentials. Returns true when WL_CONNECTED inside
     // `timeout_ms`. Non-throwing, no reboot — caller decides what's next.

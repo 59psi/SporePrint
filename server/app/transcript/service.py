@@ -6,6 +6,8 @@ import anthropic
 
 from ..config import settings
 from ..db import get_db
+from ..sessions.service import _decode_phase_row, chamber_nodes_running, phase_params_source
+from ..species.models import GrowPhase, SpeciesProfile
 from ..species.service import get_profile
 from ..vision.service import (
     CLAUDE_MAX_TOKENS,
@@ -22,25 +24,82 @@ _MAX_VISION_SUMMARIES = 150
 
 # Session events the markdown export lists under "Key Events". A phase-exit
 # reminder is the manual step owed on leaving a phase (shiitake browning's
-# cold-water soak) — the record of when it was due belongs in the narrative.
+# cold-water soak) — the record of when it was due belongs in the narrative,
+# and so does an aborted grow's end.
 _KEY_EVENT_TYPES = frozenset({
     "phase_change", "phase_exit_reminder", "harvest", "session_created", "session_completed",
+    "session_aborted",
 })
+
+# The setpoints a session analysis compares each phase's telemetry against
+# (PhaseParams fields): the temperature, humidity, CO2 and FAE bands, the
+# light schedule and the expected duration. Prose, citations and alert
+# tuning stay out to keep the request small.
+_ENVIRONMENT_TARGET_FIELDS = (
+    "temp_min_f", "temp_max_f", "temp_swing_required", "temp_swing_delta_f",
+    "humidity_min", "humidity_max", "co2_min_ppm", "co2_max_ppm",
+    "fae_mode", "fae_interval_min", "fae_duration_sec",
+)
+_ANALYSIS_TARGET_FIELDS = _ENVIRONMENT_TARGET_FIELDS + (
+    "light_hours_on", "light_hours_off", "light_spectrum", "light_lux_target",
+    "expected_duration_days",
+)
+
+
+def _analysis_targets(params: dict | None,
+                      fields: tuple[str, ...] = _ANALYSIS_TARGET_FIELDS) -> dict | None:
+    """The comparison setpoints of one phase's params, unset ones left out."""
+    if not isinstance(params, dict):
+        return None
+    return {k: params[k] for k in fields if params.get(k) is not None}
+
+
+def _phase_targets(phase_row: dict, profile: SpeciesProfile | None) -> tuple[dict | None, str | None]:
+    """(targets, where they came from) for one phase_history row.
+
+    The setpoints frozen at phase entry (params_snapshot) are what the grow
+    actually ran on, so they win: a later edit to a custom profile does not
+    rewrite them. A row with no snapshot (a session from before snapshots, or
+    a phase its profile does not define) falls back to the profile's current
+    params for that phase. A phase that runs on another phase's setpoints
+    (PHASE_PARAM_FALLBACKS: rest on fruiting, say) gets only that phase's
+    environment bands, named in the source: its light schedule (rest runs
+    dark) and its expected duration are not this phase's.
+    """
+    snapshot = _analysis_targets(phase_row.get("params_snapshot"))
+    if snapshot:
+        return snapshot, "frozen at phase entry"
+    if profile is None:
+        return None, None
+    phase = phase_row.get("phase")
+    source = phase_params_source({p.value for p in profile.phases}, phase)
+    if source is None:
+        return None, None
+    params = profile.phases[GrowPhase(source)].model_dump()
+    if source == phase:
+        return _analysis_targets(params), "species profile"
+    return (_analysis_targets(params, _ENVIRONMENT_TARGET_FIELDS),
+            f"species profile: {source}'s temperature, humidity, CO2 and FAE bands, "
+            f"which {phase} runs on (no light or duration target)")
 
 
 async def _session_node_ids(db, session: dict) -> list[str] | None:
     """Nodes whose telemetry describes this session's environment.
 
     The nodes that produced session-tagged readings, plus the session's
-    chamber nodes. None means "every node": a chamberless session whose tagged
-    raw rows have aged out into rollups (which carry no session_id), i.e. the
-    single-closet default where every sensor node is in the grow space.
+    chamber nodes, plus the nodes of every chamber the (active) session is
+    the grow of (a chamberless session running a chamber with no grow of its
+    own: sessions.service.chamber_nodes_running). None means "every node": a
+    chamberless session whose tagged raw rows have aged out into rollups
+    (which carry no session_id), i.e. the single-closet default where every
+    sensor node is in the grow space.
     """
     cursor = await db.execute(
         "SELECT DISTINCT node_id FROM telemetry_readings WHERE session_id = ?",
         (session["id"],),
     )
     nodes = {r["node_id"] for r in await cursor.fetchall()}
+    nodes.update(await chamber_nodes_running(session["id"]))
     if session.get("chamber_id") is not None:
         cursor = await db.execute(
             "SELECT node_ids FROM chambers WHERE id = ?", (session["chamber_id"],)
@@ -157,6 +216,13 @@ def _select_vision_summaries(
 
 async def export_json(session_id: int) -> dict | None:
     """Export complete session transcript as structured JSON (None if unknown)."""
+    built = await _build_transcript(session_id)
+    return built[0] if built is not None else None
+
+
+async def _build_transcript(session_id: int) -> tuple[dict, SpeciesProfile | None] | None:
+    """(export_json's transcript, the session's species profile or None), or
+    None for an unknown session."""
     async with get_db() as db:
         # Session
         cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
@@ -165,11 +231,12 @@ async def export_json(session_id: int) -> dict | None:
             return None
         session = dict(row)
 
-        # Phase history
+        # Phase history, params_snapshot decoded as get_session() returns it
+        # (it went out double-encoded, as a JSON string inside the JSON).
         cursor = await db.execute(
             "SELECT * FROM phase_history WHERE session_id = ? ORDER BY entered_at", (session_id,)
         )
-        phases = [dict(r) for r in await cursor.fetchall()]
+        phases = [_decode_phase_row(r) for r in await cursor.fetchall()]
 
         # Events
         cursor = await db.execute(
@@ -223,7 +290,7 @@ async def export_json(session_id: int) -> dict | None:
     profile = await get_profile(session["species_profile_id"])
     profile_data = profile.model_dump() if profile else None
 
-    return {
+    transcript = {
         "version": "1.0",
         "exported_at": time.time(),
         "session": session,
@@ -241,6 +308,7 @@ async def export_json(session_id: int) -> dict | None:
             "provide recommendations for the next run."
         ),
     }
+    return transcript, profile
 
 
 def _md_field(label: str, value, detail=None) -> str | None:
@@ -288,8 +356,9 @@ async def export_markdown(session_id: int) -> str | None:
         *(line for line in header if line),
         "",
         "## Yield",
-        f"- Wet: {session.get('total_wet_yield_g', 0)}g",
-        f"- Dry: {session.get('total_dry_yield_g', 0)}g",
+        # Rounded: the totals are float sums of 0.1 g entries (300.29999999999995).
+        f"- Wet: {round(session.get('total_wet_yield_g') or 0.0, 1)}g",
+        f"- Dry: {round(session.get('total_dry_yield_g') or 0.0, 1)}g",
         "",
         "## Phase Timeline",
         "",
@@ -306,10 +375,11 @@ async def export_markdown(session_id: int) -> str | None:
     if data["harvests"]:
         lines.extend(["## Harvests", ""])
         for h in data["harvests"]:
-            lines.append(
-                f"- Flush #{h['flush_number']}: {h.get('wet_weight_g', '?')}g wet, "
-                f"{h.get('dry_weight_g', '?')}g dry"
-            )
+            # The weight columns are NULL when not weighed (the key is always
+            # there, so a .get() default never applied and "Noneg" printed).
+            wet, dry = (("?" if h.get(k) is None else h[k])
+                        for k in ("wet_weight_g", "dry_weight_g"))
+            lines.append(f"- Flush #{h['flush_number']}: {wet}g wet, {dry}g dry")
         lines.append("")
 
     if data["notes"]:
@@ -325,7 +395,7 @@ async def export_markdown(session_id: int) -> str | None:
             if v.get("analysis_claude"):
                 claude = v["analysis_claude"]
                 ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(v["timestamp"]))
-                lines.append(f"**{ts}** — {claude.get('health_assessment', 'unknown')}")
+                lines.append(f"**{ts}** — {claude.get('health_assessment') or 'unknown'}")
                 if claude.get("summary"):
                     lines.append(f"> {claude['summary']}")
                 lines.append("")
@@ -346,21 +416,27 @@ async def analyze_with_claude(session_id: int) -> dict | None:
     if not settings.claude_api_key:
         return {"error": "Claude API key not configured"}
 
-    transcript = await export_json(session_id)
-    if transcript is None:
+    built = await _build_transcript(session_id)
+    if built is None:
         return None
+    transcript, profile = built
 
     try:
         client = anthropic.AsyncAnthropic(api_key=settings.claude_api_key)
 
         system_prompt = """You are an expert mycologist analyzing a mushroom cultivation session transcript.
+Each phase_telemetry entry carries the phase's actual sensor readings (telemetry_summary:
+min/max/avg per sensor; temperatures in °F, humidity in %RH, CO2 in ppm, light in lux), its
+duration_hours, and the targets the grow ran on in that phase (temperature, humidity, CO2,
+light and FAE setpoints, and expected_duration_days), with targets_source saying where they
+came from; a target that is absent is unknown, and targets is null when none are known.
 Provide a comprehensive analysis as JSON with these fields:
 - overall_score: 1-100 rating of the grow
-- condition_analysis: compare actual sensor data vs species profile targets for each phase
+- condition_analysis: compare each phase's actual sensor data against its targets
 - issues_identified: list of problems found
 - vision_concerns: any contamination or morphology issues from vision analysis
 - yield_assessment: evaluation of harvest results
-- phase_timing: was each phase the right duration?
+- phase_timing: was each phase the right duration (duration_hours against expected_duration_days)?
 - recommendations: specific actionable improvements for next run
 - summary: 3-5 sentence overall assessment"""
 
@@ -372,10 +448,20 @@ Provide a comprehensive analysis as JSON with these fields:
             and not v["analysis_claude"].get("error")
         ]
         vision_summaries = _select_vision_summaries(claude_analyses)
+        # Each phase's readings beside the setpoints it ran on: without them
+        # the model could only guess the targets from the species id (and had
+        # nothing at all for a custom strain).
+        phase_telemetry = []
+        for row, telemetry in zip(transcript["phase_timeline"], transcript["phase_telemetry"]):
+            targets, source = _phase_targets(row, profile)
+            phase_telemetry.append({**telemetry, "targets": targets, "targets_source": source})
         essential = {
             "session": transcript["session"],
             "species_profile_id": transcript["session"]["species_profile_id"],
-            "phase_telemetry": transcript["phase_telemetry"],
+            "species": ({"common_name": profile.common_name,
+                         "scientific_name": profile.scientific_name}
+                        if profile is not None else None),
+            "phase_telemetry": phase_telemetry,
             "harvests": transcript["harvests"],
             "automation_summary": transcript["automation_summary"],
             "vision_summaries": vision_summaries,

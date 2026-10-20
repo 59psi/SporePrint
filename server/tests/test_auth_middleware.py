@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 import app.auth as auth
 import app.cloud.router as cloud_router_mod
+import app.cloud.service as cloud_service
 from app.auth import (
     ApiKeyMiddleware,
     _connect_rate_ok,
@@ -185,6 +186,70 @@ def test_pair_handshake_stays_public(pairing_client):
     assert r.status_code == 400
 
 
+# The cloud calls pair-verify and configure back while pairing (and rotating
+# the device token). It never has the Pi's API key, so behind the gate pairing
+# could not finish in API-key mode — the mode the docs say to use while the Pi
+# is on the public address pairing needs.
+
+@pytest.fixture
+def cloud_callback_client(monkeypatch, pairing_client):
+    monkeypatch.setattr(cloud_router_mod, "_pairing_attempts", 0)
+    monkeypatch.setattr(cloud_router_mod, "_pairing_lockout_until", 0.0)
+    monkeypatch.setattr(cloud_router_mod, "_configure_tokens", {})
+    for attr in ("cloud_url", "cloud_token", "cloud_device_id"):
+        monkeypatch.setattr(settings, attr, getattr(settings, attr))
+    monkeypatch.setattr(settings, "cloud_device_id", "dev-42")
+    monkeypatch.setattr(cloud_service, "_connector_running", False)
+    return pairing_client
+
+
+def _configure_token(client: TestClient) -> str:
+    code = client.post("/api/cloud/pairing-code", headers=_auth(_KEY)).json()["code"]
+    r = client.post("/api/cloud/pair", json={"code": code})
+    assert r.status_code == 200, r.text
+    return r.json()["configure_token"]
+
+
+def test_cloud_pairing_callbacks_need_no_bearer(cloud_callback_client):
+    client = cloud_callback_client
+    token = _configure_token(client)
+
+    verify = client.get("/api/cloud/pair-verify", params={"configure_token": token})
+    assert verify.status_code == 200, verify.text
+    assert verify.json()["valid"] is True
+
+    configure = client.post("/api/cloud/configure", json={
+        "configure_token": token, "cloud_device_id": "dev-42",
+        "device_token": "tok-42", "cloud_url": "https://relay.sporeprint.ai",
+    })
+    assert configure.status_code == 200, configure.text
+    assert "SPOREPRINT_CLOUD_TOKEN=tok-42" in cloud_service.env_path().read_text()
+
+
+def test_cloud_pairing_callbacks_still_need_a_live_configure_token(cloud_callback_client):
+    client = cloud_callback_client
+    # The handlers' own 401s: public route, no token.
+    assert client.get("/api/cloud/pair-verify",
+                      params={"configure_token": "forged"}).status_code == 401
+    r = client.post("/api/cloud/configure", json={
+        "configure_token": "forged", "cloud_device_id": "dev-42", "device_token": "x",
+    })
+    assert r.status_code == 401
+    assert "configure_token" in r.json()["detail"]
+    assert not cloud_service.env_path().exists()
+    # The token is single-use: a replayed configure is refused.
+    token = _configure_token(client)
+    body = {"configure_token": token, "cloud_device_id": "dev-42", "device_token": "tok"}
+    assert client.post("/api/cloud/configure", json=body).status_code == 200
+    assert client.post("/api/cloud/configure", json=body).status_code == 401
+
+
+def test_only_the_callback_methods_are_public(cloud_callback_client):
+    client = cloud_callback_client
+    assert client.post("/api/cloud/pair-verify").status_code == 401
+    assert client.get("/api/cloud/configure").status_code == 401
+
+
 def test_non_api_path_is_not_gated(gated_client):
     # The middleware only guards /api/*; a non-/api route is untouched.
     assert gated_client.get("/public").status_code == 200
@@ -269,11 +334,18 @@ def test_non_ascii_bearer_is_401_not_500(gated_client):
 # ── _connect_rate_ok — sliding-window limiter ──────────────────────────────
 
 class _Clock:
+    """Stands in for the `time` module: `t` is the monotonic clock, `wall`
+    the wall clock (equal unless a test steps it)."""
+
     def __init__(self, t: float) -> None:
         self.t = t
+        self.wall = t
+
+    def monotonic(self) -> float:
+        return self.t
 
     def time(self) -> float:
-        return self.t
+        return self.wall
 
 
 @pytest.fixture(autouse=True)
@@ -319,6 +391,39 @@ def test_rate_limiter_is_per_ip(monkeypatch):
     assert _connect_rate_ok("10.0.0.2") is True
 
 
+def test_a_backward_wall_clock_step_does_not_lock_clients_out(monkeypatch):
+    """Windows were measured on the wall clock: after it stepped back, the
+    entries stamped before the step never aged out, and a dashboard
+    reconnecting every 2 min (far under the cap) was refused until the wall
+    clock caught up again."""
+    clock = _Clock(10_000.0)
+    monkeypatch.setattr(auth, "time", clock)
+    ip = "192.168.1.60"
+    for _ in range(5):
+        assert _connect_rate_ok(ip) is True
+    clock.wall -= 3600  # NTP / `date -s` / an RTC that ran ahead
+    for _ in range(35):
+        clock.t += 120
+        clock.wall += 120
+        assert _connect_rate_ok(ip) is True
+
+
+def test_rate_limiter_forgets_idle_clients(monkeypatch):
+    clock = _Clock(5000.0)
+    monkeypatch.setattr(auth, "time", clock)
+    monkeypatch.setattr(auth, "_CONNECT_RATE_MAX_CLIENTS", 8)
+    for i in range(8):
+        assert _connect_rate_ok(f"10.0.1.{i}") is True
+    clock.t += auth._CONNECT_RATE_WINDOW + 1
+    assert _connect_rate_ok("10.0.2.1") is True
+    # Every address idle for a whole window was dropped to make room.
+    assert set(auth._connect_attempts) == {"10.0.2.1"}
+    # Still bounded when every remembered client is active.
+    for i in range(20):
+        assert _connect_rate_ok(f"10.0.3.{i}") is True
+    assert len(auth._connect_attempts) <= 8
+
+
 # ── socketio_auth_ok — honours key + rate limit ────────────────────────────
 
 def test_socketio_auth_unset_key_accepts(monkeypatch):
@@ -356,7 +461,7 @@ def test_socketio_auth_rate_limited_even_with_valid_token(monkeypatch):
     assert socketio_auth_ok({"token": _KEY}, remote_addr=ip) is False
 
 
-# ── Socket.IO peer address (deps-infra#25) ─────────────────────────────────
+# ── Socket.IO peer address ─────────────────────────────────────────────────
 #
 # python-engineio's ASGI driver hardcodes environ['REMOTE_ADDR'] = '127.0.0.1',
 # so keying the connect rate-limit on it put every dashboard in ONE bucket.

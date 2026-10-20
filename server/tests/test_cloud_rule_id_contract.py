@@ -16,6 +16,9 @@ either wire form resolves to the same int on every surface; non-numeric / empty
 / None is rejected uniformly.
 """
 
+import json
+import time
+
 import pytest
 
 from app.automation.models import (
@@ -28,6 +31,8 @@ from app.automation.models import (
 from app.automation.service import create_rule, get_rule, normalize_rule_id
 from app.cloud import integrations_proxy
 from app.cloud.service import _dispatch_system_command
+from app.config import settings
+from app.db import get_db
 
 
 class _FakeSio:
@@ -36,6 +41,20 @@ class _FakeSio:
 
     async def emit(self, event: str, data: dict) -> None:
         self.emits.append((event, data))
+
+
+@pytest.fixture(autouse=True)
+async def _proxy_env(monkeypatch, _db):
+    """Unsigned frames with strict signing off (the signature gate has its
+    own suite), and a paired relay node so relay-01 rules pass the editor's
+    checks."""
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) VALUES (?, ?, ?, ?)",
+            ("node-relay-1", "relay", json.dumps(["aux", "circulation", "exhaust", "fae"]), time.time()),
+        )
+        await db.commit()
 
 
 def _rule(name: str = "contract-rule") -> AutomationRule:

@@ -2,12 +2,37 @@
 
 import logging
 import math
+import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 import httpx
 
+from ..http_tls import tls_context
+
 log = logging.getLogger(__name__)
+
+
+def as_finite(value) -> float | None:
+    """`value` as a float, or None when it is missing or not a finite number.
+
+    Providers send gaps as null (Open-Meteo serialises a missing hour's NaN as
+    null; NWS leaves `value` null), and a None that reaches the arithmetic or
+    max()/sum() downstream raises TypeError.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _at(values: Sequence | None, i: int):
+    """values[i], or None past the end of a short (or missing) series."""
+    return values[i] if values is not None and i < len(values) else None
 
 
 def _dew_point(temp_f: float, rh: float) -> float:
@@ -74,7 +99,7 @@ class OpenMeteoProvider(WeatherProvider):
             "wind_speed_unit": "mph",
         }
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=tls_context()) as client:
                 r = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
                 r.raise_for_status()
                 data = r.json()
@@ -103,20 +128,26 @@ class OpenMeteoProvider(WeatherProvider):
             "timezone": "GMT",  # explicit: hourly times are parsed as UTC below
         }
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=tls_context()) as client:
                 r = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
                 r.raise_for_status()
                 data = r.json()
             hourly = data["hourly"]
+            temps = hourly.get("temperature_2m")
+            humidities = hourly.get("relative_humidity_2m")
+            winds = hourly.get("wind_speed_10m")
+            codes = hourly.get("weather_code")
             results = []
             for i, time_str in enumerate(hourly["time"]):
-                ts = _utc_timestamp(time_str)
+                temp_f = as_finite(_at(temps, i))
+                if temp_f is None:
+                    continue  # a missing hour: Open-Meteo sends its NaN as null
                 results.append({
-                    "timestamp": ts,
-                    "temp_f": hourly["temperature_2m"][i],
-                    "humidity": hourly["relative_humidity_2m"][i],
-                    "wind_mph": hourly["wind_speed_10m"][i] if hourly.get("wind_speed_10m") else 0,
-                    "condition": _wmo_code_to_text(hourly["weather_code"][i] if hourly.get("weather_code") else 0),
+                    "timestamp": _utc_timestamp(time_str),
+                    "temp_f": temp_f,
+                    "humidity": as_finite(_at(humidities, i)),
+                    "wind_mph": as_finite(_at(winds, i)) or 0,
+                    "condition": _wmo_code_to_text(_at(codes, i) or 0),
                 })
             return results
         except Exception as e:
@@ -134,7 +165,7 @@ class OpenWeatherMapProvider(WeatherProvider):
     async def fetch_current(self, lat: str, lon: str) -> dict | None:
         params = {"lat": lat, "lon": lon, "appid": self.api_key, "units": "imperial"}
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=tls_context()) as client:
                 r = await client.get("https://api.openweathermap.org/data/2.5/weather", params=params)
                 r.raise_for_status()
                 data = r.json()
@@ -157,20 +188,24 @@ class OpenWeatherMapProvider(WeatherProvider):
     async def fetch_forecast(self, lat: str, lon: str) -> list[dict]:
         params = {"lat": lat, "lon": lon, "appid": self.api_key, "units": "imperial"}
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=tls_context()) as client:
                 r = await client.get("https://api.openweathermap.org/data/2.5/forecast", params=params)
                 r.raise_for_status()
                 data = r.json()
-            return [
-                {
+            results = []
+            for entry in data.get("list", []):
+                main = entry.get("main") or {}
+                temp_f = as_finite(main.get("temp"))
+                if temp_f is None:
+                    continue
+                results.append({
                     "timestamp": entry["dt"],
-                    "temp_f": entry["main"]["temp"],
-                    "humidity": entry["main"]["humidity"],
-                    "wind_mph": entry.get("wind", {}).get("speed", 0),
+                    "temp_f": temp_f,
+                    "humidity": as_finite(main.get("humidity")),
+                    "wind_mph": as_finite((entry.get("wind") or {}).get("speed")) or 0,
                     "condition": entry["weather"][0]["main"] if entry.get("weather") else "Unknown",
-                }
-                for entry in data.get("list", [])
-            ]
+                })
+            return results
         except Exception as e:
             log.error("OpenWeatherMap forecast fetch failed: %s", e)
             return []
@@ -183,7 +218,8 @@ class NWSProvider(WeatherProvider):
     async def _get_station_url(self, lat: str, lon: str) -> str | None:
         """Resolve lat/lon to the nearest NWS observation station."""
         try:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True,
+                                         verify=tls_context()) as client:
                 r = await client.get(
                     f"https://api.weather.gov/points/{_nws_point(lat, lon)}",
                     headers={"User-Agent": "SporePrint/1.0"},
@@ -200,7 +236,8 @@ class NWSProvider(WeatherProvider):
         if not stations_url:
             return None
         try:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True,
+                                         verify=tls_context()) as client:
                 r = await client.get(stations_url, headers={"User-Agent": "SporePrint/1.0"})
                 r.raise_for_status()
                 station_id = r.json()["features"][0]["properties"]["stationIdentifier"]
@@ -212,10 +249,9 @@ class NWSProvider(WeatherProvider):
                 r.raise_for_status()
                 props = r.json()["properties"]
 
-            temp_c = props.get("temperature", {}).get("value")
-            rh = props.get("relativeHumidity", {}).get("value")
-            wind_ms = props.get("windSpeed", {}).get("value")
-            pressure = props.get("barometricPressure", {}).get("value")
+            temp_c = as_finite((props.get("temperature") or {}).get("value"))
+            rh = as_finite((props.get("relativeHumidity") or {}).get("value"))
+            pressure = as_finite((props.get("barometricPressure") or {}).get("value"))
 
             if temp_c is None:
                 return None
@@ -226,7 +262,7 @@ class NWSProvider(WeatherProvider):
                 "outdoor_temp_f": temp_f,
                 "outdoor_humidity": rh,
                 "outdoor_dew_point_f": _dew_point(temp_f, rh),
-                "outdoor_wind_mph": round((wind_ms or 0) * 2.237, 1),
+                "outdoor_wind_mph": round(_nws_observed_wind_mph(props.get("windSpeed")), 1),
                 "outdoor_pressure_mb": round((pressure or 101325) / 100, 1),
                 "outdoor_condition": props.get("textDescription", "Unknown"),
             }
@@ -236,7 +272,8 @@ class NWSProvider(WeatherProvider):
 
     async def fetch_forecast(self, lat: str, lon: str) -> list[dict]:
         try:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True,
+                                         verify=tls_context()) as client:
                 r = await client.get(
                     f"https://api.weather.gov/points/{_nws_point(lat, lon)}",
                     headers={"User-Agent": "SporePrint/1.0"},
@@ -250,14 +287,15 @@ class NWSProvider(WeatherProvider):
 
             results = []
             for p in periods[:168]:  # max 7 days
-                ts = _utc_timestamp(p["startTime"])
-                temp_f = p["temperature"]
+                temp_f = as_finite(p.get("temperature"))
+                if temp_f is None:
+                    continue
                 results.append({
-                    "timestamp": ts,
+                    "timestamp": _utc_timestamp(p["startTime"]),
                     "temp_f": temp_f,
-                    "humidity": p.get("relativeHumidity", {}).get("value", 50),
-                    "wind_mph": float(str(p.get("windSpeed", "0")).split()[0]),
-                    "condition": p.get("shortForecast", "Unknown"),
+                    "humidity": as_finite((p.get("relativeHumidity") or {}).get("value")),
+                    "wind_mph": _nws_forecast_wind_mph(p.get("windSpeed")),
+                    "condition": p.get("shortForecast") or "Unknown",
                 })
             return results
         except Exception as e:
@@ -265,14 +303,73 @@ class NWSProvider(WeatherProvider):
             return []
 
 
+# mph per unit of an api.weather.gov observation's windSpeed, by its WMO
+# unitCode. Observations report km/h (wmoUnit:km_h-1).
+_NWS_WIND_MPH_PER_UNIT = {
+    "wmoUnit:km_h-1": 0.621371,
+    "wmoUnit:m_s-1": 2.23694,
+    "wmoUnit:kt": 1.150779,
+    "wmoUnit:mi_h-1": 1.0,
+}
+_NWS_DEFAULT_WIND_UNIT = "wmoUnit:km_h-1"
+
+
+def _nws_observed_wind_mph(wind) -> float:
+    """An NWS observation's windSpeed ({unitCode, value}) in mph, 0 when unknown.
+
+    The factor follows the unitCode (km/h when it is missing or unknown):
+    reading the km/h value as m/s overstated the wind 3.6x.
+    """
+    if not isinstance(wind, dict):
+        return 0.0
+    value = as_finite(wind.get("value"))
+    if value is None:
+        return 0.0
+    unit = wind.get("unitCode")
+    factor = _NWS_WIND_MPH_PER_UNIT.get(unit, _NWS_WIND_MPH_PER_UNIT[_NWS_DEFAULT_WIND_UNIT])
+    return value * factor
+
+
+_LEADING_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _nws_forecast_wind_mph(text) -> float:
+    """An NWS hourly period's windSpeed text ("10 mph", "5 to 10 mph") in mph:
+    its first number, 0 when it has none."""
+    match = _LEADING_NUMBER.search(str(text or ""))
+    return float(match.group()) if match else 0.0
+
+
+# Registered providers, in failover order. The poller tries the operator's
+# chosen provider (SPOREPRINT_WEATHER_PROVIDER / Settings) first, then the
+# others in this order, so a provider registered here is both selectable and
+# a failover.
+_PROVIDERS: dict[str, Callable[[str], WeatherProvider]] = {
+    "openmeteo": lambda api_key: OpenMeteoProvider(),
+    "nws": lambda api_key: NWSProvider(),
+    "openweathermap": OpenWeatherMapProvider,
+}
+DEFAULT_PROVIDER = "openmeteo"
+PROVIDER_NAMES = tuple(_PROVIDERS)
+# Providers that answer only with an API key (SPOREPRINT_WEATHER_API_KEY):
+# without one every request fails, so the cascade leaves them out.
+_KEYED_PROVIDERS = frozenset({"openweathermap"})
+
+
 def get_provider(name: str, api_key: str = "") -> WeatherProvider:
-    """Factory: return the configured weather provider."""
-    if name == "openweathermap":
-        return OpenWeatherMapProvider(api_key)
-    elif name == "nws":
-        return NWSProvider()
-    else:
-        return OpenMeteoProvider()
+    """Factory: the provider registered as `name` (Open-Meteo for an unknown name)."""
+    return _PROVIDERS.get(name, _PROVIDERS[DEFAULT_PROVIDER])(api_key)
+
+
+def provider_cascade(preferred: str, api_key: str = "") -> list[WeatherProvider]:
+    """The providers the poller tries in turn: `preferred` first, then every
+    other registered one in failover order, each once. A provider that needs
+    a key joins only when one is set (chosen without a key, it is skipped).
+    """
+    if preferred not in _PROVIDERS:
+        preferred = DEFAULT_PROVIDER
+    names = [preferred, *(n for n in _PROVIDERS if n != preferred)]
+    return [get_provider(n, api_key) for n in names if api_key or n not in _KEYED_PROVIDERS]
 
 
 def _wmo_code_to_text(code: int) -> str:

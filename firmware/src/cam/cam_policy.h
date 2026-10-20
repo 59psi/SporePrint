@@ -10,8 +10,9 @@
 //   * JPEG-quality backoff after a dropped (overflowed) frame
 //   * the X-Timestamp rule: epoch seconds only when NTP-synced
 //   * the default upload URL (the portal's Pi address) and the hosts the
-//     server_url command may point at
+//     server_url command may point at (or "" to reset to that default)
 //   * HTTPS uploads: pinned-CA or refuse, never unverified TLS
+//   * the upload's time budget against the cam's loop WDT
 
 #include <stddef.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@
 #include <string>
 
 #include "hmac_verify.h"       // sp::kMinValidEpoch
+#include "link_budget.h"       // sp::kDnsWorstCaseS, sp::kLoopWdtMarginS
 #include "server_url_allow.h"  // sp::server_url_allowed
 
 namespace sp_cam {
@@ -165,7 +167,9 @@ inline std::string default_server_url(const std::string& pi_host) {
     return kFallbackServerUrl;
 }
 
-// An explicitly stored server_url (MQTT cmd, v1 migration) always wins.
+// An explicitly stored server_url (MQTT cmd, v1 migration) wins. It is
+// dropped when the portal saves a different Pi address
+// (sp::portal_save_resets_server_url) or on {"server_url": ""}.
 inline std::string resolve_server_url(const std::string& stored,
                                       const std::string& pi_host) {
     return stored.empty() ? default_server_url(pi_host) : stored;
@@ -180,6 +184,21 @@ inline bool server_url_cmd_allowed(const char* lowered_url,
                                    const std::string& pi_host) {
     return sp::server_url_allowed(lowered_url, lowercase(paired_pi_host).c_str()) ||
            sp::server_url_allowed(lowered_url, lowercase(pi_host).c_str());
+}
+
+// What {"server_url": <url>} does. "" resets uploads to the portal default
+// (the Pi address typed at provisioning — operator-set, never from MQTT; an
+// empty URL used to be refused, leaving a stale stored URL in force until a
+// factory reset); anything else must pass the allow-list.
+enum class ServerUrlCmd : uint8_t { Set, Reset, Reject };
+
+inline ServerUrlCmd server_url_cmd(const char* lowered_url,
+                                   const std::string& paired_pi_host,
+                                   const std::string& pi_host) {
+    if (lowered_url != nullptr && lowered_url[0] == '\0') return ServerUrlCmd::Reset;
+    return server_url_cmd_allowed(lowered_url, paired_pi_host, pi_host)
+               ? ServerUrlCmd::Set
+               : ServerUrlCmd::Reject;
 }
 
 // ── HTTPS uploads ───────────────────────────────────────────────
@@ -199,5 +218,46 @@ inline UploadTransport upload_transport(const std::string& url,
     if (!is_https(url)) return UploadTransport::Plain;
     return have_pinned_ca ? UploadTransport::TlsPinned : UploadTransport::Refuse;
 }
+
+// ── the capture + upload time budget ────────────────────────────
+//
+// capture_and_post() runs in the loop task under the loop WDT main.cpp arms
+// at the end of setup() (kCamLoopWdtTimeoutS, panic). HTTPClient::begin(url)
+// builds its own NetworkClient(Secure): an unbounded lookup (lwIP gives up
+// after up to 21 s) and a 120 s TLS handshake default, which together could
+// outlast the WDT and panic the cam. The upload now goes through the cam's
+// own clients: DNS capped at sp::kDnsWorstCaseS (bounded_dns.h), the TCP
+// connect at kUploadConnectTimeoutS, the TLS handshake (an https server_url)
+// at kUploadHandshakeTimeoutS, and every socket wait without progress — a
+// stalled request write, the response read — at kUploadIoTimeoutS. The
+// capture before it waits at most kCaptureWorstCaseS (the flash settle and
+// three frame grabs, each bounded by the camera driver's 4 s frame timeout).
+// A capture never starts in a pass that already blocked on an MQTT connect
+// attempt or a CA fetch / probe (main.cpp), so these are the whole pass. An
+// upload that keeps making progress is paced by the link; the margin below
+// is its room.
+constexpr uint32_t kCamLoopWdtTimeoutS = 90;
+constexpr uint32_t kUploadConnectTimeoutS = 10;
+constexpr uint32_t kUploadHandshakeTimeoutS = 10;
+constexpr uint32_t kUploadIoTimeoutS = 10;
+constexpr uint32_t kCaptureWorstCaseS = 13;
+constexpr uint32_t kCaptureUploadWorstCaseS =
+    kCaptureWorstCaseS + sp::kDnsWorstCaseS + kUploadConnectTimeoutS +
+    kUploadHandshakeTimeoutS + 2 * kUploadIoTimeoutS;
+
+static_assert(kCaptureUploadWorstCaseS + sp::kLoopWdtMarginS + 15 <=
+                  kCamLoopWdtTimeoutS,
+              "a capture + upload pass must fit inside the cam's loop WDT, "
+              "with room for the body transfer itself");
+
+// MQTT keepalive (MqttLink::set_keepalive). The broker drops a client it has
+// heard nothing from for 1.5x the keepalive and publishes its LWT: with
+// PubSubClient's 15 s default (22.5 s) a slow capture + upload pass — no MQTT
+// pumping meanwhile — showed the cam offline and lost the commands sent in
+// between. 1.5x the keepalive covers the longest pass the loop WDT allows.
+constexpr uint16_t kCamMqttKeepaliveS = 60;
+
+static_assert(kCamMqttKeepaliveS * 3u / 2u >= kCamLoopWdtTimeoutS,
+              "the broker must not give up on the cam within one loop pass");
 
 }  // namespace sp_cam

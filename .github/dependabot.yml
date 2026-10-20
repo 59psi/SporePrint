@@ -20,8 +20,10 @@
 # release's hash-pinned firmware/requirements-pio.txt and
 # requirements-penv.txt (regenerate with the command in each header; Dependabot
 # alerts on requirements-penv.txt's starlette and ecdsa are known and accepted
-# as build-only, see its header), the uv pin in
-# server/Dockerfile, the vendored Monocypher (firmware/lib/sp_core/vendor/),
+# as build-only, see its header), the image build's hash-pinned uv in
+# server/requirements-build.txt (regenerate with the command in its header;
+# the server image's pip is the one its digest-pinned base ships), the
+# vendored Monocypher (firmware/lib/sp_core/vendor/),
 # and the compiled dashboard in ui/dist (built from its own source tree).
 #
 # Labels: no `labels:` key on purpose. Dependabot then applies its defaults

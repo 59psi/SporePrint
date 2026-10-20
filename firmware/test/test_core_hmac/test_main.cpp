@@ -394,7 +394,7 @@ void test_command_auth_rejects_unsynced_clock_before_verifying() {
     TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::StaleTimestamp, (int)r.status);
 }
 
-// ── destination binding + replay guard (fw-node#11) ────────────
+// ── destination binding + replay guard ─────────────────────────
 // The MAC covers only the payload, so a captured signed frame could be
 // re-published verbatim to another channel/node, or replayed repeatedly,
 // inside the ±30 s window. Two backward-compatible defenses:
@@ -407,10 +407,11 @@ void test_command_auth_rejects_unsynced_clock_before_verifying() {
 static const char* kExhaust = "sporeprint/relay-01/cmd/exhaust";
 static const uint64_t kNow = 1700000000ULL;
 
-// Sign an already-canonical body (sorted keys, compact) with kKey.
-static std::string sign_body(const std::string& canonical) {
+// Sign an already-canonical body (sorted keys, compact) with `key`.
+static std::string sign_body_with(const char* key,
+                                  const std::string& canonical) {
     uint8_t mac[32];
-    sp::hmac_sha256_host((const uint8_t*)kKey, strlen(kKey),
+    sp::hmac_sha256_host((const uint8_t*)key, strlen(key),
                          (const uint8_t*)canonical.data(), canonical.size(),
                          mac);
     char hex[65];
@@ -420,6 +421,11 @@ static std::string sign_body(const std::string& canonical) {
     wire += "\",";
     wire.append(canonical.begin() + 1, canonical.end());
     return wire;
+}
+
+// ...with kKey.
+static std::string sign_body(const std::string& canonical) {
+    return sign_body_with(kKey, canonical);
 }
 
 static sp::VerifyStatus verify_at(const std::string& wire, const char* topic,
@@ -542,28 +548,80 @@ void test_replay_guard_expiry_and_capacity() {
     sp::ReplayGuard guard;
     uint8_t mac[32] = {0};
     const uint32_t topic = sp::topic_hash(kExhaust);
-    guard.remember(topic, mac, kNow);
+    guard.remember(topic, mac, kNow, (double)kNow);
     TEST_ASSERT_TRUE(guard.seen(topic, mac, kNow));
     TEST_ASSERT_TRUE(guard.seen(topic, mac, kNow + 2 * sp::kReplayWindowSeconds));
     // Past any ts that could still pass the ±30 s window: forgotten.
     TEST_ASSERT_FALSE(
         guard.seen(topic, mac, kNow + 2 * sp::kReplayWindowSeconds + 1));
     TEST_ASSERT_FALSE(guard.seen(topic + 1, mac, kNow));
+    // Expired slots are reused without raising the floor.
+    for (size_t i = 0; i < sp::ReplayGuard::kSlots + 1; ++i) {
+        uint8_t m[32] = {0};
+        m[0] = (uint8_t)i;
+        guard.remember(topic, m, kNow + 100 + i * 61, (double)(kNow + 100 + i * 61));
+    }
+    TEST_ASSERT_FALSE(guard.below_floor((double)kNow));
 
-    // Ring: the oldest entry is evicted once every slot is taken.
+    // Full of live entries: the oldest frame ts is evicted and the floor
+    // rises to it.
     sp::ReplayGuard ring;
     for (size_t i = 0; i < sp::ReplayGuard::kSlots + 1; ++i) {
         uint8_t m[32] = {0};
         m[0] = (uint8_t)i;
         m[1] = (uint8_t)(i >> 8);
-        ring.remember(topic, m, kNow);
+        ring.remember(topic, m, kNow, (double)(kNow - 20 + i / 2));
     }
     uint8_t first[32] = {0};
     TEST_ASSERT_FALSE(ring.seen(topic, first, kNow));
+    TEST_ASSERT_TRUE(ring.below_floor((double)(kNow - 20)));
+    TEST_ASSERT_FALSE(ring.below_floor((double)(kNow - 19)));
     uint8_t second[32] = {0};
     second[0] = 1;
     TEST_ASSERT_TRUE(ring.seen(topic, second, kNow));
     TEST_ASSERT_TRUE(sp::topic_hash("a") != sp::topic_hash("b"));
+}
+
+void test_replay_guard_eviction_never_reopens_a_replay() {
+    // More accepted frames inside one window than the table holds: the
+    // frame evicted to make room must stay refused, and so must every other
+    // frame of that window (each accepted replay used to evict the next
+    // oldest entry, so all of them could be cycled through).
+    sp::ReplayGuard guard;
+    const size_t n = sp::ReplayGuard::kSlots + 1;
+    std::vector<std::string> frames;
+    for (size_t i = 0; i < n; ++i) {
+        // Unbound, distinct bodies signed in the same second (the Pi's
+        // fallback when a bound frame would be too large).
+        std::string body = "{\"pwm\":" + std::to_string(i) +
+                           ",\"state\":\"on\",\"ts\":1700000000}";
+        frames.push_back(sign_body(body));
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::VerifyStatus::Ok,
+                                      (int)verify_at(frames[i], kExhaust, &guard),
+                                      body.c_str());
+    }
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed,
+                          (int)verify_at(frames[0], kExhaust, &guard, kNow + 1));
+    for (int round = 0; round < 3; ++round) {
+        for (size_t i = 0; i < n; ++i) {
+            TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed,
+                                  (int)verify_at(frames[i], kExhaust, &guard,
+                                                 kNow + 2));
+        }
+    }
+    // The cost, pinned: a new frame signed in that same full second is
+    // refused too (a burst of more than kSlots frames in one second)...
+    std::string late = sign_body(
+        "{\"pwm\":99,\"state\":\"on\",\"ts\":1700000000}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed,
+                          (int)verify_at(late, kExhaust, &guard, kNow + 2));
+    // ...while the next second's frames go through.
+    std::string next = sign_body(
+        "{\"pwm\":99,\"state\":\"on\",\"ts\":1700000001}");
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok,
+                          (int)verify_at(next, kExhaust, &guard, kNow + 2));
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed,
+                          (int)verify_at(next, kExhaust, &guard, kNow + 3));
 }
 
 void test_command_auth_threads_topic_and_replay_guard() {
@@ -591,6 +649,159 @@ void test_command_auth_threads_topic_and_replay_guard() {
                           (int)r.decision);
 }
 
+// ── command-signing key rotation ───────────────────────────────
+// The setup portal keeps the key a new one replaces (NVS hmac_key_prev). A
+// frame the current key does not verify is tried with it, through the same
+// window, binding and replay checks, until a frame verifies with the
+// current key: that one retires the old key, in memory and in NVS. A node
+// that held one key used to reject every command from the moment the Pi
+// signed with a new key until the node itself was re-keyed.
+
+static const char* kNewKey = "golden-file-signing-key-v2";
+
+static sp::CmdAuthResult auth_with(const std::string& wire,
+                                   const std::string& key,
+                                   const std::string& prev,
+                                   sp::ReplayGuard* guard,
+                                   uint64_t now = kNow,
+                                   const char* topic = kExhaust) {
+    return sp::command_auth_decision(wire.data(), wire.size(), key.data(),
+                                     key.size(), now, sp::hmac_sha256_host,
+                                     topic, guard, prev.data(), prev.size());
+}
+
+// The exhaust command the Pi signs with `key` at `ts` (topic-bound).
+static std::string exhaust_cmd(const char* key, uint64_t ts,
+                               const char* state = "on") {
+    return sign_body_with(
+        key, std::string("{\"state\":\"") + state +
+                 "\",\"topic\":\"sporeprint/relay-01/cmd/exhaust\",\"ts\":" +
+                 std::to_string(ts) + "}");
+}
+
+void test_rotation_accepts_the_old_key_until_the_new_one_verifies() {
+    sp::MemKvStore kv;
+    sp::ReplayGuard guard;
+    // The portal stored kNewKey over kKey: kKey is kept as the previous key.
+    const std::string key = kNewKey;
+    std::string prev = sp::prev_key_after_rekey(kKey, "", kNewKey);
+    TEST_ASSERT_EQUAL_STRING(kKey, prev.c_str());
+    kv.set_string(sp::kHmacPrevKeyNvsKey, prev);
+
+    // The Pi still signs with the old key: accepted (said so), and the old
+    // key stays for the next one.
+    sp::CmdAuthResult r = auth_with(exhaust_cmd(kKey, kNow), key, prev, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Ok, (int)r.status);
+    TEST_ASSERT_TRUE(r.with_prev_key);
+    TEST_ASSERT_FALSE(sp::retire_prev_key(r, prev, kv));
+    TEST_ASSERT_EQUAL_STRING(kKey, prev.c_str());
+    TEST_ASSERT_EQUAL_STRING(kKey,
+                             kv.get_string(sp::kHmacPrevKeyNvsKey, "").c_str());
+    r = auth_with(exhaust_cmd(kKey, kNow + 1, "off"), key, prev, &guard,
+                  kNow + 1);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    TEST_ASSERT_TRUE(r.with_prev_key);
+    TEST_ASSERT_FALSE(sp::retire_prev_key(r, prev, kv));
+
+    // The Pi switched keys: the first frame the new key verifies is accepted
+    // and retires the old key, in memory and in NVS.
+    r = auth_with(exhaust_cmd(kNewKey, kNow + 2), key, prev, &guard, kNow + 2);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    TEST_ASSERT_FALSE(r.with_prev_key);
+    TEST_ASSERT_TRUE(sp::retire_prev_key(r, prev, kv));
+    TEST_ASSERT_TRUE(prev.empty());
+    TEST_ASSERT_EQUAL_STRING(
+        "", kv.get_string(sp::kHmacPrevKeyNvsKey, "unset").c_str());
+
+    // From then on a frame the old key signed is refused, however fresh.
+    r = auth_with(exhaust_cmd(kKey, kNow + 3, "off"), key, prev, &guard,
+                  kNow + 3);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Mismatch, (int)r.status);
+    TEST_ASSERT_FALSE(sp::retire_prev_key(r, prev, kv));
+    // The new key keeps working, with nothing left to retire.
+    r = auth_with(exhaust_cmd(kNewKey, kNow + 4, "off"), key, prev, &guard,
+                  kNow + 4);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    TEST_ASSERT_FALSE(r.with_prev_key);
+    TEST_ASSERT_FALSE(sp::retire_prev_key(r, prev, kv));
+}
+
+void test_rotation_keeps_every_check_for_the_old_key() {
+    sp::ReplayGuard guard;
+    const std::string key = kNewKey;
+    const std::string prev = kKey;
+    const std::string old = exhaust_cmd(kKey, kNow);
+
+    // Never an unsigned frame, rotation or not...
+    const std::string bare = "{\"state\":\"on\",\"ts\":1700000000}";
+    sp::CmdAuthResult r = auth_with(bare, key, prev, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::NoSignature, (int)r.status);
+    // ...nor one that neither key signed.
+    r = auth_with(exhaust_cmd("some-other-key", kNow), key, prev, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Mismatch, (int)r.status);
+    // The old key gets the same ±30 s window...
+    r = auth_with(old, key, prev, &guard, kNow + 31);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::StaleTimestamp, (int)r.status);
+    // ...the same destination binding...
+    r = auth_with(old, key, prev, &guard, kNow, "sporeprint/relay-01/cmd/aux");
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::TopicMismatch, (int)r.status);
+    // ...the same replay guard...
+    r = auth_with(old, key, prev, &guard);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Accept, (int)r.decision);
+    TEST_ASSERT_TRUE(r.with_prev_key);
+    r = auth_with(old, key, prev, &guard, kNow + 5);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::Replayed, (int)r.status);
+    // ...and the same clock gate.
+    r = auth_with(exhaust_cmd(kKey, kNow + 6, "off"), key, prev, &guard,
+                  sp::kMinValidEpoch - 1);
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::RejectClockUnsynced,
+                          (int)r.decision);
+
+    // A new-key frame that fails a check retires nothing.
+    sp::MemKvStore kv;
+    std::string held = prev;
+    kv.set_string(sp::kHmacPrevKeyNvsKey, held);
+    r = auth_with(exhaust_cmd(kNewKey, kNow + 7), key, held, &guard, kNow + 7,
+                  "sporeprint/relay-01/cmd/aux");
+    TEST_ASSERT_EQUAL_INT((int)sp::CmdAuthDecision::Reject, (int)r.decision);
+    TEST_ASSERT_EQUAL_INT((int)sp::VerifyStatus::TopicMismatch, (int)r.status);
+    TEST_ASSERT_FALSE(sp::retire_prev_key(r, held, kv));
+    TEST_ASSERT_EQUAL_STRING(kKey, held.c_str());
+    TEST_ASSERT_EQUAL_STRING(kKey,
+                             kv.get_string(sp::kHmacPrevKeyNvsKey, "").c_str());
+}
+
+void test_portal_rekey_keeps_the_replaced_key() {
+    // A first key: no previous key, so a keyed node never accepts unsigned.
+    TEST_ASSERT_EQUAL_STRING("", sp::prev_key_after_rekey("", "", "k1").c_str());
+    // A blank field, or the key it already holds, changes nothing.
+    TEST_ASSERT_EQUAL_STRING("", sp::prev_key_after_rekey("k1", "", "").c_str());
+    TEST_ASSERT_EQUAL_STRING("", sp::prev_key_after_rekey("k1", "", "k1").c_str());
+    TEST_ASSERT_EQUAL_STRING("k1",
+                             sp::prev_key_after_rekey("k2", "k1", "").c_str());
+    TEST_ASSERT_EQUAL_STRING("k1",
+                             sp::prev_key_after_rekey("k2", "k1", "k2").c_str());
+    // A new key keeps the key it replaces.
+    TEST_ASSERT_EQUAL_STRING("k1",
+                             sp::prev_key_after_rekey("k1", "", "k2").c_str());
+    // One previous key at most: re-keying again before the new key verified
+    // a frame keeps the key that save replaced, and going back to the old
+    // key keeps the newer one meanwhile.
+    TEST_ASSERT_EQUAL_STRING("k2",
+                             sp::prev_key_after_rekey("k2", "k1", "k3").c_str());
+    TEST_ASSERT_EQUAL_STRING("k2",
+                             sp::prev_key_after_rekey("k2", "k1", "k1").c_str());
+    // NVS key names are at most 15 characters.
+    TEST_ASSERT_TRUE(strlen(sp::kHmacPrevKeyNvsKey) <= 15);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_sha256_standard_vectors);
@@ -612,6 +823,10 @@ int main(int, char**) {
     RUN_TEST(test_replay_guard_allows_identical_legacy_body_on_another_channel);
     RUN_TEST(test_rejected_frames_are_not_remembered);
     RUN_TEST(test_replay_guard_expiry_and_capacity);
+    RUN_TEST(test_replay_guard_eviction_never_reopens_a_replay);
     RUN_TEST(test_command_auth_threads_topic_and_replay_guard);
+    RUN_TEST(test_rotation_accepts_the_old_key_until_the_new_one_verifies);
+    RUN_TEST(test_rotation_keeps_every_check_for_the_old_key);
+    RUN_TEST(test_portal_rekey_keeps_the_replaced_key);
     return UNITY_END();
 }

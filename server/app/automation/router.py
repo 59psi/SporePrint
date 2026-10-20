@@ -1,14 +1,13 @@
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
-from ..db import get_db
-from .models import AutomationRule, ManualOverride
+from . import service
+from .models import AutomationRule, OverrideRequest
 from .engine import (
     set_override, get_overrides, clear_override as clear_override_engine, note_actuator_off,
-    note_actuator_on,
+    note_actuator_on, add_held_by,
 )
-from .service import deserialize_rule_row, serialize_rule_data, validate_action_channel
 from .smart_plugs import get_all_plugs, paired_plug, register_plug, send_plug_command
 
 router = APIRouter()
@@ -18,77 +17,46 @@ router = APIRouter()
 
 @router.get("/rules")
 async def list_rules():
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT id, name, description, enabled, priority, rule_data, created_at FROM automation_rules ORDER BY priority DESC"
-        )
-        return [deserialize_rule_row(row) for row in await cursor.fetchall()]
+    """Every rule, each with `held_by`: the holds keeping the engine off its
+    actuator, under any name it resolves the rule's target to."""
+    return await add_held_by(await service.list_rules_with_created_at())
 
 
 @router.get("/rules/{rule_id}")
 async def get_rule(rule_id: int):
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT id, name, description, enabled, priority, rule_data FROM automation_rules WHERE id = ?",
-            (rule_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(404, "Rule not found")
-        return deserialize_rule_row(row)
+    rule = await service.get_rule(rule_id)
+    if rule is None:
+        raise HTTPException(404, "Rule not found")
+    return rule
 
 
 @router.post("/rules")
 async def create_rule(rule: AutomationRule):
-    if error := await validate_action_channel(rule.action):
-        raise HTTPException(422, error)
-    async with get_db() as db:
-        cursor = await db.execute(
-            "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) VALUES (?, ?, ?, ?, ?)",
-            (rule.name, rule.description, int(rule.enabled), rule.priority, serialize_rule_data(rule)),
-        )
-        await db.commit()
-        rule.id = cursor.lastrowid
+    rule.id = await service.create_validated_rule(rule)  # 422 when refused
     return rule.model_dump()
 
 
 @router.put("/rules/{rule_id}")
 async def update_rule(rule_id: int, rule: AutomationRule):
-    if error := await validate_action_channel(rule.action):
-        raise HTTPException(422, error)
-    async with get_db() as db:
-        result = await db.execute(
-            "UPDATE automation_rules SET name=?, description=?, enabled=?, priority=?, rule_data=?, updated_at=unixepoch('now') WHERE id=?",
-            (rule.name, rule.description, int(rule.enabled), rule.priority, serialize_rule_data(rule), rule_id),
-        )
-        await db.commit()
-        if result.rowcount == 0:
-            raise HTTPException(404, "Rule not found")
+    if not await service.update_validated_rule(rule_id, rule):  # 422 when refused
+        raise HTTPException(404, "Rule not found")
     rule.id = rule_id
     return rule.model_dump()
 
 
 @router.delete("/rules/{rule_id}")
 async def delete_rule(rule_id: int):
-    async with get_db() as db:
-        result = await db.execute("DELETE FROM automation_rules WHERE id = ?", (rule_id,))
-        await db.commit()
-        if result.rowcount == 0:
-            raise HTTPException(404, "Rule not found")
+    if not await service.delete_rule(rule_id):
+        raise HTTPException(404, "Rule not found")
     return {"status": "deleted"}
 
 
 @router.patch("/rules/{rule_id}/toggle")
 async def toggle_rule(rule_id: int):
-    async with get_db() as db:
-        cursor = await db.execute("SELECT enabled FROM automation_rules WHERE id = ?", (rule_id,))
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(404, "Rule not found")
-        new_state = 0 if row["enabled"] else 1
-        await db.execute("UPDATE automation_rules SET enabled = ? WHERE id = ?", (new_state, rule_id))
-        await db.commit()
-    return {"id": rule_id, "enabled": bool(new_state)}
+    enabled = await service.toggle_rule(rule_id)
+    if enabled is None:
+        raise HTTPException(404, "Rule not found")
+    return {"id": rule_id, "enabled": enabled}
 
 
 # ─── Overrides ──────────────────────────────────────────────────
@@ -99,7 +67,10 @@ async def list_overrides():
 
 
 @router.post("/overrides")
-async def create_override(override: ManualOverride):
+async def create_override(body: OverrideRequest):
+    # The stored hold, its expiry stamped on the Pi's clock when the body
+    # gives a duration_sec.
+    override = body.to_override()
     await set_override(override)
     return override.model_dump()
 
@@ -114,17 +85,13 @@ async def clear_override_route(target: str, channel: str | None = None):
 
 @router.get("/firings")
 async def list_firings(limit: int = 50, rule_id: int | None = None):
-    query = "SELECT * FROM automation_firings"
-    params = []
-    if rule_id:
-        query += " WHERE rule_id = ?"
-        params.append(rule_id)
-    query += " ORDER BY timestamp DESC LIMIT ?"
-    params.append(limit)
+    return await service.list_firings(limit, rule_id)
 
-    async with get_db() as db:
-        cursor = await db.execute(query, params)
-        return [dict(r) for r in await cursor.fetchall()]
+
+@router.get("/firings/stats")
+async def firing_stats(days: float = Query(7, gt=0, le=365)):
+    """Firings per rule over the last `days` days and each rule's newest firing."""
+    return await service.firing_stats(days)
 
 
 # ─── Smart Plugs ────────────────────────────────────────────────
@@ -136,13 +103,16 @@ async def list_plugs():
 
 @router.post("/plugs")
 async def add_plug(data: dict):
-    await register_plug(
-        plug_id=data["plug_id"],
-        name=data["name"],
-        plug_type=data.get("plug_type", "shelly"),
-        mqtt_topic_prefix=data["mqtt_topic_prefix"],
-        device_role=data.get("device_role"),
-    )
+    try:
+        await register_plug(
+            plug_id=data["plug_id"],
+            name=data["name"],
+            plug_type=data.get("plug_type", "shelly"),
+            mqtt_topic_prefix=data["mqtt_topic_prefix"],
+            device_role=data.get("device_role"),
+        )
+    except ValueError as e:  # a plug type / prefix no command could reach
+        raise HTTPException(422, str(e))
     return {"status": "registered"}
 
 

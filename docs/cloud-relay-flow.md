@@ -19,7 +19,7 @@ sequenceDiagram
     Relay->>Relay: verify_jwt() · get_user_tier()<br/>get_user_devices()
     Relay-->>App: connected (joins device rooms)
 
-    Note over Pi: On boot, when paired (cloud.env beside the DB, or SPOREPRINT_CLOUD_TOKEN)
+    Note over Pi: On boot, when paired (cloud.env beside the DB, or the URL, TOKEN and DEVICE_ID variables)
     Pi->>Relay: Socket.IO connect<br/>auth = { token, device_id }
     Relay->>Relay: validate_device_token()<br/>update_device_status('online')
     Relay-->>Pi: connected (joins device:<id> room)
@@ -55,14 +55,20 @@ All in `server/app/cloud/service.py::handle_cloud_command`, in this order:
 | `ts` within ±30 s of the Pi's clock | same | `Signature check failed: ts outside replay window` (`reject_reason: clock_skew`; fix the Pi's NTP) |
 | `tier == 'premium'` | `handle_cloud_command` | `Remote control requires premium tier` |
 | `id` present and not seen before | an in-memory FIFO of 1024 ids, written through to the `cloud_command_replay` table so a restart inside the window still rejects a replay | `Replayed command id` |
-| `target_kind` is `climate`, `relay`, `lighting`, `camera`, `system` or `automation`; `channel` matches `^[a-zA-Z0-9_-]{1,64}$` | `_VALID_TARGET_KINDS`, `_is_safe_channel` | `Invalid target_kind or channel` |
-| A hardware `target_kind` resolves to the most recently seen registered node of that type (or role), and that node id passes the same pattern | `_resolve_node_id_by_type()`, `_is_safe_target()`, `_target_is_registered()` | `No registered <kind> node` / `Unknown target '<id>'` |
+| `target_kind` is `climate`, `relay`, `lighting`, `camera`, `system` or `automation`; `channel` matches `^[a-zA-Z0-9_-]{1,32}\Z` (the node id and channel syntax, `server/app/node_ids.py`) | `_VALID_TARGET_KINDS`, `is_safe_id` | `Invalid target_kind or channel` |
+| A hardware `target_kind` resolves to exactly one registered node: of that type (or role) and, for a channel command, one whose reported channels list the channel (channel names are bank-specific, so `white` finds the lighting node; a node that has not reported its channels counts when it is of that kind). Two or more fitting nodes are refused, never guessed. The node id passes the same pattern | `_resolve_command_node()`, `is_safe_id()`, `_target_is_registered()` | `No registered <kind> node` / `No registered <kind> node has a '<channel>' channel` / `Ambiguous target: …` / `Unknown target '<id>'` |
 
 `system` (automation pause / resume, session start / end, rule suspend,
 reboot, Pi OTA) and `automation` (manual overrides) are handled inside the Pi
 and never reach MQTT. Before v3.3.1 only the tier string was checked, so a
 compromised cloud relay could have issued any command to any registered
 target; the Pi now requires a signature it can verify.
+
+- A manual override (`automation` / `override`) pins the node the matching
+  hardware command reaches, resolved the same way.
+- `system` / `reboot` is refused before the ack where the server cannot reboot
+  the host: the Docker install (no sudo, systemd or host access) or a host
+  without `sudo` / `systemctl`.
 
 ## The Pi → node leg
 
@@ -81,20 +87,25 @@ forged, replayed or redirected frames; see `docs/firmware-security.md`.
   without any `pwm`/`level` (older firmware treated `{state:off, pwm:N}` as ON)
   and clears that actuator's `safety_max_on_seconds` ceiling.
 - `integrations_request` frames: signed frames are replay-deduped by id (409)
-  and a signature that can't be verified gets 401. After the Pi verifies its
-  first signed one, unsigned frames are rejected (401); the latch resets on
-  `/api/cloud/configure`. `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=true`
-  rejects unsigned frames from the start.
+  and a signature that can't be verified gets 401, as does a frame the check
+  cannot evaluate. Unsigned frames are rejected (401):
+  `SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS` defaults to `true`, since the
+  cloud signs every frame. With it set to `false`, unsigned frames are
+  accepted until the Pi verifies its first signed one; that latch resets on
+  `/api/cloud/configure`. A rule created or updated this way gets the same
+  checks as the Pi's rule editor (422).
 
 ## v4 cloud-side rechecks (before forwarding any command)
 
-The cloud relay does its own enforcement before signing + forwarding. As of
-v4, two additional rechecks happen on every inbound `command` from a client:
+The cloud relay does its own enforcement before signing + forwarding. These
+rechecks happen on every inbound `command` from a client, and while the relay
+fans a device's frames out to a client that only listens:
 
 | Check | Frequency | Failure mode |
 |---|---|---|
 | Tier recheck (effective tier still `premium`) | every 30 s per session, cached | command rejected with `subscription_required` |
 | Ownership recheck (`device_id ∈ user's devices`) | every 60 s per session, cached | command rejected with `Device not owned by this user` |
+| Session recheck (the client's access token not expired or revoked) | every 60 s per session | the socket is dropped; the browser hands over refreshed tokens (`reauth`) and reconnects with its current one |
 
 The recheck guarantees that a user whose subscription expires mid-session
 loses control within 30 seconds (a device removed from the account, within
@@ -102,6 +113,17 @@ loses control within 30 seconds (a device removed from the account, within
 disconnect. The caches keep the Supabase load bounded; a
 hard recheck at every command would 4-10× the auth round-trips during a
 busy session.
+
+The Pi side is rechecked too: every 30 s the relay re-validates a connected
+Pi's device token and its owner's tier, and drops the socket when either
+fails (a rotated or deauthorized token, a lapsed subscription). A database
+outage during the check keeps the socket, and a connect whose token or
+owner's subscription the relay cannot check is refused with
+`service_unavailable`, which the Pi retries like any other failure, keeping
+what it buffered (`Invalid device token` is reserved for a token that is
+wrong, `subscription_required` for an owner known to have no subscription;
+the Pi pauses cloud sync for 15 minutes on those).
+A Pi holds one socket: a reconnect drops the older one.
 
 ## Grow sessions and contamination events (Pi → cloud, 5.2)
 
@@ -112,7 +134,8 @@ real grow.
 
 ```
 Pi: server/app/cloud/session_sync.py
-  ├─ session change (create, edit, phase advance, harvest, complete/abort)
+  ├─ session change (create, edit, phase advance, harvest, complete/abort,
+  │    its chamber linked, renamed or deleted)
   │    └─ emit "session_sync" { pi_session_id, species_profile_id, species_name,
   │         substrate, status, current_phase, started_at, completed_at, totals,
   │         flush_count, quality_rating,
@@ -122,13 +145,30 @@ Pi: server/app/cloud/session_sync.py
   ├─ contamination event recorded (vision, identify, manual)
   │    └─ emit "contamination_event" { pi_event_id, pi_session_id, source,
   │         classification, confidence, notes, detected_at }
-  └─ every (re)connect: resend what failed, then backfill the active sessions
-       and those from the last year (sessions first), then recent events
+  │    each with an acknowledgement: the relay answers { ok } once it has
+  │    written the row; until { ok: true } the id stays in the Pi's
+  │    cloud_sync_pending table
+  └─ every (re)connect: send what is pending, then re-check the active
+       sessions and those from the last year (sessions first), then recent
+       events, sending only what differs from what the cloud acknowledged
+       since the Pi started
 ```
 
 - **Idempotent.** The cloud keys each row by the authenticated device and the
   Pi's local id (`pi_session_id` / `pi_harvest_id` / `pi_event_id`), so a
   resend updates the same row. It never takes a row id from the Pi.
+- **Durable.** A change made while the link is down waits on disk, so it
+  reaches the cloud after a restart too, however old the session is. A
+  socket that died without closing takes sends it never delivers, which is
+  why only the acknowledgement counts.
+- **In order.** The Pi sends one snapshot of a session at a time and the next
+  only after the cloud has acknowledged it (a change made meanwhile goes out
+  freshly built), and the relay writes a device's snapshots in the order
+  they arrive, so the cloud never ends on an older one. An event goes out
+  after its session (the cloud links the two); one sent before its session
+  was confirmed stays pending and goes again on the next connect.
+- **Cheap reconnects.** The first connect after the Pi starts sends every
+  recent session and event once; a reconnect sends only what changed.
 - **Sources.** `vision` and `identify` arrive as `claude`, and `manual` as
   `manual`.
 - **No duplicates.** The vision `contamination_alert` event carries the
@@ -160,10 +200,15 @@ Pi: server/app/cloud/ota.py
 A progress emit never fails the update: a Pi that cannot reach the cloud
 still completes its OTA.
 
-`_promote_and_restart` was also split into `_promote` + `_restart_unit` so
-the failure mode is recoverable — if `_promote` succeeds but the systemd
-restart fails, the next `_restart_unit` attempt resumes from the right
-place rather than re-promoting.
+`_promote` and `_restart_unit` are separate steps so `promote_complete` ships
+before systemd restarts the server. Nothing resumes a failed restart: the new
+tree is already live, so a restart by hand (or the next boot) finishes the
+update, and an OTA re-sent for the same version runs the whole pipeline
+again. Every run extracts into a fresh `staging/<version>.<random>` directory
+and never deletes the tree `current` points at, so a failed or interrupted
+extraction leaves the running install intact. After a promote the Pi keeps
+the new tree and the one it replaced (for a manual rollback) and deletes older
+staging trees and the downloaded release files.
 
 OTA releases are Ed25519-signed (`generate-ota-keypair.py` +
 `sign-ota-bundle.py` in `sporeprint/scripts/`; the private release tooling
@@ -182,7 +227,8 @@ Pi: ota.run_ota_update(version, channel)
   │            canonical form → artifact/version/channel match → anti-rollback
   ├─ download: bundle, capped at the signed size
   ├─ verify:   sha256 + size == manifest   (verify_complete: verified_by)
-  └─ stage → promote (records the anti-rollback floor) → restart
+  └─ stage (fresh dir) → promote (records the anti-rollback floor,
+     prunes older trees) → restart
 ```
 
 The release also keeps publishing the legacy `{version}.tar.gz.sig` (a

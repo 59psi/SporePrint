@@ -1,4 +1,4 @@
-// test_core_link — the MQTT/WiFi-loss failsafe policy (fw-node#7).
+// test_core_link — the MQTT/WiFi-loss failsafe policy.
 //
 // CLAUDE.md §5c: "10min MQTT watchdog → safe mode". The node had no
 // disconnected-duration tracking at all: a dead Pi/broker left the lighting
@@ -7,16 +7,24 @@
 // dark until power-cycled. LinkWatchdog is the pure policy; the composition
 // root turns its actions into channel force_off()s and WiFi.begin().
 //
-// Also: the heartbeat cadence (srv-hw#22) — PublishCadence keeps the status
+// Also: the heartbeat cadence — PublishCadence keeps the status
 // heartbeat inside the Pi's offline threshold whatever the telemetry interval.
 
 #include <unity.h>
 
-#include <stdint.h>
+#include <ArduinoJson.h>
 
+#include <stdint.h>
+#include <stdio.h>
+
+#include <string>
+
+#include "chunked_writer.h"
 #include "clamps.h"
 #include "link_watchdog.h"
+#include "log_ring.h"
 #include "publish_cadence.h"
+#include "wire_contract.h"
 
 void setUp() {}
 void tearDown() {}
@@ -126,7 +134,7 @@ void test_millis_wrap_is_safe() {
     TEST_ASSERT_TRUE(w.update(t0 + kSafe, true, false).enter_safe_mode);
 }
 
-// ── heartbeat cadence (srv-hw#22) ──────────────────────────────
+// ── heartbeat cadence ──────────────────────────────────────────
 //
 // The Pi marks a node offline (and pages) when no status/* frame arrived for
 // 900 s (server/app/main.py _NODE_OFFLINE_THRESHOLD_SECONDS). The node used to
@@ -216,6 +224,201 @@ void test_interval_change_takes_effect_and_is_wrap_safe() {
     TEST_ASSERT_EQUAL_UINT32(300000, worst);
 }
 
+// ── forwarded logs (log_ring.h) ────────────────────────────────
+// A quiet node's few lines used to sit in RAM until eight had queued (often
+// never before the next restart), and a batch whose publish failed was
+// thrown away without being counted as dropped.
+
+struct BatchLog {
+    bool ok = true;
+    int calls = 0;
+    std::string last;  // the last batch offered, serialized
+    sp::LogRing* push_during = nullptr;  // emit() racing the publish
+    int push_count = 0;
+};
+
+static bool capture_publish(JsonDocument& doc, void* ctx) {
+    BatchLog* b = static_cast<BatchLog*>(ctx);
+    ++b->calls;
+    b->last.clear();
+    serializeJson(doc, b->last);
+    for (int i = 0; b->push_during != nullptr && i < b->push_count; ++i)
+        b->push_during->push(100000, 1, "late");
+    return b->ok;
+}
+
+static void push_n(sp::LogRing& r, int n, uint32_t ts, uint8_t level,
+                   const char* tag) {
+    char msg[32];
+    for (int i = 0; i < n; ++i) {
+        snprintf(msg, sizeof(msg), "%s %d", tag, i);
+        r.push(ts, level, msg);
+    }
+}
+
+void test_log_ring_sends_a_quiet_nodes_lines_within_seconds() {
+    sp::LogRing r;
+    BatchLog b;
+    push_n(r, 2, 1000, 1, "info");  // e.g. "[CMD] peripherals saved"
+    TEST_ASSERT_FALSE(r.flush(1000, false, capture_publish, &b));
+    TEST_ASSERT_FALSE(r.flush(1000 + sp::LogRing::kMaxAgeMs - 1, false,
+                              capture_publish, &b));
+    TEST_ASSERT_EQUAL_INT(0, b.calls);
+    TEST_ASSERT_TRUE(r.flush(1000 + sp::LogRing::kMaxAgeMs, false,
+                             capture_publish, &b));
+    TEST_ASSERT_EQUAL_size_t(0, r.size());
+    JsonDocument doc;
+    deserializeJson(doc, b.last);
+    TEST_ASSERT_EQUAL_INT(2, (int)doc["entries"].size());
+    TEST_ASSERT_EQUAL_STRING("info 0", doc["entries"][0]["msg"]);
+    TEST_ASSERT_TRUE(doc["dropped"].isNull());
+
+    // A warning or an error goes out on the next allowed pass, not after 5 s.
+    push_n(r, 1, 20000, 1, "info");
+    push_n(r, 1, 20001, 2, "warn");
+    TEST_ASSERT_TRUE(r.flush(20002, false, capture_publish, &b));
+    // Eight queued lines are due at once too.
+    push_n(r, 8, 30000, 1, "burst");
+    TEST_ASSERT_TRUE(r.flush(30000, false, capture_publish, &b));
+}
+
+void test_log_ring_keeps_a_batch_whose_publish_failed() {
+    sp::LogRing r;
+    BatchLog b;
+    push_n(r, 9, 0, 1, "line");
+    b.ok = false;  // the link dropped mid-publish
+    TEST_ASSERT_FALSE(r.flush(10, false, capture_publish, &b));
+    TEST_ASSERT_EQUAL_size_t(9, r.size());  // nothing lost...
+    TEST_ASSERT_EQUAL_UINT32(0, r.dropped());  // ...and nothing to report
+    // The interval still paces retries.
+    b.ok = true;
+    TEST_ASSERT_FALSE(r.flush(10 + sp::LogRing::kFlushIntervalMs - 1, false,
+                              capture_publish, &b));
+    TEST_ASSERT_TRUE(r.flush(10 + sp::LogRing::kFlushIntervalMs, false,
+                             capture_publish, &b));
+    JsonDocument doc;
+    deserializeJson(doc, b.last);
+    TEST_ASSERT_EQUAL_STRING("line 0", doc["entries"][0]["msg"]);  // in order
+    const size_t sent = doc["entries"].size();
+    TEST_ASSERT_TRUE(sent > 0);
+    TEST_ASSERT_EQUAL_size_t(9 - sent, r.size());
+}
+
+void test_log_ring_reports_overflow_once() {
+    sp::LogRing r;
+    BatchLog b;
+    push_n(r, (int)sp::LogRing::kCapacity + 8, 0, 1, "x");
+    TEST_ASSERT_EQUAL_size_t(sp::LogRing::kCapacity, r.size());
+    TEST_ASSERT_EQUAL_UINT32(8, r.dropped());
+    TEST_ASSERT_TRUE(r.flush(0, false, capture_publish, &b));
+    JsonDocument doc;
+    deserializeJson(doc, b.last);
+    TEST_ASSERT_EQUAL_INT(8, doc["dropped"].as<int>());
+    TEST_ASSERT_EQUAL_STRING("x 8", doc["entries"][0]["msg"]);  // oldest kept
+    TEST_ASSERT_EQUAL_UINT32(0, r.dropped());
+    TEST_ASSERT_TRUE(r.flush(5000, true, capture_publish, &b));
+    deserializeJson(doc, b.last);
+    TEST_ASSERT_TRUE(doc["dropped"].isNull());
+}
+
+void test_log_ring_force_ignores_thresholds_and_interval() {
+    sp::LogRing r;
+    BatchLog b;
+    push_n(r, 1, 0, 1, "restarting");
+    TEST_ASSERT_TRUE(r.flush(1, true, capture_publish, &b));
+    push_n(r, 1, 2, 1, "second");
+    TEST_ASSERT_TRUE(r.flush(3, true, capture_publish, &b));  // 2 ms later
+    TEST_ASSERT_EQUAL_size_t(0, r.size());
+    TEST_ASSERT_FALSE(r.flush(4, true, capture_publish, &b));  // empty
+    TEST_ASSERT_EQUAL_INT(2, b.calls);
+}
+
+void test_log_ring_retires_exactly_the_published_entries() {
+    // Lines logged while a batch is being published (even enough to wrap
+    // the ring) are never retired with it.
+    sp::LogRing r;
+    BatchLog b;
+    push_n(r, 4, 0, 1, "early");
+    b.push_during = &r;
+    b.push_count = 3;
+    TEST_ASSERT_TRUE(r.flush(0, true, capture_publish, &b));
+    TEST_ASSERT_EQUAL_size_t(3, r.size());
+    b.push_count = (int)sp::LogRing::kCapacity;  // overflow mid-publish
+    push_n(r, 2, 0, 1, "more");
+    TEST_ASSERT_TRUE(r.flush(0, true, capture_publish, &b));
+    TEST_ASSERT_TRUE(r.size() <= sp::LogRing::kCapacity);
+    TEST_ASSERT_TRUE(r.size() > 0);
+    b.push_during = nullptr;
+    JsonDocument doc;
+    TEST_ASSERT_TRUE(r.flush(0, true, capture_publish, &b));
+    deserializeJson(doc, b.last);
+    TEST_ASSERT_EQUAL_STRING("late", doc["entries"][0]["msg"]);
+}
+
+// ── chunked publish (chunked_writer.h) ─────────────────────────
+// ArduinoJson writes strings a character at a time; straight into
+// PubSubClient each character was one transport write — one TLS record per
+// byte on Secure MQTT, and up to 10 s per byte on a stalled plaintext socket.
+
+struct CountingSink {
+    size_t writes = 0;
+    size_t accept_total = 0;  // bytes accepted so far
+    size_t accept_limit = (size_t)-1;
+    std::string data;
+    size_t write(const uint8_t* d, size_t n) {
+        ++writes;
+        size_t k = n;
+        if (accept_total + k > accept_limit)
+            k = accept_limit > accept_total ? accept_limit - accept_total : 0;
+        data.append(reinterpret_cast<const char*>(d), k);
+        accept_total += k;
+        return k;
+    }
+};
+
+static void build_log_batch(JsonDocument& doc) {
+    JsonArray entries = doc["entries"].to<JsonArray>();
+    for (int i = 0; i < 7; ++i) {
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "[SENSOR] read pass %d took 61 ms (budget 50) - check the bus", i);
+        sp::build_log_entry(entries.add<JsonObject>(), 1000u * (uint32_t)i, 2, msg);
+    }
+    doc["dropped"] = 3;
+}
+
+void test_chunked_writer_sends_whole_chunks() {
+    JsonDocument doc;
+    build_log_batch(doc);
+    const size_t len = measureJson(doc);
+    TEST_ASSERT_TRUE(len > 512);
+    CountingSink sink;
+    sp::ChunkedWriter<CountingSink> w(sink);
+    serializeJson(doc, w);
+    TEST_ASSERT_TRUE(w.flush());
+    TEST_ASSERT_FALSE(w.failed());
+    TEST_ASSERT_EQUAL_size_t(len, w.written());
+    TEST_ASSERT_EQUAL_size_t((len + 255) / 256, sink.writes);  // not ~len
+    std::string direct;
+    serializeJson(doc, direct);
+    TEST_ASSERT_EQUAL_STRING(direct.c_str(), sink.data.c_str());
+}
+
+void test_chunked_writer_stops_at_the_first_short_write() {
+    JsonDocument doc;
+    build_log_batch(doc);
+    const size_t len = measureJson(doc);
+    CountingSink sink;
+    sink.accept_limit = 300;  // the second chunk is cut short
+    sp::ChunkedWriter<CountingSink> w(sink);
+    serializeJson(doc, w);
+    TEST_ASSERT_FALSE(w.flush());
+    TEST_ASSERT_TRUE(w.failed());
+    TEST_ASSERT_EQUAL_size_t(2, sink.writes);  // nothing after the short one
+    TEST_ASSERT_EQUAL_size_t(300, w.written());
+    TEST_ASSERT_TRUE(w.written() < len);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_constants_match_spec);
@@ -229,5 +432,12 @@ int main(int, char**) {
     RUN_TEST(test_hour_publish_interval_still_heartbeats_every_five_minutes);
     RUN_TEST(test_default_interval_heartbeats_with_telemetry);
     RUN_TEST(test_interval_change_takes_effect_and_is_wrap_safe);
+    RUN_TEST(test_log_ring_sends_a_quiet_nodes_lines_within_seconds);
+    RUN_TEST(test_log_ring_keeps_a_batch_whose_publish_failed);
+    RUN_TEST(test_log_ring_reports_overflow_once);
+    RUN_TEST(test_log_ring_force_ignores_thresholds_and_interval);
+    RUN_TEST(test_log_ring_retires_exactly_the_published_entries);
+    RUN_TEST(test_chunked_writer_sends_whole_chunks);
+    RUN_TEST(test_chunked_writer_stops_at_the_first_short_write);
     return UNITY_END();
 }

@@ -2,6 +2,7 @@ import re
 
 import pytest
 
+from app.species.models import SubstrateRecipe
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins, get_profile
 from app.species.substrate import calculate_all_recipes, calculate_recipe
@@ -88,7 +89,7 @@ async def test_different_species_substrate():
         assert recipe["spawn_weight_g"] > 0
 
 
-# ── srv-rest#21: unit classes (percent / ratio / depth / fraction) ─────
+# ── unit classes (percent / ratio / depth / fraction) ──────────────────
 
 
 def _recipe(species_id, name=None):
@@ -168,3 +169,36 @@ def test_ranges_counts_and_dimensions_pass_through():
     assert out["fresh hardwood log (oak/maple)"] == "3-6 inch diameter x 3-4 feet"
     out = calculate_recipe(_recipe("fomes_fomentarius", "Supplemented Hardwood (fruiting route)"), 10.0)["ingredients"]
     assert out["wheat bran"] == "15-20 parts"
+
+
+def _flour_cake_recipe():
+    # The shape of the library's brown-rice-flour cake recipes.
+    return SubstrateRecipe(
+        name="Flour cakes", ingredients={"brown rice flour": "2 cups", "vermiculite": "2 cups",
+                                         "water": "1 cup"},
+        water_liters_per_liter_substrate=0.6, spawn_rate_percent=100,
+        sterilization_method="pressure_sterilize", sterilization_time_min=90,
+        suitability="good",
+    )
+
+
+def test_water_is_one_figure_and_weighs_nothing_dry():
+    """The flour-cake recipes listed 'water: 0.5 cup' beside water_liters 0.6
+    for the same litre, and the cup of water counted as a fifth of the dry
+    reference mass, so the dry ingredients came out at 1 cup instead of 1.25."""
+    out = calculate_recipe(_flour_cake_recipe(), 1.0)
+    assert "water" not in out["ingredients"]
+    assert out["water_liters"] == 0.6
+    # 0.3 kg dry per litre over 4 cups at 0.12 kg: 1.25 cups each (shown 1.2).
+    assert out["ingredients"] == {"brown rice flour": "1.2 cups", "vermiculite": "1.2 cups"}
+    assert calculate_recipe(_flour_cake_recipe(), 4.0)["ingredients"]["vermiculite"] == "5 cups"
+
+
+def test_water_stays_where_it_is_the_recipes_only_water_figure():
+    """A recipe with no water_liters keeps its water ingredient, and one made
+    only of liquids still scales on them."""
+    out = calculate_recipe(_recipe("giant_puffball", "Grass/Garden Soil (Outdoor)"), 4.7)
+    assert out["water_liters"] == 0.0
+    assert out["ingredients"]["non-chlorinated water"] == "1 gallon"
+    # 'as needed' water is no second figure: it stays as written.
+    assert calculate_recipe(_recipe("blue_oyster", "Pasteurized Straw"), 5.0)["ingredients"]["water"] == "as needed"

@@ -26,11 +26,21 @@
 // so a node that image locked out recovers on this one (e.g. after a
 // network OTA push over the LAN).
 //
-// No CA can be pinned (fw-node#2):
+// Probe before switching: on the plaintext fallback a fetched CA is first
+// PROBED — one bare TLS handshake to 8883 with it on a pass of its own, the
+// live plaintext MQTT link untouched — and only a candidate whose handshake
+// verifies moves the link to TLS. A certificate that does not name the
+// node's Pi address used to take the node off MQTT on every 15-minute retry.
+//
+// The fetch itself reads the whole HTTP response under one deadline into a
+// bounded buffer (sp::scan_ca_response) — no per-read timeout a slow-drip
+// server can stretch past the loop WDT, no unbounded chunked body.
+//
+// No CA can be pinned:
 //   default     plaintext fallback, but never silently: SP_LOG error, heartbeat
 //               `tls:false, tls_fallback:true`, a `tls_downgrade` alert from
-//               the composition root, and the CA fetch + trial retried from
-//               loop() on a capped backoff — no reboot needed.
+//               the composition root, and the CA fetch + probe + trial
+//               retried from loop() on a capped backoff — no reboot needed.
 //   tls_req     ("Require TLS" in the portal) fail closed: MQTT stays down
 //               while the fetch + trial retries; a verified trial brings it up
 //               on TLS.
@@ -38,7 +48,6 @@
 // PEM in use) lets the Pi check that the CA a node trusts is its own.
 
 #include <Arduino.h>
-#include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -61,47 +70,94 @@ struct MqttTransport {
     sp::TlsMode mode = sp::TlsMode::Plain;
 };
 
-// GET the Pi CA once. Returns true with the PEM in *out when the body is a
-// plausible public certificate (sp::ca_pem_acceptable). Logs why otherwise.
-inline bool fetch_pi_ca(const std::string& host, int32_t connect_timeout_ms,
-                        uint16_t read_timeout_ms, std::string* out) {
-    // Declared before `http`, which keeps a pointer to it until end(). The
-    // bounded-DNS client keeps the lookup inside kCaFetchWorstCaseS.
+// GET the Pi CA once (HTTP/1.0 on :8000). Returns true with the PEM in *out
+// when the response is a 200 whose body is a plausible public certificate
+// (sp::ca_pem_acceptable); logs why otherwise. Every step is bounded: DNS
+// (bounded_dns.h), the TCP connect (`connect_timeout_ms`), then the whole
+// response — status line, headers and body — under ONE deadline
+// (`response_timeout_ms`) into a buffer of at most sp::kMaxCaResponseBytes;
+// sp::scan_ca_response decides when it is complete or refused.
+inline bool fetch_pi_ca(const std::string& host, uint32_t connect_timeout_ms,
+                        uint32_t response_timeout_ms, std::string* out) {
     BoundedDnsClient client;
-    HTTPClient http;
-    std::string url = "http://" + host + ":8000/api/provision/ca";
-    http.setConnectTimeout(connect_timeout_ms);
-    http.setTimeout(read_timeout_ms);
-    if (!http.begin(client, url.c_str())) {
-        SP_LOG(LOG_ERROR, "[TLS] CA fetch: bad URL %s", url.c_str());
+    client.setConnectionTimeout(connect_timeout_ms);
+    if (!client.connect(host.c_str(), 8000)) {
+        SP_LOG(LOG_WARN, "[TLS] CA fetch: no connection to %s:8000",
+               host.c_str());
         return false;
     }
-    bool ok = false;
-    int code = http.GET();
-    if (code == 200) {
-        const int size = http.getSize();  // -1 when chunked
-        if (size > 0 && (size_t)size >= sp::kMaxCaPemBytes) {
-            SP_LOG(LOG_ERROR, "[TLS] CA fetch returned %d bytes - too large to "
-                              "be the Pi CA, refusing to pin", size);
-        } else {
-            String pem = http.getString();
-            if (sp::ca_pem_acceptable(pem.c_str(), pem.length())) {
-                *out = pem.c_str();
-                ok = true;
-            } else {
-                SP_LOG(LOG_ERROR, "[TLS] CA fetch returned something that is "
-                                  "not a public certificate - refusing to pin");
+    const std::string request = "GET /api/provision/ca HTTP/1.0\r\nHost: " +
+                                host + ":8000\r\nConnection: close\r\n\r\n";
+    if (client.write(reinterpret_cast<const uint8_t*>(request.data()),
+                     request.size()) != request.size()) {
+        SP_LOG(LOG_WARN, "[TLS] CA fetch: sending the request to %s failed",
+               host.c_str());
+        client.stop();
+        return false;
+    }
+    using State = sp::CaResponseScan::State;
+    std::string response;
+    response.reserve(1024);
+    sp::CaResponseScan scan;
+    const uint32_t deadline = millis() + response_timeout_ms;
+    uint8_t chunk[256];
+    for (;;) {
+        scan = sp::scan_ca_response(response.data(), response.size());
+        if (scan.state != State::NeedMore) break;
+        if (response.size() >= sp::kMaxCaResponseBytes) {
+            scan.state = State::Refused;
+            scan.why = "response too large";
+            break;
+        }
+        if (sp::deadline_reached(millis(), deadline)) {
+            scan.state = State::Refused;
+            scan.why = "no complete response in time";
+            break;
+        }
+        int avail = client.available();
+        // Closed by the server: one last look, the final bytes may have
+        // landed together with the close.
+        if (avail <= 0 && !client.connected()) {
+            avail = client.available();
+            if (avail <= 0) {
+                scan.state = State::Refused;
+                scan.why = "connection closed mid-response";
+                break;
             }
         }
-    } else {
-        SP_LOG(LOG_WARN, "[TLS] CA fetch from %s failed (%d)%s", url.c_str(),
-               code,
-               code == 401 ? " - the Pi's API key gate blocks "
-                             "/api/provision/ca"
-                           : "");
+        if (avail > 0) {
+            size_t want = sp::kMaxCaResponseBytes - response.size();
+            if (want > sizeof(chunk)) want = sizeof(chunk);
+            if (want > (size_t)avail) want = (size_t)avail;
+            const int n = client.read(chunk, want);
+            if (n > 0) response.append(reinterpret_cast<const char*>(chunk), n);
+        } else {
+            delay(1);  // waiting on the network, bounded by `deadline`
+        }
     }
-    http.end();
-    return ok;
+    client.stop();
+
+    if (scan.state == State::Refused) {
+        SP_LOG(LOG_ERROR, "[TLS] CA fetch from %s refused: %s - not pinned",
+               host.c_str(), scan.why);
+        return false;
+    }
+    if (scan.status != 200) {
+        SP_LOG(LOG_WARN, "[TLS] CA fetch from %s failed (%d)%s", host.c_str(),
+               scan.status,
+               scan.status == 401 ? " - the Pi's API key gate blocks "
+                                    "/api/provision/ca"
+                                  : "");
+        return false;
+    }
+    const char* body = response.data() + scan.body_offset;
+    if (!sp::ca_pem_acceptable(body, scan.body_len)) {
+        SP_LOG(LOG_ERROR, "[TLS] CA fetch returned something that is not a "
+                          "public certificate - refusing to pin");
+        return false;
+    }
+    out->assign(body, scan.body_len);
+    return true;
 }
 
 // setCACert keeps the POINTER — the static buffer persists it.
@@ -203,9 +259,10 @@ public:
 
     // Call once per loop pass, BEFORE MqttLink::loop(). Judges a running
     // trial (commit / revert — no network I/O), or runs at most one blocking
-    // CA fetch (<= kCaFetchWorstCaseS) when the backoff is due. Returns true
-    // when it fetched: the caller must not start an MQTT connect attempt in
-    // the same pass (sp::mqtt_may_connect).
+    // step: a CA fetch (<= kCaFetchWorstCaseS) when the backoff is due, or
+    // the TLS probe of a fetched candidate (<= kTlsProbeWorstCaseS). Returns
+    // true when it blocked: the caller must not start an MQTT connect attempt
+    // in the same pass (sp::mqtt_may_connect).
     bool loop(uint32_t now_ms, bool button_down, MqttLink& link) {
         using Step = sp::TlsPinMachine::Step;
         switch (pin_.step(now_ms, WiFi.status() == WL_CONNECTED, button_down,
@@ -218,13 +275,15 @@ public:
             case Step::Revert:
                 revert(link);
                 return false;
+            case Step::Probe:
+                probe(link);
+                return true;
             case Step::Fetch:
                 break;
         }
         std::string ca;
-        if (!fetch_pi_ca(cfg_.broker_host,
-                         (int32_t)(sp::kCaFetchConnectTimeoutS * 1000UL),
-                         (uint16_t)(sp::kCaFetchReadTimeoutS * 1000UL), &ca)) {
+        if (!fetch_pi_ca(cfg_.broker_host, sp::kCaFetchConnectTimeoutS * 1000UL,
+                         sp::kCaFetchReadTimeoutS * 1000UL, &ca)) {
             pin_.fetch_failed(millis());
             SP_LOG(LOG_WARN, "[TLS] CA fetch attempt %u failed - still %s, "
                              "next try in %u s",
@@ -237,10 +296,19 @@ public:
         candidate_ = ca;
         warn_if_ip_host();
         use_ca(candidate_);
-        // The candidate lives in RAM only; the next allowed pass connects on
-        // it and the pass after that commits or reverts.
-        link.switch_transport(secure_, 8883);
-        pin_.trial_started(link.connect_attempts(), link.connect_successes());
+        if (!pin_.fetch_succeeded()) {
+            // On the plaintext fallback: probe it on the next pass, with the
+            // working link left alone.
+            SP_LOG(LOG_INFO, "[TLS] Fetched the Pi CA (%u bytes, sha256 "
+                             "%.16s...) - checking it with a TLS handshake "
+                             "to 8883 before MQTT moves off plaintext",
+                   (unsigned)ca.size(), ca_fp_.c_str());
+            return true;
+        }
+        // Fail-closed: nothing is up to protect. The candidate lives in RAM
+        // only; the next allowed pass connects on it and the pass after that
+        // commits or reverts.
+        start_trial(link);
         SP_LOG(LOG_INFO, "[TLS] Fetched the Pi CA (%u bytes, sha256 %.16s...) "
                          "- trying MQTT on TLS 8883 (was %s); pinned only once "
                          "the broker accepts the connection",
@@ -273,15 +341,76 @@ private:
     // The trial connected: the broker proved it holds a certificate the
     // candidate CA signed for this broker host. Persist the CA first, then
     // the marker — power lost in between leaves an unverified CA, which only
-    // earns another trial.
+    // earns another trial — and the marker only once the stored CA reads
+    // back as the candidate (sp::persist_verified_ca).
     void commit() {
-        if (kv_.get_string(kCaKey, "") != candidate_)
-            kv_.set_string(kCaKey, candidate_);
-        kv_.set_bool(kCaOkKey, true);
+        const bool persisted =
+            sp::persist_verified_ca(kv_, kCaKey, kCaOkKey, candidate_);
         pin_.trial_verified();
-        SP_LOG(LOG_INFO, "[TLS] Broker verified against the Pi CA - pinned "
-                         "(%u bytes, sha256 %.16s...); MQTT stays on TLS 8883",
-               (unsigned)candidate_.size(), ca_fp_.c_str());
+        if (persisted)
+            SP_LOG(LOG_INFO, "[TLS] Broker verified against the Pi CA - pinned "
+                             "(%u bytes, sha256 %.16s...); MQTT stays on TLS 8883",
+                   (unsigned)candidate_.size(), ca_fp_.c_str());
+        else
+            SP_LOG(LOG_ERROR, "[TLS] Broker verified against the Pi CA, but "
+                              "saving it to NVS FAILED - TLS stays up this "
+                              "boot; the next boot tries the CA again");
+    }
+
+    // Move the live link onto TLS with the candidate (in RAM only).
+    void start_trial(MqttLink& link) {
+        link.switch_transport(secure_, 8883);
+        pin_.trial_started(link.connect_attempts(), link.connect_successes());
+    }
+
+    // One bare TLS handshake to the broker with the candidate CA — what an
+    // MQTT connect on 8883 would verify (CA and broker host name), without
+    // touching the plaintext MQTT link. DNS is resolved first so a lookup
+    // failure is never read through a TLS error left by an earlier attempt.
+    // Bounded by link_budget.h kTlsProbeWorstCaseS (select() set the
+    // connect and handshake timeouts).
+    sp::TlsFailReason probe_candidate() {
+        IPAddress ip;
+        if (!resolve_host(cfg_.broker_host.c_str(), dns_timeout_ms(), &ip))
+            return sp::TlsFailReason::TlsUnreachable;
+        const int ok = secure_.connect(cfg_.broker_host.c_str(), 8883);
+        char err[80] = {0};
+        const int tls_err = ok ? 0 : secure_.lastError(err, sizeof(err));
+        secure_.stop();
+        if (ok) return sp::TlsFailReason::None;
+        return sp::classify_tls_trial_failure(sp::kMqttStateConnectFailed,
+                                              tls_err);
+    }
+
+    // Step::Probe: the candidate verified → the trial moves the link to TLS;
+    // it did not → back off with the reason, the link never touched.
+    void probe(MqttLink& link) {
+        const sp::TlsFailReason why = probe_candidate();
+        if (why == sp::TlsFailReason::None) {
+            pin_.probe_passed();
+            start_trial(link);
+            SP_LOG(LOG_INFO, "[TLS] The broker's certificate verifies against "
+                             "the fetched Pi CA (sha256 %.16s...) - moving MQTT "
+                             "to TLS 8883; pinned once the broker accepts the "
+                             "login",
+                   ca_fp_.c_str());
+            return;
+        }
+        pin_.probe_failed(why, millis());
+        SP_LOG(LOG_ERROR,
+               "[TLS] Pi CA check failed: %s - NOT pinned, MQTT stays on "
+               "plaintext, retry in %u s",
+               sp::tls_fail_reason_str(why),
+               (unsigned)(pin_.backoff().delay_ms() / 1000UL));
+        if (why == sp::TlsFailReason::CertRejected) log_cert_name_hint();
+    }
+
+    void log_cert_name_hint() const {
+        SP_LOG(LOG_ERROR,
+               "[TLS] The broker certificate must list '%s' (cert name "
+               "mismatch) and be signed by the CA the Pi serves - re-run "
+               "./install.sh on the Pi, or use sporeprint.local",
+               cfg_.broker_host.c_str());
     }
 
     // The trial's connect attempt failed: nothing is persisted. Back to the
@@ -303,12 +432,7 @@ private:
                sp::tls_fail_reason_str(why), state, tls_err,
                tls_err < 0 ? err : "", sp::tls_mode_str(pin_.mode()),
                (unsigned)(pin_.backoff().delay_ms() / 1000UL));
-        if (why == sp::TlsFailReason::CertRejected)
-            SP_LOG(LOG_ERROR,
-                   "[TLS] The broker certificate must list '%s' (cert name "
-                   "mismatch) and be signed by the CA the Pi serves - re-run "
-                   "./install.sh on the Pi, or use sporeprint.local",
-                   cfg_.broker_host.c_str());
+        if (why == sp::TlsFailReason::CertRejected) log_cert_name_hint();
     }
 
     void warn_if_ip_host() const {

@@ -166,7 +166,7 @@ async def test_request_ids_are_unique(mock_mqtt_raw):
 
 async def test_role_registered_gen2_plug_resolves_by_device_role(mock_mqtt_raw):
     """Paired under its hardware prefix with a role: the seeded rule's friendly
-    target reaches it, exactly as for Gen1/Tasmota (V3-1)."""
+    target reaches it, exactly as for Gen1/Tasmota."""
     await _register_gen2("plug-shellyplugsg3-b1", "shellies/shellyplugsg3-b1", role="heater")
     assert await target_is_present("plug-heater") is True
     assert await send_plug_command("plug-heater", "off") is True
@@ -652,13 +652,13 @@ async def test_safety_auto_off_reaches_a_gen2_plug(mock_mqtt, mock_mqtt_raw):
 
 
 async def test_ceiling_armed_by_a_gen2_on_is_cleared_by_a_manual_off(mock_mqtt, mock_mqtt_raw):
-    """A plug ON is held on (plugs ignore duration_sec), so a ceiling arms; a
-    manual OFF through the plug endpoint — by the plug's id, not the role the
-    rule named — ends it (note_actuator_off over both names)."""
+    """A plug ON is held on (plugs ignore duration_sec), so a ceiling arms —
+    under the plug's own id, whichever name the rule used; a manual OFF
+    through the plug endpoint ends it (note_actuator_off over both names)."""
     await _register_gen2("plug-plugsg3-b1", "shellies/plugsg3-b1", role="heater")
     await _fire_rule(_rule(RuleAction(target="plug-heater", state="on"),
                            safety_max_on_seconds=600), {"temp_f": 60}, session=None)
-    key = engine._safety_key("plug-heater", None)
+    key = engine._override_key("plug-plugsg3-b1", None)
     assert key in engine._safety_tasks and not engine._safety_tasks[key].done()
 
     result = await command_plug("plug-plugsg3-b1", {"state": "off"})

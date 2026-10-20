@@ -2,8 +2,8 @@
 
 Extracted from `hardware/router.py` in v3.3.2 (P12 layering cleanup) so the
 router stays thin and the `hardware_nodes` table access lives in one place.
-`mqtt.py` still writes directly to the table on heartbeat ingest (per-message
-hot-path optimization documented in the AGENTS.md V20 exception).
+`mqtt.py` still writes directly to the table on heartbeat ingest (the
+per-message hot path, the exception AGENTS.md's `hardware_nodes` rule names).
 """
 
 import json
@@ -12,16 +12,15 @@ import re
 import time
 
 from ..automation.engine import note_actuator_off, note_actuator_on
-from ..automation.service import drop_duty_from_off, is_off_command
+from ..automation.service import is_off_command, normalize_node_command
 from ..db import get_db
 from ..mqtt import mqtt_publish
-
-log = logging.getLogger(__name__)
-
 # Path segments must stay inside the per-node namespace. A caller that set
 # `topic: "sporeprint/OTHER_NODE/cmd/heater"` previously bypassed it entirely.
-NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
-CHANNEL_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+# Re-exported for hardware/router.py.
+from ..node_ids import CHANNEL_RE, NODE_ID_RE  # noqa: F401
+
+log = logging.getLogger(__name__)
 
 # Optional peripherals a node's cmd/config {"peripherals": {...}} switches on
 # or off (firmware sp_core apply_peripheral_cmd): MH-Z19C CO2 sensor (UART),
@@ -60,8 +59,9 @@ async def send_command(node_id: str, command: dict) -> tuple[str, bool]:
     caller-supplied `topic` and `channel` from `command` to prevent injection,
     then composes the canonical `sporeprint/{node}/cmd/{channel}` topic itself.
 
-    An OFF is published without any pwm / level (deployed firmware let a duty
-    value win over "off"). A published OFF to a channel or scene also clears
+    A string state is published as "on" or "off", the way the firmware reads
+    it, and an OFF without any pwm / level (deployed firmware let a duty value
+    win over "off"): normalize_node_command. A published OFF to a channel or scene also clears
     the automation safety ceiling timing that actuator, so the next automation
     ON starts a fresh one instead of tripping early on the old deadline. Any
     other published channel or scene command tells the engine the actuator may
@@ -74,7 +74,7 @@ async def send_command(node_id: str, command: dict) -> tuple[str, bool]:
     if not CHANNEL_RE.match(str(channel)):
         raise ValueError("Invalid channel")
     topic = f"sporeprint/{node_id}/cmd/{channel}"
-    command = drop_duty_from_off(command)
+    command = normalize_node_command(command)
     sent_at = time.time()
     published = bool(await mqtt_publish(topic, command))
     if published and channel != "config":

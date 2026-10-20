@@ -27,7 +27,7 @@ def test_parse_claude_json_unparseable():
 
 
 def test_parse_claude_json_truncated_fenced_block_falls_back():
-    """srv-rest#10: a response cut off at max_tokens inside a ```json fence used
+    """A response cut off at max_tokens inside a ```json fence used
     to raise JSONDecodeError out of the parser (500 on /contamination/identify)."""
     text = '```json\n{"a": 1, "b": [1,2'
     result = parse_claude_json(text)
