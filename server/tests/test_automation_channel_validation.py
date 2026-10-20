@@ -11,6 +11,8 @@ rules are validated against them → bad channels are refused, not silently lost
 import json
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.automation.models import RuleAction
 from app.automation.service import validate_action_channel
 from app.db import get_db
@@ -109,119 +111,38 @@ async def test_node_that_never_reported_channels_stays_unreported():
 # ─── Validation ────────────────────────────────────────────────────────
 
 
-async def test_known_channel_passes():
-    # Rule targets the relay-01 placeholder; the real node is MAC-derived. The
-    # channel is validated against the resolved node's reported channels.
-    await _register_node(RELAY_NODE, RELAY_CHANNELS)
-    action = RuleAction(target="relay-01", channel="aux", state="on")
-    assert await validate_action_channel(action) is None
-
-
-async def test_unknown_channel_is_rejected_and_names_the_alternatives():
-    """The `mister` → `aux` case. The error has to be actionable."""
-    await _register_node(RELAY_NODE, RELAY_CHANNELS)
-    action = RuleAction(target="relay-01", channel="mister", state="on")
-
+@pytest.mark.parametrize("nodes,action,refusal", [
+    # The rule names the relay-01 placeholder; the real node is MAC-derived,
+    # and the channel is checked against the node it resolves to.
+    ([(RELAY_NODE, RELAY_CHANNELS, "relay")], RuleAction(target="relay-01", channel="aux"), None),
+    # The `mister` → `aux` case: refused, naming what the node does answer to.
+    ([(RELAY_NODE, RELAY_CHANNELS, "relay")], RuleAction(target="relay-01", channel="mister"),
+     ["mister", "aux"]),
+    # Validate, don't discover: a node that never reported channels is no evidence.
+    ([(RELAY_NODE, None, "relay")], RuleAction(target="relay-01", channel="anything"), None),
+    # A placeholder with no node of its role reaches nothing: flagged, not
+    # left to fire status='sent' ...
+    ([], RuleAction(target="relay-01", channel="fae"), ["relay"]),
+    # ... and a node of another role is not one of its role.
+    ([("node-light-9b2c", None, "lighting")], RuleAction(target="relay-01", channel="fae"),
+     ["relay"]),
+    # Smart plugs and vendor override keys are not nodes: no opinion.
+    ([], RuleAction(target="smart-plug-7", channel="whatever"), None),
+    # Vendor writes go through the integrations dispatcher, not MQTT.
+    ([("relay-01", RELAY_CHANNELS, "relay")],
+     RuleAction(target="vendor:kasa:10.0.0.5", channel="not-a-node-channel",
+                vendor_slug="kasa", vendor_action="set_power"), None),
+    # No channel: a config command.
+    ([(RELAY_NODE, RELAY_CHANNELS, "relay")], RuleAction(target="relay-01"), None),
+])
+async def test_a_rule_may_name_only_a_channel_its_node_answers_to(nodes, action, refusal):
+    for node_id, channels, node_type in nodes:
+        await _register_node(node_id, channels, node_type)
     error = await validate_action_channel(action)
+    if refusal is None:
+        assert error is None
+    else:
+        assert error is not None and all(word in error for word in refusal), error
 
-    assert error is not None
-    assert "mister" in error
-    assert "aux" in error
-
-
-async def test_node_that_never_reported_channels_gets_no_opinion():
-    """Validate, don't discover — an un-heard-from node isn't evidence."""
-    await _register_node(RELAY_NODE, None)
-    action = RuleAction(target="relay-01", channel="anything", state="on")
-    assert await validate_action_channel(action) is None
-
-
-async def test_unregistered_placeholder_target_is_flagged():
-    """A seeded rule still naming relay-01 when NO relay node is paired can't
-    reach any actuator — flag it instead of letting it fire status='sent'."""
-    action = RuleAction(target="relay-01", channel="fae", state="on")
-    error = await validate_action_channel(action)
-    assert error is not None
-    assert "relay" in error
-
-
-async def test_placeholder_resolves_to_matching_node_type_only():
-    """relay-01 must not resolve to a lighting node — a rule for the relay role
-    is unreachable when only a lighting node is paired."""
-    await _register_node("node-light-9b2c", None, node_type="lighting")
-    action = RuleAction(target="relay-01", channel="fae", state="on")
-    error = await validate_action_channel(action)
-    assert error is not None
-    assert "relay" in error
-
-
-async def test_unknown_target_gets_no_opinion():
-    """Smart plugs and vendor override keys aren't nodes; don't block them."""
-    action = RuleAction(target="smart-plug-7", channel="whatever", state="on")
-    assert await validate_action_channel(action) is None
-
-
-async def test_vendor_action_is_not_channel_checked():
-    """Vendor writes route through the integrations dispatcher, not MQTT."""
-    await _register_node("relay-01", RELAY_CHANNELS)
-    action = RuleAction(
-        target="vendor:kasa:10.0.0.5",
-        channel="not-a-node-channel",
-        state="on",
-        vendor_slug="kasa",
-        vendor_action="set_power",
-    )
-    assert await validate_action_channel(action) is None
-
-
-async def test_config_action_without_channel_passes():
-    await _register_node(RELAY_NODE, RELAY_CHANNELS)
-    action = RuleAction(target="relay-01", state="on")
-    assert await validate_action_channel(action) is None
-
-
-# ─── API surface ───────────────────────────────────────────────────────
-
-
-def _rule(channel: str) -> dict:
-    return {
-        "name": "Misting",
-        "condition": {
-            "type": "threshold",
-            "threshold": {"sensor": "humidity", "operator": "lt", "value": 80},
-        },
-        "action": {"target": "relay-01", "channel": channel, "state": "on"},
-    }
-
-
-async def test_create_rule_rejects_unknown_channel(client):
-    await _register_node(RELAY_NODE, RELAY_CHANNELS)
-
-    response = client.post("/api/automation/rules", json=_rule("mister"))
-
-    assert response.status_code == 422
-    assert "aux" in response.json()["detail"]
-
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT COUNT(*) AS n FROM automation_rules WHERE name = 'Misting'"
-        )
-        assert (await cursor.fetchone())["n"] == 0
-
-
-async def test_create_rule_accepts_known_channel(client):
-    await _register_node(RELAY_NODE, RELAY_CHANNELS)
-
-    response = client.post("/api/automation/rules", json=_rule("aux"))
-
-    assert response.status_code == 200
-    assert response.json()["action"]["channel"] == "aux"
-
-
-async def test_update_rule_rejects_unknown_channel(client):
-    await _register_node(RELAY_NODE, RELAY_CHANNELS)
-    rule_id = client.post("/api/automation/rules", json=_rule("aux")).json()["id"]
-
-    response = client.put(f"/api/automation/rules/{rule_id}", json=_rule("mister"))
-
-    assert response.status_code == 422
+# The LAN route and the cloud relay refuse such a rule alike (422):
+# tests/test_rule_crud.py.

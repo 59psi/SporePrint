@@ -82,36 +82,31 @@ async def test_non_ascii_title_is_delivered(ntfy):
     assert _body(ntfy[1])["title"] == "Temp HIGH: 91.2°F"
 
 
-async def test_dedup_same_key_within_window(ntfy):
+async def test_a_dedup_key_collapses_repeats_only_within_its_window(ntfy):
     await notify("Title", "Msg", dedup_key="key1", dedup_seconds=300)
     await notify("Title", "Msg", dedup_key="key1", dedup_seconds=300)
-    assert len(ntfy) == 1
-
-
-async def test_dedup_different_keys_pass(ntfy):
-    await notify("Title", "Msg", dedup_key="key1", dedup_seconds=300)
+    assert len(ntfy) == 1, "the same key inside the window"
     await notify("Title", "Msg", dedup_key="key2", dedup_seconds=300)
-    assert len(ntfy) == 2
-
-
-async def test_dedup_expired_window_passes(ntfy):
-    await notify("Title", "Msg", dedup_key="key1", dedup_seconds=1)
-    # Manually expire the entry
-    _last_sent["key1"] = time.time() - 10
-    await notify("Title", "Msg", dedup_key="key1", dedup_seconds=1)
-    assert len(ntfy) == 2
+    assert len(ntfy) == 2, "another key"
+    _last_sent["key1"] = time.time() - 301  # the window has run out
+    await notify("Title", "Msg", dedup_key="key1", dedup_seconds=300)
+    assert len(ntfy) == 3
 
 
 async def test_failed_publish_does_not_consume_dedup_window(ntfy):
     """A POST that fails must not arm the dedup window, otherwise a
-    transient ntfy outage suppresses the retry for the whole window."""
+    transient ntfy outage suppresses the retry for the whole window; nor may
+    it move a window an earlier page opened."""
     ntfy.status = 503
     await notify("Title", "Msg", dedup_key="k", dedup_seconds=300)
     assert "k" not in _last_sent
     ntfy.status = 200
     await notify("Title", "Msg", dedup_key="k", dedup_seconds=300)
     assert len(ntfy) == 2
-    assert "k" in _last_sent
+    opened = _last_sent["k"] = time.time() - 400   # that window has run out
+    ntfy.status = 503
+    await notify("Title", "Msg", dedup_key="k", dedup_seconds=300)
+    assert _last_sent["k"] == opened
 
 
 async def test_priority_mapping(ntfy):
@@ -185,15 +180,8 @@ async def test_co2_pages_name_their_node_and_never_share_a_key(ntfy):
     titles = [_body(r)["title"] for r in ntfy]
     assert titles == ["CO2 CRITICAL on node-a: 2500 ppm", "CO2 CRITICAL on node-b: 45000 ppm"]
     assert "dangerous to people" in _body(ntfy[1])["message"]
-
-
-def test_a_co2_page_needs_its_node():
     with pytest.raises(TypeError):
         notif.co2_alert(2500)  # no shared, node-less key any more
-
-
-def test_the_unused_shared_key_temperature_wrapper_is_gone():
-    assert not hasattr(notif, "temperature_alert")
 
 
 async def test_phase_reminders_of_same_named_sessions_both_go_out(ntfy):

@@ -10,8 +10,9 @@
 import asyncio
 import time
 
+import app.automation.engine as engine
 from app.automation.models import AutomationRule
-from app.automation.service import create_rule, firing_stats, toggle_rule
+from app.automation.service import create_rule, firing_stats, rules_generation, toggle_rule
 from app.db import get_db
 
 DAY = 86400
@@ -56,16 +57,15 @@ async def test_overlapping_toggles_each_flip_the_rule_once():
     assert await _enabled(rule_id) == 0
 
 
-async def test_toggle_of_an_unknown_rule_is_none():
-    assert await toggle_rule(987654) is None
-
-
-def test_the_toggle_route_answers_the_new_state(client):
+def test_the_toggle_route_answers_the_new_state_and_invalidates_the_rule_cache(client):
     rule_id = client.get("/api/automation/rules").json()[0]["id"]
     before = client.get(f"/api/automation/rules/{rule_id}").json()["enabled"]
+    generation = rules_generation()
     r = client.patch(f"/api/automation/rules/{rule_id}/toggle")
     assert r.status_code == 200
     assert r.json() == {"id": rule_id, "enabled": not before}
+    assert rules_generation() > generation
+    assert engine._cache_generation != rules_generation()  # the next load reads the table
     assert client.patch("/api/automation/rules/987654/toggle").status_code == 404
 
 
@@ -73,6 +73,8 @@ def test_the_toggle_route_answers_the_new_state(client):
 
 
 async def test_stats_count_the_window_and_keep_each_rules_newest_firing():
+    empty = await firing_stats(7)
+    assert (empty["fires"], empty["failed"], empty["rules"]) == (0, 0, [])
     now = time.time()
     await _firings([
         (1, now - 60, "sent"),
@@ -115,9 +117,3 @@ def test_stats_window_is_validated(client):
     assert client.get("/api/automation/firings/stats").status_code == 200  # 7 days by default
     assert client.get("/api/automation/firings/stats?days=0").status_code == 422
     assert client.get("/api/automation/firings/stats?days=400").status_code == 422
-
-
-async def test_stats_on_an_empty_log():
-    assert (await firing_stats(7))["rules"] == []
-    stats = await firing_stats(7)
-    assert stats["fires"] == 0 and stats["failed"] == 0

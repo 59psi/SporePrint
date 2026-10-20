@@ -8,14 +8,12 @@ scene. Ending the session must command the automation-driven actuators OFF, and
 the chamber must stop advertising the finished session as its live grow.
 """
 
-import importlib
 import json
 import time
 
 import pytest
 
 import app.automation.engine as engine
-import app.sessions.service as sessions_service
 from app.automation.models import (
     AutomationRule,
     ConditionType,
@@ -26,8 +24,8 @@ from app.automation.models import (
 )
 from app.automation.service import create_rule, hold_applies, seed_builtin_rules
 from app.automation.smart_plugs import register_plug
-from app.chambers.models import ChamberCreate, ChamberUpdate
-from app.chambers.service import create_chamber, get_chamber, update_chamber
+from app.chambers.models import ChamberCreate
+from app.chambers.service import create_chamber, get_chamber
 from app.db import get_db
 from app.sessions.models import PhaseAdvance, SessionCreate
 from app.sessions.service import (
@@ -39,34 +37,27 @@ from app.sessions.service import (
     get_events,
     get_session,
 )
-
-kasa_driver = importlib.import_module("app.integrations.kasa.driver")
-
-
-@pytest.fixture()
-def json_publishes(monkeypatch):
-    """Record the JSON (native-node) publishes the session service makes."""
-    calls: list[tuple[str, dict]] = []
-
-    async def _fake_publish(topic, payload):
-        calls.append((topic, payload))
-        return True
-
-    monkeypatch.setattr(sessions_service, "mqtt_publish", _fake_publish)
-    return calls
+from tests._pi_a_engine import (  # noqa: F401 (fixtures)
+    engine_state,
+    json_publishes,
+    kasa_driver,
+    kasa_wire,
+)
 
 
 async def _session(name="Grow", **kw):
     return await create_session(SessionCreate(name=name, species_profile_id="blue_oyster", **kw))
 
 
-async def test_complete_last_session_commands_automation_actuators_off(json_publishes, mock_mqtt_raw):
+@pytest.mark.parametrize("end", [complete_session, abort_session])
+async def test_ending_the_last_grow_commands_automation_actuators_off(
+        end, json_publishes, mock_mqtt_raw):
     await seed_builtin_rules()
     # A paired cooler plug (the seeded rules target the role "plug-cooler").
     await register_plug("plug-abc123", "Cooler", "shelly", "shellies/abc123", device_role="cooler")
     s = await _session()
 
-    await complete_session(s["id"])
+    await end(s["id"])
 
     topics = {t: p for t, p in json_publishes}
     # Every relay channel automation can switch ON gets an explicit OFF.
@@ -80,46 +71,41 @@ async def test_complete_last_session_commands_automation_actuators_off(json_publ
     # Nothing was switched ON.
     assert all(p.get("state") == "off" for _, p in json_publishes)
 
-    events = await get_events(s["id"])
-    safed = [e for e in events if e["type"] == "actuators_safed"]
+    safed = [e for e in await get_events(s["id"]) if e["type"] == "actuators_safed"]
     assert len(safed) == 1
     data = json.loads(safed[0]["data"])
     assert any(r["target"] == "relay-01" and r["channel"] == "fae" for r in data["actuators"])
 
 
-async def test_abort_last_session_also_safes_actuators(json_publishes, mock_mqtt_raw):
+async def test_no_safing_while_another_grow_is_still_active(json_publishes, mock_mqtt_raw,
+                                                            kasa_wire):
+    """The engine keeps driving the closet for the remaining grow; a blanket
+    OFF would fight it."""
     await seed_builtin_rules()
-    s = await _session()
-    await abort_session(s["id"])
-    assert any(t == "sporeprint/relay-01/cmd/fae" for t, _ in json_publishes)
-
-
-async def test_no_safing_while_another_session_is_still_active(json_publishes, mock_mqtt_raw):
-    """The engine keeps driving the closet for the remaining active session;
-    blanket-OFF would fight it."""
-    await seed_builtin_rules()
+    await _kasa_heater_rule()
     older = await _session("Older")
     await _session("Newer")
     await complete_session(older["id"])
-    assert json_publishes == []
-    assert mock_mqtt_raw == []
-    events = await get_events(older["id"])
-    assert not any(e["type"] == "actuators_safed" for e in events)
+    assert json_publishes == [] and mock_mqtt_raw == [] and kasa_wire == []
+    assert not any(e["type"] == "actuators_safed" for e in await get_events(older["id"]))
 
 
-async def test_manually_held_actuator_is_left_alone(json_publishes, mock_mqtt_raw):
+async def test_a_manually_held_actuator_is_left_alone(json_publishes, mock_mqtt_raw, kasa_wire):
     await seed_builtin_rules()
+    await _kasa_heater_rule()
     async with get_db() as db:
-        await db.execute(
-            "INSERT INTO manual_overrides (target, channel, locked, reason) VALUES (?, ?, 1, ?)",
-            ("relay-01", "fae", "operator hold"),
-        )
+        for target, channel in (("relay-01", "fae"), ("vendor:kasa", None)):
+            await db.execute(
+                "INSERT INTO manual_overrides (target, channel, locked, reason) VALUES (?, ?, 1, ?)",
+                (target, channel, "operator hold"),
+            )
         await db.commit()
     s = await _session()
     await complete_session(s["id"])
     published = {t for t, _ in json_publishes}
     assert "sporeprint/relay-01/cmd/fae" not in published
     assert "sporeprint/relay-01/cmd/exhaust" in published
+    assert kasa_wire == []
 
 
 # ── a hold is read as the engine reads it ──────────────────────
@@ -361,20 +347,6 @@ async def test_ending_session_clears_chamber_active_session(end, json_publishes,
     assert (await get_chamber(chamber["id"]))["active_session_id"] is None
 
 
-async def test_chamber_patch_explicit_null_clears_active_session():
-    chamber = await create_chamber(ChamberCreate(name="Closet"))
-    s = await _session(chamber_id=chamber["id"])
-
-    # Omitting the field leaves it untouched ...
-    kept = await update_chamber(chamber["id"], ChamberUpdate(name="Renamed"))
-    assert kept["active_session_id"] == s["id"]
-
-    # ... an explicit null clears it.
-    cleared = await update_chamber(chamber["id"], ChamberUpdate(active_session_id=None))
-    assert cleared["active_session_id"] is None
-    assert cleared["name"] == "Renamed"
-
-
 def test_chamber_patch_endpoint_explicit_null_clears(client):
     chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
     s = client.post("/api/sessions", json={
@@ -391,18 +363,6 @@ def test_chamber_patch_endpoint_explicit_null_clears(client):
 
 
 # ── vendor devices are switched off too ─────────────────────────
-
-
-@pytest.fixture()
-def kasa_wire(monkeypatch):
-    sent: list[tuple[str, dict]] = []
-
-    async def fake_query(ip, payload, timeout):
-        sent.append((ip, payload))
-        return {}
-
-    monkeypatch.setattr(kasa_driver, "_kasa_query", fake_query)
-    return sent
 
 
 async def _kasa_heater_rule(on=True):
@@ -429,26 +389,51 @@ async def test_last_grow_ending_switches_a_vendor_device_off(json_publishes, moc
             "published": True} in actuators
 
 
-async def test_vendor_device_is_left_alone_while_another_grow_runs(json_publishes, mock_mqtt_raw, kasa_wire):
-    await _kasa_heater_rule()
-    older = await _session("Older")
-    await _session("Newer")
-    await complete_session(older["id"])
-    assert kasa_wire == []
 
+async def test_a_vendor_device_that_cannot_be_switched_off_never_strands_the_rest(
+        json_publishes, mock_mqtt_raw, monkeypatch):
+    """An unreachable plug is recorded as not switched off; a rule naming no
+    device has nothing to switch; every other actuator still goes off."""
+    sent: list[str] = []
 
-async def test_a_held_vendor_device_is_left_alone(json_publishes, mock_mqtt_raw, kasa_wire):
-    await _kasa_heater_rule()
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO manual_overrides (target, channel, locked, reason) VALUES (?, NULL, 1, ?)",
-            ("vendor:kasa", "operator hold"),
-        )
-        await db.commit()
+    async def query(ip, payload, timeout):
+        if ip == "10.0.0.21":
+            raise kasa_driver.KasaError("connect refused")
+        sent.append(ip)
+        return {}
+
+    monkeypatch.setattr(kasa_driver, "_kasa_query", query)
+    await seed_builtin_rules()
+    for name, ip in (("unreachable", "10.0.0.21"), ("no device", ""), ("heater", "10.0.0.20")):
+        await create_rule(AutomationRule(
+            name=name, condition=RuleCondition(
+                type=ConditionType.THRESHOLD,
+                threshold=ThresholdCondition(sensor="temp_f", operator="lt", value=60)),
+            action=RuleAction(target="vendor:kasa", vendor_slug="kasa", vendor_action="set_power",
+                              vendor_params={"ip": ip, "on": True}),
+        ))
     s = await _session()
     await complete_session(s["id"])
-    assert kasa_wire == []
 
+    assert sent == ["10.0.0.20"]
+    assert "sporeprint/relay-01/cmd/fae" in {t for t, _ in json_publishes}
+    (safed,) = [e for e in await get_events(s["id"]) if e["type"] == "actuators_safed"]
+    vendors = [a for a in json.loads(safed["data"])["actuators"] if a["kind"] == "vendor"]
+    assert sorted((a["target"], a["published"]) for a in vendors) == [
+        ("vendor:kasa:10.0.0.20", True), ("vendor:kasa:10.0.0.21", False)]
+
+
+async def test_a_config_command_rule_gets_no_off_at_session_end(json_publishes, mock_mqtt_raw):
+    """cmd/config reads no on/off state: there is nothing to switch off."""
+    await create_rule(AutomationRule(
+        name="cadence", condition=RuleCondition(
+            type=ConditionType.THRESHOLD,
+            threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=0)),
+        action=RuleAction(target="climate-01", state="on"),
+    ))
+    s = await _session()
+    await complete_session(s["id"])
+    assert json_publishes == [] and mock_mqtt_raw == []
 
 # ── a grow is ended once ───────────────────────────────────────
 

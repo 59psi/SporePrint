@@ -1,269 +1,88 @@
-import time
-from unittest.mock import patch
+"""How a rule's condition reads one telemetry frame: thresholds and compounds.
 
-from app.automation.engine import (
-    _eval_threshold,
-    _eval_schedule,
-    _evaluate_condition,
-    set_override,
-    get_overrides,
-    is_overridden,
-)
-from app.automation.models import (
-    ThresholdCondition,
-    ScheduleCondition,
-    RuleCondition,
-    CompoundCondition,
-    ConditionType,
-    CompoundOp,
-    ManualOverride,
-)
+A condition is three-valued: True, False, or None when the frame cannot say
+(the sensor it compares is missing or not a finite number). A relay or
+lighting node's frame carries no climate readings at all, and that is not the
+condition going false: a rule in force keeps its actuator through such a
+frame (see test_automation_actuators.py). Only True fires a rule.
+
+Schedules: tests/test_automation_scheduling.py. Manual holds:
+tests/test_automation_holds_and_ceilings.py.
+"""
+
+import pytest
+
+from app.automation.engine import _condition_state, _eval_threshold, _evaluate_condition
+from app.automation.models import CompoundCondition, CompoundOp, ConditionType, RuleCondition
 from app.species.models import PhaseParams
-
-
-def _phase_params(**overrides):
-    defaults = dict(
-        temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
-        co2_max_ppm=800, co2_tolerance="low", light_hours_on=12,
-        light_hours_off=12, light_spectrum="daylight_6500k", fae_mode="scheduled",
-        expected_duration_days=(7, 14),
-    )
-    defaults.update(overrides)
-    return PhaseParams(**defaults)
-
-
-# ── Threshold tests ─────────────────────────────────────────────
-
-
-def test_threshold_gt():
-    t = ThresholdCondition(sensor="temp_f", operator="gt", value=75)
-    assert _eval_threshold(t, {"temp_f": 80}, None) is True
-    assert _eval_threshold(t, {"temp_f": 70}, None) is False
-
-
-def test_threshold_lt():
-    t = ThresholdCondition(sensor="temp_f", operator="lt", value=75)
-    assert _eval_threshold(t, {"temp_f": 70}, None) is True
-    assert _eval_threshold(t, {"temp_f": 80}, None) is False
-
-
-def test_threshold_gte():
-    t = ThresholdCondition(sensor="temp_f", operator="gte", value=75)
-    assert _eval_threshold(t, {"temp_f": 75}, None) is True
-    assert _eval_threshold(t, {"temp_f": 74.9}, None) is False
-
-
-def test_threshold_lte():
-    t = ThresholdCondition(sensor="temp_f", operator="lte", value=75)
-    assert _eval_threshold(t, {"temp_f": 75}, None) is True
-    assert _eval_threshold(t, {"temp_f": 75.1}, None) is False
-
-
-def test_threshold_eq():
-    t = ThresholdCondition(sensor="temp_f", operator="eq", value=75)
-    assert _eval_threshold(t, {"temp_f": 75.05}, None) is True  # within 0.1 tolerance
-
-
-def test_threshold_eq_outside_tolerance():
-    t = ThresholdCondition(sensor="temp_f", operator="eq", value=75)
-    assert _eval_threshold(t, {"temp_f": 75.2}, None) is False
-
-
-def test_threshold_missing_sensor():
-    t = ThresholdCondition(sensor="co2_ppm", operator="gt", value=800)
-    assert _eval_threshold(t, {"temp_f": 75}, None) is False
-
-
-def test_threshold_profile_ref():
-    t = ThresholdCondition(sensor="humidity", operator="lt", profile_ref="humidity_min")
-    params = _phase_params(humidity_min=85)
-    assert _eval_threshold(t, {"humidity": 80}, params) is True
-    assert _eval_threshold(t, {"humidity": 90}, params) is False
-
-
-def test_threshold_profile_ref_missing_attr():
-    t = ThresholdCondition(sensor="humidity", operator="lt", profile_ref="nonexistent")
-    params = _phase_params()
-    assert _eval_threshold(t, {"humidity": 80}, params) is False
-
-
-def test_threshold_no_value_no_ref():
-    t = ThresholdCondition(sensor="humidity", operator="lt")
-    assert _eval_threshold(t, {"humidity": 80}, None) is False
-
-
-# ── Schedule tests ──────────────────────────────────────────────
-
-
-def _mock_localtime(hour, minute):
-    """Create a struct_time-like for the given hour and minute."""
-    return time.struct_time((2026, 1, 1, hour, minute, 0, 0, 1, 0))
-
-
-# `interval_min` is ELAPSED-SINCE-LAST-FIRE, not wall-clock modulo.
-#
-# These two tests previously asserted the modulo behaviour — that is, they
-# asserted the bug. `(hour*60+min) % 20 == 0` only matched when an evaluation
-# happened to land on an exact 20-minute boundary, but rules are evaluated when
-# telemetry arrives (~60s, and it drifts). One late frame and the whole cycle
-# was skipped: the FAE fan simply never ran that round. "Every 20 minutes" now
-# means what it says. Full contract in tests/test_automation_scheduling.py.
-def test_schedule_interval_match():
-    s = ScheduleCondition(interval_min=20)
-    now = time.time()
-    with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(2, 5)  # wall clock is irrelevant
-        mock_time.time.return_value = now
-        assert _eval_schedule(s, None, last_fired=now - 21 * 60) is True
-
-
-def test_schedule_interval_no_match():
-    s = ScheduleCondition(interval_min=20)
-    now = time.time()
-    with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(2, 0)  # on a boundary…
-        mock_time.time.return_value = now
-        # …but only 5 minutes since it last fired, so it is not due.
-        assert _eval_schedule(s, None, last_fired=now - 5 * 60) is False
-
-
-def test_schedule_time_range_inside():
-    s = ScheduleCondition(time_range=("08:00", "20:00"))
-    with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(12, 0)
-        assert _eval_schedule(s) is True
-
-
-def test_schedule_time_range_outside():
-    s = ScheduleCondition(time_range=("08:00", "20:00"))
-    with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(22, 0)
-        assert _eval_schedule(s) is False
-
-
-def test_schedule_time_range_overnight_inside():
-    s = ScheduleCondition(time_range=("22:00", "06:00"))
-    with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(23, 0)
-        assert _eval_schedule(s) is True
-        mock_time.localtime.return_value = _mock_localtime(2, 0)
-        assert _eval_schedule(s) is True
-
-
-def test_schedule_time_range_overnight_outside():
-    s = ScheduleCondition(time_range=("22:00", "06:00"))
-    with patch("app.automation.engine.time") as mock_time:
-        mock_time.localtime.return_value = _mock_localtime(12, 0)
-        assert _eval_schedule(s) is False
-
-
-def test_schedule_none():
-    assert _eval_schedule(None) is False
-
-
-# ── Compound condition tests ────────────────────────────────────
-
-
-def test_compound_and_all_true():
-    c = RuleCondition(
-        type=ConditionType.COMPOUND,
-        compound=CompoundCondition(
-            op=CompoundOp.AND,
-            conditions=[
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=70)),
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="humidity", operator="gt", value=80)),
-            ],
-        ),
-    )
-    assert _evaluate_condition(c, {"temp_f": 75, "humidity": 85}, None) is True
-
-
-def test_compound_and_one_false():
-    c = RuleCondition(
-        type=ConditionType.COMPOUND,
-        compound=CompoundCondition(
-            op=CompoundOp.AND,
-            conditions=[
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=70)),
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="humidity", operator="gt", value=90)),
-            ],
-        ),
-    )
-    assert _evaluate_condition(c, {"temp_f": 75, "humidity": 85}, None) is False
-
-
-def test_compound_or_one_true():
-    c = RuleCondition(
-        type=ConditionType.COMPOUND,
-        compound=CompoundCondition(
-            op=CompoundOp.OR,
-            conditions=[
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=80)),
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="humidity", operator="gt", value=80)),
-            ],
-        ),
-    )
-    assert _evaluate_condition(c, {"temp_f": 75, "humidity": 85}, None) is True
-
-
-def test_compound_or_all_false():
-    c = RuleCondition(
-        type=ConditionType.COMPOUND,
-        compound=CompoundCondition(
-            op=CompoundOp.OR,
-            conditions=[
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=80)),
-                RuleCondition(type=ConditionType.THRESHOLD, threshold=ThresholdCondition(sensor="humidity", operator="gt", value=90)),
-            ],
-        ),
-    )
-    assert _evaluate_condition(c, {"temp_f": 75, "humidity": 85}, None) is False
-
-
-# ── Override tests ──────────────────────────────────────────────
-
-
-async def test_set_and_check_override():
-    await set_override(ManualOverride(target="relay-01", channel="fae", reason="testing"))
-    assert is_overridden("relay-01", "fae") is True
-    assert is_overridden("relay-01", "exhaust") is False
-
-
-async def test_override_wildcard_channel():
-    await set_override(ManualOverride(target="relay-01", channel=None, reason="all channels"))
-    assert is_overridden("relay-01", "fae") is True
-    assert is_overridden("relay-01", "exhaust") is True
-
-
-async def test_override_expiry():
-    await set_override(ManualOverride(target="relay-01", channel="fae", expires_at=time.time() - 10))
-    assert is_overridden("relay-01", "fae") is False
-
-
-async def test_clear_override():
-    await set_override(ManualOverride(target="relay-01", channel="fae", reason="test"))
-    assert is_overridden("relay-01", "fae") is True
-    await set_override(ManualOverride(target="relay-01", channel="fae", locked=False))
-    assert is_overridden("relay-01", "fae") is False
-
-
-async def test_get_overrides_expires():
-    await set_override(ManualOverride(target="relay-01", channel="fae", expires_at=time.time() - 10))
-    overrides = await get_overrides()
-    assert len(overrides) == 0
-
-
-async def test_override_persists_across_reload():
-    """Overrides must survive a 'process restart' — i.e. losing the in-memory cache."""
-    import app.automation.engine as engine
-    await set_override(ManualOverride(target="relay-01", channel="heater", reason="operator hold"))
-    assert is_overridden("relay-01", "heater") is True
-
-    # Simulate process restart: clear cache + reload flag, then force a fresh load.
-    engine._overrides.clear()
-    engine._overrides_loaded = False
-    await engine.ensure_overrides_loaded()
-
-    assert is_overridden("relay-01", "heater") is True
-    overrides = await get_overrides()
-    assert any(o.target == "relay-01" and o.channel == "heater" for o in overrides)
+from tests._pi_a_engine import threshold
+
+PHASE = PhaseParams(
+    temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,
+    co2_max_ppm=800, co2_tolerance="low", light_hours_on=12,
+    light_hours_off=12, light_spectrum="daylight_6500k", fae_mode="scheduled",
+    expected_duration_days=(7, 14),
+)
+
+
+@pytest.mark.parametrize("operator,value,reading,expected", [
+    ("gt", 75, 80, True), ("gt", 75, 75, False), ("gt", 75, 70, False),
+    ("lt", 75, 70, True), ("lt", 75, 80, False),
+    ("gte", 75, 75, True), ("gte", 75, 74.9, False),
+    ("lte", 75, 75, True), ("lte", 75, 75.1, False),
+    ("eq", 75, 75.05, True), ("eq", 75, 75.2, False),   # equal within 0.1
+    # A boolean reading (door_open) compares as 0 / 1, as history stores it.
+    ("gt", 0.5, True, True), ("gt", 0.5, False, False),
+    # No usable reading: unknown, never a match. The firmware writes a NaN
+    # dew point as null; comparing a null or a string raised and skipped the
+    # rule on every frame.
+    ("gt", 75, None, None), ("gt", 75, float("nan"), None), ("gt", 75, "80", None),
+])
+def test_a_threshold_compares_the_reading_to_its_value(operator, value, reading, expected):
+    cond = threshold("temp_f", operator, value)
+    assert _condition_state(cond, {"temp_f": reading}) is expected
+    assert _eval_threshold(cond.threshold, {"temp_f": reading}) is (expected is True)
+
+
+def test_a_missing_sensor_is_unknown_not_false():
+    assert _condition_state(threshold("co2_ppm", "gt", 800), {"temp_f": 75}) is None
+
+
+@pytest.mark.parametrize("ref,reading,params,expected", [
+    ("humidity_min", 80, PHASE, True),
+    ("humidity_min", 90, PHASE, False),
+    # A profile field the phase does not set (co2_min_ppm: a species with no
+    # CO2 floor) or does not have never matches.
+    ("co2_min_ppm", 80, PHASE, False),
+    ("nonexistent", 80, PHASE, False),
+    # No active phase, or no value and no profile_ref: nothing to compare to.
+    ("humidity_min", 80, None, False),
+    (None, 80, PHASE, False),
+])
+def test_a_profile_threshold_reads_the_active_phase(ref, reading, params, expected):
+    cond = threshold("humidity", "lt", profile_ref=ref)
+    assert _condition_state(cond, {"humidity": reading}, params) is expected
+
+
+# Branches: T holds on the frame, F does not, U cannot be judged (no CO2 reading).
+_T = threshold("temp_f", "gt", 70)
+_F = threshold("humidity", "gt", 90)
+_U = threshold("co2_ppm", "gt", 1)
+_FRAME = {"temp_f": 75, "humidity": 85}
+
+
+@pytest.mark.parametrize("op,branches,expected", [
+    (CompoundOp.AND, [_T, _T], True),
+    (CompoundOp.AND, [_T, _F], False),
+    (CompoundOp.AND, [_F, _U], False),   # one false branch settles an AND
+    (CompoundOp.AND, [_T, _U], None),
+    (CompoundOp.OR, [_F, _T], True),
+    (CompoundOp.OR, [_U, _T], True),     # one true branch settles an OR
+    (CompoundOp.OR, [_F, _F], False),
+    (CompoundOp.OR, [_F, _U], None),
+])
+def test_a_compound_condition_is_three_valued(op, branches, expected):
+    cond = RuleCondition(type=ConditionType.COMPOUND,
+                         compound=CompoundCondition(op=op, conditions=branches))
+    assert _condition_state(cond, _FRAME) is expected
+    assert _evaluate_condition(cond, _FRAME) is (expected is True)

@@ -13,184 +13,98 @@ Two live instances of that, both fixed here:
   * smart-plug rules were published to sporeprint/plug-*/cmd/*, which no
     Shelly or Tasmota device subscribes to. They listen on their own topic
     trees. Every seeded humidifier/heater/cooler rule fired into the void.
+
+The safety ceiling's OFF takes the same routes: tests/test_safety_max_on.py.
 """
 
 import json
 
-from app.automation.engine import _fire_rule
-from app.automation.models import (
-    AutomationRule,
-    ConditionType,
-    RuleAction,
-    RuleCondition,
-    ThresholdCondition,
-)
-from app.db import get_db
+import pytest
 
-# Real nodes register under MAC-derived ids with a provisioned node_type, NOT
-# the seeded placeholders relay-01 / light-01. The engine resolves the
-# placeholder a seeded rule names to the chamber's real node of that role at
-# fire time, so the command reaches the topic the node is actually subscribed
-# to. Registering nodes the way provisioning does is what proves that.
+from app.automation.engine import _fire_rule
+from app.automation.models import RuleAction
+from tests._pi_a_engine import (  # noqa: F401 (fixtures)
+    FakeSio,
+    RELAY_CHANNELS,
+    engine_state,
+    firings,
+    insert_plug,
+    make_rule,
+    register_node,
+    threshold,
+)
+
+# Real nodes register under MAC-derived ids, NOT the seeded placeholders
+# relay-01 / light-01: the command must reach the topic the chamber's real
+# node of that role is subscribed to.
 RELAY_NODE = "node-relay-7a3f1c"
 LIGHT_NODE = "node-light-9b2c4d"
 
 
-def _rule(action: RuleAction, name: str = "r") -> AutomationRule:
-    return AutomationRule(
-        id=1,
-        name=name,
-        condition=RuleCondition(
-            type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="humidity", operator="lt", value=80),
-        ),
-        action=action,
-        log_to_session=False,
-    )
+def _rule(action: RuleAction, name: str = "r"):
+    return make_rule(action, condition=threshold("humidity", "lt", 80), name=name,
+                     log_to_session=False)
 
 
-async def _register_node(
-    node_id: str, node_type: str, channels: list[str] | None = None
-) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) "
-            "VALUES (?, ?, ?, ?)",
-            (node_id, node_type, json.dumps(channels) if channels is not None else None,
-             1_752_700_000.0),
-        )
-        await db.commit()
+@pytest.mark.parametrize("action,topic,payload", [
+    # The firmware reads `scene` only on cmd/scene (cmd_router.h).
+    (RuleAction(target="light-01", scene="fruiting_standard"),
+     f"sporeprint/{LIGHT_NODE}/cmd/scene", {"state": "on", "scene": "fruiting_standard"}),
+    # A channel action keeps its own suffix, a scene set beside it or not.
+    (RuleAction(target="relay-01", channel="fae", state="on", pwm=180, ramp_sec=5),
+     f"sporeprint/{RELAY_NODE}/cmd/fae", {"state": "on", "pwm": 180, "ramp_sec": 5}),
+    (RuleAction(target="relay-01", channel="fae", scene="fruiting_standard"),
+     f"sporeprint/{RELAY_NODE}/cmd/fae", {"state": "on", "scene": "fruiting_standard"}),
+    # No channel and no scene is a config command.
+    (RuleAction(target="climate-01", state="on"), "sporeprint/climate-01/cmd/config",
+     {"state": "on"}),
+])
+async def test_a_node_command_goes_to_the_topic_its_firmware_reads(mock_mqtt, action, topic,
+                                                                    payload):
+    await register_node(RELAY_NODE, "relay", RELAY_CHANNELS)
+    await register_node(LIGHT_NODE, "lighting")
+    sio = FakeSio()
+    await _fire_rule(_rule(action), {"humidity": 70}, None, sio)
+    assert mock_mqtt == [(topic, payload)]
+    assert sio.events[-1][0] == "rule_fired" and sio.events[-1][1]["status"] == "sent"
 
 
-async def _register_plug(
-    plug_id: str, plug_type: str, prefix: str, role: str | None = None
-) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO smart_plugs (plug_id, plug_type, mqtt_topic_prefix, name, device_role) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (plug_id, plug_type, prefix, plug_id, role),
-        )
-        await db.commit()
+# (the paired plug, the rule's action) -> what reaches the plug's own topic tree.
+_PLUG_RULES = {
+    # Bare text, not JSON: a Shelly rejects "on" with quotes.
+    "shelly": (("plug-9f7e", "shelly", "shellies/9f7e", "humidifier"),
+               RuleAction(target="plug-humidifier", state="on"),
+               [("shellies/9f7e/relay/0/command", "on")]),
+    "tasmota": (("plug-a1b2c3", "tasmota", "tasmota/a1b2c3", "heater"),
+                RuleAction(target="plug-heater", state="off"),
+                [("tasmota/a1b2c3/cmnd/POWER", "OFF")]),
+    "shelly gen2": (("plug-shellyplugus-c4", "shelly_gen2", "shellies/shellyplugus-c4",
+                     "humidifier"), RuleAction(target="plug-humidifier", state="on"),
+                    [("shellies/shellyplugus-c4/rpc", ("Switch.Set", {"id": 0, "on": True}))]),
+}
 
 
-# ── scene routing ──────────────────────────────────────────────────────
+@pytest.mark.parametrize("transport", list(_PLUG_RULES))
+async def test_a_plug_rule_reaches_the_plugs_own_topic_tree(mock_mqtt, mock_mqtt_raw, transport):
+    """Paired the way the build guide provisions it (plug-<hwid> with a
+    device_role) while the seeded rule names the role. Nothing goes on the
+    sporeprint/* tree, and the firing is recorded as sent."""
+    (plug_id, plug_type, prefix, role), action, sent = _PLUG_RULES[transport]
+    await insert_plug(plug_id, plug_type, prefix, role=role)
+    await _fire_rule(_rule(action, "plug"), {"humidity": 70}, None)
+
+    assert mock_mqtt == []
+    wire = [(t, (json.loads(p)["method"], json.loads(p)["params"]) if t.endswith("/rpc") else p)
+            for t, p in mock_mqtt_raw]
+    assert wire == sent
+    assert [f["status"] for f in await firings("plug")] == ["sent"]
 
 
-async def test_scene_action_publishes_to_cmd_scene(mock_mqtt):
-    """The firmware only reads `scene` on the cmd/scene suffix (cmd_router.h).
-
-    The seeded rule names the placeholder light-01; the real lighting node is
-    MAC-derived, so the scene must publish to the RESOLVED node's cmd/scene."""
-    await _register_node(LIGHT_NODE, "lighting")
-    await _fire_rule(
-        _rule(RuleAction(target="light-01", scene="fruiting_standard"), "scene"),
-        {"humidity": 70},
-        session=None,
-    )
-    topics = [t for t, _ in mock_mqtt]
-    assert topics == [f"sporeprint/{LIGHT_NODE}/cmd/scene"], topics
-
-
-async def test_channel_action_still_publishes_to_cmd_channel(mock_mqtt):
-    """A channel action must keep its own suffix even if a scene is also set —
-    published to the chamber's real relay node, not the relay-01 placeholder."""
-    await _register_node(RELAY_NODE, "relay", ["fae", "exhaust", "circulation", "aux"])
-    await _fire_rule(
-        _rule(RuleAction(target="relay-01", channel="fae", state="on"), "chan"),
-        {"humidity": 70},
-        session=None,
-    )
-    topics = [t for t, _ in mock_mqtt]
-    assert topics == [f"sporeprint/{RELAY_NODE}/cmd/fae"], topics
-
-
-async def test_bare_action_still_publishes_to_cmd_config(mock_mqtt):
-    """No channel and no scene = a config command. Unchanged."""
-    await _fire_rule(
-        _rule(RuleAction(target="climate-01", state="on"), "cfg"),
-        {"humidity": 70},
-        session=None,
-    )
-    topics = [t for t, _ in mock_mqtt]
-    assert topics == ["sporeprint/climate-01/cmd/config"], topics
-
-
-# ── smart-plug routing ─────────────────────────────────────────────────
-
-
-async def test_shelly_plug_rule_reaches_the_shelly_topic(mock_mqtt, mock_mqtt_raw):
-    # Paired the way the build guide provisions it: a plug-<hwid> row with a
-    # device_role. The seeded rule fires the friendly role target.
-    await _register_plug("plug-9f7e", "shelly", "shellies/9f7e", role="humidifier")
-
-    await _fire_rule(
-        _rule(RuleAction(target="plug-humidifier", state="on"), "plug"),
-        {"humidity": 70},
-        session=None,
-    )
-
-    # Nothing on the sporeprint/* tree — a plug does not speak that protocol.
-    assert [t for t, _ in mock_mqtt] == []
-    # Bare payload, not JSON: Shelly rejects `"on"` (quoted).
-    assert mock_mqtt_raw == [("shellies/9f7e/relay/0/command", "on")]
-
-
-async def test_tasmota_plug_rule_reaches_the_tasmota_topic(mock_mqtt, mock_mqtt_raw):
-    await _register_plug("plug-a1b2c3", "tasmota", "tasmota/a1b2c3", role="heater")
-
-    await _fire_rule(
-        _rule(RuleAction(target="plug-heater", state="off"), "plug"),
-        {"humidity": 70},
-        session=None,
-    )
-
-    assert [t for t, _ in mock_mqtt] == []
-    assert mock_mqtt_raw == [("tasmota/a1b2c3/cmnd/POWER", "OFF")]
-
-
-async def test_unregistered_plug_is_an_honest_no_op(mock_mqtt, mock_mqtt_raw):
-    """plug-<id> with no DB row is NOT paired: no actuator can receive the
-    command, so it must be a reported no-op — not a speculative publish that
-    logs status='sent' for hardware that was never there."""
-    await _fire_rule(
-        _rule(RuleAction(target="plug-cooler", state="on"), "plug"),
-        {"humidity": 70},
-        session=None,
-    )
-    # Nothing published anywhere — not on sporeprint/*, and not on a guessed
-    # shellies/* topic for a plug that was never paired.
-    assert [t for t, _ in mock_mqtt] == []
-    assert mock_mqtt_raw == []
-    # The audit row tells the truth: the firing actuated nothing.
-    async with get_db() as db:
-        cursor = await db.execute("SELECT status FROM automation_firings")
-        row = await cursor.fetchone()
-    assert row["status"] == "failed", row["status"]
-
-
-async def test_safety_auto_off_routes_plug_targets_to_plug_topic(mock_mqtt, mock_mqtt_raw):
-    """The fire-risk watchdog's OFF must reach the plug too — a stuck-on
-    heater whose OFF goes to sporeprint/plug-* stays on."""
-    from app.automation.engine import _safety_auto_off
-
-    await _register_plug("plug-a1b2c3", "tasmota", "tasmota/a1b2c3", role="heater")
-    await _safety_auto_off("plug-heater", None, 0, "heater-guard")
-
-    assert [t for t, _ in mock_mqtt] == []
-    assert ("tasmota/a1b2c3/cmnd/POWER", "OFF") in mock_mqtt_raw
-
-
-async def test_plug_firing_is_recorded_as_sent(mock_mqtt, mock_mqtt_raw):
-    """The audit row must reflect the plug transport, not claim a failure —
-    a PAIRED plug (by role, under its hardware id) records status='sent'."""
-    await _register_plug("plug-9f7e", "shelly", "shellies/9f7e", role="humidifier")
-    await _fire_rule(
-        _rule(RuleAction(target="plug-humidifier", state="on"), "plug"),
-        {"humidity": 70},
-        session=None,
-    )
-    async with get_db() as db:
-        cursor = await db.execute("SELECT status, error FROM automation_firings")
-        row = await cursor.fetchone()
-    assert row["status"] == "sent", row["error"]
+async def test_an_unregistered_plug_is_an_honest_no_op(mock_mqtt, mock_mqtt_raw):
+    """plug-<id> with no row is NOT paired: no actuator can receive the
+    command, so it is a reported no-op, not a speculative publish that logs
+    status='sent' for hardware that was never there."""
+    await _fire_rule(_rule(RuleAction(target="plug-cooler", state="on"), "plug"),
+                     {"humidity": 70}, None)
+    assert mock_mqtt == [] and mock_mqtt_raw == []
+    assert [f["status"] for f in await firings("plug")] == ["failed"]

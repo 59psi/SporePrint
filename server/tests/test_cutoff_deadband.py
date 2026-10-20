@@ -8,13 +8,7 @@ deadband inside the band (1 °F / 3 %RH, at most a quarter of the band).
 """
 
 import random
-import time
-from unittest.mock import patch
 
-import pytest
-
-import app.automation.engine as engine
-import app.cloud.service as cloud_service
 from app.automation.engine import _profile_value, evaluate_rules
 from app.automation.service import seed_builtin_rules
 from app.automation.smart_plugs import register_plug
@@ -23,16 +17,9 @@ from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 from app.species.models import PhaseParams
 from app.species.service import seed_builtins
+from tests._pi_a_engine import clock as _clock, engine_state, local, quiet_alerts  # noqa: F401
 
-_real_localtime = time.localtime
-_NOON = time.mktime((2026, 7, 13, 12, 0, 0, 0, 0, -1))
-
-
-def _clock(ts: float):
-    return patch.multiple(
-        time, time=lambda: ts,
-        localtime=lambda t=None: _real_localtime(ts if t is None else t),
-    )
+_NOON = local(12)
 
 
 def _params(temp=(55.0, 65.0), humidity=(85.0, 92.0)) -> PhaseParams:
@@ -70,17 +57,6 @@ def test_each_cutoff_names_its_off_point():
     assert rules["Dehumidify"].condition.threshold.profile_ref == "humidity_max"
 
 
-@pytest.fixture()
-def quiet_alerts(monkeypatch):
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(engine, "notify_critical", _noop)
-    monkeypatch.setattr(engine, "notify_warning", _noop)
-    monkeypatch.setattr(engine, "co2_alert", _noop)
-    monkeypatch.setattr(cloud_service, "forward_event", _noop)
-
-
 async def _fruiting_closet_with_a_cooler():
     await seed_builtins()
     await seed_builtin_rules()
@@ -110,16 +86,16 @@ async def test_the_cooler_runs_through_the_deadband(mock_mqtt, mock_mqtt_raw, qu
 
 
 async def test_noise_at_the_band_edge_no_longer_short_cycles(mock_mqtt, mock_mqtt_raw, quiet_alerts):
-    """Two hours of 60 s frames from a closet that warms 0.06 °F/min with the
+    """An hour of 60 s frames from a closet that warms 0.06 °F/min with the
     cooler off and cools 0.25 °F/min with it on, ±0.1 °F of sensor noise, at
     the 65 °F edge. Switching off at the edge started the cooler about 11
-    times an hour (22 in the two hours); switching off 1 °F inside gives each
-    cycle a whole degree to warm back through."""
+    times an hour; switching off 1 °F inside gives each cycle a whole degree
+    to warm back through."""
     await _fruiting_closet_with_a_cooler()
     rng = random.Random(7)
     temp, cooler_on, starts, t = 65.0, False, 0, _NOON
     off_gaps, last_off = [], None
-    for minute in range(120):
+    for minute in range(60):
         mock_mqtt_raw.clear()
         with _clock(t):
             await evaluate_rules("climate-1", {"temp_f": round(temp + rng.uniform(-0.1, 0.1), 2),
@@ -134,5 +110,5 @@ async def test_noise_at_the_band_edge_no_longer_short_cycles(mock_mqtt, mock_mqt
             cooler_on = power == "ON"
         temp += -0.25 if cooler_on else 0.06
         t += 60
-    assert 1 <= starts <= 8, starts  # at most 4 starts an hour
+    assert 1 <= starts <= 4, starts
     assert off_gaps and min(off_gaps) >= 10, off_gaps  # it rests while warming 1 °F

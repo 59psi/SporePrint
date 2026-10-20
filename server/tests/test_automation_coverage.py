@@ -10,23 +10,23 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from app.automation.coverage import (
     _PERSONALITY_CHANNELS,
     _actuator_present,
     _rule_applies,
     compute_coverage,
 )
-from app.automation.models import (
-    AutomationRule,
-    ConditionType,
-    RuleAction,
-    RuleCondition,
-    ThresholdCondition,
-)
+from app.automation.models import AutomationRule, RuleAction
 from app.automation.service import create_rule, seed_builtin_rules
+from app.chambers.models import ChamberCreate
+from app.chambers.service import create_chamber
 from app.db import get_db
 from app.integrations import _registry, _settings_store
 from app.species.models import GrowPhase, PhaseParams, SpeciesProfile
+from app.species.service import get_profile, seed_builtins
+from tests._pi_a_engine import RELAY_CHANNELS, engine_state, threshold  # noqa: F401 (fixtures)
 
 _PERSONALITY_H = (Path(__file__).resolve().parents[2]
                   / "firmware" / "lib" / "sp_core" / "personality.h")
@@ -68,7 +68,7 @@ def _profile(phases, species_id="test_sp", cultivable=True) -> SpeciesProfile:
 # the seeded placeholders (plug-dehumidifier / relay-01 / light-01). Coverage
 # must still report the placeholder a rule NAMES as available — resolved by
 # device_role (plugs) or node_type (nodes) — so these helpers pair hardware the
-# way the build guide does, under an id distinct from the rule target. (V3-1/2)
+# way the build guide does, under an id distinct from the rule target.
 async def _register_plug(hardware_id: str, role: str) -> None:
     async with get_db() as db:
         await db.execute(
@@ -96,29 +96,33 @@ def _by_key(requirements):
     return {(r["target"], r["channel"]): r for r in requirements}
 
 
+async def _fruiting_requirements():
+    return _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
+
+
 # ── the phase/species gate (pure) ─────────────────────────────────────────
 
 
-def test_rule_applies_matches_engine_gate():
-    def mk(**kw):
-        return AutomationRule(
-            name="r",
-            condition=RuleCondition(
-                type=ConditionType.THRESHOLD,
-                threshold=ThresholdCondition(sensor="humidity", operator="lt", value=1),
-            ),
-            action=RuleAction(target="t"),
-            **kw,
-        )
+def _gated(**kw):
+    return AutomationRule(name="r", condition=threshold("humidity", "lt", 1),
+                          action=RuleAction(target="t"), **kw)
 
-    # No gates → applies to every phase/species.
-    assert _rule_applies(mk(), "sp", "fruiting")
-    # Phase gate.
-    assert _rule_applies(mk(applies_to_phases=["fruiting"]), "sp", "fruiting")
-    assert not _rule_applies(mk(applies_to_phases=["fruiting"]), "sp", "agar")
-    # Species gate.
-    assert _rule_applies(mk(applies_to_species=["sp"]), "sp", "fruiting")
-    assert not _rule_applies(mk(applies_to_species=["other"]), "sp", "fruiting")
+
+@pytest.mark.parametrize("rule,species,phase,applies", [
+    (_gated(), "sp", "fruiting", True),                       # no gates: everything
+    (_gated(applies_to_phases=["fruiting"]), "sp", "fruiting", True),
+    (_gated(applies_to_phases=["fruiting"]), "sp", "agar", False),
+    (_gated(applies_to_species=["sp"]), "sp", "fruiting", True),
+    (_gated(applies_to_species=["other"]), "sp", "fruiting", False),
+    # Sessions store the hyphenated UI spelling, templates the table id: an
+    # exact match never matched, so every species-scoped rule read as absent.
+    (_gated(applies_to_species=["lions_mane"]), "lions-mane", "fruiting", True),
+    (_gated(applies_to_species=["lions_mane"]), "lions_mane", "fruiting", True),
+    (_gated(applies_to_species=["lions_mane"]), "reishi", "fruiting", False),
+])
+def test_a_rule_counts_for_the_phases_and_species_the_engine_runs_it_for(
+        rule, species, phase, applies):
+    assert _rule_applies(rule, species, phase) is applies
 
 
 # ── compute_coverage core ─────────────────────────────────────────────────
@@ -143,48 +147,26 @@ async def test_bare_chamber_marks_every_requirement_unavailable():
         assert reqs[key]["fallback"] is None
 
 
-async def test_paired_plug_and_channel_read_available():
+@pytest.mark.parametrize("dehumidifier,relay,available,fallback", [
+    # Paired by role under its hardware id; the relay under its MAC-derived id.
+    (True, True, True, None),
+    # No dehumidifier, but an exhaust fan: unavailable, and the vent covers it.
+    (False, True, False, "relay-01/exhaust"),
+    # Neither: no fallback is claimed that is not itself present.
+    (False, False, False, None),
+])
+async def test_the_dehumidifier_reads_available_or_degrades_to_a_present_vent(
+        dehumidifier, relay, available, fallback):
     await seed_builtin_rules()
-    # Dehumidifier paired by role under its hardware id; relay node under its
-    # MAC-derived id. Coverage reports the placeholder targets the rules name.
-    await _register_plug("plug-a1b2c3", "dehumidifier")
-    await _register_node("node-relay-7a3f", ["fae", "exhaust", "circulation", "aux"])
-    reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
+    if dehumidifier:
+        await _register_plug("plug-a1b2c3", "dehumidifier")
+    if relay:
+        await _register_node("node-relay-7a3f", RELAY_CHANNELS)
+    reqs = await _fruiting_requirements()
     dh = reqs[("plug-dehumidifier", None)]
-    assert dh["available"] is True and dh["fallback"] is None
-    assert reqs[("relay-01", "exhaust")]["available"] is True
-    assert reqs[("relay-01", "fae")]["available"] is True
-
-
-async def test_dehumidifier_degrades_to_exhaust_when_absent():
-    """No dehumidifier, but the exhaust fan is present → the requirement is
-    unavailable BUT the vent fallback (relay-01/exhaust) covers it."""
-    await seed_builtin_rules()
-    await _register_node("node-relay-7a3f", ["fae", "exhaust", "circulation", "aux"])
-    reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
-    dh = reqs[("plug-dehumidifier", None)]
-    assert dh["available"] is False
-    assert dh["fallback"] == "relay-01/exhaust"
-
-
-async def test_fallback_is_none_when_the_fallback_actuator_is_also_absent():
-    """No dehumidifier AND no exhaust channel → genuinely unavailable, no
-    fallback to name (we never claim a fallback that isn't itself present)."""
-    await seed_builtin_rules()
-    reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
-    dh = reqs[("plug-dehumidifier", None)]
-    assert dh["available"] is False
-    assert dh["fallback"] is None
-
-
-async def test_present_dehumidifier_suppresses_the_fallback():
-    await seed_builtin_rules()
-    await _register_plug("plug-a1b2c3", "dehumidifier")
-    await _register_node("node-relay-7a3f", ["fae", "exhaust", "circulation", "aux"])
-    reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
-    dh = reqs[("plug-dehumidifier", None)]
-    assert dh["available"] is True
-    assert dh["fallback"] is None
+    assert (dh["available"], dh["fallback"]) == (available, fallback)
+    assert reqs[("relay-01", "exhaust")]["available"] is relay
+    assert reqs[("relay-01", "fae")]["available"] is relay
 
 
 async def test_channel_rejected_by_live_node_is_unavailable():
@@ -192,8 +174,7 @@ async def test_channel_rejected_by_live_node_is_unavailable():
     exhaust requirement is unavailable even though the node exists."""
     await seed_builtin_rules()
     await _register_node("node-relay-7a3f", ["fae", "circulation"])  # no exhaust/aux
-    reqs = _by_key((await compute_coverage(_profile([GrowPhase.FRUITING])))[0]["requirements"])
-    assert reqs[("relay-01", "exhaust")]["available"] is False
+    assert (await _fruiting_requirements())[("relay-01", "exhaust")]["available"] is False
 
 
 async def test_light_node_presence_uses_the_node_registry():
@@ -202,13 +183,10 @@ async def test_light_node_presence_uses_the_node_registry():
     the real node is MAC-derived, so presence resolves by node_type='lighting',
     NOT by a literal light-01 row (target_is_present can't see it either)."""
     await seed_builtin_rules()
-    profile = _profile([GrowPhase.FRUITING])
-    reqs = _by_key((await compute_coverage(profile))[0]["requirements"])
-    assert reqs[("light-01", None)]["available"] is False
+    assert (await _fruiting_requirements())[("light-01", None)]["available"] is False
     # Lighting node reports in under its MAC-derived id, no channels yet.
     await _register_node("node-light-9b2c", node_type="lighting")
-    reqs2 = _by_key((await compute_coverage(profile))[0]["requirements"])
-    assert reqs2[("light-01", None)]["available"] is True
+    assert (await _fruiting_requirements())[("light-01", None)]["available"] is True
 
 
 async def test_colonization_excludes_fruiting_only_actuators():
@@ -242,19 +220,11 @@ async def test_all_profile_phases_are_reported_in_order():
 # ── HTTP contract ─────────────────────────────────────────────────────────
 
 
-def test_endpoint_404_unknown_chamber(client):
-    r = client.get("/api/chambers/9999/automation-coverage?species=lions_mane")
-    assert r.status_code == 404
-
-
-def test_endpoint_404_unknown_species(client):
+def test_the_endpoint_refuses_an_unknown_chamber_or_species(client):
+    assert client.get("/api/chambers/9999/automation-coverage?species=lions_mane").status_code == 404
     cid = client.post("/api/chambers", json={"name": "Tent A"}).json()["id"]
-    r = client.get(f"/api/chambers/{cid}/automation-coverage?species=does_not_exist")
-    assert r.status_code == 404
-
-
-def test_endpoint_requires_species_param(client):
-    cid = client.post("/api/chambers", json={"name": "Tent B"}).json()["id"]
+    assert client.get(f"/api/chambers/{cid}/automation-coverage?species=does_not_exist"
+                      ).status_code == 404
     assert client.get(f"/api/chambers/{cid}/automation-coverage").status_code == 422
 
 
@@ -285,7 +255,7 @@ async def _chamber(name, ids):
 async def test_another_chambers_relay_does_not_cover_this_chamber():
     """Any node anywhere reporting the channel used to make it read available."""
     await _register_node("clim-a", None, node_type="climate")
-    await _register_node("relay-b", ["fae", "exhaust", "circulation", "aux"])
+    await _register_node("relay-b", RELAY_CHANNELS)
     await _chamber("A", ["clim-a"])
     await _chamber("B", ["relay-b"])
     assert not await _actuator_present(RuleAction(target="node-1", channel="fae"), ["clim-a"])
@@ -295,13 +265,33 @@ async def test_another_chambers_relay_does_not_cover_this_chamber():
     assert await _actuator_present(RuleAction(target="relay-01", channel="fae"), ["relay-b"])
 
 
+async def test_another_chambers_light_does_not_cover_this_chambers_scene_rules():
+    """The verdict resolves a placeholder within the chamber: chamber B's
+    lighting node does not make chamber A's scene rules read as available."""
+    await seed_builtins()
+    await _register_node("light-b", node_type="lighting")
+    await create_chamber(ChamberCreate(name="B", node_ids=["light-b"]))
+    await create_rule(AutomationRule(
+        name="scene", priority=1, condition=threshold("temp_f", "gt", 0),
+        action=RuleAction(target="light-01", scene="fruiting_standard"),
+    ))
+    profile = await get_profile("blue_oyster")
+
+    def _light(phases):
+        return {r["available"] for ph in phases for r in ph["requirements"]
+                if r["target"] == "light-01"}
+
+    assert _light(await compute_coverage(profile)) == {True}
+    assert _light(await compute_coverage(profile, chamber_nodes=["climate-a"])) == {False}
+
+
 async def test_nodes_in_no_chamber_are_covered_by_the_relay_they_drive():
     """With no chamber (the verdict the cloud asks for, or a chamber that
     lists no nodes) a placeholder stands for the node that nodes in no
     chamber drive: one no chamber lists. The relay seen last anywhere,
     another chamber's, used to answer for them."""
     await _register_node("relay-closet", ["fae", "exhaust", "circulation"])
-    await _register_node("relay-a", ["fae", "exhaust", "circulation", "aux"])
+    await _register_node("relay-a", RELAY_CHANNELS)
     await _chamber("A", ["relay-a"])
     async with get_db() as db:  # chamber A's relay reported last
         await db.execute("UPDATE hardware_nodes SET last_seen = last_seen + 60 "
@@ -328,10 +318,7 @@ async def test_a_vendor_requirement_reads_available_once_its_integration_is_enab
     """A vendor action's vendor:* key was looked up as a node and always read
     unavailable."""
     await create_rule(AutomationRule(
-        name="kasa humidifier",
-        condition=RuleCondition(type=ConditionType.THRESHOLD,
-                                threshold=ThresholdCondition(sensor="humidity", operator="lt",
-                                                             value=80)),
+        name="kasa humidifier", condition=threshold("humidity", "lt", 80),
         action=RuleAction(target="vendor:kasa:10.0.0.20", vendor_slug="kasa",
                           vendor_action="set_power", vendor_params={"ip": "10.0.0.20", "on": True}),
     ))

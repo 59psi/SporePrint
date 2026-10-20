@@ -11,21 +11,11 @@ for a missing dehumidifier, mist-pump stands in for a missing humidifier, and
 neither fires when the real device is present.
 """
 
-import json
+import pytest
 
-from app.automation.engine import evaluate_rules  # noqa: F401 (import guard)
 from app.automation.smart_plugs import target_is_present
 from app.automation.templates import BUILTIN_RULES
-from app.db import get_db
-
-
-def _targets():
-    """(target, channel) pairs every seeded rule can actuate."""
-    out = set()
-    for r in BUILTIN_RULES:
-        out.add((r.action.target, r.action.channel))
-    return out
-
+from tests._pi_a_engine import RELAY_CHANNELS, insert_plug, register_node
 
 # Every actuator the BOM sells, as (target, channel). Keep in step with
 # server/app/builder/hardware_guides.py — if the BOM grows an actuator, add it
@@ -39,59 +29,40 @@ BOM_ACTUATORS = {
     ("plug-dehumidifier", None): "Dehumidifier plug (Tier 3)",
     ("plug-heater", None): "Heater plug (Tier 2+)",
     ("plug-cooler", None): "Peltier cooler plug (Tier 3)",
+    # Lighting is scene-driven (light-01), not per channel.
+    ("light-01", None): "LED lighting node",
 }
 
 
 def test_every_bom_actuator_has_a_rule():
-    targeted = _targets()
+    targeted = {(r.action.target, r.action.channel) for r in BUILTIN_RULES}
     missing = {label for key, label in BOM_ACTUATORS.items() if key not in targeted}
     assert not missing, f"BOM actuators with no automation rule (never run): {sorted(missing)}"
 
 
-def test_lighting_is_covered():
-    """Lighting is scene-driven (light-01), not per-channel — assert it's driven."""
-    assert any(r.action.target == "light-01" for r in BUILTIN_RULES)
+@pytest.mark.parametrize("name,absent,channel", [
+    ("Humidity Vent (no dehumidifier)", "plug-dehumidifier", "exhaust"),
+    ("Mist (no humidifier)", "plug-humidifier", "aux"),
+])
+def test_a_humidity_fallback_runs_only_while_its_device_is_absent(name, absent, channel):
+    rule = next(r for r in BUILTIN_RULES if r.name == name)
+    assert rule.requires_absent_target == absent
+    assert rule.action.channel == channel
+    if channel == "aux":
+        # Over-misting is a contamination risk: hard-gated.
+        assert rule.action.duration_sec is not None and rule.action.duration_sec <= 15
+        assert rule.safety_max_on_seconds is not None and rule.safety_max_on_seconds <= 60
 
 
-# ── capability-aware fallbacks ────────────────────────────────────────────
-
-
-def test_vent_fallback_is_gated_on_dehumidifier_absence():
-    vent = next(r for r in BUILTIN_RULES if r.name == "Humidity Vent (no dehumidifier)")
-    assert vent.requires_absent_target == "plug-dehumidifier"
-    assert vent.action.channel == "exhaust"
-
-
-def test_mist_fallback_is_gated_on_humidifier_absence():
-    mist = next(r for r in BUILTIN_RULES if r.name == "Mist (no humidifier)")
-    assert mist.requires_absent_target == "plug-humidifier"
-    assert mist.action.channel == "aux"
-    # over-misting is a contamination risk — must be hard-gated
-    assert mist.action.duration_sec is not None and mist.action.duration_sec <= 15
-    assert mist.safety_max_on_seconds is not None and mist.safety_max_on_seconds <= 60
-
-
-async def test_target_is_present_true_for_a_registered_dehumidifier():
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO smart_plugs (plug_id, plug_type, mqtt_topic_prefix, name, device_role) "
-            "VALUES ('plug-dehumidifier', 'tasmota', 'tasmota/dh', 'DH', 'dehumidifier')",
-        )
-        await db.commit()
-    assert await target_is_present("plug-dehumidifier") is True
-
-
-async def test_target_is_present_false_when_nothing_paired():
-    """No dehumidifier registered → the vent fallback is allowed to run."""
-    assert await target_is_present("plug-dehumidifier") is False
-
-
-async def test_target_is_present_matches_a_node_channel():
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, channels) VALUES ('relay-01', 'relay', ?)",
-            (json.dumps(["fae", "exhaust", "circulation", "aux"]),),
-        )
-        await db.commit()
-    assert await target_is_present("circulation") is True
-    assert await target_is_present("nonexistent") is False
+@pytest.mark.parametrize("paired,target,present", [
+    (None, "plug-dehumidifier", False),               # nothing paired: the vent may run
+    ("plug", "plug-dehumidifier", True),
+    ("relay", "circulation", True),                   # a channel some node reports
+    ("relay", "nonexistent", False),
+])
+async def test_target_is_present_reads_the_paired_plug_or_node_channel(paired, target, present):
+    if paired == "plug":
+        await insert_plug("plug-dehumidifier", "tasmota", "tasmota/dh", role="dehumidifier")
+    elif paired == "relay":
+        await register_node("relay-01", "relay", RELAY_CHANNELS)
+    assert await target_is_present(target) is present

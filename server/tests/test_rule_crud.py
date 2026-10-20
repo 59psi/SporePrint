@@ -9,45 +9,31 @@ functions, so:
 - every write reaches the engine's rule cache at once, so a rule the operator
   just switched off or deleted cannot fire from a stale cache;
 - /firings filters and limits the same way everywhere.
+
+Which node channels a rule may name: tests/test_automation_channel_validation.py.
 """
 
 import json
-import time
 
-from app.automation import engine
-from app.automation.engine import evaluate_rules
+import pytest
+
+from app.automation.engine import evaluate_rules, is_overridden
 from app.automation.models import AutomationRule
 from app.automation.service import (
     create_rule,
     delete_rule,
-    rules_generation,
+    deserialize_rule_row,
+    serialize_rule_data,
     toggle_rule,
     update_validated_rule,
 )
+from app.automation.templates import BUILTIN_RULES
 from app.cloud import integrations_proxy
 from app.db import get_db
-from app.sessions.models import SessionCreate
-from app.sessions.service import create_session
+from tests._pi_a_engine import FakeSio, engine_state, register_node, rows, start_grow  # noqa: F401
 
 RELAY = "node-relay-7a3f1c"
 RELAY_CHANNELS = ["aux", "circulation", "exhaust", "fae"]
-
-
-class _Sio:
-    def __init__(self):
-        self.emits: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.emits.append((event, data))
-
-
-async def _register_relay(channels=RELAY_CHANNELS):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) VALUES (?, ?, ?, ?)",
-            (RELAY, "relay", json.dumps(channels), time.time()),
-        )
-        await db.commit()
 
 
 def _rule_body(channel="fae", target=RELAY, name="Vent") -> dict:
@@ -60,58 +46,86 @@ def _rule_body(channel="fae", target=RELAY, name="Vent") -> dict:
 
 
 async def _rule_names() -> list[str]:
-    async with get_db() as db:
-        cursor = await db.execute("SELECT name FROM automation_rules")
-        return [r["name"] for r in await cursor.fetchall()]
+    return [r["name"] for r in await rows("SELECT name FROM automation_rules")]
 
 
-async def _relay(monkeypatch, action: str, payload: dict) -> dict:
-    """One automation_* request through the real relay handler."""
+async def _write(request, monkeypatch, transport: str, body: dict,
+                 rule_id: int | None = None) -> tuple[int, str]:
+    """Create (or, with rule_id, update) a rule over the LAN route or the
+    cloud relay; (status, error text or "")."""
+    if transport == "lan":
+        client = request.getfixturevalue("client")
+        r = (client.put(f"/api/automation/rules/{rule_id}", json=body) if rule_id
+             else client.post("/api/automation/rules", json=body))
+        return r.status_code, "" if r.status_code == 200 else r.json()["detail"]
     monkeypatch.setattr(integrations_proxy, "_require_signed_setting", lambda: False)
-    sio = _Sio()
+    sio = FakeSio()
+    action, payload = (("automation_update", {"rule_id": rule_id, "rule": body}) if rule_id
+                       else ("automation_create", {"rule": body}))
     await integrations_proxy.handle_request(sio, {"id": "req-1", "action": action, "payload": payload})
-    assert sio.emits and sio.emits[0][0] == "integrations_response"
-    return sio.emits[0][1]
+    ((event, reply),) = sio.events
+    assert event == "integrations_response"
+    return (200, "") if reply["success"] else (reply["status"], reply["error"])
 
 
 # ── The relay checks a rule the way the LAN route does ─────────────────────
 
 
-async def test_relay_create_refuses_a_channel_the_node_lacks(client, monkeypatch):
-    await _register_relay()
-    lan = client.post("/api/automation/rules", json=_rule_body("fan"))
-    assert lan.status_code == 422
-    reply = await _relay(monkeypatch, "automation_create", {"rule": _rule_body("fan")})
-    assert (reply["success"], reply["status"]) == (False, 422)
-    assert "no channel 'fan'" in reply["error"]
-    assert "Vent" not in await _rule_names()
+@pytest.mark.parametrize("transport", ["lan", "relay"])
+@pytest.mark.parametrize("channel,target,relay_paired,refusal", [
+    # The `mister` / `aux` case: a channel the node lacks; the error names
+    # the channels it has.
+    ("mister", RELAY, True, "aux"),
+    ("fan", RELAY, True, "no channel 'fan'"),
+    # A placeholder no node of its role answers: it can reach nothing.
+    ("fae", "relay-01", False, "No 'relay' node"),
+    ("aux", RELAY, True, None),
+])
+async def test_a_new_rule_is_checked_the_same_on_every_transport(
+        request, monkeypatch, transport, channel, target, relay_paired, refusal):
+    if relay_paired:
+        await register_node(RELAY, "relay", RELAY_CHANNELS)
+    status, error = await _write(request, monkeypatch, transport, _rule_body(channel, target))
+    if refusal:
+        assert status == 422 and refusal in error
+        assert "Vent" not in await _rule_names()
+    else:
+        assert status == 200
+        (stored,) = await rows("SELECT rule_data FROM automation_rules WHERE name = 'Vent'")
+        assert json.loads(stored["rule_data"])["action"]["channel"] == channel
 
 
-async def test_relay_create_refuses_a_placeholder_with_no_node(monkeypatch):
-    reply = await _relay(monkeypatch, "automation_create",
-                         {"rule": _rule_body("fae", target="relay-01")})
-    assert (reply["success"], reply["status"]) == (False, 422)
-    assert "No 'relay' node" in reply["error"]
-    assert "Vent" not in await _rule_names()
-
-
-async def test_relay_update_refuses_and_keeps_the_stored_rule(monkeypatch):
-    await _register_relay()
+@pytest.mark.parametrize("transport", ["lan", "relay"])
+async def test_a_refused_edit_keeps_the_stored_rule(request, monkeypatch, transport):
+    await register_node(RELAY, "relay", RELAY_CHANNELS)
     rule_id = await create_rule(AutomationRule.model_validate(_rule_body("fae")))
-    reply = await _relay(monkeypatch, "automation_update",
-                         {"rule_id": rule_id, "rule": _rule_body("mister")})
-    assert (reply["success"], reply["status"]) == (False, 422)
-    async with get_db() as db:
-        row = await (await db.execute(
-            "SELECT rule_data FROM automation_rules WHERE id = ?", (rule_id,))).fetchone()
-    assert json.loads(row["rule_data"])["action"]["channel"] == "fae"
+    status, _ = await _write(request, monkeypatch, transport, _rule_body("mister"), rule_id)
+    assert status == 422
+    (stored,) = await rows("SELECT rule_data FROM automation_rules WHERE id = ?", rule_id)
+    assert json.loads(stored["rule_data"])["action"]["channel"] == "fae"
 
 
-async def test_relay_create_accepts_a_rule_the_lan_route_accepts(monkeypatch):
-    await _register_relay()
-    reply = await _relay(monkeypatch, "automation_create", {"rule": _rule_body("aux")})
-    assert reply["success"] is True and reply["body"]["action"]["channel"] == "aux"
-    assert "Vent" in await _rule_names()
+def _body(state="on", photoperiod="on", compound=False):
+    schedule = {"type": "schedule", "schedule": {"photoperiod": photoperiod}}
+    condition = ({"type": "compound", "compound": {"op": "AND", "conditions": [
+        schedule, {"type": "threshold",
+                   "threshold": {"sensor": "temp_f", "operator": "gt", "value": 0}}]}}
+                 if compound else schedule)
+    return {"name": "probe", "condition": condition,
+            "action": {"target": "plug-heater", "state": state}}
+
+
+def test_rule_writes_refuse_an_unreadable_state_or_photoperiod(client):
+    """Anything but on/off used to be read as "off": a photoperiod "bogus"
+    inverted the light cycle. Read in any case and spacing, and checked inside
+    a compound too."""
+    assert client.post("/api/automation/rules", json=_body(state="toggle")).status_code == 422
+    assert client.post("/api/automation/rules", json=_body(photoperiod="bogus")).status_code == 422
+    assert client.post("/api/automation/rules",
+                       json=_body(photoperiod="bogus", compound=True)).status_code == 422
+    ok = client.post("/api/automation/rules", json=_body(state="ON"))
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["action"]["state"] == "on"
 
 
 # ── Every write reaches the engine's rule cache at once ────────────────────
@@ -123,52 +137,68 @@ async def _fires(mock_mqtt) -> bool:
     return any(t == f"sporeprint/{RELAY}/cmd/fae" for t, _ in mock_mqtt)
 
 
-async def _managed_grow():
-    # A profile the engine does not know still runs every rule (no setpoints).
-    await create_session(SessionCreate(name="crud", species_profile_id="unit-test-species",
-                                       substrate="x", current_phase="fruiting"))
-
-
-async def test_a_rule_switched_off_stops_firing_at_once(mock_mqtt):
-    await _managed_grow()
-    await _register_relay()
-    rule_id = await create_rule(AutomationRule.model_validate(_rule_body("fae")))
-    assert await _fires(mock_mqtt)          # warms the engine's 5 s rule cache
+async def _switch_off(rule_id):
     assert await toggle_rule(rule_id) is False
-    assert not await _fires(mock_mqtt)      # within the cache's lifetime
 
 
-async def test_a_deleted_rule_stops_firing_at_once(mock_mqtt):
-    await _managed_grow()
-    await _register_relay()
-    rule_id = await create_rule(AutomationRule.model_validate(_rule_body("fae")))
-    assert await _fires(mock_mqtt)
+async def _delete(rule_id):
     assert await delete_rule(rule_id)
-    assert not await _fires(mock_mqtt)
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) AS n FROM automation_firings WHERE rule_id = ?",
-                                  (rule_id,))
-        assert (await cursor.fetchone())["n"] == 1  # only the firing before the delete
 
 
-async def test_an_edit_takes_effect_at_once(mock_mqtt):
-    await _managed_grow()
-    await _register_relay()
-    rule_id = await create_rule(AutomationRule.model_validate(_rule_body("fae")))
-    assert await _fires(mock_mqtt)
+async def _edit(rule_id):
     edited = _rule_body("fae")
     edited["condition"]["threshold"]["value"] = 100  # temp_f 70 no longer matches
     assert await update_validated_rule(rule_id, AutomationRule.model_validate(edited))
-    assert not await _fires(mock_mqtt)
 
 
-async def test_the_route_toggle_moves_the_generation(client):
-    rule_id = client.get("/api/automation/rules").json()[0]["id"]
-    before = rules_generation()
-    r = client.patch(f"/api/automation/rules/{rule_id}/toggle")
-    assert r.status_code == 200 and r.json()["id"] == rule_id
-    assert rules_generation() > before
-    assert engine._cache_generation != rules_generation()  # the next load reads the table
+@pytest.mark.parametrize("write", [_switch_off, _delete, _edit], ids=["toggle", "delete", "edit"])
+async def test_a_rule_write_takes_effect_at_once(mock_mqtt, write):
+    # A profile the engine does not know still runs every rule (no setpoints).
+    await start_grow("unit-test-species", "fruiting")
+    await register_node(RELAY, "relay", RELAY_CHANNELS)
+    rule_id = await create_rule(AutomationRule.model_validate(_rule_body("fae")))
+    assert await _fires(mock_mqtt)          # warms the engine's 5 s rule cache
+    await write(rule_id)
+    assert not await _fires(mock_mqtt)      # within the cache's lifetime
+    # Only the firing before the write is on record.
+    assert len(await rows("SELECT id FROM automation_firings WHERE rule_id = ?", rule_id)) == 1
+
+
+# ── the REST routes ────────────────────────────────────────────────────────
+
+
+def test_a_rule_lives_and_dies_through_the_rest_routes(client):
+    body = _rule_body("fae", target="node-x1")
+    rule_id = client.post("/api/automation/rules", json=body).json()["id"]
+    assert client.get(f"/api/automation/rules/{rule_id}").json()["name"] == "Vent"
+    body["name"] = "Vent (edited)"
+    assert client.put(f"/api/automation/rules/{rule_id}", json=body).json() == {
+        **AutomationRule.model_validate(body).model_dump(), "id": rule_id}
+    assert client.delete(f"/api/automation/rules/{rule_id}").json() == {"status": "deleted"}
+    assert client.get(f"/api/automation/rules/{rule_id}").status_code == 404
+    assert client.put(f"/api/automation/rules/{rule_id}", json=body).status_code == 404
+    assert client.delete(f"/api/automation/rules/{rule_id}").status_code == 404
+
+
+def test_the_release_route_ends_a_hold(client):
+    for channel in ("fae", "aux"):
+        client.post("/api/automation/overrides",
+                    json={"target": "node-x1", "channel": channel, "reason": "pin"})
+    assert client.delete("/api/automation/overrides/node-x1",
+                         params={"channel": "fae"}).json() == {"status": "cleared"}
+    assert not is_overridden("node-x1", "fae")
+    assert [o["channel"] for o in client.get("/api/automation/overrides").json()] == ["aux"]
+
+
+def test_a_rule_round_trips_through_its_table_row():
+    """The metadata columns are the row's own, never duplicated in rule_data."""
+    for rule in BUILTIN_RULES:
+        data = serialize_rule_data(rule)
+        assert not {"id", "name", "description", "enabled", "priority"} & json.loads(data).keys()
+        row = {"id": 99, "name": rule.name, "description": rule.description,
+               "enabled": int(rule.enabled), "priority": rule.priority, "rule_data": data}
+        assert AutomationRule.model_validate(deserialize_rule_row(row)) == rule.model_copy(
+            update={"id": 99})
 
 
 # ── /firings ───────────────────────────────────────────────────────────────
