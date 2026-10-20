@@ -17,6 +17,15 @@ from app.cloud.signing import _canonical, verify_frame
 
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "signing_vectors.json"
+_FIRMWARE_COPY = (Path(__file__).resolve().parents[2]
+                  / "firmware" / "test" / "fixtures" / "signing_vectors.json")
+
+
+def test_firmware_copy_is_byte_identical():
+    """The node's native suites (test_core_canonical, test_core_hmac) assert
+    the firmware's copy. A copy that drifted would let both suites pass while
+    the node and the Pi disagree on what a signature covers."""
+    assert _FIRMWARE_COPY.read_bytes() == _FIXTURE.read_bytes()
 
 
 def _load_fixture():

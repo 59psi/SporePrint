@@ -41,9 +41,11 @@ def _reset_push_state(monkeypatch):
     never collide with anything on the host or with each other."""
     ota_push._status.clear()
     ota_push._tasks.clear()
+    ota_push._success_waiters.clear()
     monkeypatch.setattr(ota_push, "CALLBACK_PORT", 0)
     monkeypatch.setattr(ota_push, "_callback_port_lock", asyncio.Lock())
     yield
+    ota_push._success_waiters.clear()
 
 
 def _free_tcp_port() -> int:
@@ -89,6 +91,11 @@ class _FakeDeviceProtocol(asyncio.DatagramProtocol):
             dev.invitations_seen += 1
             dev.invitation = {"cmd": cmd, "host_port": int(tokens[1]),
                               "size": int(tokens[2]), "md5": tokens[3]}
+            if dev.auth == "none":  # ArduinoOTA with no password: no challenge
+                self.transport.sendto(b"OK", addr)
+                dev._pull_tasks.append(asyncio.get_running_loop().create_task(
+                    dev._pull(addr[0], dev.invitation["host_port"])))
+                return
             if dev.auth == "pbkdf2":  # arduino-esp32 3.3.1+ stock ArduinoOTA
                 self.nonce = hashlib.sha256(os.urandom(8)).hexdigest()
             elif dev.auth == "odd":   # neither espota variant
@@ -125,7 +132,18 @@ class _FakeDeviceProtocol(asyncio.DatagramProtocol):
             self.state = "idle"
             if response == expected:
                 dev.auth_ok = True
+                if dev.refuse is not None:
+                    # Current firmware: every refusal is decided before OK.
+                    self.transport.sendto(f"ERR {dev.refuse}".encode(), addr)
+                    return
                 self.transport.sendto(b"OK", addr)
+                if dev.refuse_after_ok is not None:
+                    # Older firmware: OK first, then the refusal as an MQTT
+                    # OTA "error" event, and no connect-back.
+                    ota_push.note_node_event(
+                        dev.node_id, {"event": "error", "ts": 0,
+                                      "reason": dev.refuse_after_ok})
+                    return
                 dev._pull_tasks.append(asyncio.get_running_loop().create_task(
                     dev._pull(addr[0], dev.invitation["host_port"])))
             else:
@@ -145,19 +163,34 @@ class FakeOtaDevice:
     duplicate_auth  — every AUTH challenge datagram arrives twice.
     auth            — "md5" (32-hex nonce: core 2.x ArduinoOTA and
                        ota_service.cpp), "pbkdf2" (64-hex nonce:
-                       arduino-esp32 3.3.1+ stock ArduinoOTA) or "odd"
-                       (a 40-hex nonce neither variant uses).
+                       arduino-esp32 3.3.1+ stock ArduinoOTA), "odd"
+                       (a 40-hex nonce neither variant uses) or "none"
+                       (no password: a bare OK to the invitation).
+    ack_delay_s     — wait this long before acking each chunk.
+    node_id         — after the final OK, report "success" for this node the
+                       way the node's MQTT OTA event reaches the push.
+    refuse          — answer a correct auth with "ERR <reason>" (a push the
+                       node turns down: manifest gate, image on probation).
+    refuse_after_ok — answer "OK", then report the refusal as an MQTT OTA
+                       "error" event for node_id and never connect back (how
+                       firmware before the ERR answer refused).
     """
 
     def __init__(self, password: str = PASSWORD, *, respond: bool = True,
                  ack_chunks: bool = True, busy_s: float = 0.0,
-                 duplicate_auth: bool = False, auth: str = "md5"):
+                 duplicate_auth: bool = False, auth: str = "md5",
+                 ack_delay_s: float = 0.0, node_id: str | None = None,
+                 refuse: str | None = None, refuse_after_ok: str | None = None):
         self.password = password
         self.respond = respond
         self.ack_chunks = ack_chunks
         self.busy_s = busy_s
         self.duplicate_auth = duplicate_auth
         self.auth = auth
+        self.ack_delay_s = ack_delay_s
+        self.node_id = node_id
+        self.refuse = refuse
+        self.refuse_after_ok = refuse_after_ok
         self.cnonce: str | None = None
         self.invitation: dict | None = None
         self.invitations_seen = 0
@@ -213,12 +246,17 @@ class FakeOtaDevice:
                     # Stall: hold the connection open, never ack.
                     await self._closed.wait()
                     return
+                if self.ack_delay_s:
+                    await asyncio.sleep(self.ack_delay_s)
                 writer.write(str(len(chunk)).encode())
                 await writer.drain()
             self.received = buf
             if hashlib.md5(buf).hexdigest() == self.invitation["md5"]:
                 writer.write(b"OK")
                 await writer.drain()
+                if self.node_id is not None:
+                    # ota_service.cpp publishes it right after the OK.
+                    ota_push.note_node_event(self.node_id, {"event": "success"})
         finally:
             writer.close()
 
@@ -373,6 +411,80 @@ async def test_push_stalled_transfer_times_out():
         await device.stop()
 
 
+async def test_push_refuses_a_host_that_skips_the_password_challenge():
+    """Every node with OTA enabled has a password and challenges for it. A
+    bare OK comes from some other host at the node's address, which would
+    take the image and confirm a flash that never happened."""
+    device = await FakeOtaDevice(auth="none").start()
+    try:
+        with pytest.raises(OtaPushError, match="without asking for the OTA password"):
+            await push_firmware(
+                "climate-01", "127.0.0.1", device.udp_port, PASSWORD,
+                os.urandom(2500), invite_timeout=1.0, stall_timeout=1.0,
+                bind_host="127.0.0.1")
+        await asyncio.sleep(0.1)  # its connect-back finds no listener
+        assert device.received == b""
+    finally:
+        await device.stop()
+
+
+async def test_push_reports_the_reason_a_node_refuses_it():
+    """Current firmware decides a refusal before its OK and answers
+    "ERR <reason>": the push says why, not "authentication rejected"."""
+    device = await FakeOtaDevice(refuse="image_on_probation").start()
+    try:
+        with pytest.raises(OtaPushError) as ei:
+            await push_firmware(
+                "climate-01", "127.0.0.1", device.udp_port, PASSWORD,
+                os.urandom(2500), invite_timeout=2.0, stall_timeout=2.0,
+                bind_host="127.0.0.1")
+        msg = str(ei.value)
+        assert msg.startswith("node refused the push: image_on_probation")
+        assert "power-cycle" in msg
+        assert "authentication" not in msg
+        assert device.auth_ok is True and device.received == b""
+    finally:
+        await device.stop()
+
+
+async def test_push_reports_a_refusal_older_firmware_sends_after_ok():
+    """Older firmware answered OK, then published its refusal (e.g. a
+    manifest-required image pushed without one) as an MQTT "error" event and
+    never connected back. The push reports that reason at once, instead of
+    "never connected back" after the full wait."""
+    device = await FakeOtaDevice(refuse_after_ok="manifest_required",
+                                 node_id="climate-01").start()
+    loop = asyncio.get_running_loop()
+    try:
+        started = loop.time()
+        with pytest.raises(OtaPushError,
+                           match="node refused the push: manifest_required"):
+            await push_firmware(
+                "climate-01", "127.0.0.1", device.udp_port, PASSWORD,
+                os.urandom(2500), invite_timeout=5.0, stall_timeout=2.0,
+                bind_host="127.0.0.1")
+        assert loop.time() - started < 4.0  # not the connect-back timeout
+        assert ota_push._error_waiters == {}
+    finally:
+        await device.stop()
+
+
+async def test_an_error_event_for_another_node_does_not_stop_a_push():
+    device = await FakeOtaDevice(node_id="climate-01").start()
+    try:
+        ota_push.note_node_event("climate-02", {"event": "error", "reason": "x"})
+        image = os.urandom(2500)
+        task = asyncio.create_task(push_firmware(
+            "climate-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1"))
+        await asyncio.sleep(0)
+        ota_push.note_node_event("climate-02", {"event": "error", "reason": "x"})
+        await task
+        assert device.received == image
+    finally:
+        await device.stop()
+
+
 # ─── Fixed callback port (docker-compose bridge networking) ──────────────
 
 
@@ -498,6 +610,67 @@ async def test_foreign_peer_on_the_callback_port_never_gets_the_image(monkeypatc
         await device.stop()
 
 
+async def _connect_once_from(local_port: int, port: int, got: dict) -> None:
+    """One connection to the callback port from `local_port`, held until the
+    Pi closes it."""
+    loop = asyncio.get_running_loop()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", local_port))
+    sock.setblocking(False)
+    await loop.sock_connect(sock, ("127.0.0.1", port))
+    reader, writer = await asyncio.open_connection(sock=sock)
+    got["connected"] = got.get("connected", 0) + 1
+    try:
+        while await reader.read(4096):
+            got["bytes"] = got.get("bytes", 0) + 1
+    finally:
+        writer.close()
+
+
+async def test_a_foreign_peer_connecting_mid_transfer_is_refused_cleanly(monkeypatch, caplog):
+    """A peer that connects while the image is already flowing is logged and
+    closed like one before it. The per-chunk refusal check must not clobber
+    the refused-peer set the connect handler shares, or that handler dies with
+    a TypeError and the warning is lost."""
+    fixed, foreign_port = _free_tcp_port(), _free_tcp_port()
+    real_peer_host = ota_push._peer_host
+
+    def _peer_host(writer):
+        peer = writer.get_extra_info("peername")
+        return _FOREIGN_IP if peer and peer[1] == foreign_port else real_peer_host(writer)
+
+    monkeypatch.setattr(ota_push, "_peer_host", _peer_host)
+    loop = asyncio.get_running_loop()
+    loop_errors: list[dict] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    got: dict = {}
+    foreign: list[asyncio.Task] = []
+
+    def _progress(sent: int) -> None:
+        if sent == ota_push.CHUNK_SIZE:  # first chunk acked: transfer under way
+            foreign.append(asyncio.ensure_future(_connect_once_from(foreign_port, fixed, got)))
+
+    device = await FakeOtaDevice(ack_delay_s=0.1).start()
+    try:
+        image = os.urandom(ota_push.CHUNK_SIZE * 6)
+        await push_firmware(
+            "climate-01", "127.0.0.1", device.udp_port, PASSWORD, image,
+            invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1",
+            callback_port=fixed, progress_cb=_progress)
+        await asyncio.wait_for(asyncio.gather(*foreign), 2)
+        assert got.get("connected") == 1 and got.get("bytes", 0) == 0
+        assert device.received == image
+        assert loop_errors == []
+        refused = [r for r in caplog.records
+                   if r.levelname == "WARNING" and _FOREIGN_IP in r.getMessage()]
+        assert len(refused) == 1
+    finally:
+        loop.set_exception_handler(previous_handler)
+        await device.stop()
+
+
 def test_peer_matching_normalises_addresses():
     assert ota_push._same_host("::ffff:10.0.0.5", "10.0.0.5")
     assert ota_push._same_host("10.0.0.5", "10.0.0.5")
@@ -573,7 +746,7 @@ async def test_duplicate_auth_challenge_is_not_mistaken_for_rejection():
 
 
 async def test_start_push_status_lifecycle_ok():
-    device = await FakeOtaDevice().start()
+    device = await FakeOtaDevice(node_id="climate-01").start()
     try:
         image = os.urandom(2500)
         # Short timeouts for determinism — patch the module defaults the
@@ -636,17 +809,58 @@ def test_get_status_defaults_to_idle():
     assert st["bytes_sent"] == 0
 
 
+async def test_a_push_the_node_never_reports_over_mqtt_ends_in_error(monkeypatch):
+    """The espota exchange cannot tell the node from another host at its
+    address; the node's own MQTT "success" event (its broker login) can. A
+    transfer that ends in OK without that event is not reported as a flash."""
+    monkeypatch.setattr(ota_push, "SUCCESS_EVENT_TIMEOUT_S", 0.2)
+    device = await FakeOtaDevice().start()  # acks and says OK, never reports
+    try:
+        async def _short(*args, **kwargs):
+            kwargs.update(invite_timeout=2.0, stall_timeout=2.0, bind_host="127.0.0.1")
+            return await push_firmware(*args, **kwargs)
+
+        monkeypatch.setattr(ota_push, "push_firmware", _short)
+        image = os.urandom(2500)
+        ota_push.start_push("climate-01", "127.0.0.1", device.udp_port, PASSWORD, image)
+        await ota_push._tasks["climate-01"]
+        st = ota_push.get_status("climate-01")
+        assert device.received == image
+        assert st["state"] == "error"
+        assert "never reported a successful flash" in st["message"]
+        assert ota_push._success_waiters == {}
+    finally:
+        await device.stop()
+
+
+def test_target_refusal_needs_an_online_node_heard_from_recently():
+    now = 1_800_000_000.0
+    fresh = {"status": "online", "last_seen": now - 30}
+    assert ota_push.target_refusal(fresh, now=now) is None
+    assert "offline" in ota_push.target_refusal({**fresh, "status": "offline"}, now=now)
+    assert ota_push.target_refusal({**fresh, "status": None}, now=now)
+    assert ota_push.target_refusal({**fresh, "last_seen": None}, now=now)
+    stale = {**fresh, "last_seen": now - ota_push.TARGET_MAX_AGE_S - 60}
+    assert "min ago" in ota_push.target_refusal(stale, now=now)
+
+
 # ─── Routes ──────────────────────────────────────────────────────────────
 
 
-async def _register_node(node_id: str, ip: str | None = None) -> None:
+async def _register_node(node_id: str, ip: str | None = None, *,
+                         status: str = "online", last_seen: float | None = None) -> None:
     async with get_db() as db:
         await db.execute(
             "INSERT INTO hardware_nodes (node_id, node_type, ip_address, "
-            "firmware_version) VALUES (?, 'climate', ?, '2.0.0')",
-            (node_id, ip),
+            "firmware_version, status, last_seen) VALUES (?, 'climate', ?, '2.0.0', ?, ?)",
+            (node_id, ip, status, time.time() if last_seen is None else last_seen),
         )
         await db.commit()
+
+
+def _reports_success(node_id: str) -> None:
+    """The node's MQTT "success" OTA event, as app/mqtt.py feeds it in."""
+    ota_push.note_node_event(node_id, {"event": "success"})
 
 
 def _post_ota(client, node_id, *, filename="firmware.bin",
@@ -725,9 +939,10 @@ async def test_post_ota_concurrent_push_conflicts(client, monkeypatch):
     await _register_node("relay-01", ip="127.0.0.1")
     release = threading.Event()
 
-    async def _gated_push(*args, **kwargs):
+    async def _gated_push(node_id, *args, **kwargs):
         while not release.is_set():
             await asyncio.sleep(0.01)
+        _reports_success(node_id)
 
     monkeypatch.setattr(ota_push, "push_firmware", _gated_push)
     try:
@@ -749,6 +964,7 @@ async def test_post_ota_starts_push_with_registry_ip(client, monkeypatch):
 
     async def _capture(node_id, ip, port, password, image, **kwargs):
         calls.update(node_id=node_id, ip=ip, port=port, image=image)
+        _reports_success(node_id)
 
     monkeypatch.setattr(ota_push, "push_firmware", _capture)
     image = b"\xe9" + os.urandom(300)
@@ -771,6 +987,7 @@ async def test_post_ota_honours_port_form_field(client, monkeypatch):
 
     async def _capture(node_id, ip, port, password, image, **kwargs):
         calls["port"] = port
+        _reports_success(node_id)
 
     monkeypatch.setattr(ota_push, "push_firmware", _capture)
     resp = _post_ota(client, "climate-01", extra={"port": "8266"})
@@ -778,6 +995,26 @@ async def test_post_ota_honours_port_form_field(client, monkeypatch):
     st = await _wait_final(client, "climate-01")
     assert st["state"] == "ok"
     assert calls["port"] == 8266
+
+
+@pytest.mark.parametrize("status, age_s", [("offline", 30), ("online", 3600), ("unknown", 30)])
+async def test_post_ota_refuses_a_node_that_is_not_online_now(client, monkeypatch, status, age_s):
+    """The push goes to the IP from the node's last heartbeat; once the node
+    is offline or quiet, another host may hold that address and would get the
+    OTA password challenge."""
+    await _register_node("climate-01", ip="10.1.2.3", status=status,
+                         last_seen=time.time() - age_s)
+    calls: list = []
+
+    async def _capture(*args, **kwargs):
+        calls.append(args)
+
+    monkeypatch.setattr(ota_push, "push_firmware", _capture)
+    resp = _post_ota(client, "climate-01")
+    assert resp.status_code == 409
+    assert "last heartbeat" in resp.json()["detail"]
+    assert calls == []
+    assert client.get("/api/hardware/nodes/climate-01/ota").json()["state"] == "idle"
 
 
 def test_get_ota_status_unknown_node_404(client):

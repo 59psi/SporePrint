@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from .integrations_proxy import reset_signing_latch
 from .service import (
+    apply_paired_credentials,
     cloud_url_transport_ok,
     get_cloud_status,
     request_reconnect,
@@ -24,7 +25,7 @@ _MAX_PAIRING_ATTEMPTS = 8
 
 # Short-lived tokens issued to clients that just presented a valid pairing
 # code. `/configure` requires this token, which closes the unauthenticated
-# .env-rewrite attack surface (sentinel S1).
+# .env-rewrite attack surface.
 #
 # v3.4.1 (L-4): was a single `dict | None` slot — a second parallel /pair
 # would overwrite the first's token and invalidate it before the first
@@ -62,13 +63,16 @@ async def cloud_status():
 async def cloud_reconnect():
     """Retry the cloud connection now instead of waiting out the backoff.
 
-    ``status``: ``reconnecting`` (retry triggered), ``connected`` (nothing to
-    do), ``restart_required`` (the connector isn't running in this process —
-    e.g. credentials were paired after boot), or ``not_configured``.
+    The retry uses the credentials pairing last saved. ``status``:
+    ``reconnecting`` (retry triggered), ``connected`` (nothing to do),
+    ``restart_required`` (the connector isn't running in this process —
+    e.g. the Pi was unpaired at boot), or ``not_configured``.
     """
     status = get_cloud_status()
     if not status["configured"]:
-        return {"status": "not_configured", "message": "Set SPOREPRINT_CLOUD_URL and _TOKEN to enable"}
+        return {"status": "not_configured",
+                "message": "Pair this Pi, or set SPOREPRINT_CLOUD_URL, SPOREPRINT_CLOUD_TOKEN "
+                           "and SPOREPRINT_CLOUD_DEVICE_ID, to enable"}
     return {"status": request_reconnect(), "current": get_cloud_status()}
 
 
@@ -103,7 +107,7 @@ async def pair_device(data: dict):
     """Validate pairing code from mobile app. Returns a configure-token on success.
 
     The configure-token is required to call /configure — this prevents an
-    unauthenticated LAN caller from rewriting .env (sentinel S1). The pairing
+    unauthenticated LAN caller from rewriting .env. The pairing
     code itself is single-use and invalidated here regardless of outcome.
     """
     global _pairing_code, _pairing_attempts, _pairing_lockout_until
@@ -131,15 +135,22 @@ async def pair_device(data: dict):
     _pairing_attempts = 0
 
     token = secrets.token_urlsafe(32)
+    # The device id this session pairs: the configured one, or a fresh one
+    # for a Pi that has none. It is kept with the token so /pair-verify can
+    # report it and /configure accepts only it.
+    cloud_device_id = settings.cloud_device_id or secrets.token_hex(16)
     _sweep_expired_configure_tokens()
-    _configure_tokens[token] = {"expires_at": now + _CONFIGURE_TOKEN_TTL_SECONDS}
+    _configure_tokens[token] = {
+        "expires_at": now + _CONFIGURE_TOKEN_TTL_SECONDS,
+        "cloud_device_id": cloud_device_id,
+    }
 
     return {
         "success": True,
         "configure_token": token,
         "configure_token_expires_in": _CONFIGURE_TOKEN_TTL_SECONDS,
         "device": {
-            "cloud_device_id": settings.cloud_device_id or secrets.token_hex(16),
+            "cloud_device_id": cloud_device_id,
             "name": "SporePrint Pi",
             "firmware_version": server_version(),
         },
@@ -154,9 +165,12 @@ async def pair_verify(configure_token: str = ""):
     mobile app that it's a Pi and trick the cloud into writing an
     attacker-chosen device_token into Supabase.
 
-    Returns ``{"valid": true, "cloud_device_id": ...}`` if the token is
-    the one we just issued, 401 otherwise. No secrets leak; the token
-    is already in the mobile's possession when this is called.
+    Returns ``{"valid": true, "cloud_device_id": ..., "version": ...}`` if
+    the token is the one we just issued, 401 otherwise. ``cloud_device_id``
+    is the id /pair handed out with this token, which the cloud holds its
+    pairing to. ``version`` is the running server version, so the cloud can
+    record it at pairing. No secrets leak; the token is already in the
+    mobile's possession when this is called.
     """
     _sweep_expired_configure_tokens()
     if not configure_token:
@@ -170,8 +184,9 @@ async def pair_verify(configure_token: str = ""):
         raise HTTPException(401, "configure_token expired")
     return {
         "valid": True,
-        "cloud_device_id": settings.cloud_device_id or "",
+        "cloud_device_id": entry.get("cloud_device_id") or settings.cloud_device_id or "",
         "expires_in": int(entry["expires_at"] - now),
+        "version": server_version(),
     }
 
 
@@ -201,6 +216,11 @@ async def configure_cloud(data: dict):
 
     if not device_id or not token_value:
         raise HTTPException(400, "Missing cloud_device_id or device_token")
+    issued_id = entry.get("cloud_device_id")
+    if issued_id and device_id != issued_id:
+        # The pairing session was opened for the id /pair handed out; another
+        # id would make this Pi connect as a different device.
+        raise HTTPException(400, "cloud_device_id does not match this pairing session — re-pair the device.")
 
     if cloud_url and not _CLOUD_URL_RE.match(cloud_url):
         raise HTTPException(400, "Invalid cloud_url")
@@ -235,4 +255,15 @@ async def configure_cloud(data: dict):
     # integrations_request frames.
     await reset_signing_latch()
 
-    return {"status": "configured", "message": "Cloud credentials saved. Restart to connect."}
+    # Take the new credentials into use now. A running connector (a re-pair or
+    # a token rotation) drops its session and reconnects with the new token;
+    # it used to keep retrying the old one, refused, until a restart.
+    # `applied` is additive: false means no connector runs in this process
+    # (the Pi was unpaired at boot), so a restart connects it.
+    applied = await apply_paired_credentials()
+    return {
+        "status": "configured",
+        "applied": applied,
+        "message": ("Cloud credentials saved and applied — reconnecting."
+                    if applied else "Cloud credentials saved. Restart to connect."),
+    }

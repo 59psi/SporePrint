@@ -1,6 +1,6 @@
 """Cloud `system/ota` command guards + pipeline failure reporting.
 
-* deps-infra#22 — the shipped Docker install can't self-update (no systemd,
+* the shipped Docker install can't self-update (no systemd,
   no sudo, no /opt layout, read-only image): refuse before acking.
 * #12 — an unwritable OTA state dir must still produce a `failed` step (it
   used to raise outside the try: success ack, then silence); a failed

@@ -9,15 +9,22 @@ heartbeat-known inventory, and "claim" adopts one of the unclaimed ones.
 Claiming is a net-new concept, so its state lives in a small `node_claims`
 ledger created on demand here (the shared schema in db.py is not extended from
 this package). A node must be heartbeat-known before it can be claimed — you
-cannot adopt hardware the Pi has never heard from.
+cannot adopt hardware the Pi has never heard from. The claim alone does not
+put the node in a chamber (chamber scoping reads `chambers.node_ids`); a claim
+that names a chamber also lists the node there, in the same transaction.
 """
 
+from ..chambers.service import add_node_to_chamber
 from ..db import get_db
 from ..mqtt import is_reserved_node_id
 
 
 class ReservedNodeIdError(ValueError):
     """The id is a broker service account (app.mqtt.RESERVED_NODE_IDS)."""
+
+
+class UnknownChamberError(LookupError):
+    """The claim named a chamber that does not exist."""
 
 
 async def _ensure_claims_table(db) -> None:
@@ -60,13 +67,15 @@ async def list_discovered_nodes() -> list[dict]:
     ]
 
 
-async def claim_node(node_id: str) -> bool:
-    """Adopt a heartbeat-known node. Returns False if the node is unknown.
+async def claim_node(node_id: str, chamber_id: int | None = None) -> bool:
+    """Adopt a heartbeat-known node, and list it in chamber `chamber_id` when
+    one is given (one transaction). Returns False if the node is unknown.
 
     Idempotent: re-claiming an already-claimed node succeeds without change.
     Raises ReservedNodeIdError for a broker service account name (server,
     sp-3p, ...): those publish through the per-node ACL patterns but are
-    never nodes, even if an older server registered one.
+    never nodes, even if an older server registered one. Raises
+    UnknownChamberError, writing nothing, for a chamber that does not exist.
     """
     if is_reserved_node_id(node_id):
         raise ReservedNodeIdError(
@@ -77,6 +86,8 @@ async def claim_node(node_id: str) -> bool:
         )
         if await cursor.fetchone() is None:
             return False
+        if chamber_id is not None and not await add_node_to_chamber(db, chamber_id, node_id):
+            raise UnknownChamberError(chamber_id)
         await _ensure_claims_table(db)
         await db.execute(
             "INSERT INTO node_claims (node_id) VALUES (?) "

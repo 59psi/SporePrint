@@ -9,12 +9,14 @@ Both sides agree on:
   - HMAC-SHA256 over `json.dumps(frame - {signature}, sort_keys=True, separators=(",", ":")).encode("utf-8")`
   - A `ts` (epoch seconds) field that must be within `REPLAY_WINDOW_SECONDS` of wall-clock.
 
-The cloud side lives at `cloud/app/relay/signing.py` in the commercial
-repo and mirrors this helper byte-for-byte. This duplication is deliberate
-— see the parent repo's docs/signing-architecture.md for the rationale.
-Drift between the two `signing.py` files (or their test fixtures) is
-blocked at release time by `bump.sh` which runs `diff -q` on the
-golden-file fixtures before permitting the version bump.
+The cloud side keeps its own copy of the canonical form and the verify logic
+in the commercial repo. The two files are not identical: only the cloud's
+signs, and this one also refuses an empty key. This duplication is
+deliberate — see the parent repo's docs/signing-architecture.md for the
+rationale. Each copy is checked against the shared golden-file fixture
+(tests/fixtures/signing_vectors.json, byte-identical in both repos; here by
+tests/test_signing_golden.py). The release script diffs the two fixture
+copies; nothing compares the two modules.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import time
 
 REPLAY_WINDOW_SECONDS = 30
@@ -45,7 +48,10 @@ def verify_frame(signing_key: str, frame: dict, now: float | None = None) -> tup
         return False, "missing signature"
 
     ts = frame.get("ts")
-    if not isinstance(ts, (int, float)):
+    # NaN passes any `>` window test (every comparison with it is False) and
+    # Python's json reads NaN / Infinity, so a non-finite ts would never
+    # expire. A bool is an int to isinstance, not a time.
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
         return False, "missing or non-numeric ts"
     if abs(now - ts) > REPLAY_WINDOW_SECONDS:
         return False, f"ts outside replay window ({abs(now - ts):.1f}s > {REPLAY_WINDOW_SECONDS}s)"
