@@ -17,9 +17,12 @@
 # always matches the broker). Docker Desktop (macOS) maps bind-mount
 # ownership itself, so no chown there.
 #
-# Edits are in place (mosquitto_passwd -b, never -c on an existing file):
+# Edits are in place (never mosquitto_passwd -c on an existing file):
 # per-node users survive, and the inode the running broker's single-file
 # bind mount points at stays the same, so a SIGHUP picks the change up.
+# Passwords reach mosquitto_passwd on stdin (password + confirmation), never
+# as an argument (`-b user pass`): every process, a container's included,
+# shows in the host's `ps`.
 
 # Must equal services.mqtt.image in docker-compose.yml (tests/test_docker.py).
 SP_MOSQUITTO_IMAGE="eclipse-mosquitto:2.1.2-alpine"
@@ -48,6 +51,25 @@ sp_docker() {
 
 sp_should_chown() { [ "$(uname -s)" = "Linux" ]; }
 
+# sp_service_account ROOT NAME — print the broker service account NAME is,
+# compared in any case, or nothing: server, sp-3p, sp-cmd, sp-telemetry, or
+# the Pi server's own login (SPOREPRINT_MQTT_USERNAME in ROOT/.env, else
+# ROOT/server/.env). The server drops node frames under these names
+# (app/mqtt.py RESERVED_NODE_IDS) and plug frames too, so none can be a node
+# or a plug. Needs sp_env_get (scripts/lib/host.sh).
+sp_service_account() {
+  local root="$1" name account server_user
+  name="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+  server_user="$(sp_env_get "$root/.env" SPOREPRINT_MQTT_USERNAME)"
+  [ -n "$server_user" ] || server_user="$(sp_env_get "$root/server/.env" SPOREPRINT_MQTT_USERNAME)"
+  for account in server sp-3p sp-cmd sp-telemetry "$server_user"; do
+    if [ -n "$account" ] && [ "$name" = "$(printf '%s' "$account" | tr '[:upper:]' '[:lower:]')" ]; then
+      printf '%s' "$account"
+      return 0
+    fi
+  done
+}
+
 # sp_passwd_update ROOT — set/replace users in ROOT/config/mosquitto/passwd.
 # Reads alternating "user" / "password" lines on stdin (never argv, so the
 # secrets stay out of the host's `ps`). Creates the file if missing; keeps
@@ -62,10 +84,21 @@ sp_passwd_update() {
       [ -f /work/passwd ] || : > /work/passwd
       while IFS= read -r u && IFS= read -r p; do
         [ -n "$u" ] || continue
-        mosquitto_passwd -b /work/passwd "$u" "$p" >/dev/null
+        printf "%s\n%s\n" "$p" "$p" | mosquitto_passwd /work/passwd "$u" >/dev/null
       done
       if [ "$SP_CHOWN" = "1" ]; then chown "$SP_UID:$SP_UID" /work/passwd; fi
       chmod 600 /work/passwd'
+}
+
+# sp_host_passwd_set FILE USER PASSWORD — set one user with the HOST's
+# mosquitto_passwd, for a host without docker. A shell function, so the
+# password is in no process's argv; mosquitto_passwd reads it on stdin.
+# Creates FILE if missing (mode 0600); keeps every other entry.
+sp_host_passwd_set() {
+  local file="$1" user="$2" pass="$3"
+  [ -f "$file" ] || : > "$file"
+  printf '%s\n%s\n' "$pass" "$pass" | mosquitto_passwd "$file" "$user" >/dev/null
+  chmod 600 "$file"
 }
 
 # sp_broker_own ROOT RELPATH... — hand files under ROOT/config/mosquitto to

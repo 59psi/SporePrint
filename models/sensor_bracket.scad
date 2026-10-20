@@ -40,8 +40,9 @@
 //   overhang < 1 mm, the clip tie slots are 5 mm bridges and the
 //   suction-cup recess ceiling is a Ø30 bridge — no supports anywhere.
 //   PETG preferred for the snap clips (PLA works with the default
-//   0.4 mm snap_interference). tilt_angle != 0 lifts the platform off the
-//   bed and then DOES need supports.
+//   0.4 mm snap_interference). tilt_angle (0-30°) raises the platform's
+//   outer, cable-slot end, pivoting on the edge the arm holds; a tilted
+//   platform lifts off the bed and then DOES need supports.
 //
 // ── Presets (-D) ───────────────────────────────────────────────────────
 //   (none)                 SCD4x enclosure, 2 clips, suction recess
@@ -49,6 +50,8 @@
 //   num_clips=1 | 3        clip count
 //   suction_cup=false      no recess under the platform
 //   clip_tie_slot=false    no zip-tie slot in the clip webs
+//   tilt_angle=10          outer end of the platform raised 10° (0-30;
+//                          needs supports)
 //   SP_FASTENER="self_tap" pilot holes instead of insert pockets
 //   part="none"            geometry off (for including in a test rig)
 //
@@ -80,7 +83,8 @@ arm_width       = 34;    // mm — arm width (X) = clip length along the wire
 arm_thick       = 4;     // mm — arm + clip bar thickness
 screw_d         = 3;     // mm — tie-down screw size; fixed at 3 (M3) to
                          //      match sensor_mount's counterbored ear holes
-tilt_angle      = 0;     // degrees — platform tilt (0 = flat; != 0 needs supports)
+tilt_angle      = 0;     // degrees, 0-30 — raises the platform's outer end,
+                         //      pivoting on the arm (0 = flat; > 0 needs supports)
 num_clips       = 2;     // number of wire clips (straddle 2 wires)
 cable_slot_w    = 8;     // mm — cable routing slot width
 gusset_size     = 4;     // mm — clip web flare each side at the bar (small
@@ -136,6 +140,9 @@ enc_y0 = plat_margin;
 
 assert(clip_mouth < wire_d && clip_mouth > wire_d / 2,
        "snap_interference must keep the clip mouth between wire_d/2 and wire_d");
+// A negative tilt would push the platform's outer end through the bed.
+assert(tilt_angle >= 0 && tilt_angle <= 30,
+       "tilt_angle must be 0-30 degrees: it raises the platform's outer end, pivoting on the arm");
 
 echo(str("sensor_bracket: ", scd30 ? "SCD-30" : "SCD4x", " platform ",
          platform_w, " x ", platform_l, " mm; tie-down pitch ",
@@ -184,53 +191,68 @@ module arm() {
 }
 
 // ── Sensor platform ───────────────────────────────────────────────────
+// A tilt pivots on the platform's bottom edge over the arm (platform-local
+// y = platform_l, z = 0) and raises the outer, cable-slot end: the 5 mm the
+// platform overlaps the arm stays inside the arm at every allowed angle, so
+// the two print as one part. tilt_angle = 0 keeps the flat placement.
 module sensor_platform() {
-    translate([plat_x0, plat_y0, 0])
-        rotate([tilt_angle, 0, 0])
+    if (tilt_angle == 0)
+        translate([plat_x0, plat_y0, 0])
+            sensor_platform_body();
+    else
+        translate([plat_x0, plat_y0 + platform_l, 0])
+            rotate([-tilt_angle, 0, 0])
+                translate([0, -platform_l, 0])
+                    sensor_platform_body();
+}
+
+// The platform in its own coordinates: slab + rim on [0, platform_w] x
+// [0, platform_l], saddles and insert pockets on top.
+module sensor_platform_body() {
+    difference() {
+        union() {
             difference() {
                 union() {
+                    cube([platform_w, platform_l, platform_thick]);
+                    // Perimeter rim (stiffener)
                     difference() {
-                        union() {
-                            cube([platform_w, platform_l, platform_thick]);
-                            // Perimeter rim (stiffener)
-                            difference() {
-                                cube([platform_w, platform_l, platform_thick + 2]);
-                                translate([wall, wall, -1])
-                                    cube([platform_w - wall * 2,
-                                          platform_l - wall * 2,
-                                          platform_thick + 4]);
-                            }
-                        }
-
-                        // Cable routing slot (front edge, under the
-                        // enclosure's ESP32 cable notch)
-                        translate([platform_w / 2 - cable_slot_w / 2, -1, -1])
-                            cube([cable_slot_w, 4, platform_thick + 4]);
-
-                        // Ventilation holes
-                        for (x = [12 : 8 : platform_w - 12])
-                            for (y = [wall + 5 : 8 : platform_l - wall - 5])
-                                translate([x, y, -1])
-                                    cylinder(h = platform_thick + 2, d = 3, $fn = 12);
-
-                        // Suction cup recess (underside, centre)
-                        if (suction_cup)
-                            translate([platform_w / 2, platform_l / 2, -0.01])
-                                cylinder(h = min(sc_depth, platform_thick - 1.2) + 0.01,
-                                         d = sc_diameter + 0.4, $fn = 64);
+                        cube([platform_w, platform_l, platform_thick + 2]);
+                        translate([wall, wall, -1])
+                            cube([platform_w - wall * 2,
+                                  platform_l - wall * 2,
+                                  platform_thick + 4]);
                     }
-
-                    // Saddles under the enclosure's end ears
-                    for (sx = [enc_x0 - ear_len, enc_x0 + enc_w])
-                        translate([sx, enc_y0, 0])
-                            cube([ear_len, enc_l, saddle_top]);
                 }
 
-                // M3 heat-set insert pockets under the ear holes
-                for (dx = [-ear_hole_pitch / 2, ear_hole_pitch / 2])
-                    translate([platform_w / 2 + dx, enc_y0 + enc_l / 2, saddle_top])
-                        sp_insert_pocket(tie_screw);
+                // Cable routing slot (front edge, under the
+                // enclosure's ESP32 cable notch)
+                translate([platform_w / 2 - cable_slot_w / 2, -1, -1])
+                    cube([cable_slot_w, 4, platform_thick + 4]);
+
+                // Ventilation holes
+                for (x = [12 : 8 : platform_w - 12])
+                    for (y = [wall + 5 : 8 : platform_l - wall - 5])
+                        translate([x, y, -1])
+                            cylinder(h = platform_thick + 2, d = 3, $fn = 12);
+
+                // Suction cup recess (underside, centre)
+                if (suction_cup)
+                    translate([platform_w / 2, platform_l / 2, -0.01])
+                        cylinder(h = min(sc_depth, platform_thick - 1.2) + 0.01,
+                                 d = sc_diameter + 0.4, $fn = 64);
             }
+
+            // Saddles under the enclosure's end ears
+            for (sx = [enc_x0 - ear_len, enc_x0 + enc_w])
+                translate([sx, enc_y0, 0])
+                    cube([ear_len, enc_l, saddle_top]);
+        }
+
+        // M3 heat-set insert pockets under the ear holes
+        for (dx = [-ear_hole_pitch / 2, ear_hole_pitch / 2])
+            translate([platform_w / 2 + dx, enc_y0 + enc_l / 2, saddle_top])
+                sp_insert_pocket(tie_screw);
+    }
 }
 
 // ── Full assembly (as printed) ────────────────────────────────────────

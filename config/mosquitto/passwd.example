@@ -10,4 +10,5 @@
 # mosquitto opens it after dropping privileges — so edit it with the scripts
 # (they run mosquitto_passwd inside the broker image), not by hand:
 #   ./scripts/add-node-mqtt-user.sh <node_id>     # add / re-key one node
-#   ./scripts/rotate-mqtt-creds.sh [server|sp-3p|sp-cmd|sp-telemetry]
+#   ./scripts/rotate-mqtt-creds.sh                # server, sp-cmd, sp-telemetry
+#   ./scripts/rotate-mqtt-creds.sh sp-3p          # the plugs' login: re-enter it in every plug

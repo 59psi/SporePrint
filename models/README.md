@@ -41,7 +41,7 @@ included by the models and are not printable parts.
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/builder/models` | The printable models: top-level `*.scad` files only. `lib/` files are not listed. |
+| `GET /api/builder/models` | The printable models: top-level `*.scad` files only. `lib/` files are not listed. Each has the `title` and `description` from its header comment; a description longer than 240 characters is cut, and `description_truncated` says so. |
 | `GET /api/builder/models/<file>.scad` | **A single self-contained file.** Every `include <lib/NAME.scad>` is replaced by the content of `models/lib/NAME.scad` (recursively), between `// ── inlined from lib/NAME.scad ──` and `// ── end of inlined lib/NAME.scad ──` comments. The file renders on its own with no `lib/` folder beside it, and gives the same STL as the repo copy. |
 | `GET /api/builder/models-bundle.zip` | `sporeprint-models/`: every model, `lib/` and this README, unmodified and in the repo layout. |
 
@@ -280,14 +280,17 @@ header strips that ship with the boards unsoldered.
   - `num_clips=1` or `num_clips=3`
   - `suction_cup=false`
   - `clip_tie_slot=false`
+  - `tilt_angle=10` (0–30°: raises the platform's outer end)
   - `SP_FASTENER="self_tap"`
-- The footprint knobs `fit`, `qt_clear`, `notch_w`, `ear_len` and `wall` must
-  be passed identically to both files.
+- The footprint knobs `fit`, `qt_clear`, `notch_w` and `ear_len` must be
+  passed identically to both files. The enclosure's `wall` is the bracket's
+  `enc_wall`: the bracket's own `wall` is its clip-ring and rim thickness.
 
 **Print:**
 - PLA or PETG, no supports. PETG is preferred for the bracket's snap clips.
-- A bracket with a non-zero `tilt_angle` lifts off the bed and **needs
-  supports**.
+- A bracket with a non-zero `tilt_angle` (0–30°) has its platform's outer
+  end raised, pivoting where the arm holds it, so the platform lifts off the
+  bed and **needs supports**.
 
 **Check before printing:**
 - PIM587 connector position and height are assumed.
@@ -603,8 +606,8 @@ estimates. If your inlet sits low near a corner, set `lip_h=3`.
 - 4 × M4 × 35 screws, socket or button head, A2 stainless. M4 × 30 and
   M4 × 40 also fit.
 - Duct retention, pick one:
-  - 1 zip tie, 16" (400 mm) or longer — the BOM buys 18" (457 mm) — and ≤ 4.8 mm wide, through
-    the finger tunnels (the BOM's 14" duct ties)
+  - 1 zip tie, 16" (400 mm) or longer — the BOM buys 18" (457 mm) — and
+    ≤ 4.8 mm wide, through the finger tunnels (a 14" tie is too short)
   - a 4" worm-drive hose clamp
 - Noctua's bundled self-tappers and anti-vibration mounts are **not** used.
 
