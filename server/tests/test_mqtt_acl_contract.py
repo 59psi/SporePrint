@@ -33,7 +33,8 @@ from app.mqtt import (
     is_service_account,
     purge_reserved_nodes,
 )
-from tests._pi_b1_mqtt import FakeBroker, RecordingSio, node_ids, run_mqtt_loop
+from tests._builders import node_ids
+from tests._fakes import FakeBroker, RecordingSio, run_mqtt_loop
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACL = REPO_ROOT / "config" / "mosquitto" / "acl.conf"

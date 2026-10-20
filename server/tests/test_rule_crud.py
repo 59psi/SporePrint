@@ -30,7 +30,8 @@ from app.automation.service import (
 from app.automation.templates import BUILTIN_RULES
 from app.cloud import integrations_proxy
 from app.db import get_db
-from tests._pi_a_engine import FakeSio, engine_state, register_node, rows, start_grow  # noqa: F401
+from tests._builders import register_node, rows, start_grow
+from tests._fakes import RecordingSio
 
 RELAY = "node-relay-7a3f1c"
 RELAY_CHANNELS = ["aux", "circulation", "exhaust", "fae"]
@@ -59,7 +60,7 @@ async def _write(request, monkeypatch, transport: str, body: dict,
              else client.post("/api/automation/rules", json=body))
         return r.status_code, "" if r.status_code == 200 else r.json()["detail"]
     monkeypatch.setattr(integrations_proxy, "_require_signed_setting", lambda: False)
-    sio = FakeSio()
+    sio = RecordingSio()
     action, payload = (("automation_update", {"rule_id": rule_id, "rule": body}) if rule_id
                        else ("automation_create", {"rule": body}))
     await integrations_proxy.handle_request(sio, {"id": "req-1", "action": action, "payload": payload})

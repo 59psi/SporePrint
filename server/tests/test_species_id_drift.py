@@ -23,7 +23,7 @@ from app.species.service import (
     seed_builtins,
     stored_species_id,
 )
-from tests._pi_c2_helpers import FRUITING, custom_profile
+from tests._builders import FRUITING, custom_profile
 
 
 def _custom_profile(**overrides) -> SpeciesProfile:

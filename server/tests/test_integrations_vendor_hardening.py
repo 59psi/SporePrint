@@ -38,7 +38,7 @@ from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import _TAPO_CLOUD_BASE_BY_REGION, TapoDriver, TapoError
 from app.integrations.trane.driver import TraneConfig, TraneDriver
 from app.integrations.wemo.driver import WemoConfig, WemoDriver
-from tests._pi_c1_integrations import use_drivers
+from tests._fakes import use_drivers
 
 # The vendor packages bind a driver INSTANCE to the name `driver`, shadowing
 # the submodule attribute — resolve the modules themselves.

@@ -21,18 +21,18 @@ import json
 
 import pytest
 
+import app.mqtt
 from app.automation.engine import _fire_rule
 from app.automation.models import RuleAction
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    FakeSio,
+from tests._builders import (
     RELAY_CHANNELS,
-    engine_state,
     firings,
     insert_plug,
     make_rule,
     register_node,
     threshold,
 )
+from tests._fakes import RecordingSio
 
 # Real nodes register under MAC-derived ids, NOT the seeded placeholders
 # relay-01 / light-01: the command must reach the topic the chamber's real
@@ -63,7 +63,7 @@ async def test_a_node_command_goes_to_the_topic_its_firmware_reads(mock_mqtt, ac
                                                                     payload):
     await register_node(RELAY_NODE, "relay", RELAY_CHANNELS)
     await register_node(LIGHT_NODE, "lighting")
-    sio = FakeSio()
+    sio = RecordingSio()
     await _fire_rule(_rule(action), {"humidity": 70}, None, sio)
     assert mock_mqtt == [(topic, payload)]
     assert sio.events[-1][0] == "rule_fired" and sio.events[-1][1]["status"] == "sent"
@@ -98,6 +98,19 @@ async def test_a_plug_rule_reaches_the_plugs_own_topic_tree(mock_mqtt, mock_mqtt
             for t, p in mock_mqtt_raw]
     assert wire == sent
     assert [f["status"] for f in await firings("plug")] == ["sent"]
+
+
+async def test_a_plug_command_the_broker_never_took_is_recorded_failed(mock_mqtt, monkeypatch):
+    """A paired plug while the server has no broker connection: nothing went
+    out, so the firing is 'failed' with the reason, never 'sent'."""
+    (plug_id, plug_type, prefix, role), action, _ = _PLUG_RULES["tasmota"]
+    await insert_plug(plug_id, plug_type, prefix, role=role)
+    monkeypatch.setattr(app.mqtt, "_client", None)  # the broker is down
+    await _fire_rule(_rule(action, "plug"), {"humidity": 70}, None)
+    assert mock_mqtt == []
+    assert await firings("plug") == [{
+        "rule_name": "plug", "status": "failed",
+        "error": "plug command not published (client disconnected?)"}]
 
 
 async def test_an_unregistered_plug_is_an_honest_no_op(mock_mqtt, mock_mqtt_raw):

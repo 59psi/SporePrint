@@ -24,15 +24,11 @@ import pytest
 
 import app.mqtt as mqtt
 from app.mqtt import _handle_message, get_reliability_counters
-from tests._pi_b1_mqtt import RecordingSio, readings, spy_ingest
+from tests._builders import readings
+from tests._fakes import RecordingSio
 
 NODE = "climate-01"
 TOPIC = f"sporeprint/{NODE}/telemetry"
-
-
-@pytest.fixture()
-def ingest(monkeypatch):
-    return spy_ingest(monkeypatch)
 
 
 @pytest.fixture()

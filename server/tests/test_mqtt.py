@@ -16,7 +16,8 @@ import app.health.service
 import app.mqtt
 from app.config import settings
 from app.mqtt import mqtt_publish
-from tests._pi_b1_mqtt import FakeBroker, Message, insert_node, node_row, run_mqtt_loop
+from tests._builders import node_row, register_node
+from tests._fakes import FakeBroker, Message, run_mqtt_loop
 
 
 async def test_the_loop_logs_in_with_the_configured_broker_account(monkeypatch):
@@ -56,7 +57,7 @@ async def test_the_retained_flag_reaches_the_status_handler(monkeypatch):
     """A retained 'online' is the broker replaying a stored frame on
     (re)subscribe, not the node talking: last_seen keeps its value."""
     stale = time.time() - 3 * 86400
-    await insert_node("node-c3", status="online", last_seen=stale)
+    await register_node("node-c3", "climate", status="online", last_seen=stale)
     await run_mqtt_loop(monkeypatch, FakeBroker([
         Message("sporeprint/node-c3/status", b'{"status": "online"}', retain=True),
     ]))

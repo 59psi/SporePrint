@@ -55,15 +55,6 @@ JPEG = b"\xff\xd8\xff\xe0" + b"fake-jpeg-body"
 
 
 @pytest.fixture(autouse=True)
-def _reset_pause_state():
-    engine._paused = False
-    engine._pause_loaded = False
-    yield
-    engine._paused = False
-    engine._pause_loaded = False
-
-
-@pytest.fixture(autouse=True)
 def _frame_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "vision_storage", str(tmp_path / "frames"))
 

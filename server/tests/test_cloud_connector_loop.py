@@ -25,7 +25,7 @@ import pytest
 import app.cloud.service as service
 from app.cloud.version import server_version
 from app.integrations import _health_sweeper
-from tests._pi_b2_cloud import sign
+from tests._signing import sign
 
 
 class _FakeClient:
@@ -114,11 +114,6 @@ def connector(monkeypatch):
         ("_queue_drops", 0), ("_last_forward", 0),
     ]:
         monkeypatch.setattr(service, name, value)
-    service._inflight.clear()
-    _empty_queue()
-    # Listeners other tests registered (the app's session sync) would start
-    # catch-ups that outlive the test.
-    monkeypatch.setattr(service, "_connect_listeners", [])
     monkeypatch.setattr(service, "_health_heartbeat_loop", _noop_loop)
     monkeypatch.setitem(service._task_status, "cloud_connector",
                         {"status": "idle", "last_run": None})
@@ -128,14 +123,7 @@ def connector(monkeypatch):
         snapshots.append(1)
 
     monkeypatch.setattr(_health_sweeper, "push_state_snapshot", fake_snapshot)
-    yield snapshots
-    service._inflight.clear()
-    _empty_queue()
-
-
-def _empty_queue():
-    while not service._queue.empty():
-        service._queue.get_nowait()
+    return snapshots
 
 
 async def _noop_loop():
@@ -266,11 +254,7 @@ async def test_a_command_on_the_socket_is_answered_on_the_same_socket(connector,
             await super().wait()
 
     monkeypatch.setattr(service.socketio, "AsyncClient", _CommandingRelay)
-    service._seen_command_ids.clear()
-    try:
-        await _run_connector(monkeypatch)
-    finally:
-        service._seen_command_ids.clear()
+    await _run_connector(monkeypatch)
     results = [data for event, data in _CommandingRelay.instances[0].emits
                if event == "command_result"]
     assert results == [{"id": "cmd-1", "success": True, "target_kind": "system",

@@ -17,7 +17,8 @@ from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 from app.species.models import PhaseParams
 from app.species.service import seed_builtins
-from tests._pi_a_engine import clock as _clock, engine_state, local, quiet_alerts  # noqa: F401
+from tests._timing import clock as _clock
+from tests._timing import local
 
 _NOON = local(12)
 

@@ -14,7 +14,6 @@ from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
 from app.species.service import seed_builtins
-from tests._pi_c2_helpers import alerts  # noqa: F401  (fixture)
 
 
 async def _closet_running(container: str) -> None:
@@ -34,10 +33,12 @@ async def _closet_running(container: str) -> None:
 # The open monotub is the control: the same closet with the substrate in its air.
 @pytest.mark.parametrize(("container", "managed"), [("liquid_culture", False), ("monotub", True)])
 async def test_room_humidity_pages_and_humidifies_only_an_open_substrate(
-        container, managed, mock_mqtt, mock_mqtt_raw, alerts):  # noqa: F811
+        container, managed, mock_mqtt, mock_mqtt_raw, alerts):
     await _closet_running(container)
     await evaluate_rules("climate-1", {"temp_f": 72, "humidity": 45})
-    humidity_pages = [a for a in alerts if "humidity" in a.lower()]
+    sent = [title for title, _ in alerts["critical"] + alerts["warning"]]
+    sent += [event for event, _ in alerts["forward"]]
+    humidity_pages = [a for a in sent if "humidity" in a.lower()]
     humidifier = [p for t, p in mock_mqtt_raw if t.startswith("tasmota/hum")]
     assert bool(humidity_pages) is managed
     assert bool(humidifier) is managed

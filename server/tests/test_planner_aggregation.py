@@ -21,7 +21,7 @@ from app.db import get_db
 from app.planner import service as planner_service
 from app.planner.service import aggregate_daily_weather, get_calendar_data
 from app.species.service import seed_builtins
-from tests._pi_c2_helpers import insert_reading
+from tests._builders import insert_reading
 
 _TODAY = datetime(2026, 7, 15, 3, 0, tzinfo=timezone.utc)
 YESTERDAY = "2026-07-14"

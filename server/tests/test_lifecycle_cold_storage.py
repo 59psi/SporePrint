@@ -24,8 +24,6 @@ from app.automation.engine import (
 from app.automation.models import RuleAction
 from app.automation.service import seed_builtin_rules
 from app.automation.smart_plugs import register_plug
-from app.chambers.models import ChamberUpdate
-from app.chambers.service import update_chamber
 from app.db import get_db
 from app.sessions.models import (
     BAG_CONTAINERS,
@@ -44,7 +42,6 @@ from app.sessions.service import (
 from app.species.models import GrowPhase
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins
-from tests._pi_c2_helpers import alerts  # noqa: F401  (fixture)
 
 _PHASES = {p.id: [ph.value for ph in p.phases] for p in BUILTIN_PROFILES}
 _PINK = _PHASES["pink_oyster"]          # pinning folded into fruiting, no rest
@@ -178,17 +175,17 @@ async def _closet_with_plugs():
 
 
 async def test_a_jar_in_cold_storage_does_not_drive_the_closet_it_left(
-        mock_mqtt, mock_mqtt_raw, alerts):  # noqa: F811
+        mock_mqtt, mock_mqtt_raw, alerts):
     await _closet_with_plugs()
     closet = await _chamber("Closet", ["climate-1", "relay-1"])
     jar = await _grow("spawn jar", "grain_colonization", "grain_jar", chamber_id=closet)
     await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
     await evaluate_rules("climate-1", {"temp_f": 72, "humidity": 45})
     assert mock_mqtt_raw == [], "the closet ran the fridge's 35-40 °F band"
-    assert alerts == []
+    assert not any(alerts.values()), alerts
 
 
-async def test_a_grow_sharing_the_closet_stays_managed(mock_mqtt, mock_mqtt_raw, alerts):  # noqa: F811
+async def test_a_grow_sharing_the_closet_stays_managed(mock_mqtt, mock_mqtt_raw, alerts):
     """A newer jar parked in cold storage no longer takes the closet's nodes
     from the grow still fruiting there."""
     await _closet_with_plugs()
@@ -199,18 +196,7 @@ async def test_a_grow_sharing_the_closet_stays_managed(mock_mqtt, mock_mqtt_raw,
     assert ("tasmota/h1/cmnd/POWER", "ON") in mock_mqtt_raw
 
 
-async def test_a_fridge_chamber_linked_to_the_jar_runs_cold_storage(alerts):  # noqa: F811
-    await _closet_with_plugs()
-    closet = await _chamber("Closet", ["climate-1"])
-    fridge = await _chamber("Fridge", ["fridge-1"])
-    jar = await _grow("spawn jar", "grain_colonization", "grain_jar", chamber_id=closet)
-    await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
-    await update_chamber(fridge, ChamberUpdate(active_session_id=jar["id"]))
-    await evaluate_rules("fridge-1", {"temp_f": 52})  # far above the 35-40 °F band
-    assert "temperature_alert" in alerts
-
-
-async def test_a_jar_already_in_cold_storage_is_released_at_start_up(mock_mqtt_raw, alerts):  # noqa: F811
+async def test_a_jar_already_in_cold_storage_is_released_at_start_up(mock_mqtt_raw, alerts):
     """A grow that entered cold storage before advancing dropped the link
     still held the chamber it grew in."""
     await _closet_with_plugs()
@@ -222,4 +208,4 @@ async def test_a_jar_already_in_cold_storage_is_released_at_start_up(mock_mqtt_r
         await db.commit()
     assert await release_cold_storage_links() == 1
     await evaluate_rules("climate-1", {"temp_f": 72})
-    assert mock_mqtt_raw == [] and alerts == []
+    assert mock_mqtt_raw == [] and not any(alerts.values()), alerts

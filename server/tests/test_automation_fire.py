@@ -14,6 +14,7 @@ Hard Ceiling among them.
 
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -21,19 +22,14 @@ import app.automation.engine as engine
 import app.cloud.service as cloud_service
 from app.automation.engine import _fire_rule, evaluate_rules
 from app.automation.models import RuleAction
-from app.automation.service import create_rule, seed_builtin_rules
+from app.automation.service import create_rule, seed_builtin_rules, valid_rules
 from app.db import get_db
 from app.integrations import _actions as vendor_actions
 from app.species.service import seed_builtins
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
+from tests._builders import (
     RELAY_CHANNELS,
-    alerts,
-    engine_state,
-    fast_sleep,
     firings,
-    frozen_sleep,
     make_rule,
-    quiet_alerts,
     register_node,
     rows,
     start_grow,
@@ -148,6 +144,22 @@ async def test_an_invalid_stored_rule_does_not_stop_the_co2_hard_ceiling(mock_mq
         await db.commit()
     await evaluate_rules("climate-1", {"co2_ppm": 45000})
     assert _exhaust_states(mock_mqtt) == ["on"]
+
+
+async def test_an_invalid_stored_rule_is_logged_once_not_on_every_load(caplog):
+    """Every rules load reads the table again (every frame, past the 5 s
+    cache): a row that does not validate is skipped and reported once."""
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) "
+            "VALUES ('broken', '', 1, 50, '{\"action\": 3}')",
+        )
+        await db.commit()
+    stored = await rows("SELECT * FROM automation_rules")
+    with caplog.at_level(logging.ERROR, logger="app.automation.service"):
+        for _ in range(3):
+            assert valid_rules(stored) == []
+    assert sum("'broken'" in r.getMessage() for r in caplog.records) == 1
 
 
 async def test_a_rule_that_raises_does_not_stop_the_co2_hard_ceiling(mock_mqtt, monkeypatch,

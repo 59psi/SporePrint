@@ -14,7 +14,7 @@ import pytest
 from app.automation.engine import get_overrides, is_overridden
 from app.automation.models import MAX_OVERRIDE_TTL_SECONDS
 from app.cloud.service import _dispatch_automation_command
-from tests._pi_a_engine import engine_state, register_node  # noqa: F401 (fixtures)
+from tests._builders import register_node
 
 SKEW = 2 * 3600  # the sender's clock two hours ahead of the Pi's
 

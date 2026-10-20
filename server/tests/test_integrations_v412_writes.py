@@ -30,7 +30,7 @@ from app.integrations import _actions
 from app.integrations.bios.driver import BiosConfig, BiosDriver
 from app.integrations.kasa.driver import KasaConfig, KasaDriver, _decrypt, _encrypt
 from app.integrations.wemo.driver import WemoConfig, WemoDriver
-from tests._pi_c1_integrations import route_httpx, use_drivers
+from tests._fakes import RecordingSio, route_httpx, use_drivers
 
 
 # ── Vendor-actions dispatcher ────────────────────────────────────────
@@ -207,14 +207,7 @@ async def test_rpc_vendor_action_without_inner_action_returns_400(monkeypatch):
     # test_cloud_integrations_signing.py).
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
 
-    class FakeSio:
-        def __init__(self):
-            self.emits = []
-
-        async def emit(self, event, data):
-            self.emits.append((event, data))
-
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(
         sio,
         {
@@ -224,6 +217,6 @@ async def test_rpc_vendor_action_without_inner_action_returns_400(monkeypatch):
             "payload": {"fixture_id": "f1"},  # missing inner action
         },
     )
-    payload = sio.emits[0][1]
+    payload = sio.events[0][1]
     assert payload["success"] is False
     assert payload["status"] == 400

@@ -13,12 +13,12 @@ test_lifecycle_cold_storage.py::test_suggested_next_phase.
 from app.sessions import service
 from app.sessions.models import HarvestCreate
 from app.species.service import seed_builtins
-from tests._pi_c2_helpers import start_grow
+from tests._builders import start_grow
 
 
 async def test_flush_status_counts_distinct_flushes():
     await seed_builtins()  # the expected count comes from the species profile
-    s = await start_grow("Flush test", "pearl_oyster", container_type="grow_bag", current_phase="fruiting")
+    s = await start_grow("pearl_oyster", "fruiting", name="Flush test", container_type="grow_bag")
     await service.add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200))
     await service.add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=50))  # same flush, 2nd pick
     await service.add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=150))

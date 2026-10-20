@@ -17,7 +17,7 @@ from app.planner.service import (
     get_calendar_data,
     get_session_warnings,
 )
-from tests._pi_c2_helpers import custom_profile, pacific_time  # noqa: F401  (fixture)
+from tests._builders import custom_profile
 
 DAY = 86_400
 
@@ -180,7 +180,7 @@ async def test_stale_weather_is_not_reported_as_current(monkeypatch):
     assert (await get_session_warnings(s["id"]))["level"] == "critical"
 
 
-async def test_forecast_warnings_skip_null_hours_and_use_the_local_day(pacific_time, monkeypatch):  # noqa: F811
+async def test_forecast_warnings_skip_null_hours_and_use_the_local_day(pacific_time, monkeypatch):
     """A null forecast temperature made the day average raise TypeError (a
     500), and an evening hour was filed under the next UTC day."""
     s = await _grow()

@@ -17,15 +17,10 @@ engine and hardware.service do) and uses the automation helpers for OFF
 detection and duty stripping.
 """
 
-import hashlib
-import hmac
-import json
 import time
-from unittest.mock import patch
 
 import pytest
 
-import app.automation.engine as engine
 import app.cloud.service as cloud_service
 from app.automation.engine import evaluate_rules
 from app.automation.models import (
@@ -39,77 +34,31 @@ from app.automation.router import command_plug
 from app.automation.service import create_rule
 from app.automation.smart_plugs import register_plug
 from app.cloud.service import handle_cloud_command
-from app.db import get_db
 from app.hardware.service import send_command
 from app.mqtt import _handle_message
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
+from tests._builders import register_node
+from tests._fakes import RecordingSio
+from tests._signing import sign
+from tests._timing import clock, local
 
-_real_localtime = time.localtime
 _KEY = "unit-test-cloud-token"
 RELAY_NODE = "node-relay-7a3f1c"
-
-
-def _local(hour, minute=0):
-    return time.mktime((2026, 7, 13, hour, minute, 0, 0, 0, -1))
-
-
-def _clock(ts):
-    return patch.multiple(
-        time,
-        time=lambda: ts,
-        localtime=lambda t=None: _real_localtime(ts if t is None else t),
-    )
-
-
-class _Sio:
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.events.append((event, data))
-
-    def last_result(self) -> dict:
-        event, data = self.events[-1]
-        assert event == "command_result", event
-        return data
-
-
-@pytest.fixture(autouse=True)
-def _reset_pause_state():
-    engine._paused = False
-    engine._pause_loaded = False
-    yield
-    engine._paused = False
-    engine._pause_loaded = False
 
 
 @pytest.fixture()
 def cloud_env(monkeypatch):
     monkeypatch.setattr(cloud_service.settings, "cloud_token", _KEY)
-    cloud_service._seen_command_ids.clear()
-    yield
-    cloud_service._seen_command_ids.clear()
-
-
-def _sign(frame: dict) -> dict:
-    body = json.dumps({k: v for k, v in frame.items() if k != "signature"},
-                      sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return {**frame, "signature": hmac.new(_KEY.encode(), body, hashlib.sha256).hexdigest()}
 
 
 def _cloud_cmd(cmd_id: str, channel, payload) -> dict:
-    return _sign({"id": cmd_id, "tier": "premium", "target_kind": "relay",
-                  "channel": channel, "payload": payload, "ts": time.time()})
+    return sign({"id": cmd_id, "tier": "premium", "target_kind": "relay",
+                 "channel": channel, "payload": payload, "ts": time.time()}, _KEY)
 
 
 async def _register_relay_node(node_id: str = RELAY_NODE) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) VALUES (?, ?, ?, ?)",
-            (node_id, "relay", json.dumps(["heater", "fae"]), time.time()),
-        )
-        await db.commit()
+    await register_node(node_id, "relay", ["heater", "fae"])
 
 
 async def _cutoff_rule(target: str, channel: str | None) -> None:
@@ -143,14 +92,14 @@ def _manual(command, published=True):
 
 
 async def _cloud_on(mock_mqtt):
-    sio = _Sio()
+    sio = RecordingSio()
     await handle_cloud_command(sio, _cloud_cmd("cmd-on", "heater", {"state": "on"}))
-    assert sio.last_result()["success"] is True
+    assert sio.last("command_result")["success"] is True
 
 
 def _node_reports(state, trigger):
     async def _do(mock_mqtt):
-        await _handle_message(_Sio(), "sporeprint/relay-01/telemetry/heater",
+        await _handle_message(RecordingSio(), "sporeprint/relay-01/telemetry/heater",
                               {"channel": "heater", "state": state, "trigger": trigger})
     return _do
 
@@ -178,14 +127,14 @@ async def test_an_on_from_outside_the_engine_lets_the_cutoff_resend_its_off(
     if target == RELAY_NODE:  # the cloud command reaches the chamber's real relay
         await _register_relay_node()
     await _cutoff_rule(target, "heater")
-    t0 = _local(12)
+    t0 = local(12)
     for dt in (0, 61):
-        with _clock(t0 + dt):
+        with clock(t0 + dt):
             await evaluate_rules("climate-1", {"temp_f": 90})
     assert len(_offs(mock_mqtt, "/cmd/heater")) == 1, "the repeat OFF is suppressed"
-    with _clock(t0 + 90):
+    with clock(t0 + 90):
         await switch(mock_mqtt)
-    with _clock(t0 + 122):
+    with clock(t0 + 122):
         await evaluate_rules("climate-1", {"temp_f": 90})
     assert len(_offs(mock_mqtt, "/cmd/heater")) == offs
 
@@ -197,14 +146,14 @@ async def test_a_plug_endpoint_on_lets_the_cutoff_resend_its_off(mock_mqtt, mock
     await register_plug(plug_id="plug-h1", name="heater", plug_type="shelly",
                         mqtt_topic_prefix="shellies/h1", device_role="heater")
     await _cutoff_rule("plug-heater", None)
-    t0 = _local(12)
+    t0 = local(12)
     for dt in (0, 61):
-        with _clock(t0 + dt):
+        with clock(t0 + dt):
             await evaluate_rules("climate-1", {"temp_f": 90})
     cmds = [p for t, p in mock_mqtt_raw if t == "shellies/h1/relay/0/command"]
     assert cmds == ["off"]
     await command_plug(named, {"state": "on"})
-    with _clock(t0 + 122):
+    with clock(t0 + 122):
         await evaluate_rules("climate-1", {"temp_f": 90})
     cmds = [p for t, p in mock_mqtt_raw if t == "shellies/h1/relay/0/command"]
     assert cmds == ["off", "on", "off"]
@@ -256,7 +205,7 @@ async def test_node_command_hooks(mock_mqtt, hooks, command, expected):
 ])
 async def test_cloud_command_hooks(mock_mqtt, hooks, cloud_env, channel, payload, expected):
     await _register_relay_node()
-    await handle_cloud_command(_Sio(), _cloud_cmd("cmd-hook", channel, payload))
+    await handle_cloud_command(RecordingSio(), _cloud_cmd("cmd-hook", channel, payload))
     assert len(mock_mqtt) == 1
     assert hooks == expected
 
@@ -264,13 +213,13 @@ async def test_cloud_command_hooks(mock_mqtt, hooks, cloud_env, channel, payload
 async def test_undelivered_cloud_on_calls_no_hook(mock_mqtt, hooks, cloud_env):
     await _register_relay_node()
     mock_mqtt.mock.return_value = False
-    await handle_cloud_command(_Sio(), _cloud_cmd("cmd-lost", "heater", {"state": "on"}))
+    await handle_cloud_command(RecordingSio(), _cloud_cmd("cmd-lost", "heater", {"state": "on"}))
     assert hooks == []
 
 
 async def test_cloud_scene_off_carries_no_duty(mock_mqtt, hooks, cloud_env):
     await _register_relay_node()
-    await handle_cloud_command(_Sio(), _cloud_cmd(
+    await handle_cloud_command(RecordingSio(), _cloud_cmd(
         "cmd-scene-off", "scene", {"state": "off", "level": 900, "pwm": 3}))
     assert mock_mqtt[0] == (f"sporeprint/{RELAY_NODE}/cmd/scene", {"state": "off"})
 
@@ -278,7 +227,7 @@ async def test_cloud_scene_off_carries_no_duty(mock_mqtt, hooks, cloud_env):
 async def test_cloud_non_object_payload_calls_no_hook(mock_mqtt, hooks, cloud_env):
     """A node drops a non-object command, so nothing was switched."""
     await _register_relay_node()
-    await handle_cloud_command(_Sio(), _cloud_cmd("cmd-list", "heater", ["on"]))
+    await handle_cloud_command(RecordingSio(), _cloud_cmd("cmd-list", "heater", ["on"]))
     assert hooks == []
 
 

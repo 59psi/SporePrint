@@ -10,35 +10,12 @@
 
 import pytest
 
-import app.cloud.service as cloud_service
 import app.mqtt
-import app.notifications.service as notifications
 from app.automation.engine import evaluate_rules
 from app.automation.models import RuleAction
 from app.automation.service import create_rule, drop_duty_from_off
-from app.config import settings
 from app.species.service import seed_builtins
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    NtfyRecorder,
-    engine_state,
-    make_rule,
-    start_grow,
-    threshold,
-)
-
-
-@pytest.fixture()
-def ntfy(monkeypatch):
-    """The real notifier, its POSTs recorded."""
-    NtfyRecorder.posts = []
-    monkeypatch.setattr(settings, "ntfy_url", "http://ntfy.test")
-    monkeypatch.setattr(notifications.httpx, "AsyncClient", NtfyRecorder)
-
-    async def _forward(event_type, data):
-        return None
-
-    monkeypatch.setattr(cloud_service, "forward_event", _forward)
-    return NtfyRecorder.posts
+from tests._builders import make_rule, start_grow, threshold
 
 
 @pytest.mark.parametrize("frames,pages", [
@@ -57,12 +34,12 @@ def ntfy(monkeypatch):
      ["CO2 CRITICAL on node-a: 45000 ppm", "CO2 CRITICAL on node-b: 45000 ppm"]),
 ])
 async def test_an_emergency_never_silences_another_nodes_parameters_or_directions(
-        ntfy, mock_mqtt, frames, pages):
+        ntfy_posts, mock_mqtt, frames, pages):
     await seed_builtins()
     await start_grow("cubensis_golden_teacher", "substrate_colonization")  # 75-80 °F, RH 70-80
     for node, readings in frames:
         await evaluate_rules(node, readings)
-    assert sorted(p["title"] for p in ntfy if p["priority"] == 5) == pages
+    assert sorted(p["title"] for p in ntfy_posts if p["priority"] == 5) == pages
 
 
 # ── an OFF never carries a duty value ──────────────────────────────────────

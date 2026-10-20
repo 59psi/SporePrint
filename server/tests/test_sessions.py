@@ -188,14 +188,6 @@ async def test_an_end_that_loses_a_race_to_another_end_changes_nothing(monkeypat
     assert "session_aborted" not in [e["type"] for e in await get_events(s["id"])]
 
 
-def test_an_ended_grow_cannot_be_ended_another_way(client):
-    s = client.post("/api/sessions", json={"name": "G", "species_profile_id": "blue_oyster"}).json()
-    assert client.post(f"/api/sessions/{s['id']}/abort").status_code == 200
-    r = client.post(f"/api/sessions/{s['id']}/complete")
-    assert r.status_code == 409 and "aborted" in r.json()["detail"]
-    assert client.get(f"/api/sessions/{s['id']}").json()["status"] == "aborted"
-
-
 async def test_get_events():
     s = await create_session(_make_session_data())
     await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))

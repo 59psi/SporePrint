@@ -13,7 +13,8 @@ from app import provision
 from app.cloud.service import _resolve_command_node
 from app.db import get_db
 from app.mqtt import _handle_message
-from tests._pi_b1_mqtt import RecordingSio, node_row
+from tests._builders import node_row
+from tests._fakes import RecordingSio
 
 
 @pytest.fixture(autouse=True)

@@ -17,7 +17,7 @@ from app.experiments.service import (
 from app.sessions.models import SessionCreate, HarvestCreate
 from app.sessions.service import create_session, add_harvest, advance_phase
 from app.sessions.models import PhaseAdvance
-from tests._pi_c2_helpers import fake_anthropic
+from tests._fakes import fake_anthropic
 
 
 async def _make_session(name, species="blue_oyster"):

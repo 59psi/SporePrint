@@ -26,7 +26,7 @@ from app.db import get_db
 from app.integrations import _registry, _settings_store
 from app.species.models import GrowPhase, PhaseParams, SpeciesProfile
 from app.species.service import get_profile, seed_builtins
-from tests._pi_a_engine import RELAY_CHANNELS, engine_state, threshold  # noqa: F401 (fixtures)
+from tests._builders import RELAY_CHANNELS, threshold
 
 _PERSONALITY_H = (Path(__file__).resolve().parents[2]
                   / "firmware" / "lib" / "sp_core" / "personality.h")

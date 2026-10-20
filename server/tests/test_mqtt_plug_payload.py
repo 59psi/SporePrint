@@ -8,20 +8,18 @@ smart_plugs row was ever created, and every plug rule failed with
 "no plug paired". These tests drive the real start_mqtt loop with raw bytes.
 """
 
-import asyncio
-
 import pytest
 
 import app.mqtt
 from app.automation.smart_plugs import send_plug_command
-from app.mqtt import _decode_payload, start_mqtt
-from tests._pi_a_engine import FakeSio, MqttMessage, fake_mqtt_client, plug_row, rows
+from app.mqtt import _decode_payload
+from tests._builders import plug_row, rows
+from tests._fakes import FakeBroker, Message, RecordingSio, run_mqtt_loop
 
 
-async def _run_loop(monkeypatch, messages) -> FakeSio:
-    monkeypatch.setattr(app.mqtt.aiomqtt, "Client", fake_mqtt_client(messages, []))
-    sio = FakeSio()
-    await asyncio.wait_for(start_mqtt(sio), timeout=5)
+async def _run_loop(monkeypatch, messages) -> RecordingSio:
+    sio = RecordingSio()
+    await run_mqtt_loop(monkeypatch, FakeBroker(messages), sio)
     return sio
 
 
@@ -60,7 +58,7 @@ def test_a_payload_is_decoded_the_way_its_topic_speaks(topic, raw, expected):
 
 
 async def test_tasmota_plain_text_power_report_registers_plug(monkeypatch, mock_mqtt_raw):
-    await _run_loop(monkeypatch, [MqttMessage("tasmota/hum/stat/POWER", b"ON")])
+    await _run_loop(monkeypatch, [Message("tasmota/hum/stat/POWER", b"ON")])
 
     row = await plug_row("plug-hum")
     assert row is not None, "plain-text Tasmota state report was dropped"
@@ -79,7 +77,7 @@ async def test_tasmota_plain_text_power_report_registers_plug(monkeypatch, mock_
 
 
 async def test_shelly_plain_text_relay_report_registers_plug(monkeypatch):
-    sio = await _run_loop(monkeypatch, [MqttMessage("shellies/dehum/relay/0", b"off")])
+    sio = await _run_loop(monkeypatch, [Message("shellies/dehum/relay/0", b"off")])
 
     row = await plug_row("plug-dehum")
     assert row is not None, "plain-text Shelly state report was dropped"
@@ -89,8 +87,8 @@ async def test_shelly_plain_text_relay_report_registers_plug(monkeypatch):
 
 async def test_cleared_retained_message_registers_nothing(monkeypatch):
     await _run_loop(monkeypatch, [
-        MqttMessage("tasmota/hum/stat/POWER", b""),
-        MqttMessage("shellies/dehum/relay/0", b""),
+        Message("tasmota/hum/stat/POWER", b""),
+        Message("shellies/dehum/relay/0", b""),
     ])
     assert await rows("SELECT plug_id FROM smart_plugs") == []
 
@@ -99,8 +97,8 @@ async def test_vendor_topics_never_enter_sporeprint_branches(monkeypatch):
     """A Shelly Gen2 status topic under shellies/ is not a SporePrint node's
     status report, while a sporeprint/* JSON status still is."""
     await _run_loop(monkeypatch, [
-        MqttMessage("shellies/plus1/status/switch:0", b'{"output":true}'),
-        MqttMessage("sporeprint/node-z/status", b'{"status":"online"}'),
+        Message("shellies/plus1/status/switch:0", b'{"output":true}'),
+        Message("sporeprint/node-z/status", b'{"status":"online"}'),
     ])
     assert await rows("SELECT node_id, status FROM hardware_nodes") == [
         {"node_id": "node-z", "status": "online"}]

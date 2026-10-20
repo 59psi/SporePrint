@@ -29,11 +29,10 @@ from app.integrations import _registry, _settings_store as store
 from app.integrations._keystore import reset_fernet_cache
 from app.integrations.grafana.config import GrafanaConfig
 from app.integrations.grafana.router import router as metrics_router
-from tests._pi_c1_integrations import fresh_keystore_fixture  # noqa: F401 — the fresh_keystore fixture
 
 
 @pytest.fixture
-def grafana(fresh_keystore):
+def grafana():
     drv = _registry.registered_drivers()["grafana"]
     saved = (drv._enabled, drv._cfg)
     drv._enabled = False
@@ -245,7 +244,7 @@ _OPERATOR_KEY = "OPERATOR-SECRET-KEY-1234"
 
 
 @pytest.fixture(params=_URL_KEY_DRIVERS)
-async def url_driver(request, fresh_keystore):
+async def url_driver(request):
     drv = _registry.registered_drivers()[request.param]
     saved = drv._cfg
     await _registry.put_config(drv.name, {"enabled": False, "config": {

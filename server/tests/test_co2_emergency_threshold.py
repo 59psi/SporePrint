@@ -13,7 +13,8 @@ from app.automation.engine import evaluate_rules
 from app.automation.service import seed_builtin_rules
 from app.species.models import PhaseParams
 from app.species.service import seed_builtins
-from tests._pi_a_engine import alerts, clock, engine_state, local, start_grow  # noqa: F401
+from tests._builders import start_grow
+from tests._timing import clock, local
 
 
 @pytest.mark.parametrize("co2_max,margin,edge", [

@@ -28,7 +28,8 @@ from app.cloud import integrations_proxy
 from app.cloud.service import handle_cloud_command
 from app.config import settings
 from app.integrations import _registry
-from tests._pi_b2_cloud import FakeSio, sign
+from tests._fakes import RecordingSio
+from tests._signing import sign
 
 _KEY = "unit-test-cloud-token"
 
@@ -45,7 +46,6 @@ def _signed(req_id, key: str = _KEY, **extra) -> dict:
 def dispatched(monkeypatch):
     """The registry calls the gate let through."""
     monkeypatch.setattr(service.settings, "cloud_token", _KEY)
-    service._seen_command_ids.clear()
     calls: list[str] = []
 
     async def fake_list():
@@ -53,8 +53,7 @@ def dispatched(monkeypatch):
         return [{"slug": "grafana"}]
 
     monkeypatch.setattr(_registry, "list_integrations", fake_list)
-    yield calls
-    service._seen_command_ids.clear()
+    return calls
 
 
 @pytest.fixture
@@ -64,9 +63,9 @@ def lax(monkeypatch):
 
 
 async def _send(frame) -> dict:
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, frame)
-    assert len(sio.emits) == 1, sio.emits
+    assert len(sio.events) == 1, sio.events
     return sio.last("integrations_response")
 
 
@@ -141,7 +140,7 @@ async def test_command_and_integrations_ids_are_deduped_apart_through_one_gate(
     """The same value used as a command id and as an integrations request id
     is two different keys of the one replay gate (claim_replay_id): neither
     channel's use of it blocks the other, and a replay of either is refused."""
-    sio = FakeSio()
+    sio = RecordingSio()
     cmd = sign({"id": "same-id", "tier": "premium", "target_kind": "system",
                 "channel": "automation", "payload": {"paused": False}, "ts": time.time()}, _KEY)
     await handle_cloud_command(sio, cmd)

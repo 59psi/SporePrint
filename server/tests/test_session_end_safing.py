@@ -8,6 +8,7 @@ scene. Ending the session must command the automation-driven actuators OFF, and
 the chamber must stop advertising the finished session as its live grow.
 """
 
+import importlib
 import json
 import time
 
@@ -37,12 +38,8 @@ from app.sessions.service import (
     get_events,
     get_session,
 )
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    engine_state,
-    json_publishes,
-    kasa_driver,
-    kasa_wire,
-)
+
+kasa_driver = importlib.import_module("app.integrations.kasa.driver")
 
 
 async def _session(name="Grow", **kw):
@@ -467,6 +464,13 @@ def test_end_endpoints_answer_409_for_an_ended_grow(client):
     assert r.status_code == 409, r.text
     assert client.post(f"/api/sessions/{s['id']}/contaminated").status_code == 409
     assert client.post(f"/api/sessions/{s['id']}/phase", json={"phase": "fruiting"}).status_code == 409
+    # The other way round: an aborted grow is not completed after the fact,
+    # the 409 says why, and the grow keeps its outcome.
+    s = client.post("/api/sessions", json={"name": "H", "species_profile_id": "blue_oyster"}).json()
+    assert client.post(f"/api/sessions/{s['id']}/abort").status_code == 200
+    r = client.post(f"/api/sessions/{s['id']}/complete")
+    assert r.status_code == 409 and "aborted" in r.json()["detail"]
+    assert client.get(f"/api/sessions/{s['id']}").json()["status"] == "aborted"
 
 
 async def test_advancing_to_complete_ends_the_grow(json_publishes, mock_mqtt_raw):

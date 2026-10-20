@@ -11,11 +11,9 @@ any past hours in the cache), so the "Pre-cool for Hot Forecast" rule ran the
 cooler all through a mild day because tomorrow would be hot.
 """
 
-import json
 import time
 from datetime import datetime, timedelta
 
-import httpx
 import pytest
 
 import app.notifications.service as notif
@@ -26,29 +24,9 @@ from app.sessions.service import advance_phase, create_session
 from app.species.service import seed_builtins
 from app.weather.prediction import _store_model
 
-_RealAsyncClient = httpx.AsyncClient
-
 # cubensis_golden_teacher substrate_colonization: 75–80 °F.
 _MAX_F = 80.0
 _MIN_F = 75.0
-
-
-@pytest.fixture()
-def ntfy(monkeypatch):
-    """Real notifier over a MockTransport; returns the published JSON bodies."""
-    bodies: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        bodies.append(json.loads(request.content.decode("utf-8")))
-        return httpx.Response(200, json={"id": "x"})
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return _RealAsyncClient(*args, **kwargs)
-
-    monkeypatch.setattr("app.config.settings.ntfy_url", "http://ntfy:80")
-    monkeypatch.setattr(notif.httpx, "AsyncClient", factory)
-    return bodies
 
 
 async def _active_session():
@@ -81,15 +59,15 @@ def _now_hour() -> float:
 # ── forecast alerts ─────────────────────────────────────────────────────────
 
 
-async def test_no_model_means_no_closet_alert_from_outdoor_temps(ntfy):
+async def test_no_model_means_no_closet_alert_from_outdoor_temps(ntfy_posts):
     """Before a model exists the outdoor forecast says nothing about the closet."""
     await _active_session()
     forecast = _hourly(_now_hour() + 3600, [_MAX_F + 30] * 48)  # scorching outdoors
     await weather_svc._check_forecast_alerts(None, forecast)
-    assert ntfy == []
+    assert ntfy_posts == []
 
 
-async def test_elapsed_hours_are_ignored(ntfy):
+async def test_elapsed_hours_are_ignored(ntfy_posts):
     """Open-Meteo returns hours from 00:00 today; hours already past must not
     trigger 'danger in 0h'."""
     await _active_session()
@@ -97,7 +75,7 @@ async def test_elapsed_hours_are_ignored(ntfy):
     past = _hourly(_now_hour() - 6 * 3600, [_MAX_F + 30] * 5)  # hot, but over
     future = _hourly(_now_hour() + 3600, [(_MIN_F + _MAX_F) / 2] * 48)  # in range
     await weather_svc._check_forecast_alerts(None, past + future)
-    assert ntfy == []
+    assert ntfy_posts == []
 
 
 @pytest.mark.parametrize("temps,priority,title", [
@@ -108,7 +86,7 @@ async def test_elapsed_hours_are_ignored(ntfy):
     # for cold; only past min - 10 did anything page.
     ([_MIN_F - 7] * 24, 4, "Cold advisory"),
 ], ids=["heat-danger", "heat-advisory", "cold-advisory"])
-async def test_a_forecast_alert_pages_once_across_polls(ntfy, temps, priority, title):
+async def test_a_forecast_alert_pages_once_across_polls(ntfy_posts, temps, priority, title):
     """The same forecast condition re-evaluated every poll pages once, not
     every 10 min."""
     await _active_session()
@@ -120,18 +98,18 @@ async def test_a_forecast_alert_pages_once_across_polls(ntfy, temps, priority, t
         # 15-min critical window: only a forecast-specific window holds.
         for key in list(notif._last_sent):
             notif._last_sent[key] -= 1000
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == priority
-    assert title in ntfy[0]["title"]
+    assert len(ntfy_posts) == 1
+    assert ntfy_posts[0]["priority"] == priority
+    assert title in ntfy_posts[0]["title"]
 
 
-async def test_later_critical_is_not_masked_by_an_earlier_warning(ntfy):
+async def test_later_critical_is_not_masked_by_an_earlier_warning(ntfy_posts):
     await _active_session()
     await _identity_model()
     temps = [_MAX_F + 7] * 5 + [_MAX_F + 20] * 5  # warning soon, danger later
     await weather_svc._check_forecast_alerts(None, _hourly(_now_hour() + 3600, temps))
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 5
+    assert len(ntfy_posts) == 1
+    assert ntfy_posts[0]["priority"] == 5
 
 
 # ── today's forecast high/low ───────────────────────────────────────────────
@@ -160,7 +138,7 @@ async def test_forecast_high_low_cover_only_today(monkeypatch):
 # ── cold advisory and provider gaps ─────────────────────────────────────────
 
 
-async def test_a_null_forecast_hour_does_not_drop_the_alerts(ntfy):
+async def test_a_null_forecast_hour_does_not_drop_the_alerts(ntfy_posts):
     """A provider gap (temp or humidity null, the key present) raised
     TypeError in the prediction, so the poll's alerts never went out."""
     await _active_session()
@@ -172,8 +150,8 @@ async def test_a_null_forecast_hour_does_not_drop_the_alerts(ntfy):
         {"timestamp": start + 7200, "temp_f": _MAX_F + 15, "humidity": 50},
     ]
     await weather_svc._check_forecast_alerts(None, forecast)
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 5
+    assert len(ntfy_posts) == 1
+    assert ntfy_posts[0]["priority"] == 5
 
 
 # ── every active grow, on the setpoints in force ───────────────────────────
@@ -198,7 +176,7 @@ async def _chamber(name: str) -> int:
         return cursor.lastrowid
 
 
-async def test_every_active_grow_gets_its_forecast_alert(ntfy):
+async def test_every_active_grow_gets_its_forecast_alert(ntfy_posts):
     """Only the newest active session anywhere was checked: with two chambers
     the older grow's heat danger never paged."""
     await seed_builtins()
@@ -208,12 +186,12 @@ async def test_every_active_grow_gets_its_forecast_alert(ntfy):
     await _grow("newer", "pink_oyster", "fruiting", b, now)         # 70-85 °F
     await _identity_model()
     await weather_svc._check_forecast_alerts(None, _hourly(_now_hour() + 3600, [78.0] * 6))
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 5
-    assert "Blue Oyster (older) heat danger" in ntfy[0]["title"]
+    assert len(ntfy_posts) == 1
+    assert ntfy_posts[0]["priority"] == 5
+    assert "Blue Oyster (older) heat danger" in ntfy_posts[0]["title"]
 
 
-async def test_rest_phase_is_checked_against_the_fruiting_envelope(ntfy):
+async def test_rest_phase_is_checked_against_the_fruiting_envelope(ntfy_posts):
     """Most profiles define no rest phase: the engine runs it on the fruiting
     envelope, but the forecast alerts found no setpoints and went silent for
     every rest between flushes."""
@@ -222,12 +200,12 @@ async def test_rest_phase_is_checked_against_the_fruiting_envelope(ntfy):
     await advance_phase(s["id"], PhaseAdvance(phase="rest"))
     await _identity_model()
     await weather_svc._check_forecast_alerts(None, _hourly(_now_hour() + 3600, [85.0] * 6))
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 5
-    assert "heat danger" in ntfy[0]["title"]
+    assert len(ntfy_posts) == 1
+    assert ntfy_posts[0]["priority"] == 5
+    assert "heat danger" in ntfy_posts[0]["title"]
 
 
-async def test_cold_storage_gets_no_closet_forecast_alert(ntfy):
+async def test_cold_storage_gets_no_closet_forecast_alert(ntfy_posts):
     """A jar in the fridge runs on no species setpoints: the closet forecast
     says nothing about it."""
     await seed_builtins()
@@ -235,7 +213,7 @@ async def test_cold_storage_gets_no_closet_forecast_alert(ntfy):
     await advance_phase(s["id"], PhaseAdvance(phase="cold_storage"))
     await _identity_model()
     await weather_svc._check_forecast_alerts(None, _hourly(_now_hour() + 3600, [85.0] * 6))
-    assert ntfy == []
+    assert ntfy_posts == []
 
 
 # ── GET /api/weather/impact ────────────────────────────────────────────────

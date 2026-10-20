@@ -27,13 +27,7 @@ from app.automation.engine import (
 from app.automation.models import MAX_OVERRIDE_TTL_SECONDS, ManualOverride, RuleAction
 from app.automation.service import create_rule
 from app.cloud.service import _dispatch_system_command
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    engine_state,
-    make_rule,
-    register_node,
-    start_grow,
-    threshold,
-)
+from tests._builders import make_rule, register_node, start_grow, threshold
 
 # A real relay registers under a MAC-derived id, distinct from the relay-01
 # placeholder the rule names.

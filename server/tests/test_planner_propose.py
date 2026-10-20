@@ -12,7 +12,7 @@ from icalendar import Calendar
 from app.species.models import GrowPhase, PhaseParams
 from app.planner.service import propose_cycle
 from app.planner.ical import cycle_to_ical
-from tests._pi_c2_helpers import COLONIZATION, FRUITING, PRIMORDIA, custom_profile
+from tests._builders import COLONIZATION, FRUITING, PRIMORDIA, custom_profile
 
 START = date(2026, 7, 16)
 

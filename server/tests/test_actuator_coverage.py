@@ -15,7 +15,7 @@ import pytest
 
 from app.automation.smart_plugs import target_is_present
 from app.automation.templates import BUILTIN_RULES
-from tests._pi_a_engine import RELAY_CHANNELS, insert_plug, register_node
+from tests._builders import RELAY_CHANNELS, insert_plug, register_node
 
 # Every actuator the BOM sells, as (target, channel). Keep in step with
 # server/app/builder/hardware_guides.py — if the BOM grows an actuator, add it

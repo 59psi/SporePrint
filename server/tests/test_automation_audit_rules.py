@@ -39,18 +39,15 @@ from app.db import get_db
 from app.sessions.models import PhaseAdvance
 from app.sessions.service import advance_phase
 from app.species.service import seed_builtins
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    alerts,
+from tests._builders import (
     chamber,
-    clock,
-    engine_state,
     firings,
-    local,
     make_rule,
     register_node,
     start_grow,
     threshold,
 )
+from tests._timing import clock, local
 
 
 async def _seed_all():

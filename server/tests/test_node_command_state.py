@@ -17,16 +17,8 @@ from app.automation.engine import _fire_rule, _safety_tasks
 from app.automation.models import AutomationRule, RuleAction
 from app.automation.service import is_off_command, node_command_state, normalize_node_command
 from app.hardware.service import send_command
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    REAL_SLEEP,
-    ended,
-    engine_state,
-    frozen_sleep,
-    make_rule,
-    rows,
-    threshold,
-    watchdog_rows,
-)
+from tests._builders import make_rule, rows, threshold, watchdog_rows
+from tests._timing import REAL_SLEEP, ended
 
 
 @pytest.mark.parametrize("state,sent", [

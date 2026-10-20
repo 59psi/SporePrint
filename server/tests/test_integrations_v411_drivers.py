@@ -35,7 +35,8 @@ from app.integrations.kasa.driver import KasaConfig, KasaDriver
 from app.integrations.quest.driver import QuestConfig, QuestDriver
 from app.integrations.tapo.driver import TapoDriver
 from app.integrations.trane.driver import TraneConfig, TraneDriver
-from tests._pi_c1_integrations import route_httpx, stored_readings, tapo_cfg, use_drivers
+from tests._builders import stored_readings
+from tests._fakes import route_httpx, tapo_cfg, use_drivers
 
 # The vendor packages bind a driver INSTANCE to the name `driver`, shadowing
 # the submodule attribute — resolve the module itself.

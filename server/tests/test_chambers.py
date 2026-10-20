@@ -22,7 +22,7 @@ from app.sessions.service import (
     create_session,
     get_active_session_for_node,
 )
-from tests._pi_c2_helpers import insert_reading
+from tests._builders import insert_reading
 
 
 def _make_chamber(**overrides):

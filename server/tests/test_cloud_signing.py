@@ -12,7 +12,7 @@ import json
 import pytest
 
 from app.cloud.signing import REPLAY_WINDOW_SECONDS, verify_frame
-from tests._pi_b2_cloud import sign
+from tests._signing import sign
 
 _KEY = "unit-test-device-token"
 _NOW = 1_800_000_000.0

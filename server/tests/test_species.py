@@ -18,7 +18,7 @@ from app.species.service import (
     update_profile,
     delete_profile,
 )
-from tests._pi_c2_helpers import custom_profile
+from tests._builders import custom_profile
 
 
 async def test_seeding_twice_stores_each_builtin_once():

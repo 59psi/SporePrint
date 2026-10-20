@@ -15,7 +15,7 @@ import pytest
 from app.automation.engine import _condition_state, _eval_threshold, _evaluate_condition
 from app.automation.models import CompoundCondition, CompoundOp, ConditionType, RuleCondition
 from app.species.models import PhaseParams
-from tests._pi_a_engine import threshold
+from tests._builders import threshold
 
 PHASE = PhaseParams(
     temp_min_f=72, temp_max_f=76, humidity_min=85, humidity_max=92,

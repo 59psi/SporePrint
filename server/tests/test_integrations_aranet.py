@@ -33,17 +33,14 @@ from app.integrations.aranet.driver import AranetDriver
 from app.integrations.aranet.models import AranetMeasurementsResponse, AranetSensor
 from app.integrations.aranet.poller import STALE_FLOOR_SECONDS, run_one_poll
 from app.integrations.aranet.router import router as aranet_extra_router
-from tests._pi_c1_integrations import (  # noqa: F401 — the fresh_keystore fixture
-    fresh_keystore_fixture,
-    stored_readings,
-)
+from tests._builders import stored_readings
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def app_client(fresh_keystore, monkeypatch):
+def app_client(monkeypatch):
     drv = _registry.registered_drivers().get("aranet")
     assert isinstance(drv, AranetDriver)
     # The singleton gets its own state back after the test.

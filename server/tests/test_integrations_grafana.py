@@ -36,7 +36,6 @@ from app.integrations.trane.driver import TraneConfig
 from app.main import app as server_app
 from app.mqtt import _handle_message
 from app.retention.service import RAW_RETENTION_DAYS, _prune_actuator_events
-from tests._pi_c1_integrations import fresh_keystore_fixture  # noqa: F401 — the fresh_keystore fixture
 
 grafana_router_mod = importlib.import_module("app.integrations.grafana.router")
 
@@ -45,7 +44,7 @@ grafana_router_mod = importlib.import_module("app.integrations.grafana.router")
 
 
 @pytest.fixture
-def app_client(fresh_keystore, monkeypatch):
+def app_client(monkeypatch):
     """The integrations router and the Grafana `/metrics` route, mounted as
     in production, with the registered exporter reset to disabled (and given
     its own state back after the test)."""

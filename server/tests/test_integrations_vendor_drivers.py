@@ -49,14 +49,13 @@ from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import TapoDriver, TapoError
 from app.integrations.trane.driver import TraneConfig, TraneDriver
 from app.integrations.wemo.driver import WemoConfig, WemoDriver
-from tests._pi_c1_integrations import (
+from tests._builders import stored_readings
+from tests._fakes import (
     EMAIL,
     PASSWORD,
     FakeKlapPlugs,
-    fresh_keystore_fixture,  # noqa: F401 — the fresh_keystore fixture
     health_after_one_poll,
     route_httpx,
-    stored_readings,
     tapo_cfg,
     tapo_ok,
     use_drivers,
@@ -764,7 +763,7 @@ async def test_pulse_local_unusable_url_is_a_pulse_error(monkeypatch):
 # ── Saved config is used after a restart ─────────────────────────────
 
 
-def test_test_uses_the_saved_config_after_a_restart(fresh_keystore, monkeypatch):
+def test_test_uses_the_saved_config_after_a_restart(monkeypatch):
     drv = _registry.registered_drivers()["quest"]
     monkeypatch.setattr(drv, "_cfg", drv._cfg)  # the singleton gets its own config back
     app = FastAPI()

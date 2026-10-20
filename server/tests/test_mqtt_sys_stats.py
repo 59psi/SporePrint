@@ -8,7 +8,8 @@ text, not JSON) around the JSON decode that would drop them.
 
 import app.mqtt
 from app.health import service as health_service
-from tests._pi_b1_mqtt import FakeBroker, Message, node_row, run_mqtt_loop
+from tests._builders import node_row
+from tests._fakes import FakeBroker, Message, run_mqtt_loop
 
 
 async def test_broker_stats_reach_the_mqtt_health_detail(monkeypatch):

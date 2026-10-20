@@ -9,11 +9,15 @@ error→disabled must resolve the open escalation.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 import app.cloud.service as cloud_service
 from app.integrations import _health_sweeper as sweeper
 from app.integrations._base import IntegrationHealth
+from tests._fakes import RecordingSio
 
 
 class _Drv:
@@ -67,19 +71,12 @@ async def test_forward_event_reports_undelivered_when_disconnected(monkeypatch):
 
 
 async def test_forward_event_reports_delivered(monkeypatch):
-    class _Sio:
-        def __init__(self):
-            self.emits = []
-
-        async def emit(self, ev, data):
-            self.emits.append((ev, data))
-
-    sio = _Sio()
+    sio = RecordingSio()
     monkeypatch.setattr(cloud_service.settings, "cloud_url", "https://relay.example")
     monkeypatch.setattr(cloud_service, "_connected", True)
     monkeypatch.setattr(cloud_service, "_sio", sio)
     assert await cloud_service.forward_event("vendor_health_degraded", {"a": 1}) is True
-    assert sio.emits and sio.emits[0][0] == "event"
+    assert sio.events and sio.events[0][0] == "event"
 
 
 async def test_transition_while_offline_is_delivered_after_reconnect(one_driver, cloud):
@@ -177,3 +174,27 @@ async def test_a_driver_whose_health_raises_does_not_hide_the_others(monkeypatch
     await sweeper._sweep_once()
     assert [(d["vendor"], d["state"]) for _e, d in cloud.sent] == [("quest", "error")]
     assert "broken" not in sweeper._last_state
+
+
+async def test_the_loop_sweeps_every_interval_and_outlives_a_crashing_sweep(monkeypatch):
+    """A sweep that raises is logged and the next one runs an interval later;
+    a cancellation (the app shutting down) ends the loop cleanly."""
+    sweeps: list[int] = []
+    pauses: list[float] = []
+
+    async def _sweep():
+        sweeps.append(len(sweeps))
+        if len(sweeps) == 1:
+            raise RuntimeError("a driver's health() blew up")
+        if len(sweeps) == 3:
+            raise asyncio.CancelledError
+
+    async def _pause(seconds):
+        pauses.append(seconds)
+
+    monkeypatch.setattr(sweeper, "_sweep_once", _sweep)
+    monkeypatch.setattr(sweeper, "asyncio",
+                        SimpleNamespace(sleep=_pause, CancelledError=asyncio.CancelledError))
+    await asyncio.wait_for(sweeper.run_health_sweeper(), timeout=2)
+    assert len(sweeps) == 3
+    assert pauses == [sweeper._SWEEP_INTERVAL_SECONDS] * 2

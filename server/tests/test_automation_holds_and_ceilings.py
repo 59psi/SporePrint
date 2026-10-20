@@ -30,17 +30,8 @@ from app.automation.engine import (
 from app.automation.models import MAX_OVERRIDE_TTL_SECONDS, ManualOverride, RuleAction
 from app.automation.service import create_rule
 from app.db import get_db
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    REAL_SLEEP,
-    alerts,
-    engine_state,
-    frozen_sleep,
-    gated_sleep,
-    make_rule,
-    quiet_alerts,
-    rows,
-    watchdog_rows,
-)
+from tests._builders import make_rule, rows, watchdog_rows
+from tests._timing import REAL_SLEEP
 
 
 # ── one hold per actuator, in the table and the cache ──────────────────────
@@ -66,11 +57,15 @@ async def test_a_released_hold_frees_the_actuator():
     assert await rows("SELECT * FROM manual_overrides") == []
 
 
-@pytest.mark.parametrize("expires_at", [time.time() - 10, 0])
-async def test_an_expired_hold_is_neither_held_nor_listed(expires_at):
+# Seconds before now the hold expired; None is an expiry of 0 (the epoch). The
+# expiry itself is computed in the test, so the id is the same on every
+# collection (pytest-xdist compares them across workers).
+@pytest.mark.parametrize("expired_ago", [10, None], ids=["ten-seconds-ago", "0"])
+async def test_an_expired_hold_is_neither_held_nor_listed(expired_ago):
     """An expiry of 0 is long past, not "never" (it used to be read as falsy).
     The hot-path check drops an expired hold from the cache; the list prunes
     it from the table as well."""
+    expires_at = 0 if expired_ago is None else time.time() - expired_ago
     for channel in ("fae", "aux"):
         await set_override(ManualOverride(target="relay-01", channel=channel,
                                           expires_at=expires_at))

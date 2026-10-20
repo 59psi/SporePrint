@@ -26,7 +26,7 @@ from app.sessions.service import (
     list_sessions,
     resolve_session_node_id,
 )
-from tests._pi_c2_helpers import insert_reading, register_node
+from tests._builders import insert_reading, register_node
 
 
 def _session(**overrides):

@@ -26,19 +26,15 @@ from app.automation.service import create_rule, seed_builtin_rules
 from app.automation.smart_plugs import register_plug
 from app.db import get_db
 from app.species.service import seed_builtins
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
+from tests._builders import (
     LIGHT_CHANNELS as _LIGHT_CHANNELS,
     RELAY_CHANNELS as _RELAY_CHANNELS,
     chamber as _chamber,
-    clock as _clock,
-    engine_state,
-    frozen_sleep,
-    local as _local,
-    quiet_alerts,
     register_node,
     start_grow as _session,
     threshold as _threshold,
 )
+from tests._timing import clock as _clock, local as _local
 
 
 @pytest.fixture(autouse=True)

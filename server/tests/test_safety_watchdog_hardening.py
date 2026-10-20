@@ -43,24 +43,15 @@ from app.automation.router import command_plug
 from app.automation.service import create_rule
 from app.automation.templates import BUILTIN_RULES
 from app.integrations import _actions as vendor_actions
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    REAL_SLEEP,
-    alerts,
-    dispatch_calls,
-    drain,
-    ended,
-    engine_state,
-    fast_sleep,
+from tests._builders import (
     firings,
-    frozen_sleep,
-    gated_sleep,
     insert_plug,
     insert_watchdog,
     make_rule,
-    quiet_alerts,
     rows,
     watchdog_rows,
 )
+from tests._timing import REAL_SLEEP, drain, ended
 
 HEATER = RuleAction(target="relay-01", channel="heater")
 

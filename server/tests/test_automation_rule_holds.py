@@ -14,7 +14,6 @@ import time
 import pytest
 
 import app.automation.engine as engine
-import app.cloud.service as cloud_service
 from app.automation.engine import set_override
 from app.automation.models import (
     AutomationRule,
@@ -31,7 +30,8 @@ from app.chambers.models import ChamberCreate
 from app.chambers.service import create_chamber
 from app.cloud import integrations_proxy
 from app.config import settings
-from tests._pi_a_engine import FakeSio, engine_state, register_node  # noqa: F401 (fixtures)
+from tests._builders import register_node
+from tests._fakes import RecordingSio
 
 
 async def _node(node_id: str, node_type: str, seen_ago: float) -> None:
@@ -174,14 +174,12 @@ def test_every_rule_in_the_list_carries_its_holds(client):
 
 async def test_the_cloud_rule_list_carries_the_same_holds(monkeypatch):
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    cloud_service._seen_command_ids.clear()
     await _node("node-a1", "relay", seen_ago=5)
     fae = await _rule("FAE", FAE)
     await _hold("node-a1", "fae", "pinned")
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {"id": "list-1", "action": "automation_list"})
     (_, payload), = sio.events
     assert payload["success"] is True
     (row,) = [r for r in payload["body"] if r["id"] == fae]
     assert [(h["target"], h["channel"]) for h in row["held_by"]] == [("node-a1", "fae")]
-    cloud_service._seen_command_ids.clear()

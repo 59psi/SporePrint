@@ -7,7 +7,6 @@ from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session, generate_ical
 from app.species.service import seed_builtins
-from tests._pi_c2_helpers import pacific_time  # noqa: F401  (fixture)
 
 
 def _make_session_data(**overrides):
@@ -21,7 +20,7 @@ async def _events_by_uid() -> dict:
     return {str(ev["uid"]): ev for ev in cal.walk("VEVENT")}
 
 
-async def test_projection_without_an_inoculation_date_starts_on_the_local_day(pacific_time):  # noqa: F811
+async def test_projection_without_an_inoculation_date_starts_on_the_local_day(pacific_time):
     """A grow started at 18:00 Pacific (01:00 UTC the next day) with no
     inoculation date was anchored on the UTC date: every expected date a day
     late. It starts on the day the operator started it."""

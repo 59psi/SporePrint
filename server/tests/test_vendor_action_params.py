@@ -19,10 +19,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.cloud import integrations_proxy
-from app.cloud import service as cloud_service
 from app.config import settings
 from app.integrations import _actions, _registry
-from tests._pi_a_engine import FakeSio, agrowtek_wire, kasa_wire  # noqa: F401 (fixtures)
+from tests._fakes import RecordingSio
 
 fluence_mod = importlib.import_module("app.integrations.fluence.driver")
 fohse_mod = importlib.import_module("app.integrations.fohse.driver")
@@ -83,9 +82,8 @@ def test_the_actions_route_names_a_missing_parameter_with_a_400(client, kasa_wir
 
 async def test_the_cloud_proxy_names_a_missing_parameter_with_a_400(monkeypatch, kasa_wire):
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    cloud_service._seen_command_ids.clear()
 
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {
         "id": "va-1", "action": "vendor_action", "slug": "kasa",
         "payload": {"action": "set_power", "on": False},
@@ -95,7 +93,6 @@ async def test_the_cloud_proxy_names_a_missing_parameter_with_a_400(monkeypatch,
     assert reply["status"] == 400
     assert "'ip'" in reply["error"]
     assert kasa_wire == []
-    cloud_service._seen_command_ids.clear()
 
 
 def test_action_params_are_what_the_driver_gets():

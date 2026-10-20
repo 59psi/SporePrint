@@ -33,7 +33,6 @@ from app.config import settings
 from app.db import get_db
 from app.integrations import _registry, _settings_store as store
 from app.integrations._keystore import reset_fernet_cache
-from tests._pi_c1_integrations import fresh_keystore_fixture  # noqa: F401 — the fresh_keystore fixture
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -119,7 +118,7 @@ def test_a_slug_registers_once(fresh_registry):
 
 
 @pytest.mark.asyncio
-async def test_secret_field_round_trips_through_save_and_load(fresh_keystore):
+async def test_secret_field_round_trips_through_save_and_load():
     plain = {"base_url": "http://10.0.0.5", "api_key": "supersecret-key-xyz"}
     await store.save("dummy", True, plain, secret_fields={"api_key"})
     loaded = await store.load("dummy", secret_fields={"api_key"})
@@ -130,7 +129,7 @@ async def test_secret_field_round_trips_through_save_and_load(fresh_keystore):
 
 
 @pytest.mark.asyncio
-async def test_secret_field_is_encrypted_on_disk(fresh_keystore):
+async def test_secret_field_is_encrypted_on_disk():
     plain = {"api_key": "supersecret-key-xyz"}
     await store.save("dummy", False, plain, secret_fields={"api_key"})
     async with get_db() as db:
@@ -145,7 +144,7 @@ async def test_secret_field_is_encrypted_on_disk(fresh_keystore):
 
 
 @pytest.mark.asyncio
-async def test_redact_for_response_returns_a_fingerprint_preview(fresh_keystore):
+async def test_redact_for_response_returns_a_fingerprint_preview():
     redacted = store.redact_for_response(
         {"api_key": "abcdefghij", "base_url": "http://x"},
         secret_fields={"api_key"},
@@ -162,7 +161,7 @@ async def test_redact_for_response_returns_a_fingerprint_preview(fresh_keystore)
 
 
 @pytest.mark.asyncio
-async def test_redact_never_returns_a_short_secret(fresh_keystore):
+async def test_redact_never_returns_a_short_secret():
     redacted = store.redact_for_response(
         {"api_key": "ab"},
         secret_fields={"api_key"},
@@ -184,7 +183,7 @@ async def test_preview_depends_on_the_pis_key(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_health_update_persists(fresh_keystore):
+async def test_health_update_persists():
     await store.save("dummy", True, {"api_key": "x"}, secret_fields={"api_key"})
     await store.update_health(
         "dummy", IntegrationHealth(state="error", last_error="timeout")
@@ -206,7 +205,7 @@ def _make_app() -> FastAPI:
 
 
 @pytest.fixture
-def driver_and_client(fresh_registry, fresh_keystore):
+def driver_and_client(fresh_registry):
     driver = DummyDriver()
     register(driver)
     app = _make_app()
@@ -365,7 +364,7 @@ def test_put_config_without_enabled_keeps_the_stored_flag(driver_and_client):
 
 
 async def test_put_config_puts_the_driver_back_when_the_save_fails(
-    fresh_registry, fresh_keystore, monkeypatch,
+    fresh_registry, monkeypatch,
 ):
     driver = DummyDriver()
     register(driver)
@@ -409,7 +408,7 @@ def test_listing_flags_an_enabled_driver_that_is_not_running(driver_and_client):
     assert "not running" in health["last_error"]
 
 
-async def test_test_connection_persists_health(fresh_registry, fresh_keystore):
+async def test_test_connection_persists_health(fresh_registry):
     driver = DummyDriver()
     register(driver)
     await _registry.put_config("dummy", {"enabled": False, "config": {"api_key": "x"}})
@@ -473,9 +472,7 @@ class BoomDriver(IntegrationDriver):
         return IntegrationHealth(state="error")
 
 
-async def test_boot_starts_each_enabled_driver_and_survives_one_that_fails(
-    fresh_registry, fresh_keystore,
-):
+async def test_boot_starts_each_enabled_driver_and_survives_one_that_fails(fresh_registry):
     boom, enabled, disabled = BoomDriver(), DummyDriver(), _OffDriver()
     for driver in (boom, enabled, disabled):
         register(driver)

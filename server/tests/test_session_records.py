@@ -24,7 +24,7 @@ from app.sessions.service import (
 from app.species.models import GrowPhase
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import create_profile, seed_builtins
-from tests._pi_c2_helpers import enter_open_phase_days_ago
+from tests._builders import enter_open_phase_days_ago
 
 _PROFILES = {p.id: p for p in BUILTIN_PROFILES}
 

@@ -25,7 +25,8 @@ from app.species.models import GrowPhase
 from app.species.service import get_profile, seed_builtins
 from app.transcript import service as transcript_service
 from app.transcript.service import export_json, export_markdown
-from tests._pi_c2_helpers import fake_anthropic, insert_reading, insert_rollup
+from tests._builders import insert_reading, insert_rollup
+from tests._fakes import fake_anthropic
 
 DAY = 86400
 

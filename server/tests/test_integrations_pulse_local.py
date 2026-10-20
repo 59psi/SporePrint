@@ -34,7 +34,7 @@ from app.integrations.pulse.local_transport import (
     discover_devices,
 )
 from app.integrations.pulse.models import PulseDevice, PulseDeviceListResponse
-from tests._pi_c1_integrations import stored_readings
+from tests._builders import stored_readings
 
 
 # ── Discovery parser ──────────────────────────────────────────────────

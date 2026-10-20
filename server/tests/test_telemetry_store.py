@@ -17,12 +17,8 @@ from app.retention import service as retention_service
 from app.retention.service import _restamp_future_readings
 from app.telemetry import service as telemetry
 from app.telemetry.service import get_latest, latest_node_timestamp
-from tests._pi_b1_mqtt import RecordingSio, insert_node, node_row, readings, spy_ingest
-
-
-@pytest.fixture()
-def no_rules(monkeypatch):
-    spy_ingest(monkeypatch)
+from tests._builders import node_row, readings, register_node
+from tests._fakes import RecordingSio
 
 
 async def _put(node_id, sensor, value, ts):
@@ -72,7 +68,7 @@ def test_history_re_buckets_at_the_rollup_tiers_own_widths():
         assert f"/ {width} AS INT" not in source, "a tier width written out again"
 
 
-async def test_a_failed_insert_still_records_the_node_as_alive(no_rules, monkeypatch):
+async def test_a_failed_insert_still_records_the_node_as_alive(ingest, monkeypatch):
     """The readings and the last_seen touch share one transaction; a failed
     insert (here a session gone from under it: a foreign key) rolls back on
     its own, and the node's liveness still commits."""
@@ -80,7 +76,7 @@ async def test_a_failed_insert_still_records_the_node_as_alive(no_rules, monkeyp
         return 424242
 
     monkeypatch.setattr("app.mqtt.active_session_for_node", _gone_session)
-    await insert_node("n1", last_seen=time.time() - 3600)
+    await register_node("n1", "climate", last_seen=time.time() - 3600)
     before = time.time()
     await _handle_message(RecordingSio(), "sporeprint/n1/telemetry",
                           {"ts": time.time() - 60, "temp_f": 70.0, "replay": True})
@@ -135,7 +131,7 @@ async def test_latest_reads_by_index_seeks_not_a_scan_of_the_history():
 # ── a node clock far in the future ────────────────────────────────────────
 
 
-async def test_a_far_future_frame_is_stored_at_its_arrival_time(no_rules):
+async def test_a_far_future_frame_is_stored_at_its_arrival_time(ingest):
     before = get_reliability_counters()["future_ts_clamps"]
     sio = RecordingSio()
     arrival = time.time()
@@ -155,7 +151,7 @@ async def test_a_far_future_frame_is_stored_at_its_arrival_time(no_rules):
     assert get_reliability_counters()["node_clock_skew"]["n1"]["observed_at"] >= arrival
 
 
-async def test_a_small_lead_is_kept_as_the_nodes_own_time(no_rules):
+async def test_a_small_lead_is_kept_as_the_nodes_own_time(ingest):
     ts = time.time() + MAX_FUTURE_SKEW_SECONDS / 2
     await _handle_message(RecordingSio(), "sporeprint/n1/telemetry", {"ts": ts, "temp_f": 70.0})
     assert await latest_node_timestamp("n1") == pytest.approx(ts)

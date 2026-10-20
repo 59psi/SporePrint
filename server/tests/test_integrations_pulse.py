@@ -40,14 +40,13 @@ from app.integrations.pulse.models import (
 )
 from app.integrations.pulse.poller import STALE_FLOOR_SECONDS, run_one_poll
 from app.integrations.pulse.router import router as pulse_extra_router
-from tests._pi_c1_integrations import fresh_keystore_fixture  # noqa: F401 — the fresh_keystore fixture
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def app_client(fresh_keystore, monkeypatch):
+def app_client(monkeypatch):
     drv = _registry.registered_drivers().get("pulse")
     assert isinstance(drv, PulseDriver)
     # The singleton gets its own state back after the test.

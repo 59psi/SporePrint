@@ -12,7 +12,6 @@
 - chambers: linking a session through PATCH /api/chambers also binds it.
 """
 
-import importlib
 import time
 
 import pytest
@@ -57,18 +56,7 @@ from app.sessions.service import (
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins
 from app.telemetry.service import active_session_for_node
-from tests._pi_c2_helpers import age_grow, insert_rollup, register_node
-
-kasa_driver = importlib.import_module("app.integrations.kasa.driver")
-
-
-@pytest.fixture(autouse=True)
-def _reset_pause_state():
-    engine._paused = False
-    engine._pause_loaded = False
-    yield
-    engine._paused = False
-    engine._pause_loaded = False
+from tests._builders import age_grow, insert_rollup, register_node
 
 
 async def _session(species="blue_oyster", phase="substrate_colonization", **kw):
@@ -436,18 +424,6 @@ async def test_rollup_fallback_prefers_the_node_with_most_data():
 # ── session end clears safety ceilings ─────────────────────────────────────
 
 
-@pytest.fixture()
-def json_publishes(monkeypatch):
-    calls: list[tuple[str, dict]] = []
-
-    async def _fake_publish(topic, payload):
-        calls.append((topic, payload))
-        return True
-
-    monkeypatch.setattr(sessions_service, "mqtt_publish", _fake_publish)
-    return calls
-
-
 def _on_rule(name, target, channel=None, ceiling=3600):
     return AutomationRule(
         name=name, priority=1, safety_max_on_seconds=ceiling,
@@ -513,19 +489,6 @@ def _offs(json_publishes, mock_mqtt_raw):
             + [t for t, p in mock_mqtt_raw if p == "off"])
 
 
-@pytest.fixture()
-def kasa_wire(monkeypatch):
-    """What the Kasa driver would send on the LAN, as (ip, payload)."""
-    sent: list[tuple[str, dict]] = []
-
-    async def fake_query(ip, payload, timeout):
-        sent.append((ip, payload))
-        return {}
-
-    monkeypatch.setattr(kasa_driver, "_kasa_query", fake_query)
-    return sent
-
-
 async def test_ending_one_chambers_grow_safes_only_that_chambers_nodes(
         mock_mqtt, mock_mqtt_raw, json_publishes, kasa_wire):
     """Chamber B still runs: ending A's grow used to skip safing entirely,
@@ -568,8 +531,8 @@ async def test_last_grow_ending_switches_a_placeholder_off_where_its_on_went(
     chamber B's — and A's light stayed on its fruiting scene for good."""
     a = (await create_chamber(ChamberCreate(name="A", node_ids=["climate-a", "light-a"])))["id"]
     await create_chamber(ChamberCreate(name="B", node_ids=["climate-b", "light-b"]))
-    await register_node("light-a", "lighting", seen_ago=300)
-    await register_node("light-b", "lighting", seen_ago=5)
+    await register_node("light-a", "lighting", last_seen=time.time() - 300, status="online")
+    await register_node("light-b", "lighting", last_seen=time.time() - 5, status="online")
     await create_rule(AutomationRule(
         name="lights", priority=1,
         condition=RuleCondition(type=ConditionType.THRESHOLD,

@@ -361,6 +361,16 @@ async def test_connect_hook_is_registered_with_the_connector(cloud):
     assert session_sync.on_cloud_connect in cloud_service._connect_listeners
 
 
+async def test_attaching_the_sync_again_registers_each_hook_once(cloud):
+    """attach() runs at every app boot: a second call must not send every
+    change, recorded event and catch-up twice."""
+    session_sync.attach()
+    assert sessions_service._session_change_listeners.count(session_sync._on_session_changed) == 1
+    assert contamination_service._recorded_listeners.count(
+        session_sync._on_contamination_recorded) == 1
+    assert cloud_service._connect_listeners.count(session_sync.on_cloud_connect) == 1
+
+
 async def test_nothing_piles_up_when_no_cloud_is_configured(cloud, monkeypatch):
     monkeypatch.setattr(settings, "cloud_url", "")
     cloud.up = False

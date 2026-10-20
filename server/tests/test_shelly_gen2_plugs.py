@@ -22,13 +22,11 @@ the plug (tests/test_automation_routing.py), the safety ceiling's OFF
 (tests/test_safety_watchdog_hardening.py).
 """
 
-import asyncio
 import json
 import logging
 
 import pytest
 
-import app.automation.smart_plugs as smart_plugs
 import app.mqtt
 from app.automation.smart_plugs import (
     PLUG_TYPE_SHELLY,
@@ -38,15 +36,8 @@ from app.automation.smart_plugs import (
     register_plug,
     send_plug_command,
 )
-from app.mqtt import start_mqtt
-from tests._pi_a_engine import (
-    FakeSio as _Sio,
-    MqttMessage,
-    fake_mqtt_client,
-    insert_plug,
-    plug_row as _row,
-    rows,
-)
+from tests._builders import insert_plug, plug_row as _row, rows
+from tests._fakes import FakeBroker, Message, RecordingSio as _Sio, run_mqtt_loop
 
 # Real payloads, as the devices publish them (trimmed of unrelated components).
 PLUS_PLUG_S_FULL_STATUS = {
@@ -95,13 +86,6 @@ MINI_GEN3_SWITCH_STATUS = {
 def _notify_status(prefix: str, switches: dict) -> dict:
     return {"src": "shellyplusplugs-a8032ab12345", "dst": f"{prefix}/events",
             "method": "NotifyStatus", "params": {"ts": 1759622461.5, **switches}}
-
-
-@pytest.fixture(autouse=True)
-def _reset_gen2_state():
-    smart_plugs._gen2_errors_seen.clear()
-    yield
-    smart_plugs._gen2_errors_seen.clear()
 
 
 async def _register_gen2(plug_id: str, prefix: str, role: str | None = None,
@@ -483,16 +467,15 @@ async def test_real_loop_registers_a_gen2_plug_from_its_retained_online_and_repl
                        "result": PLUS_PLUG_S_FULL_STATUS["params"]}).encode()
     delta = json.dumps(_notify_status(
         "shellies/humidifier", {"switch:0": {"id": 0, "output": False}})).encode()
-    published: list[tuple[str, str]] = []
-    monkeypatch.setattr(app.mqtt.aiomqtt, "Client", fake_mqtt_client([
-        MqttMessage("shellies/humidifier/online", b"true"),
-        MqttMessage("shellies/humidifier/sporeprint/rpc", full),
-        MqttMessage("shellies/humidifier/events/rpc", delta),
-    ], published))
+    broker = FakeBroker([
+        Message("shellies/humidifier/online", b"true"),
+        Message("shellies/humidifier/sporeprint/rpc", full),
+        Message("shellies/humidifier/events/rpc", delta),
+    ])
     sio = _Sio()
-    await asyncio.wait_for(start_mqtt(sio), timeout=5)
+    await run_mqtt_loop(monkeypatch, broker, sio)
 
-    assert [(t, json.loads(p)["method"]) for t, p in published] == [
+    assert [(t, json.loads(p)["method"]) for t, p in broker.published] == [
         ("shellies/humidifier/rpc", "Shelly.GetStatus")]
     row = await _row("plug-humidifier")
     assert row["plug_type"] == PLUG_TYPE_SHELLY_GEN2

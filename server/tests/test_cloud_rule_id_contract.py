@@ -30,7 +30,8 @@ from app.automation.service import create_rule, get_rule, normalize_rule_id
 from app.cloud import integrations_proxy
 from app.cloud.service import _dispatch_system_command
 from app.config import settings
-from tests._pi_b2_cloud import FakeSio, register_node
+from tests._builders import register_node
+from tests._fakes import RecordingSio
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +67,7 @@ def _rule_payload() -> dict:
 
 
 async def _proxy(action: str, payload: dict) -> dict:
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {"id": "c1", "action": action, "payload": payload})
     return sio.last("integrations_response")
 

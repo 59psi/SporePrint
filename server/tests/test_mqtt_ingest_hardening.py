@@ -24,7 +24,8 @@ from app.mqtt import _decode_payload, _handle_message, get_reliability_counters
 from app.sessions.models import PhaseAdvance, SessionCreate
 from app.sessions.service import advance_phase, create_session
 from app.species.service import seed_builtins
-from tests._pi_b1_mqtt import RecordingSio, capture_ntfy, insert_node, node_row
+from tests._builders import node_row, register_node
+from tests._fakes import RecordingSio
 
 DAY = 86400
 
@@ -70,7 +71,7 @@ async def test_only_a_live_online_status_refreshes_last_seen(
     seen = None
     if prior:
         seen = time.time() - prior[1]
-        await insert_node("node-d4", status=prior[0], last_seen=seen)
+        await register_node("node-d4", "climate", status=prior[0], last_seen=seen)
     before = time.time()
     await _handle_message(RecordingSio(), "sporeprint/node-d4/status", {"status": status},
                           retained=retained)
@@ -259,11 +260,6 @@ async def test_the_nodes_api_reports_the_ca_check(served_ca, client):
 
 
 # ── firmware limits that are normal for the grow's phase ──────────────────
-
-
-@pytest.fixture()
-def ntfy_posts(monkeypatch):
-    return capture_ntfy(monkeypatch)
 
 
 async def _alert(node_id: str, alert_type: str, value):

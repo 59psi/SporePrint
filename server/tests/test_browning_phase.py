@@ -21,12 +21,10 @@ about and logs. Covered here:
 import json
 import time
 from datetime import date
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-import app.automation.engine as engine
-import app.cloud.service as cloud_service
 import app.sessions.service as sessions_service
 from app.automation.coverage import compute_coverage
 from app.automation.engine import evaluate_rules
@@ -63,7 +61,9 @@ from app.vision.service import (
     browning_guidance,
     browning_signal,
 )
-from tests._pi_c2_helpers import enter_open_phase_days_ago, fake_anthropic
+from tests._builders import enter_open_phase_days_ago
+from tests._fakes import fake_anthropic
+from tests._timing import clock
 
 _PROFILES = {p.id: p for p in BUILTIN_PROFILES}
 _SHIITAKE = _PROFILES["shiitake"]
@@ -320,24 +320,6 @@ async def test_an_edited_pre_browning_copy_is_left_alone():
     assert stored["applies_to_phases"] == ["primordia_induction", "fruiting"]
 
 
-@pytest.fixture()
-def quiet_alerts(monkeypatch):
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(engine, "notify_critical", _noop)
-    monkeypatch.setattr(engine, "notify_warning", _noop)
-    monkeypatch.setattr(engine, "co2_alert", _noop)
-    monkeypatch.setattr(cloud_service, "forward_event", _noop)
-
-
-def _clock(ts):
-    real_localtime = time.localtime
-    return patch.multiple(
-        time, time=lambda: ts, localtime=lambda t=None: real_localtime(ts if t is None else t),
-    )
-
-
 async def test_browning_block_gets_dehumidified_and_vented(mock_mqtt, mock_mqtt_raw, quiet_alerts):
     await seed_builtins()
     await seed_builtin_rules()
@@ -345,7 +327,7 @@ async def test_browning_block_gets_dehumidified_and_vented(mock_mqtt, mock_mqtt_
                         mqtt_topic_prefix="shellies/d1", device_role="dehumidifier")
     await _session("shiitake", "browning", container_type="grow_bag")
     noon = time.mktime((2026, 7, 13, 12, 0, 0, 0, 0, -1))
-    with _clock(noon):
+    with clock(noon):
         await evaluate_rules("climate-1", {"temp_f": 65, "humidity": 86, "co2_ppm": 2400})
     assert [p for t, p in mock_mqtt_raw if t == "shellies/d1/relay/0/command"] == ["on"]
     fae = [p for t, p in mock_mqtt if t.endswith("/cmd/fae")]

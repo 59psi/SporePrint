@@ -17,7 +17,7 @@ import pytest
 
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import TapoDriver, TapoError
-from tests._pi_c1_integrations import EMAIL, FakeKlapPlugs, route_httpx, tapo_cfg, tapo_ok
+from tests._fakes import EMAIL, FakeKlapPlugs, route_httpx, tapo_cfg, tapo_ok
 
 
 # ── Config ────────────────────────────────────────────────────────────

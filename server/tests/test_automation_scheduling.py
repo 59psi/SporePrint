@@ -14,6 +14,7 @@ What this pins, each once a silent failure:
    cycle. "Every 20 minutes" now means 20 minutes since the rule last fired.
 """
 
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,7 +23,7 @@ import pytest
 
 from app.automation.engine import _eval_schedule
 from app.automation.models import ScheduleCondition
-from tests._pi_a_engine import clock, local
+from tests._timing import clock, local
 
 
 def _phase(**kw):
@@ -131,6 +132,16 @@ def test_the_photoperiod_follows_the_species_light_window(photoperiod, start, ho
     sched = ScheduleCondition(photoperiod=photoperiod, photoperiod_start=start)
     with _at(*_MON, *hhmm):
         assert _eval_schedule(sched, _phase(light_hours_on=hours_on)) is expected
+
+
+def test_an_unreadable_photoperiod_is_logged_once_not_on_every_frame(caplog):
+    """Every telemetry frame evaluates the schedule: a stored bad value warns
+    once per process, then never fires quietly."""
+    sched = ScheduleCondition(photoperiod="sunset", photoperiod_start="06:00")
+    with caplog.at_level(logging.WARNING, logger="app.automation.engine"), _at(*_MON, 12):
+        for _ in range(3):
+            assert _eval_schedule(sched, _phase(light_hours_on=12)) is False
+    assert sum("'sunset'" in r.getMessage() for r in caplog.records) == 1
 
 
 def test_a_photoperiod_with_no_light_hours_never_fires():

@@ -28,21 +28,10 @@ from app.sessions.models import SessionCreate
 from app.sessions.service import create_session, resolve_session_node_id
 from app.telemetry.service import get_latest
 from app.transcript.service import export_json
-from tests._pi_b1_mqtt import (
-    RecordingSio,
-    capture_ntfy,
-    insert_node,
-    node_row,
-    readings,
-    spy_ingest,
-)
+from tests._builders import node_row, readings, register_node
+from tests._fakes import RecordingSio, spy_ingest
 
 DAY = 86400
-
-
-@pytest.fixture()
-def ingest(monkeypatch):
-    return spy_ingest(monkeypatch)
 
 
 def _latest(rows, sensor):
@@ -192,7 +181,8 @@ async def test_malformed_chamber_node_ids_do_not_break_ingest(ingest):
     assert len(ingest.rules) == 1
 
 
-async def test_a_live_frame_resolves_its_grow_once_for_the_tag_and_the_rules(monkeypatch):
+async def test_a_live_frame_resolves_its_grow_once_for_the_tag_and_the_rules(
+        monkeypatch, ntfy_posts):
     """The readings' tag and the rules engine share one lookup of the node's
     grow: the ingest hands the grow it tagged with to the real evaluate_rules,
     which used to resolve it again (two more database connections on every
@@ -212,7 +202,6 @@ async def test_a_live_frame_resolves_its_grow_once_for_the_tag_and_the_rules(mon
 
     monkeypatch.setattr("app.automation.engine._session_for_node", _counted)
     monkeypatch.setattr("app.automation.engine.evaluate_rules", _rules)
-    capture_ntfy(monkeypatch)
 
     await _feed("node-tent", temp_f=70.0)
 
@@ -312,7 +301,7 @@ async def test_a_storage_failure_never_costs_a_live_frame_its_rules(
     else:
         monkeypatch.setattr("app.mqtt.get_db", _locked_db)
     stale = time.time() - 3600
-    await insert_node("climate-01", last_seen=stale)
+    await register_node("climate-01", "climate", last_seen=stale)
     before = time.time()
     sio = RecordingSio()
     await _feed("climate-01", sio, temp_f=95.0)
@@ -353,7 +342,7 @@ async def test_outdoor_weather_joins_the_readings_the_rules_see(ingest, monkeypa
 ], ids=["sensor-frame", "switch-report", "replayed-frame"])
 async def test_every_telemetry_frame_refreshes_a_registered_nodes_last_seen(
         ingest, suffix, frame):
-    await insert_node("node-1", last_seen=time.time() - 3600)
+    await register_node("node-1", "climate", last_seen=time.time() - 3600)
     frame = dict(frame)
     if suffix == "telemetry":
         frame["ts"] = time.time() - frame.pop("ts_age", 0)
@@ -366,7 +355,7 @@ async def test_telemetry_does_not_change_status_or_register_nodes(ingest):
     # Recovery (status 'online') stays with the heartbeat/status path, and an
     # unknown node id is never registered from telemetry — registration gates
     # keyless camera uploads (auth._camera_frame_rejection).
-    await insert_node("climate-01", last_seen=time.time() - 3600, status="offline")
+    await register_node("climate-01", "climate", last_seen=time.time() - 3600, status="offline")
     await _feed("climate-01", temp_f=71.5)
     assert (await node_row("climate-01"))["status"] == "offline"
 
@@ -378,11 +367,6 @@ async def test_telemetry_does_not_change_status_or_register_nodes(ingest):
 
 
 # ── node alerts reach ntfy ───────────────────────────────────────
-
-
-@pytest.fixture()
-def ntfy_posts(monkeypatch):
-    return capture_ntfy(monkeypatch)
 
 
 @pytest.mark.parametrize("alert_type,value,priority", [
@@ -454,7 +438,7 @@ async def test_level_report_is_forwarded_live_but_never_evaluated_or_stored(
         return None
 
     monkeypatch.setattr("app.mqtt.active_session_for_node", _no_session_lookup)
-    await insert_node("light-01", last_seen=time.time() - 3600)
+    await register_node("light-01", "climate", last_seen=time.time() - 3600)
     sio = RecordingSio()
     before = time.time()
     await _handle_message(sio, "sporeprint/light-01/telemetry", dict(payload))

@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from app.integrations.tapo import klap
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import TapoDriver
-from tests._pi_c1_integrations import route_httpx
+from tests._fakes import route_httpx
 
 
 EMAIL = "user@example.com"

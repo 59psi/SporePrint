@@ -38,22 +38,8 @@ from app.automation.smart_plugs import (
     send_plug_command,
     target_is_present,
 )
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    FakeSio,
-    engine_state,
-    insert_plug,
-    make_rule,
-    plug_row,
-)
-
-
-@pytest.fixture(autouse=True)
-def _reset_logged_once():
-    smart_plugs._transport_conflict_logged.clear()
-    smart_plugs._gen2_errors_seen.clear()
-    yield
-    smart_plugs._transport_conflict_logged.clear()
-    smart_plugs._gen2_errors_seen.clear()
+from tests._builders import insert_plug, make_rule, plug_row
+from tests._fakes import RecordingSio
 
 
 def _at(ts: float):
@@ -241,7 +227,7 @@ async def test_a_plug_reporting_itself_on_re_arms_a_suppressed_cutoff_off(
     await _fire_rule(cutoff, {"temp_f": 80}, None)
     assert len(mock_mqtt_raw) == 1, "the repeat OFF is suppressed"
 
-    await handle_plug_message(FakeSio(), topic, report)
+    await handle_plug_message(RecordingSio(), topic, report)
     await _fire_rule(cutoff, {"temp_f": 80}, None)
     assert len(mock_mqtt_raw) == 2
     assert _wire(mock_mqtt_raw)[0] == _wire(mock_mqtt_raw)[1], "the same OFF, again"
@@ -261,7 +247,7 @@ async def test_a_plug_reporting_itself_on_re_arms_a_suppressed_cutoff_off(
      {"Time": "2026-09-27T10:00:00", "Uptime": "0T01:00:00", "POWER": "ON"}, "on"),
 ])
 async def test_a_tasmota_report_records_the_plugs_state(topic, payload, state):
-    sio = FakeSio()
+    sio = RecordingSio()
     await handle_plug_message(sio, topic, payload)
     row = await plug_row("plug-heat1")
     assert (row["plug_type"], row["mqtt_topic_prefix"]) == ("tasmota", "tasmota/heat1")
@@ -271,7 +257,7 @@ async def test_a_tasmota_report_records_the_plugs_state(topic, payload, state):
 
 @pytest.mark.parametrize("payload", [{"Dimmer": 40}, "not json"])
 async def test_a_tasmota_reply_saying_nothing_about_the_relay_registers_nothing(payload):
-    sio = FakeSio()
+    sio = RecordingSio()
     await handle_plug_message(sio, "tasmota/heat1/stat/RESULT", payload)
     assert await plug_row("plug-heat1") is None
     assert sio.events == []
@@ -279,13 +265,13 @@ async def test_a_tasmota_reply_saying_nothing_about_the_relay_registers_nothing(
 
 async def test_a_tasmota_energy_report_records_a_registered_plugs_power():
     sensor = "tasmota/heat1/tele/SENSOR"
-    await handle_plug_message(FakeSio(), sensor, {"ENERGY": {"Power": 7}})
+    await handle_plug_message(RecordingSio(), sensor, {"ENERGY": {"Power": 7}})
     assert await plug_row("plug-heat1") is None, "a power reading alone is not a plug"
-    await handle_plug_message(FakeSio(), "tasmota/heat1/stat/POWER", "ON")
-    await handle_plug_message(FakeSio(), sensor, {"ENERGY": {"Power": 7}})
+    await handle_plug_message(RecordingSio(), "tasmota/heat1/stat/POWER", "ON")
+    await handle_plug_message(RecordingSio(), sensor, {"ENERGY": {"Power": 7}})
     assert (await plug_row("plug-heat1"))["last_power_w"] == 7.0
     for unreadable in ({"ENERGY": {"Power": "lots"}}, {"ENERGY": 7}, "not json"):
-        await handle_plug_message(FakeSio(), sensor, unreadable)
+        await handle_plug_message(RecordingSio(), sensor, unreadable)
     assert (await plug_row("plug-heat1"))["last_power_w"] == 7.0
 
 
@@ -296,7 +282,7 @@ async def test_a_report_on_another_transport_leaves_a_live_plug_alone(mock_mqtt_
     now = time.time()
     await insert_plug("plug-heater", "tasmota", "tasmota/heater",
                       status="online", last_state="on", last_seen=now - 30)
-    sio = FakeSio()
+    sio = RecordingSio()
     with caplog.at_level(logging.WARNING, logger="app.automation.smart_plugs"):
         await handle_plug_message(sio, "shellies/heater/relay/0", "off")
     row = await plug_row("plug-heater")
@@ -314,7 +300,7 @@ async def test_the_conflict_is_logged_once_per_window(caplog):
                       status="online", last_seen=time.time())
     with caplog.at_level(logging.WARNING, logger="app.automation.smart_plugs"):
         for _ in range(5):
-            await handle_plug_message(FakeSio(), "shellies/heater/relay/0", "off")
+            await handle_plug_message(RecordingSio(), "shellies/heater/relay/0", "off")
     assert caplog.text.count("was ignored") == 1
 
 
@@ -326,7 +312,7 @@ async def test_a_quiet_plug_follows_its_new_transport(status, age, caplog):
     last_seen = None if age is None else time.time() - age
     await insert_plug("plug-heater", "tasmota", "tasmota/heater", status=status,
                       last_seen=last_seen)
-    sio = FakeSio()
+    sio = RecordingSio()
     with caplog.at_level(logging.WARNING, logger="app.automation.smart_plugs"):
         await handle_plug_message(sio, "shellies/heater/relay/0", "on")
     row = await plug_row("plug-heater")
@@ -339,7 +325,7 @@ async def test_a_quiet_plug_follows_its_new_transport(status, age, caplog):
 async def test_a_power_report_for_another_transport_is_not_recorded():
     await insert_plug("plug-heater", "tasmota", "tasmota/heater", status="online",
                       last_seen=time.time())
-    await handle_plug_message(FakeSio(), "shellies/heater/relay/0/power", "1500")
+    await handle_plug_message(RecordingSio(), "shellies/heater/relay/0/power", "1500")
     assert (await plug_row("plug-heater"))["last_power_w"] is None
 
 
@@ -349,28 +335,28 @@ async def test_a_power_report_for_another_transport_is_not_recorded():
 async def test_unchanged_reports_do_not_write_until_last_seen_is_due():
     t0 = 1_800_000_000.0
     with _at(t0):
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0", "off")
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0/power", "0.00")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0", "off")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0/power", "0.00")
     assert (await plug_row("plug-h1"))["last_seen"] == t0
     with _at(t0 + 30):  # Gen1 republishes both every 30 s
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0", "off")
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0/power", "0.00")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0", "off")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0/power", "0.00")
     assert (await plug_row("plug-h1"))["last_seen"] == t0  # nothing written
     with _at(t0 + 60):  # a change is written at once
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0", "on")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0", "on")
     row = await plug_row("plug-h1")
     assert (row["last_state"], row["last_seen"]) == ("on", t0 + 60)
     with _at(t0 + 90):
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0/power", "41.5")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0/power", "41.5")
     row = await plug_row("plug-h1")
     assert (row["last_power_w"], row["last_seen"]) == (41.5, t0 + 90)
     with _at(t0 + 90 + smart_plugs._LAST_SEEN_REFRESH_SECONDS):  # refresh is due
-        await handle_plug_message(FakeSio(), "shellies/h1/relay/0", "on")
+        await handle_plug_message(RecordingSio(), "shellies/h1/relay/0", "on")
     assert (await plug_row("plug-h1"))["last_seen"] == t0 + 90 + smart_plugs._LAST_SEEN_REFRESH_SECONDS
 
 
 async def test_an_unchanged_report_from_an_offline_plug_brings_it_online():
     await insert_plug("plug-h1", "shelly", "shellies/h1", status="offline", last_state="off",
                       last_seen=time.time())
-    await handle_plug_message(FakeSio(), "shellies/h1/relay/0", "off")
+    await handle_plug_message(RecordingSio(), "shellies/h1/relay/0", "off")
     assert (await plug_row("plug-h1"))["status"] == "online"

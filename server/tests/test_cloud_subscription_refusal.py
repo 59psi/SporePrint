@@ -42,11 +42,6 @@ def _reset_state(monkeypatch):
     monkeypatch.setattr(service, "_connect_error", None)
     monkeypatch.setattr(service, "_connected", False)
     monkeypatch.setattr(service, "_queue_drops", 0)
-    while not service._queue.empty():
-        service._queue.get_nowait()
-    yield
-    while not service._queue.empty():
-        service._queue.get_nowait()
 
 
 # ── recognising the refusal ──────────────────────────────────────────────

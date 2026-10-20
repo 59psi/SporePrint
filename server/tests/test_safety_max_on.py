@@ -19,21 +19,8 @@ import pytest
 import app.automation.engine as engine
 from app.automation.engine import _fire_rule, is_overridden
 from app.automation.models import RuleAction
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    REAL_SLEEP,
-    alerts,
-    dispatch_calls,
-    drain,
-    ended,
-    engine_state,
-    fast_sleep,
-    firings,
-    frozen_sleep,
-    insert_plug,
-    make_rule,
-    quiet_alerts,
-    watchdog_rows,
-)
+from tests._builders import firings, insert_plug, make_rule, watchdog_rows
+from tests._timing import REAL_SLEEP, drain, ended
 
 OFF = {"state": "off", "reason": "safety_max_on_seconds"}
 

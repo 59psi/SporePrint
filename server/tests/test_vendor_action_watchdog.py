@@ -14,6 +14,8 @@ it, so a string ON arms the ceiling and gets an OFF of the matching type.
 
 from __future__ import annotations
 
+import importlib
+
 import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -24,14 +26,9 @@ from app.automation.models import RuleAction
 from app.cloud import integrations_proxy
 from app.db import get_db
 from app.integrations import _actions
-from tests._pi_a_engine import (  # noqa: F401 (fixtures)
-    agrowtek_wire,
-    engine_state,
-    frozen_sleep,
-    kasa_driver,
-    kasa_wire,
-    make_rule,
-)
+from tests._builders import make_rule
+
+kasa_driver = importlib.import_module("app.integrations.kasa.driver")
 
 HEATER = "vendor:kasa:10.0.0.20"
 HEATER_KEY = f"{HEATER}:*"

@@ -22,7 +22,7 @@ from app.chambers.service import update_chamber
 from app.sessions.models import PhaseAdvance
 from app.sessions.service import advance_phase
 from app.species.service import seed_builtins
-from tests._pi_a_engine import alerts, chamber, engine_state, start_grow  # noqa: F401 (fixtures)
+from tests._builders import chamber, start_grow
 
 SPECIES = "cubensis_golden_teacher"  # substrate colonization: 75-80 °F, RH 70-80
 

@@ -15,7 +15,6 @@ from datetime import date
 import pytest
 from fastapi import HTTPException
 
-import app.cloud.service as cloud_service
 from app.automation.models import AutomationRule
 from app.automation.service import create_rule, get_rule
 from app.cloud import integrations_proxy
@@ -23,7 +22,9 @@ from app.config import settings
 from app.db import get_db
 from app.integrations import _registry
 from app.integrations._base import IntegrationHealth
-from tests._pi_b2_cloud import FakeSio, register_node, sign
+from tests._builders import register_node
+from tests._fakes import RecordingSio
+from tests._signing import sign
 
 _KEY = "unit-test-cloud-token"
 RELAY_BANK = ["aux", "circulation", "exhaust", "fae"]
@@ -32,15 +33,12 @@ RELAY_BANK = ["aux", "circulation", "exhaust", "fae"]
 @pytest.fixture(autouse=True)
 def _dispatch_only(monkeypatch):
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    cloud_service._seen_command_ids.clear()
-    yield
-    cloud_service._seen_command_ids.clear()
 
 
 async def _send(frame: dict) -> dict:
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {"id": "x", **frame})
-    assert len(sio.emits) == 1, sio.emits
+    assert len(sio.events) == 1, sio.events
     return sio.last("integrations_response")
 
 
@@ -56,9 +54,9 @@ def _rule_payload(name: str = "fan", channel: str = "fae") -> dict:
 
 
 async def test_a_frame_without_an_id_is_dropped_unanswered():
-    sio = FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {"action": "list"})
-    assert sio.emits == []
+    assert sio.events == []
 
 
 async def test_unknown_action_responds_with_error():
@@ -134,7 +132,7 @@ async def test_attach_answers_integrations_requests_on_the_socket(registry):
     """`attach()` wires `integrations_request` on the connector socket to the
     handler, answering on that same socket."""
 
-    class _Socket(FakeSio):
+    class _Socket(RecordingSio):
         def __init__(self) -> None:
             super().__init__()
             self.handlers: dict = {}
@@ -301,7 +299,7 @@ async def test_relay_rule_writes_refuse_a_channel_the_node_lacks(monkeypatch, re
     # The relay bank is fae / exhaust / circulation / aux: no "mister".
     mister = _rule_payload("mist", channel="mister")
 
-    sio = FakeSio()
+    sio = RecordingSio()
     for frame in (
         {"id": "create-1", "action": "automation_create", "payload": {"rule": mister}},
         {"id": "update-1", "action": "automation_update",
@@ -309,8 +307,8 @@ async def test_relay_rule_writes_refuse_a_channel_the_node_lacks(monkeypatch, re
     ):
         await integrations_proxy.handle_request(sio, sign({**frame, "ts": time.time()}, _KEY))
 
-    assert len(sio.emits) == 2
-    for _event, payload in sio.emits:
+    assert len(sio.events) == 2
+    for _event, payload in sio.events:
         assert (payload["success"], payload["status"]) == (False, 422), payload
         assert "mister" in payload["error"]
     assert await _rule_rows() == before, "a refused rule must not be written"

@@ -22,7 +22,7 @@ from app import main
 from app.db import get_db
 from app.health.service import _task_registry, register_task
 from app.mqtt import _handle_message
-from tests._pi_b1_mqtt import RecordingSio
+from tests._fakes import RecordingSio
 
 
 @pytest.fixture()

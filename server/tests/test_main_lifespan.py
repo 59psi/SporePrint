@@ -20,10 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.automation.engine
-import app.cloud.service
 import app.mqtt
 import app.retention.service
-import app.weather.service
 from app import main
 from app.config import settings
 from app.db import get_db
@@ -74,7 +72,7 @@ async def _forever(*_args):
 
 
 @pytest.fixture()
-def boot_order(monkeypatch):
+def boot_order(monkeypatch, no_background_loops):
     """Boot the real lifespan, recording when each safety-relevant step ran."""
     order: list[str] = []
 
@@ -94,12 +92,6 @@ def boot_order(monkeypatch):
         return False
 
     monkeypatch.setattr(app.mqtt, "start_mqtt", _start_mqtt)
-    monkeypatch.setattr(app.weather.service, "start_weather_polling", _forever)
-    monkeypatch.setattr(app.retention.service, "start_retention_task", _forever)
-    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _forever)
-    monkeypatch.setattr(main, "_daily_retrain", _forever)
-    monkeypatch.setattr(main, "_nightly_weather_aggregate", _forever)
-    monkeypatch.setattr(main, "_node_liveness_sweeper", _forever)
     monkeypatch.setattr(app.automation.engine, "rehydrate_safety_watchdogs", _rehydrate)
     monkeypatch.setattr(main, "_start_enabled_integrations", _start_integrations)
     monkeypatch.setattr(app.retention.service, "ensure_incremental_auto_vacuum", _convert)
@@ -154,15 +146,8 @@ def main_log():
 
 
 @pytest.fixture()
-def client_factory(monkeypatch):
+def client_factory(no_background_loops):
     """Like conftest's `client`, but the test decides when to boot."""
-    monkeypatch.setattr(app.mqtt, "start_mqtt", _forever)
-    monkeypatch.setattr(app.weather.service, "start_weather_polling", _forever)
-    monkeypatch.setattr(app.retention.service, "start_retention_task", _forever)
-    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _forever)
-    monkeypatch.setattr(main, "_daily_retrain", _forever)
-    monkeypatch.setattr(main, "_nightly_weather_aggregate", _forever)
-    monkeypatch.setattr(main, "_node_liveness_sweeper", _forever)
     return lambda: TestClient(main.app, raise_server_exceptions=False)
 
 
