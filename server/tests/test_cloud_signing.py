@@ -1,95 +1,59 @@
 """Pi-side HMAC verification for cloud-relayed command frames.
 
 The cloud relay signs every command with HMAC-SHA256(device_token, canonical_json).
-The Pi refuses unsigned, tampered, or replayed frames before they reach
-any other layer of the command handler.
+The Pi refuses unsigned, tampered, wrongly keyed or replayed (stale or future
+ts) frames before they reach any other layer of the command handler. The
+canonical form itself is pinned against the shared golden vectors in
+test_signing_golden.py.
 """
 
-import hashlib
-import hmac
 import json
-import time
 
 import pytest
 
 from app.cloud.signing import REPLAY_WINDOW_SECONDS, verify_frame
-
+from tests._pi_b2_cloud import sign
 
 _KEY = "unit-test-device-token"
+_NOW = 1_800_000_000.0
 
 
-def _sign(key: str, frame: dict) -> dict:
-    """Test helper that mirrors the cloud-side sign_frame exactly."""
-    filtered = {k: v for k, v in frame.items() if k != "signature"}
-    body = json.dumps(filtered, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    sig = hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return {**frame, "signature": sig}
+def _frame(**fields) -> dict:
+    return {"id": "abc", "tier": "premium", "target": "relay-01", "ts": _NOW, **fields}
 
 
-def test_signed_frame_verifies():
-    frame = _sign(_KEY, {"id": "abc", "tier": "premium", "target": "relay-01",
-                         "ts": time.time()})
-    ok, reason = verify_frame(_KEY, frame)
-    assert ok, reason
+def _without(field: str) -> dict:
+    frame = _frame()
+    del frame[field]
+    return frame
 
 
-def test_missing_signature_rejected():
-    ok, reason = verify_frame(_KEY, {"id": "abc", "ts": time.time()})
-    assert not ok
-    assert reason == "missing signature"
+def _tampered() -> dict:
+    frame = sign(_frame(), _KEY)
+    frame["target"] = "relay-02"  # changed AFTER signing
+    return frame
 
 
-def test_missing_ts_rejected():
-    frame = _sign(_KEY, {"id": "abc"})
-    # Strip ts to simulate a client that forgot to include it.
-    frame.pop("ts", None)
-    # Re-sign without ts so the signature matches what's left — this
-    # isolates the ts check from the signature check.
-    body = json.dumps({k: v for k, v in frame.items() if k != "signature"},
-                      sort_keys=True, separators=(",", ":")).encode("utf-8")
-    frame["signature"] = hmac.new(_KEY.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    ok, reason = verify_frame(_KEY, frame)
-    assert not ok
-    assert "ts" in reason
+@pytest.mark.parametrize("skew", [-REPLAY_WINDOW_SECONDS, REPLAY_WINDOW_SECONDS])
+def test_a_signed_frame_verifies_up_to_the_edge_of_the_replay_window(skew):
+    assert verify_frame(_KEY, sign(_frame(ts=_NOW + skew), _KEY), now=_NOW) == (True, None)
 
 
-def test_expired_ts_rejected():
-    old = time.time() - (REPLAY_WINDOW_SECONDS + 5)
-    frame = _sign(_KEY, {"id": "abc", "ts": old})
-    ok, reason = verify_frame(_KEY, frame)
-    assert not ok
-    assert "replay window" in reason
-
-
-def test_future_ts_rejected():
-    future = time.time() + (REPLAY_WINDOW_SECONDS + 5)
-    frame = _sign(_KEY, {"id": "abc", "ts": future})
-    ok, reason = verify_frame(_KEY, frame)
-    assert not ok
-    assert "replay window" in reason
-
-
-def test_wrong_key_rejected():
-    frame = _sign("some-other-token", {"id": "abc", "ts": time.time()})
-    ok, reason = verify_frame(_KEY, frame)
-    assert not ok
-    assert reason == "signature mismatch"
-
-
-def test_tampered_payload_rejected():
-    """Modifying any field after signing must invalidate the signature."""
-    frame = _sign(_KEY, {"id": "abc", "ts": time.time(), "target": "relay-01"})
-    frame["target"] = "relay-02"  # swap target AFTER signing
-    ok, reason = verify_frame(_KEY, frame)
-    assert not ok
-    assert reason == "signature mismatch"
-
-
-def test_empty_key_rejected():
-    frame = _sign(_KEY, {"id": "abc", "ts": time.time()})
-    ok, reason = verify_frame("", frame)
-    assert not ok
-    assert "signing key" in reason
+@pytest.mark.parametrize("key, frame, reason", [
+    (_KEY, _frame(), "missing signature"),
+    # Signed without a ts, so only the ts check can refuse it.
+    (_KEY, sign(_without("ts"), _KEY), "missing or non-numeric ts"),
+    (_KEY, sign(_frame(ts=_NOW - REPLAY_WINDOW_SECONDS - 0.5), _KEY), "ts outside replay window"),
+    (_KEY, sign(_frame(ts=_NOW + REPLAY_WINDOW_SECONDS + 0.5), _KEY), "ts outside replay window"),
+    (_KEY, sign(_frame(), "some-other-token"), "signature mismatch"),
+    (_KEY, _tampered(), "signature mismatch"),
+    ("", sign(_frame(), _KEY), "no signing key configured"),
+], ids=["unsigned", "no-ts", "stale", "future",
+        "wrong-key", "tampered", "no-key"])
+def test_a_frame_that_fails_any_check_is_refused_with_its_reason(key, frame, reason):
+    ok, why = verify_frame(key, frame, now=_NOW)
+    assert ok is False
+    assert why.startswith(reason), why
 
 
 @pytest.mark.parametrize("ts", [float("nan"), float("inf"), float("-inf"), True, False])
@@ -97,15 +61,11 @@ def test_a_ts_that_is_not_a_finite_time_is_rejected(ts):
     """NaN passes any `>` window test, so a NaN-ts frame never expired and
     became replayable once the replay cache forgot its id. Python's json
     reads NaN and Infinity, so such a frame can arrive validly signed."""
-    frame = _sign(_KEY, {"id": "abc", "ts": ts})
-    for now in (time.time(), time.time() + 3600, time.time() + 10 * 365 * 86400):
-        ok, reason = verify_frame(_KEY, frame, now=now)
-        assert not ok
-        assert reason == "missing or non-numeric ts"
+    ok, reason = verify_frame(_KEY, sign(_frame(ts=ts), _KEY), now=_NOW)
+    assert (ok, reason) == (False, "missing or non-numeric ts")
 
 
 def test_a_nan_ts_off_the_wire_is_rejected():
-    wire = json.dumps(_sign(_KEY, {"id": "abc", "ts": float("nan")}))
+    wire = json.dumps(sign(_frame(ts=float("nan")), _KEY))
     assert '"ts": NaN' in wire
-    ok, reason = verify_frame(_KEY, json.loads(wire))
-    assert not ok and reason == "missing or non-numeric ts"
+    assert verify_frame(_KEY, json.loads(wire), now=_NOW) == (False, "missing or non-numeric ts")

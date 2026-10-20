@@ -16,11 +16,9 @@ either wire form resolves to the same int on every surface; non-numeric / empty
 / None is rejected uniformly.
 """
 
-import json
-import time
-
 import pytest
 
+from app.automation.engine import is_overridden
 from app.automation.models import (
     AutomationRule,
     ConditionType,
@@ -32,15 +30,7 @@ from app.automation.service import create_rule, get_rule, normalize_rule_id
 from app.cloud import integrations_proxy
 from app.cloud.service import _dispatch_system_command
 from app.config import settings
-from app.db import get_db
-
-
-class _FakeSio:
-    def __init__(self) -> None:
-        self.emits: list[tuple[str, dict]] = []
-
-    async def emit(self, event: str, data: dict) -> None:
-        self.emits.append((event, data))
+from tests._pi_b2_cloud import FakeSio, register_node
 
 
 @pytest.fixture(autouse=True)
@@ -49,17 +39,12 @@ async def _proxy_env(monkeypatch, _db):
     own suite), and a paired relay node so relay-01 rules pass the editor's
     checks."""
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) VALUES (?, ?, ?, ?)",
-            ("node-relay-1", "relay", json.dumps(["aux", "circulation", "exhaust", "fae"]), time.time()),
-        )
-        await db.commit()
+    await register_node("node-relay-1", "relay", channels=["aux", "circulation", "exhaust", "fae"])
 
 
-def _rule(name: str = "contract-rule") -> AutomationRule:
+def _rule() -> AutomationRule:
     return AutomationRule(
-        name=name,
+        name="contract-rule",
         condition=RuleCondition(
             type=ConditionType.THRESHOLD,
             threshold=ThresholdCondition(sensor="humidity", operator="lt", value=80),
@@ -80,117 +65,50 @@ def _rule_payload() -> dict:
     }
 
 
+async def _proxy(action: str, payload: dict) -> dict:
+    sio = FakeSio()
+    await integrations_proxy.handle_request(sio, {"id": "c1", "action": action, "payload": payload})
+    return sio.last("integrations_response")
+
+
 # ── normalize_rule_id: the shared canonicaliser ────────────────────────────
 
 def test_normalize_accepts_int_and_numeric_str_and_rejects_junk():
-    assert normalize_rule_id(5) == 5
-    assert normalize_rule_id("5") == 5
-    assert normalize_rule_id("  7 ") == 7          # surrounding whitespace tolerated
-    assert normalize_rule_id(0) == 0
-    assert normalize_rule_id("seven") is None      # non-numeric string
-    assert normalize_rule_id("") is None
-    assert normalize_rule_id(None) is None
+    cases = {5: 5, "5": 5, "  7 ": 7, 0: 0, "seven": None, "": None, None: None}
+    assert {raw: normalize_rule_id(raw) for raw in cases} == cases
     # bool is an int subclass — must NOT sneak through as 0/1
     assert normalize_rule_id(True) is None
     assert normalize_rule_id(False) is None
 
 
-# ── system 'rule' suspend path: an int id is now accepted (was rejected) ───
+# ── the same numeric id reaches every surface, in either wire form ─────────
 
-async def test_system_rule_suspend_accepts_int_rule_id():
-    rid = await create_rule(_rule())
-    assert isinstance(rid, int)
-
-    # Pre-fix this returned (False, "rule_suspend requires payload.rule_id")
-    # because the int failed the isinstance(str) guard.
-    ok, err = await _dispatch_system_command("rule", {"rule_id": rid, "minutes": 15})
-    assert ok, err
-    assert err is None
-
-
-async def test_system_rule_suspend_accepts_numeric_str_rule_id():
-    rid = await create_rule(_rule())
-    ok, err = await _dispatch_system_command("rule", {"rule_id": str(rid), "minutes": 15})
-    assert ok, err
-
-
-async def test_system_rule_suspend_rejects_missing_and_non_numeric():
-    for bad in (None, "", "not-a-number"):
-        ok, err = await _dispatch_system_command("rule", {"rule_id": bad})
-        assert not ok
-        assert err == "rule_suspend requires payload.rule_id"
-
-
-# ── integrations-proxy CRUD: a numeric-string id is now accepted (was not) ─
-
-async def test_proxy_automation_delete_accepts_numeric_str():
-    sio = _FakeSio()
+@pytest.mark.parametrize("wire", [int, str], ids=["int", "numeric-str"])
+async def test_a_numeric_rule_id_reaches_the_suspend_and_crud_surfaces(wire):
+    """Pre-fix an int failed the suspend path's isinstance(str) guard and a
+    str failed the CRUD path's isinstance(int) guard."""
     rid = await create_rule(_rule())
 
-    # Pre-fix a str failed isinstance(int) and raised "requires payload.rule_id".
-    await integrations_proxy.handle_request(
-        sio,
-        {"id": "c1", "action": "automation_delete", "payload": {"rule_id": str(rid)}},
-    )
-    body = sio.emits[0][1]
-    assert body["success"] is True, body
-    assert body["body"]["id"] == rid
+    ok, err = await _dispatch_system_command("rule", {"rule_id": wire(rid), "minutes": 15})
+    assert (ok, err) == (True, None)
+    assert is_overridden("relay-01", "fae") is True  # the rule's own action target
+
+    updated = await _proxy("automation_update", {"rule_id": wire(rid), "rule": _rule_payload()})
+    assert updated["success"] is True, updated
+    assert updated["body"]["id"] == rid
+    assert (await get_rule(rid))["name"] == "updated"
+
+    deleted = await _proxy("automation_delete", {"rule_id": wire(rid)})
+    assert deleted["success"] is True, deleted
+    assert deleted["body"]["id"] == rid
     assert await get_rule(rid) is None, "rule row must actually be deleted"
 
 
-async def test_proxy_automation_delete_accepts_int():
-    sio = _FakeSio()
-    rid = await create_rule(_rule())
-    await integrations_proxy.handle_request(
-        sio,
-        {"id": "c2", "action": "automation_delete", "payload": {"rule_id": rid}},
-    )
-    assert sio.emits[0][1]["success"] is True
-    assert await get_rule(rid) is None
-
-
-async def test_proxy_automation_update_accepts_numeric_str():
-    sio = _FakeSio()
-    rid = await create_rule(_rule())
-    await integrations_proxy.handle_request(
-        sio,
-        {
-            "id": "c3",
-            "action": "automation_update",
-            "payload": {"rule_id": str(rid), "rule": _rule_payload()},
-        },
-    )
-    body = sio.emits[0][1]
-    assert body["success"] is True, body
-    assert body["body"]["id"] == rid
-    updated = await get_rule(rid)
-    assert updated is not None and updated["name"] == "updated"
-
-
-async def test_proxy_automation_delete_still_rejects_non_numeric():
-    sio = _FakeSio()
-    await integrations_proxy.handle_request(
-        sio,
-        {"id": "c4", "action": "automation_delete", "payload": {"rule_id": "seven"}},
-    )
-    body = sio.emits[0][1]
-    assert body["success"] is False
-    assert body["status"] == 400
-
-
-# ── the two surfaces now agree: one id works on both ───────────────────────
-
-async def test_same_numeric_id_is_honoured_by_both_surfaces():
-    """A single caller-supplied numeric id reaches the suspend path AND the
-    CRUD path — the mismatch that stranded one of them is gone."""
-    rid = await create_rule(_rule())
-
-    ok, err = await _dispatch_system_command("rule", {"rule_id": rid, "minutes": 5})
-    assert ok, f"system suspend rejected int id: {err}"
-
-    sio = _FakeSio()
-    await integrations_proxy.handle_request(
-        sio,
-        {"id": "both", "action": "automation_delete", "payload": {"rule_id": rid}},
-    )
-    assert sio.emits[0][1]["success"] is True, "CRUD path rejected the same int id"
+@pytest.mark.parametrize("bad", [None, "", "not-a-number"])
+async def test_a_non_numeric_rule_id_is_refused_by_every_surface(bad):
+    ok, err = await _dispatch_system_command("rule", {"rule_id": bad})
+    assert (ok, err) == (False, "rule_suspend requires payload.rule_id")
+    for action in ("automation_update", "automation_delete"):
+        resp = await _proxy(action, {"rule_id": bad, "rule": _rule_payload()})
+        assert (resp["success"], resp["status"]) == (False, 400), resp
+        assert "payload.rule_id" in resp["error"]

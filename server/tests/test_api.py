@@ -2,6 +2,8 @@
 
 import pytest
 
+from app.db import get_db
+
 
 @pytest.fixture(autouse=True)
 def _seed(client):
@@ -17,29 +19,14 @@ def test_health_endpoint(client):
     assert r.json() == {"status": "ok", "version": "5.2.2"}
 
 
-# ── Sessions ────────────────────────────────────────────────────
-
-
-def test_list_sessions_empty(client):
-    r = client.get("/api/sessions")
+@pytest.mark.parametrize("path", ["/api/sessions", "/api/hardware/nodes", "/api/vision/frames"])
+def test_a_fresh_pi_serves_empty_lists(client, path):
+    r = client.get(path)
     assert r.status_code == 200
     assert r.json() == []
 
 
-def test_create_and_get_session(client):
-    r = client.post("/api/sessions", json={
-        "name": "API Test Grow",
-        "species_profile_id": "blue_oyster",
-    })
-    assert r.status_code == 200
-    session = r.json()
-    assert session["name"] == "API Test Grow"
-    assert session["status"] == "active"
-    assert "id" in session
-
-    r2 = client.get(f"/api/sessions/{session['id']}")
-    assert r2.status_code == 200
-    assert r2.json()["name"] == "API Test Grow"
+# ── Sessions ────────────────────────────────────────────────────
 
 
 def test_session_not_found(client):
@@ -53,7 +40,11 @@ def test_session_lifecycle_via_api(client):
         "name": "Lifecycle Test",
         "species_profile_id": "blue_oyster",
     })
-    sid = r.json()["id"]
+    assert r.status_code == 200
+    created = r.json()
+    assert (created["name"], created["status"]) == ("Lifecycle Test", "active")
+    sid = created["id"]
+    assert client.get(f"/api/sessions/{sid}").json()["name"] == "Lifecycle Test"
 
     # Advance phase
     r = client.post(f"/api/sessions/{sid}/phase", json={"phase": "fruiting"})
@@ -123,22 +114,15 @@ def test_list_sessions_include_phase_history_matches_get_session(client):
     assert len(sessions[sid_b]["phase_history"]) == 2
 
 
-def test_list_sessions_include_phase_history_empty_history(client):
+async def test_list_sessions_include_phase_history_empty_history(client):
     """A session with no phase_history rows gets [] — not a missing key."""
-    import asyncio
-
-    from app.db import get_db
-
-    async def _insert_bare_session():
-        async with get_db() as db:
-            cursor = await db.execute(
-                "INSERT INTO sessions (name, species_profile_id) VALUES (?, ?)",
-                ("Bare Session", "blue_oyster"),
-            )
-            await db.commit()
-            return cursor.lastrowid
-
-    sid = asyncio.run(_insert_bare_session())
+    async with get_db() as db:
+        cursor = await db.execute(
+            "INSERT INTO sessions (name, species_profile_id) VALUES (?, ?)",
+            ("Bare Session", "blue_oyster"),
+        )
+        await db.commit()
+        sid = cursor.lastrowid
 
     r = client.get("/api/sessions", params={"include_phase_history": "true"})
     assert r.status_code == 200
@@ -149,21 +133,17 @@ def test_list_sessions_include_phase_history_empty_history(client):
 # ── Species ─────────────────────────────────────────────────────
 
 
-def test_list_species_after_seed(client):
+def test_the_seeded_species_catalogue_is_served(client):
     r = client.get("/api/species")
     assert r.status_code == 200
     profiles = r.json()
     assert len(profiles) >= 10
-    names = [p["common_name"] for p in profiles]
-    assert "Blue Oyster" in names
+    assert "Blue Oyster" in [p["common_name"] for p in profiles]
 
-
-def test_get_species_profile(client):
     r = client.get("/api/species/blue_oyster")
     assert r.status_code == 200
     profile = r.json()
     assert profile["category"] == "gourmet"
-    assert "phases" in profile
     assert "fruiting" in profile["phases"]
 
 
@@ -178,24 +158,17 @@ def test_list_automation_rules(client):
     assert any(rule["name"] == "Humidity Boost" for rule in rules)
 
 
-def test_create_and_toggle_rule(client):
-    import asyncio
-
-    from app.db import get_db
-
+async def test_create_and_toggle_rule(client):
     # A rule targeting the relay placeholder is only valid once a relay node is
     # paired — real nodes register under MAC-derived ids, and the engine
     # resolves relay-01 to that node at fire time. Provision one first.
-    async def _register_relay_node():
-        async with get_db() as db:
-            await db.execute(
-                "INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
-                "VALUES ('node-7a3f1c', 'relay', ?)",
-                (1_752_700_000.0,),
-            )
-            await db.commit()
-
-    asyncio.run(_register_relay_node())
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
+            "VALUES ('node-7a3f1c', 'relay', ?)",
+            (1_752_700_000.0,),
+        )
+        await db.commit()
 
     rule = {
         "name": "Test Rule",
@@ -213,24 +186,6 @@ def test_create_and_toggle_rule(client):
     r = client.patch(f"/api/automation/rules/{rule_id}/toggle")
     assert r.status_code == 200
     assert r.json()["enabled"] is False
-
-
-# ── Hardware ────────────────────────────────────────────────────
-
-
-def test_list_hardware_nodes_empty(client):
-    r = client.get("/api/hardware/nodes")
-    assert r.status_code == 200
-    assert r.json() == []
-
-
-# ── Vision ──────────────────────────────────────────────────────
-
-
-def test_list_vision_frames_empty(client):
-    r = client.get("/api/vision/frames")
-    assert r.status_code == 200
-    assert r.json() == []
 
 
 # ── Telemetry ───────────────────────────────────────────────────

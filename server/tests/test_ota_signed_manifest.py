@@ -4,7 +4,9 @@ The manifest binds version + channel + sha256 + size under the pinned key.
 These tests run run_ota_update() against a fake release host and check
 that a manifest that is tampered with, replayed for another version, moved
 to another channel, or older than the install is refused before anything is
-promoted. They also cover the transitional bundle-only-signature path.
+promoted. They also cover the transitional bundle-only-signature path, the
+progress events the cloud sees, and the trees a promote leaves on the SD
+card.
 """
 
 from __future__ import annotations
@@ -24,14 +26,13 @@ from app.cloud import ota, ota_manifest
 from app.config import settings
 
 BASE = "https://updates.sporeprint.ai/firmware"
+_FILES = (("app/__init__.py", b""), ("pyproject.toml", b"[project]\n"))
 
 
 def _bundle_bytes(tag: str) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, content in (("app/__init__.py", b""),
-                              ("app/main.py", f"VERSION = {tag!r}\n".encode()),
-                              ("pyproject.toml", b"[project]\n")):
+        for name, content in (*_FILES, ("app/main.py", f"VERSION = {tag!r}\n".encode())):
             info = tarfile.TarInfo(name=name)
             info.size = len(content)
             tf.addfile(info, io.BytesIO(content))
@@ -117,8 +118,12 @@ def pi(tmp_path, monkeypatch):
     return host
 
 
+def _live(pi):
+    return (pi.root / "current").resolve()
+
+
 def _promoted(pi) -> bool:
-    return (pi.root / "current").resolve().name != "5.0.0"
+    return _live(pi).name != "5.0.0"
 
 
 def _floor(pi) -> str | None:
@@ -136,7 +141,7 @@ async def test_signed_manifest_release_installs(pi):
     assert result["ok"] is True, result
     assert result["verified_by"] == "manifest"
     assert result["sha256"] == fields["sha256"]
-    assert _promoted(pi)
+    assert (_live(pi) / "app" / "main.py").read_text() == "VERSION = '5.1.0'\n"
     assert _floor(pi) == "5.1.0"
     # Manifest first, then only the bundle: the legacy .sig is not needed.
     assert pi.fetched == [
@@ -144,19 +149,91 @@ async def test_signed_manifest_release_installs(pi):
         f"{BASE}/stable/5.1.0.manifest.json.sig",
         f"{BASE}/stable/5.1.0.tar.gz",
     ]
-    # Same step names the cloud already accepts; verified_by is additive.
+    # Same step names and fields the cloud already accepts; verified_by is
+    # additive.
     assert [e["step"] for e in pi.events] == [
         "download_started", "download_complete", "verify_complete",
         "extract_complete", "promote_complete", "restart_initiated",
     ]
-    verify = next(e for e in pi.events if e["step"] == "verify_complete")
-    assert verify["verified_by"] == "manifest"
+    assert all((e["version"], e["channel"]) == ("5.1.0", "stable") for e in pi.events)
+    by_step = {e["step"]: e for e in pi.events}
+    assert by_step["download_started"]["url"] == f"{BASE}/stable/5.1.0.tar.gz"
+    assert by_step["download_complete"]["size_bytes"] == fields["size"]
+    assert by_step["verify_complete"]["verified_by"] == "manifest"
+    assert by_step["extract_complete"]["files_extracted"] == 3
 
 
 async def test_same_version_reinstall_is_allowed(pi):
     pi.publish("5.0.0", "stable")
+    assert ota.validate_request("5.0.0", "stable") is None
     result = await ota.run_ota_update("5.0.0", "stable")
     assert result["ok"] is True, result
+
+
+async def test_a_relay_that_is_down_does_not_stop_the_update(pi, monkeypatch):
+    """Progress events are fire-and-forget: a Pi that cannot reach the cloud
+    must still complete its OTA."""
+    async def _down(*args, **kwargs):
+        raise RuntimeError("cloud is having a bad day")
+
+    monkeypatch.setattr(service, "forward_event", _down)
+    pi.publish("5.1.0", "stable")
+    result = await ota.run_ota_update("5.1.0", "stable")
+    assert result["ok"] is True, result
+    assert _promoted(pi)
+
+
+async def test_promote_keeps_two_trees_and_no_downloads(pi):
+    """Each OTA left a full extracted tree and its bundle on the SD card. A
+    promote keeps the live tree and the one before it (for a manual
+    rollback) and removes older trees and the spent downloads."""
+    leftover = pi.root / "staging" / "4.9.0"
+    leftover.mkdir(parents=True)
+    installed_by_hand = _live(pi)               # releases/5.0.0, outside staging/
+    for version in ("5.1.0", "5.2.0"):
+        pi.publish(version, "stable")
+        previous = _live(pi)
+        result = await ota.run_ota_update(version, "stable")
+        assert result["ok"] is True, result
+        assert (_live(pi) / "app" / "main.py").read_text() == f"VERSION = {version!r}\n"
+        staging = {p.resolve() for p in (pi.root / "staging").iterdir()}
+        assert staging == {_live(pi), previous} - {installed_by_hand}
+        assert not leftover.exists()
+        assert [p for p in (pi.state_dir / "incoming").iterdir() if p.is_file()] == []
+    assert len(staging) == 2
+
+
+# ─── Failing closed ──────────────────────────────────────────────────
+
+
+async def test_a_pi_with_no_pinned_key_refuses_before_downloading(pi, monkeypatch):
+    """The failed event names WHERE it broke, so the cloud admin can see it."""
+    monkeypatch.setattr(settings, "ota_pubkey_b64", "")
+    monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
+    pi.publish("5.1.0", "stable")
+    result = await ota.run_ota_update("5.1.0", "stable")
+    assert (result["ok"], result["step"]) == (False, "validate")
+    assert "not configured" in result["error"]
+    assert pi.fetched == []
+    failed = pi.events[-1]
+    assert (failed["step"], failed["failed_at"], failed["version"], failed["channel"]) == (
+        "failed", "validate", "5.1.0", "stable")
+    assert "not configured" in failed["error"]
+
+
+async def test_an_unexpected_failure_is_reported_and_promotes_nothing(pi, monkeypatch):
+    """Not every failure is an OTAError (a full SD card mid-extract): it is
+    still a failed step the cloud sees, and the running install stays."""
+    def _disk_full(bundle_path, version):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ota, "_stage_install", _disk_full)
+    pi.publish("5.1.0", "stable")
+    result = await ota.run_ota_update("5.1.0", "stable")
+    assert (result["ok"], result["step"]) == (False, "stage")
+    assert result["error"].startswith("unexpected: OSError")
+    assert (pi.events[-1]["step"], pi.events[-1]["failed_at"]) == ("failed", "stage")
+    assert not _promoted(pi)
 
 
 # ─── Tampering ────────────────────────────────────────────────────────
@@ -182,13 +259,11 @@ async def test_tampered_manifest_is_refused_before_download(pi, changes):
 
     result = await ota.run_ota_update("5.1.0", "stable")
 
-    assert result["ok"] is False
-    assert result["step"] == "manifest"
+    assert (result["ok"], result["step"]) == (False, "manifest")
     assert "signature verification FAILED" in result["error"]
     assert f"{BASE}/stable/5.1.0.tar.gz" not in pi.fetched
     assert not _promoted(pi)
-    assert pi.events[-1]["step"] == "failed"
-    assert pi.events[-1]["failed_at"] == "manifest"
+    assert (pi.events[-1]["step"], pi.events[-1]["failed_at"]) == ("failed", "manifest")
 
 
 async def test_manifest_signed_by_another_key_is_refused(pi):
@@ -199,94 +274,66 @@ async def test_manifest_signed_by_another_key_is_refused(pi):
     assert not _promoted(pi)
 
 
-async def test_swapped_bundle_fails_the_signed_sha256(pi):
-    """Genuine manifest, different tarball at the bundle URL."""
+def _same_length_other_bundle(real: bytes) -> bytes:
+    """Same length, so only the digest can catch it."""
+    return _bundle_bytes("evil")[: len(real)].ljust(len(real), b"\0")
+
+
+@pytest.mark.parametrize("swap, step, message", [
+    (_same_length_other_bundle, "verify", "sha256 does not match the signed manifest"),
+    (lambda real: real + b"trailing payload", "download", "exceeded max size"),
+    (lambda real: real[:-1], "verify", "bytes, the signed manifest says"),
+], ids=["same-length-swap", "longer", "shorter"])
+async def test_a_bundle_that_is_not_the_signed_one_is_refused(pi, swap, step, message):
+    """A genuine manifest, and a different body at the bundle URL: the signed
+    size caps the download, the signed sha256 and size check what came."""
     pi.publish("5.1.0", "stable")
-    evil = _bundle_bytes("evil")
-    real = pi.files[f"{BASE}/stable/5.1.0.tar.gz"]
-    # Same length so only the digest can catch it.
-    pi.files[f"{BASE}/stable/5.1.0.tar.gz"] = evil[: len(real)].ljust(len(real), b"\0")
+    url = f"{BASE}/stable/5.1.0.tar.gz"
+    pi.files[url] = swap(pi.files[url])
 
     result = await ota.run_ota_update("5.1.0", "stable")
 
-    assert result["ok"] is False
-    assert result["step"] == "verify"
-    assert "sha256 does not match" in result["error"]
+    assert (result["ok"], result["step"]) == (False, step)
+    assert message in result["error"]
     assert not _promoted(pi)
 
 
-async def test_longer_bundle_is_cut_off_at_the_signed_size(pi):
-    pi.publish("5.1.0", "stable")
-    pi.files[f"{BASE}/stable/5.1.0.tar.gz"] += b"trailing payload"
-    result = await ota.run_ota_update("5.1.0", "stable")
-    assert result["ok"] is False
-    assert result["step"] == "download"
-    assert not _promoted(pi)
+# ─── Genuine manifests that do not fit the request ────────────────────
 
 
-async def test_shorter_bundle_fails_the_signed_size(pi):
-    pi.publish("5.1.0", "stable")
-    pi.files[f"{BASE}/stable/5.1.0.tar.gz"] = pi.files[f"{BASE}/stable/5.1.0.tar.gz"][:-1]
-    result = await ota.run_ota_update("5.1.0", "stable")
-    assert result["ok"] is False
-    assert "bytes, the signed manifest says" in result["error"]
-
-
-# ─── Replay / mix-and-match of genuine manifests ─────────────────────
-
-
-async def test_genuine_manifest_for_another_version_is_refused(pi):
-    """A validly signed 5.1.0 manifest served at the 5.2.0 path."""
-    pi.publish("5.1.0", "stable")
-    pi.publish("5.2.0", "stable")
+def _serve_at(pi, src: str, dst: str) -> None:
     for suffix in (".manifest.json", ".manifest.json.sig", ".tar.gz"):
-        pi.files[f"{BASE}/stable/5.2.0{suffix}"] = pi.files[f"{BASE}/stable/5.1.0{suffix}"]
+        pi.files[f"{dst}{suffix}"] = pi.files[f"{src}{suffix}"]
 
-    result = await ota.run_ota_update("5.2.0", "stable")
 
-    assert result["ok"] is False
-    assert "manifest version '5.1.0' != requested '5.2.0'" in result["error"]
+@pytest.mark.parametrize("publish, request_, message", [
+    # A validly signed 5.1.0 manifest served at the 5.2.0 path.
+    (lambda pi: (pi.publish("5.1.0", "stable"),
+                 _serve_at(pi, f"{BASE}/stable/5.1.0", f"{BASE}/stable/5.2.0")),
+     ("5.2.0", "stable"), "manifest version '5.1.0' != requested '5.2.0'"),
+    (lambda pi: (pi.publish("5.1.0", "beta"),
+                 _serve_at(pi, f"{BASE}/beta/5.1.0", f"{BASE}/stable/5.1.0")),
+     ("5.1.0", "stable"), "manifest channel 'beta' != requested 'stable'"),
+    (lambda pi: pi.publish("5.1.0", "stable", artifact="node-esp32"),
+     ("5.1.0", "stable"), "not 'sporeprint-server'"),
+    (lambda pi: pi.publish("5.1.0", "stable", size=0),
+     ("5.1.0", "stable"), "declares a 0-byte bundle"),
+], ids=["other-version", "other-channel", "other-artifact", "empty-bundle"])
+async def test_a_genuine_manifest_for_something_else_is_refused(pi, publish, request_, message):
+    publish(pi)
+    result = await ota.run_ota_update(*request_)
+    assert (result["ok"], result["step"]) == (False, "manifest")
+    assert message in result["error"]
     assert not _promoted(pi)
-
-
-async def test_genuine_beta_manifest_on_the_stable_path_is_refused(pi):
-    pi.publish("5.1.0", "beta")
-    for suffix in (".manifest.json", ".manifest.json.sig", ".tar.gz"):
-        pi.files[f"{BASE}/stable/5.1.0{suffix}"] = pi.files[f"{BASE}/beta/5.1.0{suffix}"]
-
-    result = await ota.run_ota_update("5.1.0", "stable")
-
-    assert result["ok"] is False
-    assert "manifest channel 'beta' != requested 'stable'" in result["error"]
-    assert not _promoted(pi)
-
-
-async def test_manifest_for_another_artifact_is_refused(pi):
-    pi.publish("5.1.0", "stable", artifact="node-esp32")
-    result = await ota.run_ota_update("5.1.0", "stable")
-    assert result["ok"] is False
-    assert "not 'sporeprint-server'" in result["error"]
 
 
 # ─── Channel binding ──────────────────────────────────────────────────
 
 
-async def test_other_channel_refused_before_ack(pi, monkeypatch):
-    started: list = []
-    monkeypatch.setattr(ota, "run_ota_update", lambda *a: started.append(a))
-    ok, err = await service._dispatch_system_command(
-        "ota", {"firmware_version": "5.1.0-beta.1", "channel": "beta"})
-    assert ok is False
-    assert "follows the 'stable' OTA channel" in err
-    assert "SPOREPRINT_OTA_CHANNEL=beta" in err
-    assert started == []
-
-
 async def test_pipeline_refuses_a_channel_the_pi_does_not_follow(pi):
     pi.publish("5.1.0", "beta")
     result = await ota.run_ota_update("5.1.0", "beta")
-    assert result["ok"] is False
-    assert result["step"] == "validate"
+    assert (result["ok"], result["step"]) == (False, "validate")
     assert pi.fetched == []
 
 
@@ -343,24 +390,13 @@ async def test_unknown_installed_version_fails_closed(pi, monkeypatch):
     assert ota.validate_request("5.1.0", "stable") is None
 
 
-async def test_downgrade_cannot_be_requested_from_the_cloud(pi, monkeypatch):
-    """Only the Pi's own setting allows a downgrade; payload keys don't."""
-    ok, err = await service._dispatch_system_command("ota", {
-        "firmware_version": "4.9.0", "channel": "stable",
-        "allow_downgrade": True, "ota_allow_downgrade": True,
-    })
-    assert ok is False
-    assert "downgrade" in err
-
-
 # ─── Transitional: releases without a manifest ────────────────────────
 
 
 async def test_legacy_only_release_refused_by_default(pi):
     pi.publish("5.1.0", "stable", manifest=False)
     result = await ota.run_ota_update("5.1.0", "stable")
-    assert result["ok"] is False
-    assert result["step"] == "manifest"
+    assert (result["ok"], result["step"]) == (False, "manifest")
     assert "no signed manifest" in result["error"]
     assert "SPOREPRINT_OTA_ALLOW_LEGACY_SIGNATURE" in result["error"]
     assert f"{BASE}/stable/5.1.0.tar.gz" not in pi.fetched
@@ -419,40 +455,56 @@ async def test_a_broken_manifest_never_falls_back_to_legacy(pi, monkeypatch, dam
 # ─── What the OTA command may carry ──────────────────────────────────
 
 
-async def test_cloud_supplied_pubkey_is_ignored(pi, monkeypatch):
+@pytest.fixture
+def instant_ack_flush(monkeypatch):
+    """The OTA task waits 2 s for the command ack to flush; not here."""
+    real_sleep = asyncio.sleep
+
+    async def _instant(seconds, *args):
+        await real_sleep(0)
+
+    monkeypatch.setattr(service.asyncio, "sleep", _instant)
+
+
+async def test_a_genuine_release_sent_from_the_cloud_is_installed(pi, instant_ack_flush):
+    pi.publish("5.1.0", "stable")
+    ok, err = await service._dispatch_system_command(
+        "ota", {"firmware_version": "5.1.0", "channel": "stable"})
+    assert (ok, err) == (True, None)
+    await asyncio.wait_for(service._ota_task, timeout=10)
+    assert _promoted(pi)
+    assert pi.events[-1]["step"] == "restart_initiated"
+
+
+async def test_cloud_supplied_pubkey_is_ignored(pi, monkeypatch, instant_ack_flush):
     """The cloud adds the account's registered `ota_pubkey` to the command.
     The Pi must never verify with it: a key from the command channel would
-    let whoever controls that channel sign their own bundle."""
+    let whoever controls that channel sign their own bundle. Only the
+    version and channel reach the pipeline, never a key or a downgrade
+    switch."""
     attacker = Ed25519PrivateKey.generate()
     attacker_b64 = base64.b64encode(attacker.public_key().public_bytes_raw()).decode()
     pi.publish("5.1.0", "stable", manifest_key=attacker)
     pi.files[f"{BASE}/stable/5.1.0.tar.gz.sig"] = attacker.sign(
         pi.files[f"{BASE}/stable/5.1.0.tar.gz"])
 
+    calls: list = []
+    real_update = ota.run_ota_update
+
+    async def _spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return await real_update(*args, **kwargs)
+
+    monkeypatch.setattr(ota, "run_ota_update", _spy)
     ok, err = await service._dispatch_system_command("ota", {
         "firmware_version": "5.1.0", "channel": "stable", "ota_pubkey": attacker_b64,
+        "allow_downgrade": True,
     })
     assert ok is True, err
     await asyncio.wait_for(service._ota_task, timeout=10)
 
+    assert calls == [(("5.1.0", "stable"), {})]
     assert not _promoted(pi)
     failed = pi.events[-1]
     assert failed["step"] == "failed"
     assert "signature verification FAILED" in failed["error"]
-
-
-async def test_dispatch_passes_only_version_and_channel(pi, monkeypatch):
-    calls: list = []
-
-    async def _fake(*args, **kwargs):
-        calls.append((args, kwargs))
-        return {"ok": True}
-
-    monkeypatch.setattr(ota, "run_ota_update", _fake)
-    ok, _ = await service._dispatch_system_command("ota", {
-        "firmware_version": "5.1.0", "channel": "stable",
-        "ota_pubkey": "AAAA", "allow_downgrade": True,
-    })
-    assert ok is True
-    await asyncio.wait_for(service._ota_task, timeout=10)
-    assert calls == [(("5.1.0", "stable"), {})]

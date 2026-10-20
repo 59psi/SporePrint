@@ -60,15 +60,26 @@ async def test_schedule_reboot_runs_systemctl_after_grace(fake_run, monkeypatch)
     assert system_actions._reboot_tasks == set()
 
 
-async def test_a_failed_reboot_is_logged_with_its_exit_status(monkeypatch, caplog):
-    def _refused(args, **kwargs):
-        return subprocess.CompletedProcess(args, 1, stdout="", stderr="sudo: a password is required")
+def _refused(args, **kwargs):
+    return subprocess.CompletedProcess(args, 1, stdout="", stderr="sudo: a password is required")
 
-    monkeypatch.setattr(system_actions.subprocess, "run", _refused)
+
+def _no_sudo(args, **kwargs):
+    raise FileNotFoundError(2, "No such file or directory: 'sudo'")
+
+
+@pytest.mark.parametrize("run, logged", [
+    (_refused, "Reboot failed: systemctl exited 1 (sudo: a password is required)"),
+    (_no_sudo, "Reboot scheduling failed: [Errno 2] No such file or directory: 'sudo'"),
+], ids=["sudo-refused", "no-sudo"])
+async def test_a_reboot_that_did_not_happen_is_logged(monkeypatch, caplog, run, logged):
+    """The ack already went out; the log is the only place a failed reboot
+    shows (the cloud command path refuses earlier where it can)."""
+    monkeypatch.setattr(system_actions.subprocess, "run", run)
     monkeypatch.setattr(system_actions, "REBOOT_GRACE_SECONDS", 0)
     system_actions.schedule_reboot()
     await asyncio.gather(*system_actions._reboot_tasks)
-    assert "systemctl exited 1 (sudo: a password is required)" in caplog.text
+    assert logged in caplog.text
 
 
 async def test_the_reboot_command_runs_off_the_event_loop(monkeypatch):
@@ -89,19 +100,21 @@ async def test_the_reboot_command_runs_off_the_event_loop(monkeypatch):
 # ── refused before the ack where it cannot run ──────────────────────────
 
 
-def test_reboot_is_unsupported_in_the_docker_deployment(monkeypatch, tmp_path):
+@pytest.mark.parametrize("docker, missing, reason", [
+    (True, (), "reboot is not supported in the Docker deployment"),
+    (False, ("systemctl",), "reboot needs systemctl on this host, which it does not have"),
+    (False, (), None),
+], ids=["docker", "no-systemctl", "bare-metal"])
+def test_reboot_is_refused_where_the_host_cannot_be_rebooted(monkeypatch, tmp_path, docker,
+                                                             missing, reason):
     dockerenv = tmp_path / ".dockerenv"
-    dockerenv.touch()
+    if docker:
+        dockerenv.touch()
     monkeypatch.setattr(ota, "_DOCKERENV", dockerenv)
-    reason = system_actions.reboot_unsupported_reason()
-    assert reason and "Docker" in reason
-
-
-def test_reboot_needs_sudo_and_systemctl(monkeypatch, tmp_path):
-    monkeypatch.setattr(ota, "_DOCKERENV", tmp_path / "no-dockerenv")
     monkeypatch.setattr(system_actions.shutil, "which",
-                        lambda tool: None if tool == "systemctl" else f"/usr/bin/{tool}")
-    assert system_actions.reboot_unsupported_reason() == (
-        "reboot needs systemctl on this host, which it does not have")
-    monkeypatch.setattr(system_actions.shutil, "which", lambda tool: f"/usr/bin/{tool}")
-    assert system_actions.reboot_unsupported_reason() is None
+                        lambda tool: None if tool in missing else f"/usr/bin/{tool}")
+    got = system_actions.reboot_unsupported_reason()
+    if reason is None:
+        assert got is None
+    else:
+        assert got.startswith(reason), got

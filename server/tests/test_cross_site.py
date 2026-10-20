@@ -213,6 +213,7 @@ def test_socketio_websocket_from_another_site_is_refused(lan_client):
     ("http://[fd00::5]:3001", "[fd00::5]", True),
     ("null", "sporeprint.local", False),
     ("http://user@192.168.1.5", None, False),
+    ("http://[not-an-ip", "sporeprint.local", False),   # unparseable
 ])
 def test_origin_rule(origin, host, allowed):
     assert origin_is_allowed(origin, host) is allowed

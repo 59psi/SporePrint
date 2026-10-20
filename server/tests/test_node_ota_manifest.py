@@ -224,7 +224,7 @@ def node_answers(monkeypatch):
 
     monkeypatch.setattr("app.hardware.service.mqtt_publish", _publish)
     monkeypatch.setattr(ota_push, "push_firmware", _push)
-    monkeypatch.setattr(ota_push, "MANIFEST_CONFIRM_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(ota_push, "MANIFEST_CONFIRM_TIMEOUT_S", 0.05)
     state["log"] = log
     return state
 
@@ -339,7 +339,8 @@ async def test_the_manifest_is_armed_only_once_the_callback_port_is_free(monkeyp
     ota_push.start_push("climate-01", "10.1.2.3", 3232, PASSWORD, IMAGE,
                         manifest=signed, send_command=_send)
     task = ota_push._tasks["climate-01"]
-    await asyncio.sleep(0.1)
+    for _ in range(20):          # every chance to run: it is held at the lock
+        await asyncio.sleep(0)
     assert order == []
     ota_push._callback_port_lock.release()
     await asyncio.wait_for(task, 2)

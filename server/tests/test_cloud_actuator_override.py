@@ -12,82 +12,77 @@ These pin the Pi-side handling of that second frame:
   - set     → an expiring ManualOverride on the actuator's node/channel;
   - release → the override is cleared and automation resumes control.
 
-Driven through the importable `_dispatch_automation_command` seam — the same
-seam test_automation_remote_hold.py uses for the `system` dispatcher.
+Driven through the importable `_dispatch_automation_command` seam. That the
+hold runs `duration_sec` on the Pi's own clock, whatever the cloud's
+expires_at says, is test_override_duration.py.
 """
 
-import json
 import time
+
+import pytest
 
 from app.automation.engine import get_overrides, is_overridden
 from app.automation.models import MAX_OVERRIDE_TTL_SECONDS
 from app.cloud.service import _dispatch_automation_command
-from app.db import get_db
+from tests._pi_b2_cloud import register_node
+
+RELAY_BANK = ["aux", "circulation", "exhaust", "fae"]
+LIGHT_BANK = ["blue", "far_red", "red", "white"]
+
+# (node_id, node_type, reported channels or None)
+_UNREPORTED_RELAY = ("relay-01", "relay", None)
+_UNREPORTED_LIGHT = ("light-01", "lighting", None)
+_RELAY_BANK_NODE = ("node-relay-1", "relay", RELAY_BANK)
+_LIGHT_BANK_NODE = ("node-light-1", "lighting", LIGHT_BANK)
 
 
-async def _register_node(node_id: str, node_type: str) -> None:
-    """Register a node that has not reported its channels (matched by the
-    channel's bank type)."""
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, roles, last_seen) "
-            "VALUES (?, ?, ?, ?)",
-            (node_id, node_type, json.dumps([node_type]), time.time()),
-        )
-        await db.commit()
+async def _register(*nodes) -> None:
+    for node_id, node_type, channels in nodes:
+        await register_node(node_id, node_type, roles=[node_type], channels=channels)
+
+
+async def _set(channel: str, **payload):
+    return await _dispatch_automation_command(
+        "override", {"channel": channel, "state": "on", **payload})
+
+
+async def _override(channel: str):
+    return next(o for o in await get_overrides() if o.channel == channel)
 
 
 # ── set registers an expiring override ─────────────────────────────────────
 
 
-async def test_override_set_registers_expiring_override():
+async def test_a_set_pins_the_channel_for_its_duration_not_forever():
     """A cloud 'set' pins the fan's relay channel out of automation's reach,
-    with an expiry — not a sticky-forever hold."""
-    await _register_node("relay-01", "relay")
-
+    locked and expiring — not a sticky-forever hold. A NaN expires_at (it
+    compares false against every deadline) beside the duration changes
+    nothing."""
+    await _register(_UNREPORTED_RELAY)
     before = time.time()
-    duration = 600  # 10 min — the cloud's duration_sec
-    ok, err = await _dispatch_automation_command(
-        "override",
-        {"channel": "fae", "state": "on", "duration_sec": duration,
-         "expires_at": before + duration},
-    )
-    assert ok is True and err is None
-
-    # fae maps to the relay node; that (node, channel) is now overridden…
+    assert await _set("fae", duration_sec=300, expires_at=float("nan")) == (True, None)
     assert is_overridden("relay-01", "fae") is True
-    ov = next(o for o in await get_overrides()
-              if o.target == "relay-01" and o.channel == "fae")
-    # …locked, and EXPIRING ~10 min out.
-    assert ov.locked is True
-    assert ov.expires_at is not None
-    assert 9.5 * 60 <= (ov.expires_at - before) <= 10.5 * 60
+    ov = await _override("fae")
+    assert ov.target == "relay-01" and ov.locked is True
+    assert 4.5 * 60 <= ov.expires_at - before <= 5.5 * 60
 
 
-async def test_override_set_falls_back_to_duration_when_no_expires_at():
-    """No absolute expires_at → the Pi derives one from duration_sec."""
-    await _register_node("relay-01", "relay")
-    before = time.time()
-    ok, err = await _dispatch_automation_command(
-        "override", {"channel": "aux", "state": "on", "duration_sec": 300},
-    )
-    assert ok is True and err is None
-    ov = next(o for o in await get_overrides() if o.channel == "aux")
-    assert ov.expires_at is not None
-    assert 4.5 * 60 <= (ov.expires_at - before) <= 5.5 * 60
-
-
-async def test_override_set_light_maps_to_lighting_node():
-    """white is a lighting-bank channel → the override targets the lighting node
-    (what a light rule's action targets), not the relay node."""
-    await _register_node("light-01", "lighting")
-    ok, err = await _dispatch_automation_command(
-        "override",
-        {"channel": "white", "state": "on", "duration_sec": 300,
-         "expires_at": time.time() + 300},
-    )
-    assert ok is True and err is None
-    assert is_overridden("light-01", "white") is True
+@pytest.mark.parametrize("nodes, channel, node", [
+    # A node that has not reported its channels is found by the channel's bank.
+    ([_UNREPORTED_RELAY, _UNREPORTED_LIGHT], "fae", "relay-01"),
+    # white is a lighting-bank channel → the lighting node (what a light
+    # rule's action targets), not the relay node.
+    ([_UNREPORTED_RELAY, _UNREPORTED_LIGHT], "white", "light-01"),
+    # exhaust (relay) and far_red (lighting) were refused as mapping to no
+    # node, though both banks report them.
+    ([_RELAY_BANK_NODE, _LIGHT_BANK_NODE], "exhaust", "node-relay-1"),
+    ([_RELAY_BANK_NODE, _LIGHT_BANK_NODE], "far_red", "node-light-1"),
+], ids=["unreported-relay", "unreported-lighting", "reported-relay", "reported-lighting"])
+async def test_the_override_lands_on_the_node_that_has_the_channel(nodes, channel, node):
+    await _register(*nodes)
+    assert await _set(channel, duration_sec=300) == (True, None)
+    assert is_overridden(node, channel) is True
+    assert [o.target for o in await get_overrides()] == [node]
 
 
 # ── release clears the override ────────────────────────────────────────────
@@ -95,141 +90,59 @@ async def test_override_set_light_maps_to_lighting_node():
 
 async def test_override_release_clears_override():
     """A cloud 'release' clears the hold so automation resumes control."""
-    await _register_node("relay-01", "relay")
-
-    # Pre-existing hold from a prior 'set'.
-    ok, _ = await _dispatch_automation_command(
-        "override",
-        {"channel": "aux", "state": "on", "duration_sec": 600,
-         "expires_at": time.time() + 600},
-    )
-    assert ok is True
+    await _register(_UNREPORTED_RELAY)
+    assert (await _set("aux", duration_sec=600))[0] is True
     assert is_overridden("relay-01", "aux") is True
 
-    ok, err = await _dispatch_automation_command(
-        "override", {"channel": "aux", "release": True},
-    )
-    assert ok is True and err is None
+    ok, err = await _dispatch_automation_command("override", {"channel": "aux", "release": True})
+    assert (ok, err) == (True, None)
     assert is_overridden("relay-01", "aux") is False
-    assert not any(o.target == "relay-01" and o.channel == "aux"
-                   for o in await get_overrides())
-
-
-# ── honest degradation, never a crash ──────────────────────────────────────
-
-
-async def test_override_absurd_expiry_is_clamped_to_ttl_ceiling():
-    """A cloud expires_at past the Pi's ceiling is clamped, not honoured — a
-    fat-fingered duration can't pin the actuator off for a year."""
-    await _register_node("relay-01", "relay")
-    before = time.time()
-    ten_years = before + 10 * 365 * 24 * 60 * 60
-    ok, _ = await _dispatch_automation_command(
-        "override", {"channel": "fae", "state": "on", "expires_at": ten_years},
-    )
-    assert ok is True
-    ov = next(o for o in await get_overrides() if o.channel == "fae")
-    assert ov.expires_at is not None
-    assert ov.expires_at <= before + MAX_OVERRIDE_TTL_SECONDS + 1
-
-
-async def test_override_unmappable_channel_is_honest_noop():
-    """A smart-plug/unknown channel (heater/pump → no relay/lighting node) must
-    not crash and must not silently claim success."""
-    ok, err = await _dispatch_automation_command(
-        "override", {"channel": "heater", "state": "on", "duration_sec": 600},
-    )
-    assert ok is False
-    assert err and "heater" in err
     assert await get_overrides() == []
 
 
-async def test_override_no_registered_node_is_honest_noop():
-    """A mappable channel but no relay node registered → honest no-op."""
-    ok, err = await _dispatch_automation_command(
-        "override", {"channel": "fae", "release": True},
-    )
-    assert ok is False
-    assert err and "relay" in err
+# ── an expiry the Pi cannot honour ─────────────────────────────────────────
 
 
-async def test_override_missing_channel_rejected():
-    ok, err = await _dispatch_automation_command("override", {"state": "on"})
-    assert ok is False
-    assert err and "channel" in err
-
-
-async def test_unknown_automation_channel_rejected():
-    ok, err = await _dispatch_automation_command("bogus", {"channel": "fae"})
-    assert ok is False
-    assert err and "bogus" in err
-
-
-# ── the node is found by its reported channels ─────────────────────────────
-
-
-async def _register_bank(node_id: str, node_type: str, channels: list[str]) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, roles, channels, last_seen) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (node_id, node_type, json.dumps([node_type]), json.dumps(channels), time.time()),
-        )
-        await db.commit()
-
-
-async def test_override_for_any_bank_channel_registers():
-    """exhaust (relay) and far_red (lighting) were refused as mapping to no
-    node, though both banks have them."""
-    await _register_bank("node-relay-1", "relay", ["aux", "circulation", "exhaust", "fae"])
-    await _register_bank("node-light-1", "lighting", ["blue", "far_red", "red", "white"])
-    for channel, node in (("exhaust", "node-relay-1"), ("far_red", "node-light-1")):
-        ok, err = await _dispatch_automation_command(
-            "override", {"channel": channel, "state": "on", "duration_sec": 300})
-        assert ok is True and err is None, err
-        assert is_overridden(node, channel) is True
-
-
-async def test_override_with_two_candidate_nodes_is_refused():
-    await _register_bank("relay-a", "relay", ["aux", "circulation", "exhaust", "fae"])
-    await _register_bank("relay-b", "relay", ["aux", "circulation", "exhaust", "fae"])
-    ok, err = await _dispatch_automation_command(
-        "override", {"channel": "fae", "state": "on", "duration_sec": 300})
-    assert ok is False
-    assert err.startswith("Ambiguous target")
-    assert await get_overrides() == []
-
-
-# ── a non-finite expiry is no expiry ──────────────────────────────────────
-
-
-async def test_nan_expiry_falls_back_to_the_duration():
-    """NaN compares false against every deadline, so a hold carrying it never
-    read as expired; it is ignored like any other unusable expiry."""
-    await _register_node("relay-01", "relay")
+@pytest.mark.parametrize("expiry", [
+    lambda now: now + 10 * 365 * 24 * 3600,
+    lambda now: float("nan"),
+    lambda now: float("inf"),
+], ids=["ten-years", "nan", "inf"])
+async def test_an_expiry_past_the_ceiling_or_not_finite_is_held_to_the_ceiling(expiry):
+    """With no duration, a fat-fingered or non-finite expiry is clamped to
+    the Pi's 24 h ceiling: it can't pin the actuator for a year, and NaN can't
+    make a hold that never reads as expired."""
+    await _register(_UNREPORTED_RELAY)
     before = time.time()
-    ok, _ = await _dispatch_automation_command(
-        "override", {"channel": "fae", "state": "on", "expires_at": float("nan"),
-                     "duration_sec": 300})
-    assert ok is True
-    ov = next(o for o in await get_overrides() if o.channel == "fae")
-    assert 4.5 * 60 <= ov.expires_at - before <= 5.5 * 60
-
-
-async def test_non_finite_expiry_without_a_duration_gets_the_ceiling():
-    await _register_node("relay-01", "relay")
-    before = time.time()
-    for channel, value in (("fae", float("nan")), ("aux", float("inf"))):
-        ok, _ = await _dispatch_automation_command(
-            "override", {"channel": channel, "state": "on", "expires_at": value})
-        assert ok is True
-    for ov in await get_overrides():
-        assert ov.expires_at <= before + MAX_OVERRIDE_TTL_SECONDS + 1
+    assert (await _set("fae", expires_at=expiry(before)))[0] is True
+    ov = await _override("fae")
+    assert before < ov.expires_at <= before + MAX_OVERRIDE_TTL_SECONDS + 1
+    assert is_overridden("relay-01", "fae") is True
 
 
 async def test_a_zero_expiry_reads_as_expired():
-    await _register_node("relay-01", "relay")
-    ok, _ = await _dispatch_automation_command(
-        "override", {"channel": "fae", "state": "on", "expires_at": 0})
-    assert ok is True
+    await _register(_UNREPORTED_RELAY)
+    assert (await _set("fae", expires_at=0))[0] is True
     assert is_overridden("relay-01", "fae") is False
+
+
+# ── honest refusal, never a crash and never a silent success ──────────────
+
+
+@pytest.mark.parametrize("nodes, channel, payload, error", [
+    # A smart-plug/unknown channel (heater/pump → no relay/lighting node).
+    ([], "override", {"channel": "heater", "state": "on", "duration_sec": 600},
+     "Channel 'heater' maps to no relay/lighting node"),
+    ([], "override", {"channel": "fae", "release": True}, "No registered relay node"),
+    ([], "override", {"state": "on"}, "automation override requires payload.channel"),
+    ([], "bogus", {"channel": "fae"}, "Unknown automation channel 'bogus'"),
+    ([("relay-a", "relay", RELAY_BANK), ("relay-b", "relay", RELAY_BANK)], "override",
+     {"channel": "fae", "state": "on", "duration_sec": 300}, "Ambiguous target"),
+], ids=["unmappable-channel", "no-node", "no-channel", "unknown-channel", "two-candidates"])
+async def test_an_override_the_pi_cannot_place_is_refused_and_registers_nothing(
+        nodes, channel, payload, error):
+    await _register(*nodes)
+    ok, err = await _dispatch_automation_command(channel, payload)
+    assert ok is False
+    assert err.startswith(error), err
+    assert await get_overrides() == []

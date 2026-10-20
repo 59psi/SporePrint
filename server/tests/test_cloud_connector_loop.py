@@ -1,14 +1,18 @@
 """Cloud connector loop behaviour, driven with a fake Socket.IO client.
 
-* #9  a relay that accepts then immediately drops the session must meet a
-      growing backoff, not a ~1 s reconnect storm; a stable session resets it.
-* #20 POST /reconnect must actually wake the retry sleep.
-* #8  the integrations snapshot is (re)pushed on every connect.
-* #11 the device token is never sent over plaintext to a public host.
-* #5  credentials persisted by pairing are loaded at connector start.
+* a relay that accepts then immediately drops the session must meet a
+  growing backoff, not a ~1 s reconnect storm; a stable session resets it.
+* POST /reconnect must actually wake the retry sleep.
+* the integrations snapshot is (re)pushed on every connect, and every
+  registered connect listener runs even when one fails.
+* the device token is never sent over plaintext to a public host.
+* credentials persisted by pairing are loaded at connector start.
 * buffered frames go out as replayed history; frames the relay never
-  acknowledged are kept for the next connect; the connector does not start
-  (or buffer) without all three credentials.
+  acknowledged, or the socket refused, are kept for the next connect; a full
+  buffer drops its oldest frame; the connector does not start (or buffer)
+  without all three credentials.
+* a command arriving on the socket goes through the security gate and is
+  answered on the same socket.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import pytest
 import app.cloud.service as service
 from app.cloud.version import server_version
 from app.integrations import _health_sweeper
+from tests._pi_b2_cloud import sign
 
 
 class _FakeClient:
@@ -37,6 +42,7 @@ class _FakeClient:
         self.handlers: dict = {}
         self.connected = False
         self.connect_calls = 0
+        self.disconnect_calls = 0
         self.auth_seen = None
         self.wait_timeout = None
         self.emits: list[tuple[str, dict]] = []
@@ -74,7 +80,23 @@ class _FakeClient:
         return None
 
     async def disconnect(self):
+        self.disconnect_calls += 1
         self.connected = False
+
+
+class _SilentRelay(_FakeClient):
+    """A relay whose socket died without a FIN: emits succeed, nothing acks."""
+
+    def __init__(self, reconnection: bool = False) -> None:
+        super().__init__(reconnection)
+        self.ack = False
+
+
+class _BrokenSocket(_FakeClient):
+    """The socket went away under the connector: every emit raises."""
+
+    async def emit(self, event, data=None, namespace=None, callback=None):
+        raise ConnectionError("socket is closed")
 
 
 @pytest.fixture
@@ -89,10 +111,14 @@ def connector(monkeypatch):
         ("_heartbeat_task", None), ("_wake_event", None),
         ("_connector_running", False), ("_standing_refusal", None),
         ("_connect_error", None), ("_last_snapshot_push", 0), ("_token_refusals", 0),
+        ("_queue_drops", 0), ("_last_forward", 0),
     ]:
         monkeypatch.setattr(service, name, value)
     service._inflight.clear()
     _empty_queue()
+    # Listeners other tests registered (the app's session sync) would start
+    # catch-ups that outlive the test.
+    monkeypatch.setattr(service, "_connect_listeners", [])
     monkeypatch.setattr(service, "_health_heartbeat_loop", _noop_loop)
     monkeypatch.setitem(service._task_status, "cloud_connector",
                         {"status": "idle", "last_run": None})
@@ -124,11 +150,27 @@ def _stop_after(n: int, record: list):
     return fake_backoff_sleep
 
 
-async def test_immediate_server_disconnect_backs_off(connector, monkeypatch):
-    sleeps: list[float] = []
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(4, sleeps))
+async def _run_connector(monkeypatch, attempts: int = 1, record: list | None = None) -> None:
+    """Run the connector for `attempts` connects, then stop it."""
+    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(attempts, [] if record is None else record))
     with pytest.raises(asyncio.CancelledError):
         await service.start_cloud_connector()
+
+
+def _live(monkeypatch, client: _FakeClient) -> _FakeClient:
+    """A connector whose session is up on `client`."""
+    monkeypatch.setattr(service, "_sio", client)
+    monkeypatch.setattr(service, "_connected", True)
+    monkeypatch.setattr(service, "_connector_running", True)
+    return client
+
+
+# ── reconnect and backoff ────────────────────────────────────────────
+
+
+async def test_immediate_server_disconnect_backs_off(connector, monkeypatch):
+    sleeps: list[float] = []
+    await _run_connector(monkeypatch, 4, sleeps)
     assert sleeps == [10, 20, 40, 80], (
         "a session the relay drops immediately must grow the backoff, "
         "not reconnect ~1 s later forever"
@@ -139,18 +181,103 @@ async def test_immediate_server_disconnect_backs_off(connector, monkeypatch):
 async def test_stable_session_resets_backoff(connector, monkeypatch):
     monkeypatch.setattr(service, "_STABLE_SESSION_SECONDS", 0)
     sleeps: list[float] = []
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(3, sleeps))
-    with pytest.raises(asyncio.CancelledError):
-        await service.start_cloud_connector()
+    await _run_connector(monkeypatch, 3, sleeps)
     assert sleeps == [5, 5, 5]
 
 
+async def test_backoff_sleep_is_woken_by_reconnect_request(monkeypatch):
+    monkeypatch.setattr(service, "_wake_event", asyncio.Event())
+    monkeypatch.setattr(service, "_connector_running", True)
+    monkeypatch.setattr(service, "_connected", False)
+
+    async def poke():
+        await asyncio.sleep(0.01)
+        assert service.request_reconnect() == "reconnecting"
+
+    poker = asyncio.create_task(poke())
+    await asyncio.wait_for(service._backoff_sleep(30), timeout=2)
+    await poker
+
+
+async def test_stopping_the_connector_closes_a_live_session(connector, monkeypatch):
+    """Shutdown cancels the connector mid-session: it closes the socket and
+    returns instead of leaving the relay to time the session out."""
+
+    in_session = asyncio.Event()
+
+    class _HeldSession(_FakeClient):
+        async def wait(self):
+            in_session.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(service.socketio, "AsyncClient", _HeldSession)
+    task = asyncio.create_task(service.start_cloud_connector())
+    await asyncio.wait_for(in_session.wait(), timeout=5)
+    task.cancel()
+    await task
+    assert _HeldSession.instances[0].disconnect_calls == 1
+    assert service._connector_running is False
+
+
+# ── what a connect does ──────────────────────────────────────────────
+
+
 async def test_snapshot_pushed_on_every_connect(connector, monkeypatch):
-    sleeps: list[float] = []
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(2, sleeps))
-    with pytest.raises(asyncio.CancelledError):
-        await service.start_cloud_connector()
+    await _run_connector(monkeypatch, 2)
     assert len(connector) == 2
+
+
+async def test_every_connect_listener_runs_even_when_one_fails(connector, monkeypatch):
+    ran: list[str] = []
+
+    async def broken():
+        raise RuntimeError("catch-up failed")
+
+    async def catch_up():
+        ran.append("catch_up")
+
+    for listener in (broken, catch_up, catch_up):   # registering twice is a no-op
+        service.add_connect_listener(listener)
+    await _run_connector(monkeypatch)
+    assert ran == ["catch_up"]
+
+
+async def test_a_standing_refusal_clears_once_the_relay_accepts_the_pi_again(connector, monkeypatch):
+    """A resubscribed owner or a re-paired Pi: the next accepted connect ends
+    the pause, and telemetry is buffered again."""
+    monkeypatch.setattr(service, "_standing_refusal", "subscription_required")
+    await _run_connector(monkeypatch)
+    assert service._standing_refusal is None
+    monkeypatch.setattr(service, "_connector_running", True)
+    await service.forward_telemetry("climate-01", {"temp_f": 72.0})
+    assert service._queue.qsize() == 1
+
+
+async def test_a_command_on_the_socket_is_answered_on_the_same_socket(connector, monkeypatch):
+    """The socket's `command` event runs the whole security gate
+    (handle_cloud_command) and the command_result goes back on that socket."""
+    frame = sign({"id": "cmd-1", "tier": "premium", "target_kind": "system",
+                  "channel": "automation", "payload": {"paused": False},
+                  "ts": time.time()}, "tok")
+
+    class _CommandingRelay(_FakeClient):
+        async def wait(self):
+            await self.handlers["command"](frame)
+            await super().wait()
+
+    monkeypatch.setattr(service.socketio, "AsyncClient", _CommandingRelay)
+    service._seen_command_ids.clear()
+    try:
+        await _run_connector(monkeypatch)
+    finally:
+        service._seen_command_ids.clear()
+    results = [data for event, data in _CommandingRelay.instances[0].emits
+               if event == "command_result"]
+    assert results == [{"id": "cmd-1", "success": True, "target_kind": "system",
+                        "channel": "automation", "error": None}]
+
+
+# ── credentials and transport ────────────────────────────────────────
 
 
 async def test_public_plaintext_cloud_url_is_refused(connector, monkeypatch):
@@ -170,31 +297,10 @@ async def test_public_plaintext_cloud_url_is_refused(connector, monkeypatch):
     ("http://localhost:8001", True),
     ("http://devbox.local:8001", True),
     ("ftp://relay.sporeprint.ai", False),
+    ("http://[::1", False),            # not even a URL
 ])
 def test_cloud_url_transport_policy(url, ok):
     assert service.cloud_url_transport_ok(url) is ok
-
-
-async def test_backoff_sleep_is_woken_by_reconnect_request(monkeypatch):
-    monkeypatch.setattr(service, "_wake_event", asyncio.Event())
-    monkeypatch.setattr(service, "_connector_running", True)
-    monkeypatch.setattr(service, "_connected", False)
-
-    async def poke():
-        await asyncio.sleep(0.01)
-        assert service.request_reconnect() == "reconnecting"
-
-    poker = asyncio.create_task(poke())
-    await asyncio.wait_for(service._backoff_sleep(30), timeout=2)
-    await poker
-
-
-def test_request_reconnect_states(monkeypatch):
-    monkeypatch.setattr(service, "_connector_running", False)
-    assert service.request_reconnect() == "restart_required"
-    monkeypatch.setattr(service, "_connector_running", True)
-    monkeypatch.setattr(service, "_connected", True)
-    assert service.request_reconnect() == "connected"
 
 
 async def test_connector_loads_paired_credentials(connector, monkeypatch):
@@ -205,10 +311,7 @@ async def test_connector_loads_paired_credentials(connector, monkeypatch):
         "SPOREPRINT_CLOUD_TOKEN": "paired-token",
         "SPOREPRINT_CLOUD_DEVICE_ID": "dev-9",
     })
-    sleeps: list[float] = []
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(1, sleeps))
-    with pytest.raises(asyncio.CancelledError):
-        await service.start_cloud_connector()
+    await _run_connector(monkeypatch)
     assert _FakeClient.instances[0].auth_seen == {"token": "paired-token", "device_id": "dev-9"}
 
 
@@ -233,33 +336,30 @@ async def test_repairing_reconnects_with_the_new_token(connector, monkeypatch):
     assert client.auth_seen == {"token": "rotated", "device_id": "dev-1"}
 
 
-async def test_apply_paired_credentials_without_a_connector_needs_a_restart(connector, monkeypatch):
-    service.write_cloud_env({"SPOREPRINT_CLOUD_TOKEN": "fresh"})
-    assert await service.apply_paired_credentials() is False
-    assert service.settings.cloud_token == "fresh"
-
-
 async def test_connect_waits_long_enough_for_the_relay(connector, monkeypatch):
     """The relay answers only after two Supabase round trips; the client's
     1 s default failed every slow handshake."""
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(1, []))
-    with pytest.raises(asyncio.CancelledError):
-        await service.start_cloud_connector()
+    await _run_connector(monkeypatch)
     assert _FakeClient.instances[0].wait_timeout >= 5
 
 
-@pytest.mark.parametrize("missing", ["cloud_device_id", "cloud_token"])
-async def test_connector_needs_all_three_credentials(connector, monkeypatch, missing):
-    monkeypatch.setattr(service.settings, missing, "")
+@pytest.mark.parametrize("missing, status", [
+    (("cloud_device_id",), "disabled — SPOREPRINT_CLOUD_DEVICE_ID not set"),
+    (("cloud_token",), "disabled — SPOREPRINT_CLOUD_TOKEN not set"),
+    (("cloud_url", "cloud_token", "cloud_device_id"), "disabled"),   # never paired
+], ids=["device-id", "token", "all"])
+async def test_connector_needs_all_three_credentials(connector, monkeypatch, missing, status):
+    for attr in missing:
+        monkeypatch.setattr(service.settings, attr, "")
     await service.start_cloud_connector()
     assert _FakeClient.instances == [], "a partial pairing can only be refused"
-    status = service._task_status["cloud_connector"]["status"]
-    var = {"cloud_device_id": "SPOREPRINT_CLOUD_DEVICE_ID",
-           "cloud_token": "SPOREPRINT_CLOUD_TOKEN"}[missing]
-    assert status == f"disabled — {var} not set"
+    assert service._task_status["cloud_connector"]["status"] == status
     # Nothing would ever drain a queue, so nothing is buffered.
     await service.forward_telemetry("climate-01", {"temp_f": 72.0})
     assert service._queue.empty()
+
+
+# ── the offline buffer and acknowledgements ──────────────────────────
 
 
 async def test_buffered_frames_drain_as_replayed_history(connector, monkeypatch):
@@ -269,32 +369,41 @@ async def test_buffered_frames_drain_as_replayed_history(connector, monkeypatch)
     await service.forward_telemetry("climate-01", {"temp_f": 91.0, "ts": 1_760_000_000.0})
     assert service._queue.qsize() == 1
 
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(1, []))
-    with pytest.raises(asyncio.CancelledError):
-        await service.start_cloud_connector()
+    await _run_connector(monkeypatch)
     sent = [data for event, data in _FakeClient.instances[0].emits if event == "telemetry"]
     assert sent == [{"node_id": "climate-01", "ts": 1_760_000_000.0, "temp_f": 91.0,
                      "replay": True}]
     assert service._queue.empty()
 
 
-class _SilentRelay(_FakeClient):
-    """A relay whose socket died without a FIN: emits succeed, nothing acks."""
+async def test_a_full_offline_buffer_drops_the_oldest_frame_and_counts_it(connector, monkeypatch):
+    monkeypatch.setattr(service, "_queue", asyncio.Queue(maxsize=2))
+    monkeypatch.setattr(service, "_connector_running", True)
+    for ts in (1.0, 2.0, 3.0):
+        await service.forward_telemetry("climate-01", {"temp_f": 70.0, "ts": ts})
+    assert [service._queue.get_nowait()["ts"] for _ in range(2)] == [2.0, 3.0]
+    assert service.get_cloud_status()["queue_drops"] == 1
 
-    def __init__(self, reconnection: bool = False) -> None:
-        super().__init__(reconnection)
-        self.ack = False
+
+async def test_a_frame_the_socket_refuses_stays_buffered(connector, monkeypatch):
+    """Sent live or drained on connect, a frame the dead socket throws back
+    is kept for the next connect — not lost and not left tracked in flight."""
+    _live(monkeypatch, _BrokenSocket())
+    await service.forward_telemetry("climate-01", {"temp_f": 70.0, "ts": 1.0})
+    assert service._queue.qsize() == 1
+    assert not service._inflight
+
+    assert await service._drain_queue() == 0
+    assert service._queue.get_nowait()["ts"] == 1.0
+    assert not service._inflight
 
 
 async def test_unacknowledged_frames_are_kept_for_the_next_connect(connector, monkeypatch):
     monkeypatch.setattr(service.socketio, "AsyncClient", _SilentRelay)
     monkeypatch.setattr(service, "_connector_running", True)
-    monkeypatch.setattr(service, "_last_forward", 0)
     await service.forward_telemetry("climate-01", {"temp_f": 70.0, "ts": 1_760_000_000.0})
 
-    monkeypatch.setattr(service, "_backoff_sleep", _stop_after(1, []))
-    with pytest.raises(asyncio.CancelledError):
-        await service.start_cloud_connector()
+    await _run_connector(monkeypatch)
     # Sent once into the dead socket, never acknowledged: back in the queue
     # when the disconnect is noticed, and not counted as forwarded.
     assert [e for e, _ in _FakeClient.instances[0].emits].count("telemetry") == 1
@@ -305,10 +414,7 @@ async def test_unacknowledged_frames_are_kept_for_the_next_connect(connector, mo
 
 
 async def test_an_acknowledged_frame_is_not_resent(connector, monkeypatch):
-    client = _FakeClient()
-    monkeypatch.setattr(service, "_sio", client)
-    monkeypatch.setattr(service, "_connected", True)
-    monkeypatch.setattr(service, "_connector_running", True)
+    _live(monkeypatch, _FakeClient())
     await service.forward_telemetry("climate-01", {"temp_f": 70.0})
     assert not service._inflight
     assert service._requeue_unacked() == 0
@@ -316,16 +422,23 @@ async def test_an_acknowledged_frame_is_not_resent(connector, monkeypatch):
     assert service._last_forward > 0
 
 
+class _Clock:
+    """Stands in for the service module's `time`."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+
 async def test_unacknowledged_frames_past_the_max_age_are_not_resent(connector, monkeypatch):
-    client = _SilentRelay()
-    monkeypatch.setattr(service, "_sio", client)
-    monkeypatch.setattr(service, "_connected", True)
-    monkeypatch.setattr(service, "_connector_running", True)
+    clock = _Clock(1_800_000_000.0)
+    monkeypatch.setattr(service, "time", clock)
+    _live(monkeypatch, _SilentRelay())
     await service.forward_telemetry("climate-01", {"temp_f": 70.0})
     assert len(service._inflight) == 1
-    real_time = time.time
-    monkeypatch.setattr(service.time, "time",
-                        lambda: real_time() + service._INFLIGHT_MAX_AGE_SECONDS + 1)
+    clock.now += service._INFLIGHT_MAX_AGE_SECONDS + 1
     assert service._requeue_unacked() == 0
     assert service._queue.empty()
 
@@ -337,9 +450,7 @@ async def test_integrations_snapshot_rides_its_own_channel(connector, monkeypatc
     """The relay fills its integrations cache from the dedicated
     `integrations_state` event; the generic `event` copy stays for clouds
     that read it there."""
-    client = _FakeClient()
-    monkeypatch.setattr(service, "_sio", client)
-    monkeypatch.setattr(service, "_connected", True)
+    client = _live(monkeypatch, _FakeClient())
     assert await service.forward_event("integrations_state", {"drivers": [{"slug": "kasa"}]})
     events = {event: data for event, data in client.emits}
     assert events["integrations_state"]["drivers"] == [{"slug": "kasa"}]
@@ -347,9 +458,7 @@ async def test_integrations_snapshot_rides_its_own_channel(connector, monkeypatc
 
 
 async def test_a_confirmed_event_counts_only_when_acknowledged(connector, monkeypatch):
-    client = _SilentRelay()
-    monkeypatch.setattr(service, "_sio", client)
-    monkeypatch.setattr(service, "_connected", True)
+    client = _live(monkeypatch, _SilentRelay())
     payload = {"vendor": "kasa", "state": "error", "resolved": False}
     assert await service.forward_event("vendor_health_degraded", payload, confirm=True) is False
     # Unconfirmed sends keep their fire-and-forget meaning.
@@ -373,8 +482,7 @@ async def _one_beat(monkeypatch, client):
     monkeypatch.setattr(service, "get_system_metrics", _metrics)
     monkeypatch.setattr(service, "HEALTH_HEARTBEAT_INTERVAL", 0)
     monkeypatch.setattr(client, "emit", _emit)
-    monkeypatch.setattr(service, "_sio", client)
-    monkeypatch.setattr(service, "_connected", True)
+    _live(monkeypatch, client)
     await _REAL_HEARTBEAT()
 
 

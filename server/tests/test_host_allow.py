@@ -29,6 +29,7 @@ def _defaults(monkeypatch):
 
 @pytest.mark.parametrize("host", [
     None,                          # no Host at all: no browser sends that
+    # localhost:8000 is also the server container's compose healthcheck.
     "localhost", "localhost:8000", "LOCALHOST:3001", "localhost.",
     "grow.localhost",
     "127.0.0.1", "127.0.0.1:8000", "127.9.9.9",
@@ -71,13 +72,14 @@ def test_public_ui_url_host_is_allowed(monkeypatch):
 def test_extra_allowed_hosts(monkeypatch):
     monkeypatch.setattr(
         settings, "allowed_hosts",
-        " pi.example.net , *.ts.net, .corp.example, 203.0.113.7, 198.51.100.0/24, [2001:db8::5] ,",
+        " pi.example.net , *.ts.net, .corp.example, 203.0.113.7, 198.51.100.0/24, [2001:db8::5] ,"
+        " *.",                       # a bare wildcard admits nothing
     )
     for host in ("pi.example.net:3001", "grow.tail1234.ts.net", "a.b.corp.example",
                  "203.0.113.7", "198.51.100.44:8000", "[2001:db8::5]:8000"):
         assert host_is_allowed(host) is True, host
     for host in ("example.net", "ts.net.evil.com", "203.0.113.8", "198.51.101.1",
-                 "corp.example.evil.com"):
+                 "corp.example.evil.com", "evil.com"):
         assert host_is_allowed(host) is False, host
 
 
@@ -199,14 +201,19 @@ async def test_websocket_refusal_without_the_denial_extension_closes():
     assert sent == [{"type": "websocket.close", "code": 1008}]
 
 
-async def test_lifespan_passes_through():
+@pytest.mark.parametrize("scope", [
+    {"type": "lifespan"},
+    # No Host header at all: no browser sends that (curl --http1.0, probes).
+    {"type": "http", "method": "GET", "path": "/api/private", "headers": []},
+], ids=["lifespan", "no-host-header"])
+async def test_a_scope_with_no_host_to_check_passes_through(scope):
     seen = []
 
     async def inner(scope, receive, send):
         seen.append(scope["type"])
 
-    await HostAllowMiddleware(inner)({"type": "lifespan"}, None, None)
-    assert seen == ["lifespan"]
+    await HostAllowMiddleware(inner)(scope, None, None)
+    assert seen == [scope["type"]]
 
 
 @pytest.mark.parametrize("host", ["sporeprint.local:3001", "192.168.1.9:8000"])
@@ -304,18 +311,30 @@ async def test_a_frame_without_a_valid_node_id_is_only_the_usual_refusal(pages, 
     assert host_allow._frame_refusals == {}
 
 
+class _Monotonic:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
 async def test_camera_refusal_memory_is_bounded(pages, monkeypatch):
+    """Capped, so invented node ids cannot grow it; entries older than the
+    log interval make room for new cameras."""
+    clock = _Monotonic(1000.0)
+    monkeypatch.setattr(host_allow, "time", clock)
     monkeypatch.setattr(host_allow, "_FRAME_REFUSAL_CAP", 4)
     for i in range(10):
         assert await _post_frame(f"cam-{i}") == 421
-    assert len(host_allow._frame_refusals) == 4
+    assert {node for node, _ in host_allow._frame_refusals} == {"cam-0", "cam-1", "cam-2", "cam-3"}
+
+    clock.now += host_allow._FRAME_REFUSAL_LOG_SECONDS
+    assert await _post_frame("cam-new") == 421
+    assert {node for node, _ in host_allow._frame_refusals} == {"cam-new"}
 
 
 # ── wired into the real app, HTTP + Socket.IO ─────────────────────────────
-
-def test_socket_app_is_wrapped():
-    assert isinstance(main.socket_app, HostAllowMiddleware)
-
 
 def test_real_app_refuses_a_rebound_host_on_api_and_socketio():
     client = TestClient(main.socket_app, base_url="http://attacker.example:8000")
@@ -338,8 +357,3 @@ def test_real_app_serves_socketio_to_a_lan_host():
     r = client.get("/socket.io/", params={"EIO": "4", "transport": "polling"})
     assert r.status_code == 200
     assert '"sid"' in r.text
-
-
-def test_compose_healthcheck_host_is_allowed():
-    """The server container's healthcheck probes http://localhost:8000."""
-    assert host_is_allowed("localhost:8000") is True
