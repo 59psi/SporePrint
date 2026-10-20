@@ -151,31 +151,24 @@ def test_include_cycle_is_rejected(models_dir, api):
     assert "cycle" in r.json()["detail"]
 
 
-def test_include_depth_limit(models_dir, api):
+@pytest.mark.parametrize("past_the_limit", [0, 1], ids=["at-the-limit", "one-past-it"])
+def test_include_depth_limit(models_dir, api, past_the_limit):
+    """A chain of _INLINE_MAX_DEPTH lib files inlines; one more is refused."""
     lib = models_dir / "lib"
-    depth = builder_service._INLINE_MAX_DEPTH + 2
+    depth = builder_service._INLINE_MAX_DEPTH + past_the_limit
     for i in range(depth):
         nxt = f"include <l{i + 1}.scad>\n" if i + 1 < depth else ""
         (lib / f"l{i}.scad").write_text(f"{nxt}L{i} = {i};\n")
     (models_dir / "part.scad").write_text("include <lib/l0.scad>\n")
 
     r = api.get("/api/builder/models/part.scad")
-    assert r.status_code == 500
-    assert "deeper" in r.json()["detail"]
-
-
-def test_depth_at_limit_is_fine(models_dir, api):
-    lib = models_dir / "lib"
-    depth = builder_service._INLINE_MAX_DEPTH
-    for i in range(depth):
-        nxt = f"include <l{i + 1}.scad>\n" if i + 1 < depth else ""
-        (lib / f"l{i}.scad").write_text(f"{nxt}L{i} = {i};\n")
-    (models_dir / "part.scad").write_text("include <lib/l0.scad>\n")
-
-    r = api.get("/api/builder/models/part.scad")
-    assert r.status_code == 200
-    assert _statements(r.text) == []
-    assert f"L{depth - 1} = {depth - 1};" in r.text
+    if past_the_limit:
+        assert r.status_code == 500
+        assert "deeper" in r.json()["detail"]
+    else:
+        assert r.status_code == 200
+        assert _statements(r.text) == []
+        assert f"L{depth - 1} = {depth - 1};" in r.text
 
 
 def test_missing_lib_file_is_an_error(models_dir, api):
@@ -327,6 +320,31 @@ def test_symlinked_model_outside_models_dir_rejected(models_dir, api, tmp_path):
     r = api.get("/api/builder/models/link.scad")
     assert r.status_code == 404
     assert "SECRET" not in r.text
+
+
+def test_diagram_route_serves_only_the_docs_svgs(api, tmp_path, monkeypatch):
+    """GET /api/builder/diagrams/{filename} hands out a file from docs/: an
+    SVG there, and nothing else — no other file type, nothing outside."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "wiring-tier1.svg").write_text("<svg>tier 1</svg>")
+    (docs / "notes.md").write_text("SECRET notes")
+    (tmp_path / "secret.svg").write_text("<svg>SECRET</svg>")
+    monkeypatch.setattr(builder_service, "_DOCS_DIR", docs)
+
+    r = api.get("/api/builder/diagrams/wiring-tier1.svg")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/svg+xml")
+    assert r.text == "<svg>tier 1</svg>"
+    for path in ("notes.md", "missing.svg", "..%2Fsecret.svg", "..", "%2E%2E%2Fsecret.svg"):
+        r = api.get(f"/api/builder/diagrams/{path}")
+        assert r.status_code in (400, 404), (path, r.status_code)
+        assert "SECRET" not in r.text, path
+    # A name with a path in it never reaches the route (no "/" in a path
+    # segment); the lookup refuses it on its own too.
+    for name in ("../secret.svg", "sub/wiring-tier1.svg"):
+        with pytest.raises(builder_service.InvalidBuilderPathError):
+            builder_service.diagram_path(name)
 
 
 # ── bundle (synthetic) ──────────────────────────────────────────

@@ -239,18 +239,11 @@ def test_a_manifest_signed_for_another_version_fails(tmp_path):
         _check(_zip(tmp_path, "node_esp32", members))
 
 
-def test_an_image_built_as_another_version_fails(tmp_path):
-    members = _members(tmp_path, "node_esp32", version="5.0.9")
-    image = members["firmware.bin"]
-    data, sig = _sign(tmp_path, image, artifact="node_esp32", version=VERSION)
-    members.update({"node_esp32.manifest.json": data, "node_esp32.manifest.json.sig": sig})
-    with pytest.raises(vfr.ReleaseError, match="SPOREPRINT_FW_VERSION"):
-        _check(_zip(tmp_path, "node_esp32", members))
-
-
-@pytest.mark.parametrize("built_as", ["15.1.0", "v5.1.0", "5.1.0-rc1", "25.1.0"])
-def test_an_image_whose_version_only_ends_in_the_release_version_fails(tmp_path, built_as):
-    """5.1.0 must be the whole version string, not the tail of a longer one."""
+# Another version, or one that only ends in the release's 5.1.0: the version
+# must be the whole C string, not the tail of a longer one.
+@pytest.mark.parametrize("built_as", ["5.0.9", "15.1.0", "v5.1.0", "5.1.0-rc1", "25.1.0"])
+def test_an_image_built_as_another_version_fails(tmp_path, built_as):
+    """Signed for the release version, but the image says otherwise."""
     members = _members(tmp_path, "node_esp32", version=built_as)
     image = members["firmware.bin"]
     data, sig = _sign(tmp_path, image, artifact="node_esp32", version=VERSION)
@@ -269,12 +262,6 @@ def test_embeds_c_string_needs_a_whole_terminated_string():
     assert not vfr.embeds_c_string(b"v5.1.0\0", "5.1.0", alphabet)
     assert not vfr.embeds_c_string(b"\x005.1.0", "5.1.0", alphabet)
     assert not vfr.embeds_c_string(b"\x005.1.0.1\0", "5.1.0", alphabet)
-
-
-def test_an_image_with_the_key_only_as_the_tail_of_a_longer_string_fails(tmp_path):
-    members = _members(tmp_path, "node_esp32", pubkey_b64="QQ" + PUBKEY_B64)
-    with pytest.raises(vfr.ReleaseError, match="verify key"):
-        _check(_zip(tmp_path, "node_esp32", members))
 
 
 def test_the_env_may_be_the_tail_of_a_longer_string(tmp_path):
@@ -298,35 +285,24 @@ def test_an_image_that_does_not_name_its_env_fails(tmp_path):
         _check(_zip(tmp_path, "node_esp32s3", members))
 
 
-def test_a_manifest_edited_after_signing_fails_the_signature(tmp_path):
+_MANIFEST, _SIG = "node_esp32.manifest.json", "node_esp32.manifest.json.sig"
+# A signed zip with its manifest or signature changed after signing.
+_TAMPERED = {
+    "manifest-edited-after-signing": lambda m: {
+        _MANIFEST: m[_MANIFEST].replace(b'"version":"5.1.0"', b'"version":"5.1.9"')},
+    "flipped-signature-bit": lambda m: {_SIG: bytes([m[_SIG][0] ^ 0x01]) + m[_SIG][1:]},
+    "truncated-signature": lambda m: {_SIG: m[_SIG][:63]},
+    "signature-by-another-key": lambda m: {_SIG: OTHER_KEY.sign(m[_MANIFEST])},
+}
+
+
+@pytest.mark.parametrize("tamper", _TAMPERED.values(), ids=_TAMPERED.keys())
+def test_a_zip_whose_signature_does_not_verify_fails(tmp_path, tamper):
     members = _members(tmp_path, "node_esp32")
-    members["node_esp32.manifest.json"] = members["node_esp32.manifest.json"].replace(
-        b'"version":"5.1.0"', b'"version":"5.1.9"')
+    changed = tamper(members)
+    assert all(members[name] != blob for name, blob in changed.items())
     with pytest.raises(vfr.SignatureError):
-        _check(_zip(tmp_path, "node_esp32", members))
-
-
-def test_a_flipped_signature_bit_fails(tmp_path):
-    members = _members(tmp_path, "node_esp32")
-    sig = bytearray(members["node_esp32.manifest.json.sig"])
-    sig[0] ^= 0x01
-    members["node_esp32.manifest.json.sig"] = bytes(sig)
-    with pytest.raises(vfr.SignatureError):
-        _check(_zip(tmp_path, "node_esp32", members))
-
-
-def test_a_truncated_signature_fails(tmp_path):
-    members = _members(tmp_path, "node_esp32")
-    members["node_esp32.manifest.json.sig"] = members["node_esp32.manifest.json.sig"][:63]
-    with pytest.raises(vfr.SignatureError):
-        _check(_zip(tmp_path, "node_esp32", members))
-
-
-def test_a_signature_by_another_key_fails(tmp_path):
-    members = _members(tmp_path, "node_esp32")
-    members["node_esp32.manifest.json.sig"] = OTHER_KEY.sign(members["node_esp32.manifest.json"])
-    with pytest.raises(vfr.SignatureError):
-        _check(_zip(tmp_path, "node_esp32", members))
+        _check(_zip(tmp_path, "node_esp32", {**members, **changed}))
 
 
 def test_checking_with_another_verify_key_fails(tmp_path):
@@ -335,16 +311,13 @@ def test_checking_with_another_verify_key_fails(tmp_path):
         vfr.check_zip(path, OTHER_KEY.public_key(), version=VERSION)
 
 
-def test_an_image_without_the_verify_key_fails(tmp_path):
-    """Built without SPOREPRINT_OTA_PUBKEY_B64: the node could not check."""
-    members = _members(tmp_path, "node_esp32", pubkey_b64=None)
-    with pytest.raises(vfr.ReleaseError, match="verify key"):
-        _check(_zip(tmp_path, "node_esp32", members))
-
-
-def test_an_image_with_another_verify_key_fails(tmp_path):
-    other = vfr.public_key_b64(OTHER_KEY.public_key())
-    members = _members(tmp_path, "node_esp32", pubkey_b64=other)
+@pytest.mark.parametrize("pubkey_b64", [
+    None,                                         # built without SPOREPRINT_OTA_PUBKEY_B64: no check at all
+    vfr.public_key_b64(OTHER_KEY.public_key()),   # checks against another key
+    "QQ" + PUBKEY_B64,                            # the key only as the tail of a longer string
+], ids=["none", "another-key", "tail-of-a-longer-string"])
+def test_an_image_without_the_release_verify_key_fails(tmp_path, pubkey_b64):
+    members = _members(tmp_path, "node_esp32", pubkey_b64=pubkey_b64)
     with pytest.raises(vfr.ReleaseError, match="verify key"):
         _check(_zip(tmp_path, "node_esp32", members))
 

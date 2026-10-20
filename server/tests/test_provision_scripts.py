@@ -6,6 +6,11 @@ These scripts are the only way broker credentials and the command-signing
 key reach a deployed Pi, and every failure mode they had was silent: a key
 written to a file compose never reads, a broker never reloaded, a password
 file the broker could not open.
+
+An install.sh run costs a few hundred milliseconds of subprocesses, so the
+tests that check different facts of the same scenario (a new install, an
+upgrade, an operator's own settings) share one run through module-scoped
+fixtures; a test that changes the tree works on its own copy.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -176,8 +182,10 @@ def test_add_node_refuses_a_docker_created_passwd_directory(tmp_path):
     assert "install.sh" in res.stdout
 
 
-@pytest.mark.parametrize("name", ["server", "Server", "sp-3p", "SP-3P", "sp-cmd",
-                                  "sp-telemetry", "Sp-Telemetry", "pi-core", "PI-Core"])
+# Each fixed service account and the configured login, and one mixed-case
+# spelling of each kind (the script folds the id's case once for all).
+@pytest.mark.parametrize("name", ["server", "sp-3p", "SP-3P", "sp-cmd", "sp-telemetry",
+                                  "pi-core", "PI-Core"])
 @pytest.mark.parametrize("daemon", [True, False])
 def test_add_node_refuses_a_broker_service_account(tmp_path, name, daemon):
     """A node id equal to a service account (any case, or the server's own
@@ -444,21 +452,17 @@ def test_provision_node_puts_the_server_first_only_with_its_first_key(tmp_path, 
     assert res.returncode == 0, res.stderr + res.stdout
     steps = _steps(res.stdout)
     assert sorted(steps) == sorted([_PI_STEP, _NODES_STEP]) and steps[0] == first, steps
+    # Only --rotate replaces a key, and only then is the operator warned.
     assert "REPLACED" not in res.stdout
     assert "Rotating the key" not in res.stdout
 
 
-@pytest.mark.parametrize("existing", ["", "cd" * 32])
-def test_provision_node_warns_only_when_it_replaces_a_key(tmp_path, existing):
-    root = _make_repo(tmp_path)
-    (root / ".env").write_text(f"SPOREPRINT_MQTT_HMAC_KEY={existing}\n")
-    res = _run(root / "scripts" / "provision-node.sh",  # no --rotate: reuse, or a first key
-               bindir=_fake_bin(tmp_path, docker_daemon=False), log=tmp_path / "calls.log")
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert "REPLACED" not in res.stdout
-
-
 # ── installers (static contract checks — they need a real Docker host) ────
+
+
+def _code(path: Path) -> str:
+    """A shell script (or compose file) without its comment lines."""
+    return "\n".join(line for line in path.read_text().splitlines() if not line.lstrip().startswith("#"))
 
 
 def test_setup_pi_delegates_to_install_sh():
@@ -466,8 +470,7 @@ def test_setup_pi_delegates_to_install_sh():
     certs or LAN-trust flag: Docker created passwd/ and certs/ as root-owned
     directories, the broker and server crash-looped, and the next install.sh
     could not write the passwd file. It is now a thin wrapper."""
-    body = (REPO_ROOT / "scripts" / "setup-pi.sh").read_text()
-    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+    code = _code(REPO_ROOT / "scripts" / "setup-pi.sh")
     assert "install.sh" in code
     assert "compose up" not in code
 
@@ -482,24 +485,14 @@ def test_install_sh_hands_broker_files_to_the_broker_uid():
 def test_install_sh_never_recreates_an_existing_passwd_file():
     """`mosquitto_passwd -c` on re-run wiped every per-node user, and the
     already-running broker kept the old hashes in memory."""
-    body = (REPO_ROOT / "install.sh").read_text()
-    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+    code = _code(REPO_ROOT / "install.sh")
     assert "mosquitto_passwd -c" not in code
     assert "compose restart mqtt" in code or "kill -s HUP mqtt" in code
 
 
-def test_install_sh_certificate_covers_the_pi_ip():
-    """Nodes provisioned with the Pi's IP as broker host fail the TLS name
-    check without an IP entry (and mbedTLS 2.x in arduino-esp32 2.x only
-    string-matches SAN entries, so the IP is also listed as a DNS name)."""
-    body = (REPO_ROOT / "install.sh").read_text()
-    assert "IP:" in body and "DNS:" in body
-
-
 def test_setup_sh_is_not_the_pi_installer():
-    body = (REPO_ROOT / "setup.sh").read_text()
-    assert "install.sh" in body
-    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+    assert "install.sh" in (REPO_ROOT / "setup.sh").read_text()
+    code = _code(REPO_ROOT / "setup.sh")
     # The LAN dashboard sends no bearer: an auto-generated API key made every
     # /api call 401 after `docker compose up`.
     assert "NEW_API_KEY" not in code
@@ -516,8 +509,7 @@ def test_no_script_puts_a_broker_password_on_a_command_line():
     included), where any local user reads it. Passwords go to mosquitto_passwd
     on stdin and to the clients in an options file."""
     for path in _BROKER_SCRIPTS:
-        code = "\n".join(line for line in path.read_text().splitlines()
-                         if not line.lstrip().startswith("#"))
+        code = _code(path)
         assert not re.search(r"mosquitto_passwd(\s+-\w+)*\s+-b\b", code), path.name
         for m in re.finditer(r"mosquitto_(?:sub|pub|rr)\s[^\n;|]*", code):
             assert not re.search(r"(^|\s)-P\s", m.group(0)), (path.name, m.group(0))
@@ -612,11 +604,91 @@ def _run_install(root: Path, tmp_path: Path, *, fake_tz: str | None = None,
                           umask=-1 if umask is None else umask)
 
 
-def test_install_sh_writes_the_host_timezone(tmp_path):
-    root = _make_install_repo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="America/Denver", zoneinfo=_fake_zoneinfo(tmp_path))
+def _ok(res: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
     assert res.returncode == 0, res.stderr + res.stdout
-    assert _env_value(root / ".env", "TZ") == "America/Denver"
+    return res
+
+
+_HOST_TZ = "America/Denver"
+_LEGACY_KEY, _ROOT_KEY, _STALE_KEY = "ef" * 32, "12" * 32, "34" * 32
+
+
+@pytest.fixture(scope="module")
+def fresh_install(tmp_path_factory):
+    """A first install.sh run on a host in America/Denver, then a re-run.
+
+    The broker image's passwd script runs here against the fake
+    mosquitto_passwd (FAKE_RUN_PASSWD) and the host has no chrony. What the
+    first run left is kept apart (a copy of the tree, the .env mode, the
+    calls it made), so a check of what a NEW install writes never sees what
+    the re-run added."""
+    base = tmp_path_factory.mktemp("fresh-install")
+    root = _make_install_repo(base)
+    zi = _fake_zoneinfo(base)
+    env = {"FAKE_RUN_PASSWD": "1", "SP_CHRONY_CONF": str(base / "no-chrony" / "chrony.conf")}
+    first = _ok(_run_install(root, base, fake_tz=_HOST_TZ, zoneinfo=zi, extra_env=env))
+    after_first = base / "after-first-run" / root.name
+    shutil.copytree(root, after_first, symlinks=True)
+    run = SimpleNamespace(root=root, zoneinfo=zi, env=env, first=first, after_first=after_first,
+                          first_env_mode=stat.S_IMODE((root / ".env").stat().st_mode),
+                          first_calls=(base / "calls.log").read_text())
+    run.rerun = _ok(_run_install(root, base, fake_tz=_HOST_TZ, zoneinfo=zi, extra_env=env))
+    return run
+
+
+def _clone_install(fresh_install: SimpleNamespace, tmp_path: Path) -> Path:
+    """A copy of the fresh install as its first run left it, to change."""
+    root = tmp_path / "SporePrint"
+    shutil.copytree(fresh_install.after_first, root, symlinks=True)
+    return root
+
+
+def _rerun_clone(fresh_install: SimpleNamespace, root: Path, tmp_path: Path) -> subprocess.CompletedProcess:
+    return _run_install(root, tmp_path, fake_tz=_HOST_TZ, zoneinfo=fresh_install.zoneinfo,
+                        extra_env=fresh_install.env)
+
+
+@pytest.fixture(scope="module")
+def upgraded_install(tmp_path_factory):
+    """install.sh over an install from before TZ, the signing key and the
+    ntfy topic: the operator's .env, its last line saved with no newline, and
+    the key an older provision-node.sh left in server/.env."""
+    base = tmp_path_factory.mktemp("upgraded-install")
+    root = _make_install_repo(base)
+    (root / ".env").write_text("SPOREPRINT_ALLOW_UNAUTHENTICATED=true\nSPOREPRINT_API_KEY=my-mobile-key")
+    (root / "server" / ".env").write_text(f"SPOREPRINT_MQTT_HMAC_KEY={_LEGACY_KEY}\n")
+    res = _ok(_run_install(root, base, fake_tz=_HOST_TZ, zoneinfo=_fake_zoneinfo(base)))
+    return SimpleNamespace(root=root, res=res)
+
+
+@pytest.fixture(scope="module")
+def operator_install(tmp_path_factory):
+    """install.sh over a .env the operator set up: a time zone, an ntfy
+    topic, the signing key compose reads (server/.env holds a stale one) and
+    broker passwords quoted the ways compose allows."""
+    base = tmp_path_factory.mktemp("operator-install")
+    root = _make_install_repo(base)
+    (root / ".env").write_text(
+        "SPOREPRINT_ALLOW_UNAUTHENTICATED=true\nTZ=Europe/Berlin\nSPOREPRINT_NTFY_TOPIC=my-own-topic\n"
+        f"SPOREPRINT_MQTT_HMAC_KEY={_ROOT_KEY}\nSPOREPRINT_MQTT_USERNAME=server\n"
+        "SPOREPRINT_MQTT_PASSWORD=\"quoted pw\"\nSPOREPRINT_MQTT_3P_PASSWORD='plug pw'\n")
+    (root / "server" / ".env").write_text(f"SPOREPRINT_MQTT_HMAC_KEY={_STALE_KEY}\n")
+    res = _ok(_run_install(root, base, fake_tz=_HOST_TZ, zoneinfo=_fake_zoneinfo(base),
+                           extra_env={"FAKE_RUN_PASSWD": "1"}))
+    return SimpleNamespace(root=root, res=res)
+
+
+@pytest.fixture
+def default_topic_install(tmp_path):
+    """install.sh over an install still on the default ntfy topic."""
+    root = _make_install_repo(tmp_path)
+    (root / ".env").write_text("SPOREPRINT_ALLOW_UNAUTHENTICATED=true\nSPOREPRINT_NTFY_TOPIC=sporeprint\n")
+    res = _ok(_run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path)))
+    return SimpleNamespace(root=root, res=res)
+
+
+def test_install_sh_writes_the_host_timezone(fresh_install):
+    assert _env_value(fresh_install.after_first / ".env", "TZ") == _HOST_TZ
 
 
 def test_install_sh_resolves_a_legacy_zone_alias(tmp_path):
@@ -624,34 +696,21 @@ def test_install_sh_resolves_a_legacy_zone_alias(tmp_path):
     image ships canonical zones only (the aliases moved to tzdata-legacy),
     and glibc runs an unknown TZ on UTC without a word."""
     root = _make_install_repo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="US/Pacific", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
+    _ok(_run_install(root, tmp_path, fake_tz="US/Pacific", zoneinfo=_fake_zoneinfo(tmp_path)))
     assert _env_value(root / ".env", "TZ") == "America/Los_Angeles"
 
 
-def test_install_sh_warns_an_upgrade_that_schedules_leave_utc(tmp_path):
+def test_install_sh_warns_an_upgrade_that_schedules_leave_utc(upgraded_install, fresh_install):
     """An existing install ran every schedule on UTC; operators may have
     typed UTC times to compensate. The upgrade must say so."""
-    root = _make_install_repo(tmp_path)
-    (root / ".env").write_text("SPOREPRINT_ALLOW_UNAUTHENTICATED=true\n")
-    res = _run_install(root, tmp_path, fake_tz="America/Denver", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _env_value(root / ".env", "TZ") == "America/Denver"
-    assert "ran on UTC" in res.stdout and "TZ=UTC" in res.stdout
+    assert _env_value(upgraded_install.root / ".env", "TZ") == _HOST_TZ
+    assert "ran on UTC" in upgraded_install.res.stdout and "TZ=UTC" in upgraded_install.res.stdout
     # A fresh install has nothing to migrate.
-    fresh = _make_install_repo(tmp_path / "fresh")
-    res = _run_install(fresh, tmp_path / "fresh", fake_tz="America/Denver",
-                       zoneinfo=_fake_zoneinfo(tmp_path / "fresh"))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert "ran on UTC" not in res.stdout
+    assert "ran on UTC" not in fresh_install.first.stdout
 
 
-def test_install_sh_keeps_the_operator_timezone(tmp_path):
-    root = _make_install_repo(tmp_path)
-    (root / ".env").write_text("TZ=Europe/Berlin\n")
-    res = _run_install(root, tmp_path, fake_tz="America/Denver", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _env_value(root / ".env", "TZ") == "Europe/Berlin"
+def test_install_sh_keeps_the_operator_timezone(operator_install):
+    assert _env_value(operator_install.root / ".env", "TZ") == "Europe/Berlin"
 
 
 _CHRONY_LAN = ("allow 10.0.0.0/8", "allow 172.16.0.0/12", "allow 192.168.0.0/16", "local stratum 10")
@@ -692,109 +751,78 @@ def test_install_sh_makes_chrony_serve_ntp_to_the_lan(tmp_path, debian_layout):
     assert "answers NTP from the LAN" in res.stdout
 
 
-def test_install_sh_ntp_step_never_fails_the_install(tmp_path):
+def test_install_sh_ntp_step_never_fails_the_install(fresh_install):
     """No apt, no chrony (or no sudo): the time step warns and moves on."""
-    root = _make_install_repo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path),
-                       extra_env={"SP_CHRONY_CONF": str(tmp_path / "none" / "chrony.conf")})
-    assert res.returncode == 0, res.stderr + res.stdout
-    step = res.stdout.split("LAN time server", 1)[1].split("▶", 1)[0]
+    step = fresh_install.first.stdout.split("LAN time server", 1)[1].split("▶", 1)[0]
     assert "[!]" in step and "nodes cannot" in step, step
 
 
-def test_install_sh_gives_a_new_install_an_unguessable_ntfy_topic(tmp_path):
+def test_install_sh_gives_a_new_install_an_unguessable_ntfy_topic(fresh_install):
     """The bundled ntfy server has no logins: on the default `sporeprint`
     topic anyone on the network (or a web page posting blind) could read the
     alerts or push fake critical ones to the operator's phone."""
-    root = _make_install_repo(tmp_path)
-    zi = _fake_zoneinfo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-    assert res.returncode == 0, res.stderr + res.stdout
-    topic = _env_value(root / ".env", "SPOREPRINT_NTFY_TOPIC")
+    topic = _env_value(fresh_install.after_first / ".env", "SPOREPRINT_NTFY_TOPIC")
     assert re.fullmatch(r"sporeprint-[0-9a-f]{16}", topic or ""), topic
-    assert topic in res.stdout  # the operator subscribes the phone to it
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _env_value(root / ".env", "SPOREPRINT_NTFY_TOPIC") == topic
-    assert "default ntfy topic" not in res.stdout
+    assert topic in fresh_install.first.stdout  # the operator subscribes the phone to it
+    assert _env_value(fresh_install.root / ".env", "SPOREPRINT_NTFY_TOPIC") == topic
+    assert "default ntfy topic" not in fresh_install.rerun.stdout
 
 
-@pytest.mark.parametrize("topic, warned", [("sporeprint", True), (None, True), ("my-own-topic", False)])
-def test_install_sh_keeps_an_existing_installs_ntfy_topic(tmp_path, topic, warned):
+@pytest.mark.parametrize("install, topic, warned", [
+    ("default_topic_install", "sporeprint", True),
+    ("upgraded_install", None, True),
+    ("operator_install", "my-own-topic", False),
+], ids=["default-topic", "no-topic", "own-topic"])
+def test_install_sh_keeps_an_existing_installs_ntfy_topic(request, install, topic, warned):
     """Phones subscribe to the topic: moving an existing install to a new one
     would silently stop its alerts, so it is kept, with a warning while it is
     the guessable default."""
-    root = _make_install_repo(tmp_path)
-    (root / ".env").write_text("SPOREPRINT_ALLOW_UNAUTHENTICATED=true\n"
-                               + (f"SPOREPRINT_NTFY_TOPIC={topic}\n" if topic else ""))
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _env_value(root / ".env", "SPOREPRINT_NTFY_TOPIC") == topic
-    assert ("default ntfy topic" in res.stdout) is warned
+    run = request.getfixturevalue(install)
+    assert _env_value(run.root / ".env", "SPOREPRINT_NTFY_TOPIC") == topic
+    assert ("default ntfy topic" in run.res.stdout) is warned
 
 
 def test_install_sh_never_writes_an_unknown_zone(tmp_path):
     root = _make_install_repo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="Mars/Olympus_Mons", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
+    res = _ok(_run_install(root, tmp_path, fake_tz="Mars/Olympus_Mons", zoneinfo=_fake_zoneinfo(tmp_path)))
     assert not _env_value(root / ".env", "TZ")
     assert "UTC" in res.stdout  # the operator is told schedules stay on UTC
 
 
-def test_install_sh_provisions_the_command_signing_key(tmp_path):
+def test_install_sh_provisions_the_command_signing_key(fresh_install):
     """Once paired, cloud_url is set and mqtt_require_signing=auto REFUSES
     every unsigned cmd/* publish: a Pi without a key lost all actuation after
     pairing + restart. With a key the Pi signs everything — nodes that have
     no key accept signed frames (hmac_verify.cpp NoKey → AcceptUnsigned) and
     keyed nodes verify them — so the installer always provisions one."""
-    root = _make_install_repo(tmp_path)
-    zi = _fake_zoneinfo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-    assert res.returncode == 0, res.stderr + res.stdout
-    key = _key(root / ".env")
+    key = _key(fresh_install.after_first / ".env")
     assert key and re.fullmatch(r"[0-9a-f]{64}", key)
-    assert stat.S_IMODE((root / ".env").stat().st_mode) == 0o600
-    assert key not in res.stdout  # never echoed into install logs
+    assert fresh_install.first_env_mode == 0o600
+    assert key not in fresh_install.first.stdout  # never echoed into install logs
     # …and a re-run keeps it (nodes may hold it by then).
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _key(root / ".env") == key
+    assert _key(fresh_install.root / ".env") == key
 
 
-def test_install_sh_reuses_the_key_nodes_already_hold(tmp_path):
-    root = _make_install_repo(tmp_path)
-    legacy = "ef" * 32
-    (root / "server" / ".env").write_text(f"SPOREPRINT_MQTT_HMAC_KEY={legacy}\n")
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _key(root / ".env") == legacy
+def test_install_sh_reuses_the_key_nodes_already_hold(upgraded_install):
+    assert _key(upgraded_install.root / ".env") == _LEGACY_KEY
 
 
-def test_install_sh_keeps_the_root_signing_key(tmp_path):
-    root = _make_install_repo(tmp_path)
-    current, stale = "12" * 32, "34" * 32
-    (root / ".env").write_text(f"SPOREPRINT_MQTT_HMAC_KEY={current}\n")
-    (root / "server" / ".env").write_text(f"SPOREPRINT_MQTT_HMAC_KEY={stale}\n")
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _key(root / ".env") == current
+def test_install_sh_keeps_the_root_signing_key(operator_install):
+    assert _key(operator_install.root / ".env") == _ROOT_KEY
 
 
-def test_install_sh_passes_broker_passwords_on_stdin(tmp_path):
+def test_install_sh_passes_broker_passwords_on_stdin(fresh_install):
     """install.sh's loop runs in the broker image (run here against the fake
     mosquitto_passwd, which refuses -b): each password reaches
     mosquitto_passwd on stdin and lands under its own user."""
-    root = _make_install_repo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path),
-                       extra_env={"FAKE_RUN_PASSWD": "1"})
-    assert res.returncode == 0, res.stderr + res.stdout
+    root = fresh_install.after_first
     server_pw = _env_value(root / ".env", "SPOREPRINT_MQTT_PASSWORD")
     plug_pw = _env_value(root / ".env", "SPOREPRINT_MQTT_3P_PASSWORD")
     assert server_pw and plug_pw
     passwd = (root / "config" / "mosquitto" / "passwd").read_text()
     assert f"server:fakehash-of-{server_pw}\n" in passwd
     assert f"sp-3p:fakehash-of-{plug_pw}\n" in passwd
-    calls = (tmp_path / "calls.log").read_text()
+    calls = fresh_install.first_calls
     assert server_pw not in calls and plug_pw not in calls
 
 
@@ -825,59 +853,55 @@ def _reissue(certs: Path, *, days: int, ips: tuple[str, ...] = FAKE_IPS) -> None
              "-CAcreateserial", "-days", str(days), "-out", "server.crt", "-extfile", "san.ext", cwd=certs)
 
 
-def test_install_sh_reissues_a_missing_server_cert_from_the_same_ca(tmp_path):
+def _certs(root: Path) -> Path:
+    return root / "config" / "mosquitto" / "certs"
+
+
+def test_install_sh_reissues_a_missing_server_cert_from_the_same_ca(fresh_install, tmp_path):
     """A missing server.crt (deleted to force a fresh one, or lost to a failed
     move) made install.sh generate a NEW CA: every node that had pinned the
     old one failed TLS, never fell back, and needed a factory reset."""
-    root = _make_install_repo(tmp_path)
-    zi = _fake_zoneinfo(tmp_path)
-    certs = root / "config" / "mosquitto" / "certs"
-    assert _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi).returncode == 0
+    root = _clone_install(fresh_install, tmp_path)
+    certs = _certs(root)
     ca = _fingerprint(certs / "ca.crt")
     for lost in ("server.crt", "server.key"):
         (certs / lost).unlink()
-        res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-        assert res.returncode == 0, res.stderr + res.stdout
+        res = _ok(_rerun_clone(fresh_install, root, tmp_path))
         assert "Generated CA" not in res.stdout and "existing CA" in res.stdout, lost
         assert _fingerprint(certs / "ca.crt") == ca, lost
         assert _issued_by(certs), lost
     assert not list(certs.glob(".issue.*"))
 
 
-def test_install_sh_never_replaces_a_ca_whose_key_is_gone(tmp_path):
-    root = _make_install_repo(tmp_path)
-    zi = _fake_zoneinfo(tmp_path)
-    certs = root / "config" / "mosquitto" / "certs"
-    assert _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi).returncode == 0
+def test_install_sh_never_replaces_a_ca_whose_key_is_gone(fresh_install, tmp_path):
+    root = _clone_install(fresh_install, tmp_path)
+    certs = _certs(root)
     ca = _fingerprint(certs / "ca.crt")
     (certs / "server.crt").unlink()
     (certs / "ca.key").unlink()
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
+    res = _rerun_clone(fresh_install, root, tmp_path)
     assert res.returncode != 0
     assert "ca.key" in res.stderr and "factory-reset" in res.stderr
     assert _fingerprint(certs / "ca.crt") == ca
 
 
-def test_install_sh_renews_a_server_cert_about_to_expire(tmp_path):
+def test_install_sh_renews_a_server_cert_about_to_expire(fresh_install, tmp_path):
     """The server certificate runs for five years and nothing renewed it;
     deleting it, the only remedy, regenerated the CA. A re-run now re-issues
     one that expires within 30 days, from the same CA."""
-    root = _make_install_repo(tmp_path)
-    zi = _fake_zoneinfo(tmp_path)
-    certs = root / "config" / "mosquitto" / "certs"
-    assert _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi).returncode == 0
+    root = _clone_install(fresh_install, tmp_path)
+    certs = _certs(root)
     ca = _fingerprint(certs / "ca.crt")
     _reissue(certs, days=1)
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-    assert res.returncode == 0, res.stderr + res.stdout
+    res = _ok(_rerun_clone(fresh_install, root, tmp_path))
     assert "expires within 30 days" in res.stdout
     assert subprocess.run(["openssl", "x509", "-in", str(certs / "server.crt"), "-noout",
                            "-checkend", str(365 * 86400)]).returncode == 0
     assert _fingerprint(certs / "ca.crt") == ca and _issued_by(certs)
-    # A current certificate is left alone.
-    before = (certs / "server.crt").read_bytes()
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=zi)
-    assert "already present" in res.stdout and (certs / "server.crt").read_bytes() == before
+    # A current certificate is left alone (the fresh install's re-run).
+    assert "already present" in fresh_install.rerun.stdout
+    assert (_certs(fresh_install.root) / "server.crt").read_bytes() == \
+        (_certs(fresh_install.after_first) / "server.crt").read_bytes()
 
 
 def test_install_sh_warns_when_the_ca_itself_nears_expiry(tmp_path):
@@ -1008,15 +1032,13 @@ def test_host_lib_falls_back_to_ifconfig_without_hostname_I(tmp_path):
     assert _lib(tmp_path, "sp_host_ipv4s", ips="").split() == ["192.168.1.77", "10.1.2.3"]
 
 
-def test_setup_sh_certificate_covers_the_host_ips_like_install_sh(tmp_path):
-    """setup.sh issued DNS-only SANs, so a node given the Pi's IP
-    as its Secure-MQTT broker host never verified the broker (mbedTLS 2.28
-    string-matches DNS SANs only). Its helper must produce exactly the SAN
+def test_setup_sh_certificate_covers_the_host_ips_like_install_sh(fresh_install, tmp_path):
+    """Nodes provisioned with the Pi's IP as broker host fail the TLS name
+    check without an IP entry, and mbedTLS 2.28 (arduino-esp32 2.x)
+    string-matches DNS SANs only: install.sh lists every host IP as both.
+    setup.sh issued DNS-only SANs; its helper must produce exactly the SAN
     install.sh puts in the real certificate."""
-    root = _make_install_repo(tmp_path)
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    issued = _cert_san(root / "config" / "mosquitto" / "certs" / "server.crt")
+    issued = _cert_san(_certs(fresh_install.after_first) / "server.crt")
     for ip in FAKE_IPS:
         assert {f"IP:{ip}", f"DNS:{ip}"} <= issued
     lib = _lib(tmp_path, f"sp_server_san {FAKE_HOSTNAME} $(sp_host_ipv4s)")
@@ -1140,30 +1162,21 @@ def test_env_writers_keep_every_line_and_the_value_verbatim(tmp_path):
                         f"TZ=America/Denver\nSPOREPRINT_X={value}\n"), name
 
 
-def test_install_sh_appends_keys_to_an_env_without_a_final_newline(tmp_path):
+def test_install_sh_appends_keys_to_an_env_without_a_final_newline(upgraded_install):
     """The upgrade path: an existing .env without TZ or the signing key,
     whose last line was saved with no newline. Each key the run adds lands on
     its own line and the operator's last setting keeps its value."""
-    root = _make_install_repo(tmp_path)
-    (root / ".env").write_text("SPOREPRINT_ALLOW_UNAUTHENTICATED=true\nSPOREPRINT_API_KEY=my-mobile-key")
-    res = _run_install(root, tmp_path, fake_tz="America/Denver", zoneinfo=_fake_zoneinfo(tmp_path))
-    assert res.returncode == 0, res.stderr + res.stdout
-    assert _env_value(root / ".env", "SPOREPRINT_API_KEY") == "my-mobile-key"
-    assert _env_value(root / ".env", "TZ") == "America/Denver"
-    assert re.fullmatch(r"[0-9a-f]{64}", _key(root / ".env") or "")
-    assert (root / ".env").read_text().endswith("\n")
+    env = upgraded_install.root / ".env"
+    assert _env_value(env, "SPOREPRINT_API_KEY") == "my-mobile-key"
+    assert _env_value(env, "TZ") == _HOST_TZ
+    assert re.fullmatch(r"[0-9a-f]{64}", _key(env) or "")
+    assert env.read_text().endswith("\n")
 
 
-def test_install_sh_hashes_a_quoted_password_as_compose_reads_it(tmp_path):
+def test_install_sh_hashes_a_quoted_password_as_compose_reads_it(operator_install):
     """compose strips the quotes around SPOREPRINT_MQTT_PASSWORD="…"; the
     passwd entry install.sh writes must be for that same bare value."""
-    root = _make_install_repo(tmp_path)
-    (root / ".env").write_text('SPOREPRINT_ALLOW_UNAUTHENTICATED=true\nSPOREPRINT_MQTT_USERNAME=server\n'
-                               'SPOREPRINT_MQTT_PASSWORD="quoted pw"\nSPOREPRINT_MQTT_3P_PASSWORD=\'plug pw\'\n')
-    res = _run_install(root, tmp_path, fake_tz="UTC", zoneinfo=_fake_zoneinfo(tmp_path),
-                       extra_env={"FAKE_RUN_PASSWD": "1"})
-    assert res.returncode == 0, res.stderr + res.stdout
-    passwd = (root / "config" / "mosquitto" / "passwd").read_text()
+    passwd = (operator_install.root / "config" / "mosquitto" / "passwd").read_text()
     assert "server:fakehash-of-quoted pw\n" in passwd and "sp-3p:fakehash-of-plug pw\n" in passwd
 
 

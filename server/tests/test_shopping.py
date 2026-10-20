@@ -4,49 +4,18 @@ from app.species.shopping import container_kind, generate_shopping_list
 from app.species.substrate import calculate_recipe
 
 
-async def test_shopping_list_returns_categorized_items():
-    """Shopping list for blue_oyster should include substrate, spawn, and containers."""
+async def test_a_seeded_profiles_list_has_every_category_and_scales_with_grows():
+    """The route builds the list from the profile as seeded in the DB: it
+    carries substrate, spawn and containers, and the spawn scales with the
+    number of grows. (An unknown species is the route's 404, test_species.py.)"""
     await seed_builtins()
     profile = await get_profile("blue_oyster")
-    assert profile is not None
-
-    result = generate_shopping_list(profile, grows=1, container_liters=5.0)
-    assert result is not None
-    assert result["species_id"] == "blue_oyster"
-    assert result["grows"] == 1
-    assert len(result["items"]) > 0
-
-    categories = {item["category"] for item in result["items"]}
-    assert "substrate" in categories
-    assert "spawn" in categories
-    assert "containers" in categories
-
-
-async def test_shopping_list_nonexistent_species():
-    """get_profile returns None for nonexistent species, so shopping list should be None."""
-    await seed_builtins()
-    profile = await get_profile("nonexistent_species_xyz")
-    assert profile is None
-
-
-async def test_shopping_list_scales_with_grows():
-    """Multiple grows should produce larger quantities."""
-    await seed_builtins()
-    profile = await get_profile("blue_oyster")
-    assert profile is not None
-
-    result_1 = generate_shopping_list(profile, grows=1, container_liters=5.0)
-    result_3 = generate_shopping_list(profile, grows=3, container_liters=5.0)
-
-    assert result_1 is not None
-    assert result_3 is not None
-    assert result_3["grows"] == 3
-
-    # Spawn should scale with number of grows
-    spawn_1 = next(i for i in result_1["items"] if i["category"] == "spawn")
-    spawn_3 = next(i for i in result_3["items"] if i["category"] == "spawn")
-    # Both should have quantity strings; the 3-grow one should be larger
-    assert spawn_1["quantity"] != spawn_3["quantity"]
+    one = generate_shopping_list(profile, grows=1, container_liters=5.0)
+    three = generate_shopping_list(profile, grows=3, container_liters=5.0)
+    assert (one["species_id"], one["grows"], three["grows"]) == ("blue_oyster", 1, 3)
+    assert {"substrate", "spawn", "containers"} <= {item["category"] for item in one["items"]}
+    spawn = [next(i["quantity"] for i in r["items"] if i["category"] == "spawn") for r in (one, three)]
+    assert spawn == ["150 g", "450 g"]
 
 
 # ── shopping list agrees with the substrate calculator ───────────────────

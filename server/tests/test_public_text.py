@@ -4,6 +4,7 @@ id from another repo, a tool's name) mean nothing to a reader here, so none
 may be used as the reason for a line.
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -30,12 +31,16 @@ _SKIPPED_FILES: set[Path] = set()
 
 
 def _scanned_files():
-    for path in ROOT.rglob("*"):
-        rel = path.relative_to(ROOT)
-        if any(part in _SKIPPED_DIRS for part in rel.parts):
-            continue
-        if path.is_file() and path.suffix in _SCANNED_SUFFIXES and rel not in _SKIPPED_FILES:
-            yield rel
+    # Skipped trees are pruned before the walk enters them (server/.venv alone
+    # holds tens of thousands of files).
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _SKIPPED_DIRS]
+        for name in filenames:
+            path = Path(dirpath, name)
+            rel = path.relative_to(ROOT)
+            if (name not in _SKIPPED_DIRS and path.suffix in _SCANNED_SUFFIXES
+                    and rel not in _SKIPPED_FILES and path.is_file()):
+                yield rel
 
 
 def test_no_private_tracker_or_tool_references():
@@ -44,6 +49,8 @@ def test_no_private_tracker_or_tool_references():
         try:
             text = (ROOT / rel).read_text(encoding="utf-8")
         except UnicodeDecodeError:
+            continue
+        if not _PRIVATE_REFERENCE.search(text):  # no pattern spans a line break
             continue
         for number, line in enumerate(text.splitlines(), 1):
             if _PRIVATE_REFERENCE.search(line):

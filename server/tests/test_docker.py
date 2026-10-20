@@ -13,8 +13,8 @@ from pathlib import Path
 import yaml
 
 from app.config import Settings
+from app.hardware import ota_push
 from app.host_allow import host_is_allowed
-from app.vision import service as vision_service
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
@@ -90,22 +90,27 @@ def _compose_default(key: str) -> str:
     return m.group(1)
 
 
-def test_compose_has_all_services():
+# Each service the stack needs and its image repository (None: built from
+# this repo). The tag is Dependabot's to move; the next test checks it is an
+# exact version.
+_SERVICE_IMAGES = {
+    "server": None,
+    "ui": None,
+    "mqtt": "eclipse-mosquitto",
+    "ntfy": "binwiederhier/ntfy",
+}
+
+
+def test_compose_runs_every_service_on_its_image():
+    """A missing service, or a typo in an image name (nothing to pull, or
+    somebody else's image), breaks the stack only when a Pi updates."""
     services = _load_compose()["services"]
-    for name in ("server", "mqtt", "ntfy", "ui"):
+    for name, repo in _SERVICE_IMAGES.items():
         assert name in services, f"Missing service: {name}"
-
-
-def test_ntfy_image_is_pinned():
-    # An exact release tag, never a moving one: Dependabot bumps the tag, and
-    # a `latest` image would change under an operator between pulls.
-    services = _load_compose()["services"]
-    assert re.fullmatch(r"binwiederhier/ntfy:v\d+\.\d+\.\d+", services["ntfy"]["image"])
-
-
-def test_mosquitto_image_is_correct():
-    services = _load_compose()["services"]
-    assert services["mqtt"]["image"] == "eclipse-mosquitto:2.1.2-alpine"
+        if repo is None:
+            assert "build" in services[name], f"{name} is built from this repo"
+        else:
+            assert services[name].get("image", "").rsplit(":", 1)[0] == repo, name
 
 
 def test_every_image_is_pinned_to_an_exact_version():
@@ -179,20 +184,12 @@ def test_server_receives_every_operator_setting():
 def test_compose_defaults_mirror_the_server_defaults():
     """A compose default that disagrees with the code would silently change
     behaviour for every Pi that leaves the key unset."""
-    fields = Settings.model_fields
-    interval = fields["vision_auto_interval_min"].default if "vision_auto_interval_min" in fields else None
-    if interval is None:
-        interval = vision_service._AUTO_ANALYSIS_MIN_INTERVAL_SECONDS // 60
-    assert int(_compose_default("SPOREPRINT_VISION_AUTO_INTERVAL_MIN")) == interval
-    strict = (fields["cloud_require_signed_integrations"].default
-              if "cloud_require_signed_integrations" in fields else False)
-    assert _compose_default("SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS") == str(bool(strict)).lower()
-    assert _compose_default("SPOREPRINT_MQTT_REQUIRE_SIGNING") == fields["mqtt_require_signing"].default
-    assert int(_compose_default("SPOREPRINT_WEATHER_POLL_MINUTES")) == fields["weather_poll_minutes"].default
-    if "public_ui_url" in fields:
-        assert _compose_default("SPOREPRINT_PUBLIC_UI_URL") == fields["public_ui_url"].default
-    image_default = re.search(r"^ENV\s+FORWARDED_ALLOW_IPS=(\S+)", SERVER_DOCKERFILE.read_text(), re.M).group(1)
-    assert _compose_default("FORWARDED_ALLOW_IPS") == image_default
+    # (FORWARDED_ALLOW_IPS: test_forwarded_headers_are_trusted_only_from_the_ui_container.)
+    for name in ("vision_auto_interval_min", "cloud_require_signed_integrations", "mqtt_require_signing",
+                 "weather_poll_minutes", "public_ui_url"):
+        default = Settings.model_fields[name].default
+        want = str(default).lower() if isinstance(default, bool) else str(default)
+        assert _compose_default(f"SPOREPRINT_{name.upper()}") == want, name
 
 
 def test_compose_defaults_boot_the_server(monkeypatch):
@@ -309,8 +306,6 @@ def test_server_publishes_the_ota_push_callback_port():
     """espota: the node connects BACK over TCP to the port the Pi advertises.
     Behind the compose bridge network that port must be fixed and
     published, or every push ends 'node … never connected back'."""
-    from app.hardware import ota_push
-
     port = ota_push.CALLBACK_PORT
     assert port and port != 8000
     published = _published_ports(_load_compose()["services"]["server"])
@@ -454,7 +449,8 @@ class _Health(BaseHTTPRequestHandler):
 def _probe_against(status: int) -> int:
     handler = type("Handler", (_Health,), {"status": status})
     server = HTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # A short poll: shutdown() waits for serve_forever to notice it.
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
     try:
         probe = _server_probe()[-1]
         assert '("127.0.0.1",8000)' in probe, probe

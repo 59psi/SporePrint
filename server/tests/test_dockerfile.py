@@ -79,25 +79,20 @@ def test_uv_is_pinned_by_version_and_hash():
     assert "uv pip compile" in text and "--generate-hashes" in text  # how to refresh it
 
 
-def test_uvicorn_trusts_forwarded_headers_only_from_the_compose_network():
-    ins = _instructions()
-    env = " ".join(rest for op, rest in ins if op == "ENV")
-    m = re.search(r"FORWARDED_ALLOW_IPS=(\S+)", env)
-    assert m and m.group(1) not in ("*", "0.0.0.0/0"), "never trust every source"
-    cmd = json.loads(next(rest for op, rest in ins if op == "CMD"))
-    assert cmd[:2] == ["uvicorn", "app.main:socket_app"]
-    assert "--proxy-headers" in cmd
-
-
-def test_forwarded_headers_are_trusted_from_one_address_only():
+def test_uvicorn_trusts_forwarded_headers_from_one_address_only():
     """A CIDR (the old 172.16.0.0/12) includes the bridge gateways, and
     docker-proxy relays IPv6/loopback clients of the published :8000 from a
     gateway — letting them forge X-Forwarded-For and pick their own Socket.IO
-    rate-limit bucket. Only the ui container's fixed address is trusted."""
-    env = " ".join(rest for op, rest in _instructions() if op == "ENV")
+    rate-limit bucket. Only one address is trusted (test_docker.py pins it to
+    the ui container's)."""
+    ins = _instructions()
+    env = " ".join(rest for op, rest in ins if op == "ENV")
     value = re.search(r"FORWARDED_ALLOW_IPS=(\S+)", env).group(1)
     assert "," not in value and "/" not in value, value
-    ipaddress.ip_address(value)
+    ipaddress.ip_address(value)  # never "*" or a range
+    cmd = json.loads(next(rest for op, rest in ins if op == "CMD"))
+    assert cmd[:2] == ["uvicorn", "app.main:socket_app"]
+    assert "--proxy-headers" in cmd
 
 
 # ── build context: runtime data never enters an image layer ───────────────

@@ -19,12 +19,16 @@ from app.automation import templates as rule_templates
 from app.automation.templates import BUILTIN_RULES
 from app.builder.hardware_guides import TIERS, TIER_ALL, TIER_RECOMMENDED
 from app.chambers.models import ChamberCreate, ChamberUpdate
+from app.cloud.service import _VALID_TARGET_KINDS, cloud_url_transport_ok
 from app.config import Settings
 from app.db import SCHEMA
 from app.hardware.service import PERIPHERAL_KEYS
+from app.integrations._actions import VENDOR_ACTIONS
 from app.labels.router import _LABEL_PATHS
 from app.main import app as server_app
 from app.mqtt import _CLOCK_STEP_BACK_SECONDS
+from app.node_ids import NODE_ID_RE
+from app.retention import service as retention
 from app.species.models import GrowPhase
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.wizard import recommend
@@ -91,12 +95,8 @@ def test_docs_exist():
 
 
 @pytest.mark.parametrize("svg", SVGS, ids=lambda p: p.name)
-def test_every_svg_is_well_formed_xml(svg):
-    ET.parse(svg)
-
-
-@pytest.mark.parametrize("svg", SVGS, ids=lambda p: p.name)
 def test_svg_footers_carry_no_release_number(svg):
+    # (_svg_labels parses the file: a malformed SVG fails here, by name.)
     # All five said "SporePrint v4.0.0" through the 5.0.0 release; a
     # hard-coded number goes stale on every bump.
     stale = [t for t in _svg_labels(svg) if re.search(r"SporePrint v\d+\.\d+\.\d+", t)]
@@ -415,15 +415,12 @@ def test_grafana_doc_points_at_the_api_port():
 # ── Counts and paths ─────────────────────────────────────────────────
 
 
-def test_readme_and_agents_counts_match_the_code():
+def test_species_profile_counts_match_the_code():
+    # (Table counts: test_server_module_endpoint_and_table_counts_match_the_code.)
     n_species = len(BUILTIN_PROFILES)
-    n_tables = len(set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)))
     for doc in (README, AGENTS, *_QUIET_DOCS):
-        text = _read(doc)
-        for n in re.findall(r"(\d+) (?:built-in )?species profiles", text):
+        for n in re.findall(r"(\d+) (?:built-in )?species profiles", _read(doc)):
             assert int(n) == n_species, f"{doc.name} says {n} species profiles, code has {n_species}"
-        for n in re.findall(r"(\d+) (?:SQLite )?tables", text):
-            assert int(n) == n_tables, f"{doc.name} says {n} tables, db.py has {n_tables}"
     for doc in (README, SPECIES_REF):
         assert f"{n_species} built-in species profiles" in _read(doc), doc.name
 
@@ -456,7 +453,7 @@ def test_server_module_endpoint_and_table_counts_match_the_code(doc):
         assert modules or ops, f"{doc.name} no longer states the server's size — drop it from _COUNT_DOCS"
     assert all(int(n) == n_modules for n in modules), f"{doc.name}: {modules} vs {n_modules} modules"
     assert all(int(n) == n_ops for n in ops), f"{doc.name}: {ops} vs {n_ops} API operations"
-    for n in re.findall(r"\b(\d+) (?:SQLite )?tables\b", text):
+    for n in re.findall(r"(\d+) (?:SQLite )?tables", text):
         assert int(n) == n_tables, f"{doc.name} says {n} tables, db.py has {n_tables}"
 
 
@@ -684,11 +681,9 @@ def test_power_strip_sizes_match_the_bom():
 
 
 def test_in_chamber_boards_get_the_6_ft_usb_cables():
-    for tier, svg in zip(TIERS, TIER_SVGS):
-        names = [c.name for c in tier.components]
-        assert any("USB-C Data Cable, 6 ft" in n for n in names), tier.id
-        labels = " | ".join(_svg_labels(svg))
-        assert "6 ft (2 m)" in labels, svg.name
+    # (How many each tier buys: test_hardware_guides.py.)
+    for svg in TIER_SVGS:
+        assert "6 ft (2 m)" in " | ".join(_svg_labels(svg)), svg.name
     power = _section(_read(GUIDE), "Power and cabling")
     assert "6 ft (2 m) USB-A → USB-C" in power and "6 ft (2 m) USB-A → micro-USB" in power
 
@@ -933,14 +928,10 @@ def test_docs_name_the_pinned_platform(doc):
         assert other == core, f"{doc.name} names core {other}; platformio.ini pins {core}"
     for other in re.findall(r"\b(5\d\.\d\d\.\d+-\d+)\b", text):
         assert other == tag, f"{doc.name} names pioarduino {other}; platformio.ini pins {tag}"
+    if doc in (AGENTS, FW_README):
+        assert tag in text, f"{doc.name} does not name the pinned release {tag}"
     if doc in (README, FW_README, GUIDE):
         assert "6.2.0" in text and "git" in text, f"{doc.name}: pioarduino needs PlatformIO 6.2.0+ and git"
-
-
-def test_agents_and_firmware_readme_name_the_platform_release():
-    tag, _core = _platform()
-    for doc in (AGENTS, FW_README):
-        assert tag in _read(doc), f"{doc.name} does not name the pinned release {tag}"
 
 
 def test_builder_setup_step_names_the_toolchain():
@@ -1114,9 +1105,13 @@ def test_readme_feature_list_claims_only_what_exists():
 
 
 def test_readme_label_claims_match_the_labels_router():
+    # The API returns QR code PNGs; nothing drives a printer.
     text = _read(README)
     assert not re.search(r"Phomemo|NIIMBOT|Thermal printer support", text)
-    row = next(l for l in text.splitlines() if l.startswith("| `labels` |"))
+    assert "thermal printer" not in text
+    tree_line = next(line for line in text.splitlines() if "── labels/" in line)
+    assert "QR code PNGs" in tree_line
+    row = next(line for line in text.splitlines() if line.startswith("| `labels` |"))
     named = set(re.findall(r"\b(session|culture|container)s?\b", row))
     assert named == set(_LABEL_PATHS), row
 
@@ -1382,14 +1377,6 @@ def test_readme_sessions_page_row_names_only_what_the_page_has():
     assert any(p.endswith("/drying") or p.endswith("/drying-log") for p in paths)
 
 
-def test_readme_labels_are_png_qr_codes_not_printer_support():
-    text = _read(README)
-    assert "thermal printer" not in text
-    tree_line = next(line for line in text.splitlines() if "── labels/" in line)
-    assert "QR code PNGs" in tree_line
-    assert set(_LABEL_PATHS) >= {"session", "culture"}
-
-
 def test_readme_wizard_counts_match_the_scorer():
     # include_active filters the candidate pool; it is not a scored input.
     inputs = [n for n, prm in inspect.signature(recommend).parameters.items()
@@ -1492,9 +1479,6 @@ def test_readme_version_line_is_the_one_bump_sh_rewrites():
 
 
 def test_cloud_command_docs_match_the_pi_gate():
-    from app.cloud.service import _VALID_TARGET_KINDS
-    from app.node_ids import NODE_ID_RE
-
     flow = _read(DOCS / "cloud-relay-flow.md")
     cloud = _section(_read(README), "Cloud Connector")
     for text, name in ((flow, "cloud-relay-flow.md"), (cloud, "README Cloud Connector")):
@@ -1531,8 +1515,6 @@ def test_mermaid_flowcharts_have_no_bare_text_lines(doc):
 
 
 def test_data_flow_states_the_retention_tiers():
-    from app.retention import service as retention
-
     text = re.sub(r"\s+", " ", _read(DOCS / "data-flow.md"))
     for days in (retention.RAW_RETENTION_DAYS, retention.FIVEMIN_RETENTION_DAYS,
                  retention.FIRINGS_RETENTION_DAYS):
@@ -1549,8 +1531,6 @@ def test_grafana_doc_lists_every_exported_metric():
 
 
 def test_smart_plug_doc_lists_every_vendor_write_action():
-    from app.integrations._actions import VENDOR_ACTIONS
-
     table = _section(_read(SMART_PLUGS), "Write actions across the rest of the grid")
     for slug, actions in VENDOR_ACTIONS.items():
         row = next((l for l in table.splitlines() if l.lower().startswith(f"| {slug} ")), None)
@@ -1636,8 +1616,6 @@ def test_readme_ota_key_row_covers_signed_node_manifests():
 
 
 def test_readme_cloud_url_row_matches_the_transport_check():
-    from app.cloud.service import cloud_url_transport_ok
-
     assert cloud_url_transport_ok("https://sporeprint.ai")
     assert cloud_url_transport_ok("http://192.168.1.20:9001")
     assert not cloud_url_transport_ok("http://example.com")
@@ -1680,11 +1658,11 @@ def test_agents_states_the_cors_rule_the_code_keeps():
     assert "`_LAN_ORIGIN_REGEX`" in text and 'never `allow_origins=["*"]`' in text
 
 
-@pytest.mark.parametrize("doc", SPEC, ids=_rel)
-def test_operator_claude_md_is_the_current_context_file(doc):
+@pytest.mark.skipif(not CLAUDE.exists(), reason="no operator CLAUDE.md here (git-ignored, never shipped)")
+def test_operator_claude_md_is_the_current_context_file():
     # Git-ignored, so a merge never carries it: the main checkout kept the
     # 631-line April spec while worktrees had the rewrite.
-    assert re.search(r"^@AGENTS\.md\s*$", _read(doc), re.M), (
+    assert re.search(r"^@AGENTS\.md\s*$", _read(CLAUDE), re.M), (
         "CLAUDE.md is the pre-2026-10 spec: copy the current operator CLAUDE.md "
         "(it imports @AGENTS.md) over it")
 

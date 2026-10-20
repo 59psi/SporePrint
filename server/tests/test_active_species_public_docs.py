@@ -9,6 +9,7 @@ The names checked here come from the profiles themselves, so a new active
 profile is covered the day it is added.
 """
 
+import functools
 import re
 import subprocess
 from pathlib import Path
@@ -43,10 +44,19 @@ def _active_terms() -> set[str]:
     return {t for t in terms if len(t) > 3}
 
 
+_BOUNDED = r"(?<![A-Za-z]){}(?![A-Za-z])"
+
+
+@functools.cache
+def _any_term(terms: frozenset[str]) -> re.Pattern:
+    """One pass over a doc that matches wherever some term's own pattern does."""
+    return re.compile(_BOUNDED.format("(?:" + "|".join(map(re.escape, sorted(terms))) + ")"), re.IGNORECASE)
+
+
 def _names_in(text: str, terms: set[str]) -> list[str]:
-    return sorted(
-        t for t in terms if re.search(rf"(?<![A-Za-z]){re.escape(t)}(?![A-Za-z])", text, re.IGNORECASE)
-    )
+    if not _any_term(frozenset(terms)).search(text):
+        return []
+    return sorted(t for t in terms if re.search(_BOUNDED.format(re.escape(t)), text, re.IGNORECASE))
 
 
 def _public_docs() -> list[Path]:
