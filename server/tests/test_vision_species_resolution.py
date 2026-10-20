@@ -1,5 +1,5 @@
 """Vision auto-analysis resolves the session's species across the hyphen/underscore
-id drift (same bug class as V1-1).
+id drift.
 
 analyze_frame_claude used to resolve the species with a raw
 `JOIN ... ON s.species_profile_id = sp.id`, which missed the ~63/74 species whose

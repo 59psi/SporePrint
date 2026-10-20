@@ -100,11 +100,20 @@ async def test_elapsed_hours_are_ignored(ntfy):
     assert ntfy == []
 
 
-async def test_forecast_critical_is_deduped_across_polls(ntfy):
-    """The same forecast danger re-evaluated every poll pages once, not every 10 min."""
+@pytest.mark.parametrize("temps,priority,title", [
+    ([_MAX_F + 15] * 24, 5, "heat danger"),
+    # The advisory's old 300 s dedup was shorter than the 600 s poll interval.
+    ([_MAX_F + 7] * 24, 4, "Heat advisory"),
+    # A closet predicted 5-10 °F below the minimum warned for heat but never
+    # for cold; only past min - 10 did anything page.
+    ([_MIN_F - 7] * 24, 4, "Cold advisory"),
+], ids=["heat-danger", "heat-advisory", "cold-advisory"])
+async def test_a_forecast_alert_pages_once_across_polls(ntfy, temps, priority, title):
+    """The same forecast condition re-evaluated every poll pages once, not
+    every 10 min."""
     await _active_session()
     await _identity_model()
-    forecast = _hourly(_now_hour() + 3600, [_MAX_F + 15] * 24)
+    forecast = _hourly(_now_hour() + 3600, temps)
     for _ in range(3):
         await weather_svc._check_forecast_alerts(None, forecast)
         # Age every dedup entry by more than a poll interval AND the generic
@@ -112,21 +121,8 @@ async def test_forecast_critical_is_deduped_across_polls(ntfy):
         for key in list(notif._last_sent):
             notif._last_sent[key] -= 1000
     assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 5
-    assert "heat danger" in ntfy[0]["title"]
-
-
-async def test_heat_warning_is_deduped_across_polls(ntfy):
-    """The warning's old 300 s dedup was shorter than the 600 s poll interval."""
-    await _active_session()
-    await _identity_model()
-    forecast = _hourly(_now_hour() + 3600, [_MAX_F + 7] * 24)
-    await weather_svc._check_forecast_alerts(None, forecast)
-    for key in list(notif._last_sent):  # age the entry past one poll interval
-        notif._last_sent[key] -= 1000
-    await weather_svc._check_forecast_alerts(None, forecast)
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 4
+    assert ntfy[0]["priority"] == priority
+    assert title in ntfy[0]["title"]
 
 
 async def test_later_critical_is_not_masked_by_an_earlier_warning(ntfy):
@@ -162,21 +158,6 @@ async def test_forecast_high_low_cover_only_today(monkeypatch):
 
 
 # ── cold advisory and provider gaps ─────────────────────────────────────────
-
-
-async def test_cold_advisory_is_deduped_across_polls(ntfy):
-    """A closet predicted 5-10 °F below the minimum warned for heat but never
-    for cold; only past min - 10 did anything page."""
-    await _active_session()
-    await _identity_model()
-    forecast = _hourly(_now_hour() + 3600, [_MIN_F - 7] * 24)
-    await weather_svc._check_forecast_alerts(None, forecast)
-    for key in list(notif._last_sent):  # age the entry past one poll interval
-        notif._last_sent[key] -= 1000
-    await weather_svc._check_forecast_alerts(None, forecast)
-    assert len(ntfy) == 1
-    assert ntfy[0]["priority"] == 4
-    assert "Cold advisory" in ntfy[0]["title"]
 
 
 async def test_a_null_forecast_hour_does_not_drop_the_alerts(ntfy):

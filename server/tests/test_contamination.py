@@ -1,13 +1,16 @@
-import pytest
+"""The contaminant library and the identify prompt.
+
+* Every library entry carries the fields the UI renders, a danger level it
+  knows, and a unique id (the detail route looks entries up by it).
+* The identify system prompt asks Claude for the fields the route reads.
+* /library lists all seven entries; /library/{id} returns one, 404 for an
+  unknown id.
+"""
 
 from app.contamination.library import CONTAMINANTS, IDENTIFICATION_SYSTEM_PROMPT
 
 
-def test_library_has_seven_contaminants():
-    assert len(CONTAMINANTS) == 7
-
-
-def test_all_contaminants_have_required_fields():
+def test_every_contaminant_has_the_fields_a_known_danger_level_and_a_unique_id():
     required = {
         "id",
         "common_name",
@@ -24,47 +27,22 @@ def test_all_contaminants_have_required_fields():
     for c in CONTAMINANTS:
         missing = required - set(c.keys())
         assert not missing, f"Contaminant {c.get('id', '?')} missing fields: {missing}"
-
-
-def test_danger_levels_are_valid():
-    valid = {"critical", "high", "medium"}
-    for c in CONTAMINANTS:
-        assert c["danger_level"] in valid, f"{c['id']} has invalid danger_level"
-
-
-def test_trichoderma_has_two_stages():
-    trich = next(c for c in CONTAMINANTS if c["id"] == "trichoderma")
-    assert len(trich["stages"]) == 2
-    assert trich["stages"][0]["name"] == "Early white"
-    assert trich["stages"][1]["name"] == "Green sporulation"
-
-
-def test_contaminant_ids_are_unique():
+        assert c["danger_level"] in {"critical", "high", "medium"}, c["id"]
     ids = [c["id"] for c in CONTAMINANTS]
     assert len(ids) == len(set(ids))
 
 
-def test_system_prompt_is_nonempty():
-    assert len(IDENTIFICATION_SYSTEM_PROMPT) > 100
-    assert "contamination_detected" in IDENTIFICATION_SYSTEM_PROMPT
-    assert "contaminants" in IDENTIFICATION_SYSTEM_PROMPT
-    assert "health_assessment" in IDENTIFICATION_SYSTEM_PROMPT
-    assert "recommendations" in IDENTIFICATION_SYSTEM_PROMPT
+def test_identify_prompt_asks_for_the_fields_the_route_reads():
+    for field in ("contamination_detected", "contaminants", "health_assessment", "recommendations"):
+        assert field in IDENTIFICATION_SYSTEM_PROMPT
 
 
 def test_library_list_endpoint(client):
     resp = client.get("/api/contamination/library")
     assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 7
-    ids = {c["id"] for c in data}
-    assert "trichoderma" in ids
-    assert "cobweb" in ids
-    assert "black_mold" in ids
-    assert "bacterial" in ids
-    assert "lipstick_mold" in ids
-    assert "penicillium" in ids
-    assert "wet_spot" in ids
+    assert {c["id"] for c in resp.json()} == {
+        "trichoderma", "cobweb", "black_mold", "bacterial", "lipstick_mold", "penicillium", "wet_spot",
+    }
 
 
 def test_library_detail_endpoint(client):
@@ -74,9 +52,5 @@ def test_library_detail_endpoint(client):
     assert data["id"] == "trichoderma"
     assert data["common_name"] == "Green Mold"
     assert data["danger_level"] == "high"
-    assert len(data["stages"]) == 2
-
-
-def test_library_detail_404(client):
-    resp = client.get("/api/contamination/library/nonexistent")
-    assert resp.status_code == 404
+    assert [stage["name"] for stage in data["stages"]] == ["Early white", "Green sporulation"]
+    assert client.get("/api/contamination/library/nonexistent").status_code == 404

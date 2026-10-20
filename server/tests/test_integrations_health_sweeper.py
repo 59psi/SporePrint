@@ -25,15 +25,17 @@ class _Drv:
         return IntegrationHealth(state=self.state, last_error=self.error)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_sweeper_state(monkeypatch):
+    monkeypatch.setattr(sweeper, "_last_state", {})
+    monkeypatch.setattr(sweeper, "_ok_streak", {})
+
+
 @pytest.fixture
 def one_driver(monkeypatch):
     drv = _Drv("ok")
     monkeypatch.setattr(sweeper._registry, "registered_drivers", lambda: {"aranet": drv})
-    sweeper._last_state.clear()
-    sweeper._ok_streak.clear()
-    yield drv
-    sweeper._last_state.clear()
-    sweeper._ok_streak.clear()
+    return drv
 
 
 @pytest.fixture
@@ -159,3 +161,19 @@ async def test_a_flapping_driver_is_one_incident(one_driver, cloud):
     await sweeper._sweep_once()
     assert [d["resolved"] for _e, d in cloud.sent] == [False, True]
     assert sweeper._last_state["aranet"] == "ok"
+
+
+async def test_a_driver_whose_health_raises_does_not_hide_the_others(monkeypatch, cloud):
+    class _Broken:
+        async def health(self):
+            raise RuntimeError("bug in one driver")
+
+    quest = _Drv("ok")
+    monkeypatch.setattr(sweeper._registry, "registered_drivers",
+                        lambda: {"broken": _Broken(), "quest": quest})
+    cloud.up = True
+    await sweeper._sweep_once()
+    quest.state = "error"
+    await sweeper._sweep_once()
+    assert [(d["vendor"], d["state"]) for _e, d in cloud.sent] == [("quest", "error")]
+    assert "broken" not in sweeper._last_state

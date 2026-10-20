@@ -7,6 +7,8 @@
   parse_claude_json → 500 instead of the documented parse_error.
 """
 
+import anthropic
+import httpx
 import pytest
 from starlette.datastructures import UploadFile
 
@@ -86,19 +88,6 @@ def test_mislabelled_jpeg_is_declared_by_its_bytes(client, claude):
     assert source["media_type"] == "image/jpeg"
 
 
-def test_truncated_fenced_json_returns_parse_error_not_500(client, claude):
-    claude.reply = '```json\n{"contamination_detected": true, "contaminants": [{"classific'
-    claude.stop_reason = "max_tokens"
-    r = client.post(
-        "/api/contamination/identify",
-        files={"file": ("frame.jpg", JPEG, "image/jpeg")},
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["parse_error"] is True
-    assert body["raw_response"].startswith("```json")
-
-
 # ── The upload is bounded before it is read ─────────────────────────────
 
 
@@ -152,10 +141,13 @@ def test_an_upload_without_a_length_is_refused(client, claude):
     assert claude.calls == []
 
 
-def test_a_body_that_is_not_multipart_is_422(client, claude):
-    r = client.post("/api/contamination/identify", content=JPEG,
-                    headers={"content-type": "image/jpeg"})
-    assert r.status_code == 422
+@pytest.mark.parametrize("upload", [
+    {"content": JPEG, "headers": {"content-type": "image/jpeg"}},
+    {"data": {"note": "no image"}, "files": {"other": ("x.txt", b"x", "text/plain")}},
+], ids=["not-multipart", "no-file-part"])
+def test_a_malformed_upload_is_a_422_before_the_paid_call(client, claude, upload):
+    r = client.post("/api/contamination/identify", **upload)
+    assert r.status_code == 422, r.text
     assert claude.calls == []
 
 
@@ -234,9 +226,6 @@ def test_an_identify_detection_is_linked_to_its_session_and_chamber(client, clau
 
 
 def test_an_api_error_is_a_502(client, monkeypatch):
-    import anthropic
-    import httpx
-
     class _Messages:
         async def create(self, **kwargs):
             raise anthropic.RateLimitError(
@@ -258,8 +247,12 @@ def test_an_api_error_is_a_502(client, monkeypatch):
 
 @pytest.mark.parametrize("result, expected", [
     ({"contamination_detected": True,
-      "contaminants": [{"classification": "trichoderma", "confidence": 0.7}]},
-     {"contamination_type": "trichoderma", "confidence": 0.7}),
+      "contaminants": [{"classification": "trichoderma", "confidence": 0.94},
+                       {"classification": "cobweb", "confidence": 0.3}],
+      "health_assessment": "contaminated"},
+     {"contamination_type": "trichoderma", "confidence": 0.94}),
+    ({"contamination_detected": True, "contaminants": []},
+     {"contamination_type": None, "confidence": None}),  # positive with nothing named
     ({"contamination_detected": "true", "contaminants": {"classification": "cobweb"}},
      {"contamination_type": "cobweb", "confidence": None}),
     ({"contamination_detected": True, "contaminants": "bacterial"},
@@ -270,7 +263,11 @@ def test_an_api_error_is_a_502(client, monkeypatch):
     ({"contamination_detected": True}, {"contamination_type": None, "confidence": None}),
     ({"contamination_detected": "false", "contaminants": [{"classification": "x"}]}, None),
     ({"contamination_detected": 1}, None),
+    ({"contamination_detected": False, "contaminants": []}, None),
+    ({"parse_error": True, "raw_response": "..."}, None),
     (["not", "a", "dict"], None),
+    (None, None),
+    ("nope", None),
 ])
 def test_detection_from_identify_never_raises(result, expected):
     assert detection_from_identify(result) == expected

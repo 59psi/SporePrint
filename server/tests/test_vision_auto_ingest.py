@@ -1,4 +1,4 @@
-"""Auto contamination/harvest detection actually fires on camera ingest (H4-1).
+"""Auto contamination/harvest detection actually fires on camera ingest.
 
 The local CNN (`analyze_frame_local`) is not built — it scores no frame — so
 auto contamination/harvest detection never ran on ingest: green mold and
@@ -12,7 +12,8 @@ ingest, cost-gated so Anthropic spend stays bounded:
   - only for a frame tied to an active grow session, and
   - at most once per camera of a session per cadence window.
 
-These tests pin the gating and the wire-up.
+These tests pin the gating and the wire-up (ingest also schedules frame
+retention, test_vision_retention.py).
 """
 
 import re
@@ -74,25 +75,20 @@ async def _insert_frame_with_file(tmp_path, session_id: int, node_id: str = "cam
 # ── throttle logic (pure) ───────────────────────────────────────────────────
 
 
-def test_default_auto_cadence_matches_spec_six_hours():
-    """Spec §6 — Claude Vision runs every 6h (+ on demand), not on
-    every 15-minute capture (~24x the specified API spend on a BYOK key)."""
-    assert _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS == 6 * 3600
-
-
-def test_claim_slot_throttles_per_camera_and_expires():
+def test_claim_slot_throttles_per_camera_to_one_read_every_six_hours():
+    """Spec §6 — Claude Vision runs every 6h (+ on demand), not on every
+    15-minute capture (~24x the specified API spend on a BYOK key)."""
+    six_hours = 6 * 3600
     base = 1_000_000.0
     # first frame for the session's camera claims the slot
     assert _claim_auto_analysis_slot(1, "cam-01", now=base) is True
     # subsequent frames inside the cadence window are refused
     assert _claim_auto_analysis_slot(1, "cam-01", now=base + 60) is False
-    assert _claim_auto_analysis_slot(
-        1, "cam-01", now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS - 1) is False
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + six_hours - 1) is False
     # a different session throttles independently
     assert _claim_auto_analysis_slot(2, "cam-01", now=base + 60) is True
     # once the window elapses, the camera is eligible again
-    assert _claim_auto_analysis_slot(
-        1, "cam-01", now=base + _AUTO_ANALYSIS_MIN_INTERVAL_SECONDS) is True
+    assert _claim_auto_analysis_slot(1, "cam-01", now=base + six_hours) is True
 
 
 def test_each_camera_of_a_session_has_its_own_window():
@@ -194,31 +190,6 @@ async def test_ingest_schedules_and_persists_when_byok_and_untrottled(tmp_path, 
     assert row["analysis_claude"] == analysis
 
 
-async def test_second_frame_within_window_is_not_scheduled(tmp_path, monkeypatch):
-    """Throttle: a second frame for the same session inside the cadence window
-    does NOT schedule another (paid) analysis."""
-    monkeypatch.setattr(settings, "claude_api_key", "test-key")
-    sid = await _make_active_session()
-    fid1, fpath1 = await _insert_frame_with_file(tmp_path, sid)
-    fid2, fpath2 = await _insert_frame_with_file(tmp_path, sid)
-
-    mock = AsyncMock(return_value={"health_assessment": "healthy", "summary": "ok"})
-    monkeypatch.setattr(service, "analyze_frame_claude", mock)
-
-    t1 = await maybe_schedule_auto_analysis(
-        frame_id=fid1, session_id=sid, node_id="cam-01", file_path=fpath1
-    )
-    assert t1 is not None
-    await t1
-
-    t2 = await maybe_schedule_auto_analysis(
-        frame_id=fid2, session_id=sid, node_id="cam-01", file_path=fpath2
-    )
-    assert t2 is None, "second frame within the cadence window must be throttled"
-
-    mock.assert_awaited_once()  # only the first frame reached Claude
-
-
 async def test_second_camera_of_the_grow_is_analysed_in_the_same_window(tmp_path, monkeypatch):
     """A grow watched by two cameras gets a read of each view: the second
     camera's frame is not throttled by the first camera's analysis."""
@@ -273,12 +244,17 @@ async def test_frame_without_active_session_is_not_scheduled(monkeypatch):
 # ── router wire-up ──────────────────────────────────────────────────────────
 
 
-def test_ingest_endpoint_invokes_auto_analysis(client, monkeypatch, tmp_path):
-    """POST /api/vision/frame must hand every ingested frame to the auto-analysis
-    scheduler (which then applies the cost gate)."""
+def test_ingest_endpoint_hands_each_frame_to_auto_analysis_and_retention(
+    client, monkeypatch, tmp_path,
+):
+    """POST /api/vision/frame must hand every ingested frame to the
+    auto-analysis scheduler (which then applies the cost gate) and schedule
+    the frame-retention pass (throttled itself)."""
     monkeypatch.setattr(settings, "vision_storage", str(tmp_path / "frames"))
     recorder = AsyncMock(return_value=None)
     monkeypatch.setattr(vrouter, "maybe_schedule_auto_analysis", recorder)
+    prune = AsyncMock(return_value=None)
+    monkeypatch.setattr(vrouter, "maybe_schedule_vision_prune", prune)
 
     r = client.post(
         "/api/vision/frame",
@@ -299,3 +275,4 @@ def test_ingest_endpoint_invokes_auto_analysis(client, monkeypatch, tmp_path):
     assert kwargs["session_id"] is None  # fresh DB → no active session
     # Stored names are unique per frame: node + ts + random suffix.
     assert re.search(r"cam-01_1752300000_[0-9a-f]{12}\.jpg$", kwargs["file_path"])
+    prune.assert_awaited_once()

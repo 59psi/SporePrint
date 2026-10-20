@@ -97,22 +97,20 @@ def _install(monkeypatch, module, reply) -> _Recorder:
 # ─── Config ─────────────────────────────────────────────────────────────
 
 
-def test_default_model_is_current_sonnet(monkeypatch):
-    monkeypatch.delenv("SPOREPRINT_CLAUDE_MODEL", raising=False)
-    assert DEFAULT_CLAUDE_MODEL == "claude-sonnet-5"
-    assert Settings(_env_file=None).claude_model == "claude-sonnet-5"
-
-
-def test_model_is_env_overridable(monkeypatch):
-    monkeypatch.setenv("SPOREPRINT_CLAUDE_MODEL", "claude-opus-5-5")
-    assert Settings(_env_file=None).claude_model == "claude-opus-5-5"
-
-
-def test_blank_model_env_falls_back_to_default(monkeypatch):
+@pytest.mark.parametrize("env,model", [
+    (None, "claude-sonnet-5"),
+    ("claude-opus-5-5", "claude-opus-5-5"),
     # docker-compose passes `${SPOREPRINT_CLAUDE_MODEL:-}` → an empty string
     # must not become model="" (a 400 on every request).
-    monkeypatch.setenv("SPOREPRINT_CLAUDE_MODEL", "  ")
-    assert Settings(_env_file=None).claude_model == DEFAULT_CLAUDE_MODEL
+    ("  ", "claude-sonnet-5"),
+], ids=["current-default", "env-override", "blank-env-falls-back"])
+def test_the_model_comes_from_the_environment_with_a_current_default(monkeypatch, env, model):
+    if env is None:
+        monkeypatch.delenv("SPOREPRINT_CLAUDE_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("SPOREPRINT_CLAUDE_MODEL", env)
+    assert DEFAULT_CLAUDE_MODEL == "claude-sonnet-5"
+    assert Settings(_env_file=None).claude_model == model
 
 
 def test_no_hardcoded_model_ids_outside_config():
@@ -207,15 +205,16 @@ def test_identify_refusal_is_a_clear_502(client, monkeypatch, claude_env):
     assert "declined" in r.json()["detail"]
 
 
-def test_identify_truncation_is_flagged(client, monkeypatch, claude_env):
-    _install(monkeypatch, cidentify, _message(
-        _text('```json\n{"contamination_detected": true, "contam'), stop_reason="max_tokens",
-    ))
+def test_identify_truncation_is_a_flagged_parse_error_not_a_500(client, monkeypatch, claude_env):
+    # Cut off inside a ```json fence: the parser used to raise out of the route.
+    reply = '```json\n{"contamination_detected": true, "contam'
+    _install(monkeypatch, cidentify, _message(_text(reply), stop_reason="max_tokens"))
     r = client.post("/api/contamination/identify", files={"file": ("f.jpg", JPEG, "image/jpeg")})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["parse_error"] is True
     assert body["truncated"] is True
+    assert body["raw_response"] == reply
 
 
 # ─── Transcript analysis ────────────────────────────────────────────────

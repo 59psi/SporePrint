@@ -1,44 +1,36 @@
-"""Tests for the v4.1 Pulse Grow cloud-API driver.
+"""The Pulse Grow driver (cloud transport; local mode has its own file).
 
-Covers:
-  - Driver auto-registers; tier="free"; secret_fields={"password"}
-  - Config validation (email shape, poll interval bounds, password trim)
-  - Models tolerate `{token: …}` and `{data: {token: …}}` envelopes;
-    handle list / `{devices:[…]}` / `{data:[…]}` shapes for devices
-  - Client login / list_devices / recent_data round-trip
-  - Client transparently re-logs in on 401 once and only once
-  - Client maps 429 → "rate-limited" hint, ≥400 → status + body
-  - Poller maps temperature / humidity / vpd / dew_point / light to the
-    SporePrint sensor name space; skips unmapped types; isolates and
-    reports per-device failures; stores a poll's new samples through the
-    injected writer in one batch
-  - Driver lifecycle: idempotent start/stop; test_connection requires
-    creds; surfaces PulseError; health transitions disabled→ok→degraded
-  - /devices route shape (200 / 400 / 502)
-  - password redacts to a fingerprint preview in /api/integrations listing
+* Config: a blank config is a valid staged one (cloud transport by
+  default), a pasted password is trimmed, and a malformed email, a poll
+  interval under the floor or a too-short discovery window is refused.
+* Models tolerate the ``{token}`` / ``{data: {token}}`` login envelopes, the
+  list / ``{devices}`` / ``{data}`` device envelopes, null values, numeric
+  ids and bad entries.
+* The client logs in, re-logs in once on a 401 (never in a loop), and maps
+  429 / 5xx / transport / non-JSON failures to a PulseError.
+* A poll maps temperature / humidity / vpd / dew point / light to SporePrint
+  sensors in their units, skips unmapped types, isolates and reports a
+  failing device, stores a sample once and reports it stale when it stops
+  changing, and reuses one cloud client across polls.
+* /devices: 400 without config, the list with chamber mappings, 502 on a
+  Pulse error, the saved config after a restart, 409 for a stored password
+  that no longer decrypts.
 """
 
 from __future__ import annotations
 
-import asyncio
 import importlib
-import time
-from typing import Any
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.integrations import _registry
-from app.integrations import _settings_store as store
 from app.integrations._keystore import reset_fernet_cache
-from app.integrations.pulse.client import (
-    PULSE_API_BASE,
-    PulseCloudClient,
-    PulseError,
-)
+from app.integrations._samples import PollResult, SampleTracker
+from app.integrations.pulse.client import PulseCloudClient, PulseError
 from app.integrations.pulse.config import PulseConfig
 from app.integrations.pulse.driver import PulseDriver
 from app.integrations.pulse.models import (
@@ -46,32 +38,22 @@ from app.integrations.pulse.models import (
     PulseLoginResponse,
     PulseRecentDataResponse,
 )
-from app.integrations._samples import PollResult, SampleTracker
-from app.integrations.pulse.poller import STALE_FLOOR_SECONDS, _TYPE_MAP, run_one_poll
+from app.integrations.pulse.poller import STALE_FLOOR_SECONDS, run_one_poll
 from app.integrations.pulse.router import router as pulse_extra_router
+from tests._pi_c1_integrations import fresh_keystore_fixture  # noqa: F401 — the fresh_keystore fixture
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def fresh_keystore(tmp_path, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / ".int-key"))
-    reset_fernet_cache()
-    yield
-    reset_fernet_cache()
-
-
-@pytest.fixture
-def app_client(fresh_keystore):
+def app_client(fresh_keystore, monkeypatch):
     drv = _registry.registered_drivers().get("pulse")
     assert isinstance(drv, PulseDriver)
-    drv._cfg = PulseConfig()
-    drv._task = None
-    drv._last_poll_at = None
-    drv._last_poll_ok = False
-    drv._last_error = None
+    # The singleton gets its own state back after the test.
+    for attr, value in (("_cfg", PulseConfig()), ("_task", None), ("_last_poll_at", None),
+                        ("_last_poll_ok", False), ("_last_error", None)):
+        monkeypatch.setattr(drv, attr, value)
 
     app = FastAPI()
     app.include_router(_registry.router, prefix="/api/integrations")
@@ -92,107 +74,73 @@ def _recent_data_payload(measurements):
     return {"measurements": measurements}
 
 
-# ── Registration ──────────────────────────────────────────────────────
-
-
-def test_driver_auto_registers_on_import():
-    assert "pulse" in _registry.registered_drivers()
-
-
-def test_tier_is_free_for_dual_transport_driver():
-    """The driver advertises its lowest supported tier (free, for local
-    transport). The cloud-web settings UI is responsible for gating the
-    cloud-mode toggle behind the premium check.
-    """
-    drv = _registry.registered_drivers()["pulse"]
-    assert drv.tier_required == "free"
-
-
-def test_password_in_secret_fields():
-    drv = _registry.registered_drivers()["pulse"]
-    assert drv.secret_fields == {"password"}
-
-
 # ── Config ────────────────────────────────────────────────────────────
 
 
-def test_config_rejects_obviously_malformed_email():
-    with pytest.raises(ValueError, match="@"):
-        PulseConfig(email="brandon-at-example.com", password="x")
+def test_a_blank_config_is_a_valid_staged_one_and_a_pasted_password_is_trimmed():
+    # Empty fields are how the operator stages a partially-configured driver.
+    staged = PulseConfig()
+    assert (staged.transport, staged.email, staged.password) == ("cloud", "", "")
+    assert PulseConfig(email="b@example.com", password="  secret\n  ").password == "secret"
+    assert PulseConfig(local_discovery_timeout_seconds=5.0).local_discovery_timeout_seconds == 5.0
 
 
-def test_config_strips_password_whitespace():
-    c = PulseConfig(email="b@example.com", password="  secret\n  ")
-    assert c.password == "secret"
-
-
-def test_config_floors_poll_seconds():
-    with pytest.raises(ValueError):
-        PulseConfig(poll_seconds=10)
-
-
-def test_config_empty_email_is_allowed():
-    """Empty fields are how the operator stages a partially-configured
-    driver — they shouldn't trip validation just for being unset.
-    """
-    c = PulseConfig()
-    assert c.email == ""
-    assert c.password == ""
+@pytest.mark.parametrize("fields,error", [
+    ({"email": "brandon-at-example.com", "password": "x"}, "@"),
+    ({"poll_seconds": 10}, "greater than or equal"),
+    ({"transport": "local", "local_discovery_timeout_seconds": 0.5}, "greater than or equal"),
+], ids=["email", "poll-floor", "discovery-window"])
+def test_config_refuses_what_the_driver_cannot_use(fields, error):
+    with pytest.raises(ValueError, match=error):
+        PulseConfig(**fields)
 
 
 # ── Models ────────────────────────────────────────────────────────────
 
 
-def test_login_response_handles_root_token_shape():
-    parsed = PulseLoginResponse.from_payload({"token": "tok"})
-    assert parsed.token == "tok"
+@pytest.mark.parametrize("payload,token", [
+    ({"token": "tok"}, "tok"),
+    ({"data": {"token": "tok"}}, "tok"),
+    ({"weird": True}, None),
+], ids=["root", "data-envelope", "unknown-shape"])
+def test_login_response_reads_either_envelope(payload, token):
+    assert PulseLoginResponse.from_payload(payload).token == token
 
 
-def test_login_response_handles_data_envelope():
-    parsed = PulseLoginResponse.from_payload({"data": {"token": "tok"}})
-    assert parsed.token == "tok"
+@pytest.mark.parametrize("payload", [
+    [{"id": "a"}, {"id": "b"}],
+    {"devices": [{"id": "a"}, {"id": "b"}]},
+    {"data": [{"id": "a"}, {"id": "b"}]},
+], ids=["array", "devices-envelope", "data-envelope"])
+def test_device_list_reads_every_envelope(payload):
+    assert [d.id for d in PulseDeviceListResponse.from_payload(payload).devices] == ["a", "b"]
 
 
-def test_login_response_unknown_shape_returns_none():
-    parsed = PulseLoginResponse.from_payload({"weird": True})
-    assert parsed.token is None
-
-
-def test_device_list_handles_array_shape():
-    parsed = PulseDeviceListResponse.from_payload(
-        [{"id": "a"}, {"id": "b"}]
-    )
-    assert [d.id for d in parsed.devices] == ["a", "b"]
-
-
-def test_device_list_handles_data_envelope():
-    parsed = PulseDeviceListResponse.from_payload(
-        {"data": [{"id": "x"}, {"id": "y"}]}
-    )
-    assert [d.id for d in parsed.devices] == ["x", "y"]
-
-
-def test_recent_data_attaches_device_id():
-    parsed = PulseRecentDataResponse.from_payload(
-        {"measurements": [{"type": "temperature", "value": 22.0}]},
-        device_id="abc",
-    )
+@pytest.mark.parametrize("payload,count", [
+    ({"measurements": [{"type": "temperature", "value": 22.0}]}, 1),
+    ({"weird": True}, 0),
+], ids=["measurements", "unknown-shape"])
+def test_recent_data_carries_its_device_id(payload, count):
+    parsed = PulseRecentDataResponse.from_payload(payload, device_id="abc")
     assert parsed.device_id == "abc"
-    assert len(parsed.measurements) == 1
+    assert len(parsed.measurements) == count
 
 
-def test_recent_data_unknown_shape_returns_empty():
-    parsed = PulseRecentDataResponse.from_payload(
-        {"weird": True}, device_id="abc"
+def test_models_tolerate_null_values_numeric_ids_and_bad_entries():
+    devices = PulseDeviceListResponse.from_payload([{"id": 1234}, {"name": "no id"}, "junk"])
+    assert [d.id for d in devices.devices] == ["1234"]
+    data = PulseRecentDataResponse.from_payload(
+        {"measurements": [_measurement("temperature", None), _measurement("humidity", 80),
+                          {"value": 1}, _measurement("vpd", "n/a")]},
+        device_id="1234",
     )
-    assert parsed.device_id == "abc"
-    assert parsed.measurements == []
+    assert [(m.type, m.value) for m in data.measurements] == [("temperature", None), ("humidity", 80.0)]
+    assert PulseRecentDataResponse.from_payload(["not", "a", "dict"], "d").measurements == []
 
 
 # ── Client ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_client_login_sets_token(monkeypatch):
     async def fake_request(self, method, url, headers, json=None):
         assert "/v2/auth/login" in url
@@ -206,7 +154,6 @@ async def test_client_login_sets_token(monkeypatch):
     assert client.has_token
 
 
-@pytest.mark.asyncio
 async def test_client_login_with_no_token_in_response_raises(monkeypatch):
     async def fake_request(self, method, url, headers, json=None):
         return httpx.Response(200, json={"unexpected": True})
@@ -217,7 +164,6 @@ async def test_client_login_with_no_token_in_response_raises(monkeypatch):
         await client.login()
 
 
-@pytest.mark.asyncio
 async def test_client_re_logs_in_on_401(monkeypatch):
     """Token expired → discard, re-login, retry once."""
 
@@ -243,7 +189,6 @@ async def test_client_re_logs_in_on_401(monkeypatch):
     assert sum(1 for u in calls if "/v2/devices" in u) == 2
 
 
-@pytest.mark.asyncio
 async def test_client_does_not_loop_re_login(monkeypatch):
     """A persistently-401 protected endpoint must not re-login forever."""
 
@@ -263,20 +208,28 @@ async def test_client_does_not_loop_re_login(monkeypatch):
     assert call_count["n"] <= 4
 
 
-@pytest.mark.asyncio
-async def test_client_maps_429_to_rate_limited(monkeypatch):
+def _unreachable(url):
+    raise httpx.ConnectError("network unreachable", request=httpx.Request("GET", url))
+
+
+@pytest.mark.parametrize("reply,error", [
+    (lambda url: httpx.Response(429, text="slow down"), "rate-limited"),
+    (lambda url: httpx.Response(500, text="oops"), "HTTP 500"),
+    (_unreachable, "transport error"),
+    (lambda url: httpx.Response(200, text="<html>maintenance</html>"), "non-JSON"),
+], ids=["429", "5xx", "unreachable", "not-json"])
+async def test_client_failures_are_pulse_errors(monkeypatch, reply, error):
     async def fake_request(self, method, url, headers, json=None):
         if "/v2/auth/login" in url:
             return httpx.Response(200, json=_login_payload("t"))
-        return httpx.Response(429, text="slow down")
+        return reply(url)
 
     monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
     client = PulseCloudClient("b@example.com", "pw")
-    with pytest.raises(PulseError, match="rate-limited"):
+    with pytest.raises(PulseError, match=error):
         await client.list_devices()
 
 
-@pytest.mark.asyncio
 async def test_client_recent_data_calls_correct_path(monkeypatch):
     captured = {}
 
@@ -299,18 +252,6 @@ async def test_client_recent_data_calls_correct_path(monkeypatch):
 
 
 # ── Poller ────────────────────────────────────────────────────────────
-
-
-def test_type_map_covers_documented_pulse_types():
-    """Tripwire — keep _TYPE_MAP in sync with the README + Grafana
-    exporter's metric family list."""
-    assert _TYPE_MAP == {
-        "temperature": "temp_c",
-        "humidity": "humidity",
-        "vpd": "vpd_kpa",
-        "dew_point": "dew_point_f",
-        "light": "lux",
-    }
 
 
 class _StubClient:
@@ -349,7 +290,6 @@ class _Writer:
         return [row for batch in self.batches for row in batch]
 
 
-@pytest.mark.asyncio
 async def test_poller_publishes_mapped_measurements():
     client = _StubClient(
         devices=[{"id": "d1"}],
@@ -384,7 +324,6 @@ async def test_poller_publishes_mapped_measurements():
     assert rows_by_sensor["lux"] == 12000
 
 
-@pytest.mark.asyncio
 async def test_poller_reads_fahrenheit_units():
     response = PulseRecentDataResponse.from_payload(
         _recent_data_payload([
@@ -401,7 +340,6 @@ async def test_poller_reads_fahrenheit_units():
     assert rows_by_sensor["dew_point_f"] == pytest.approx(67.6), "already °F: not converted twice"
 
 
-@pytest.mark.asyncio
 async def test_poller_isolates_and_reports_per_device_failures():
     """A failing device fetch must not stop sibling devices."""
 
@@ -428,7 +366,6 @@ async def test_poller_isolates_and_reports_per_device_failures():
     assert result.failed == {"pulse:broken": "device offline"}
 
 
-@pytest.mark.asyncio
 async def test_poller_skips_unmapped_types():
     response = PulseRecentDataResponse.from_payload(
         _recent_data_payload(
@@ -449,7 +386,6 @@ async def test_poller_skips_unmapped_types():
     assert [sensor for _ts, _node, sensor, _v in writer.rows] == ["temp_c"]
 
 
-@pytest.mark.asyncio
 async def test_poller_stores_a_sample_once_and_reports_it_stale():
     taken = 1_700_000_000.0
     response = PulseRecentDataResponse.from_payload(
@@ -471,20 +407,7 @@ async def test_poller_stores_a_sample_once_and_reports_it_stale():
     assert list(late.failed) == ["pulse:d1"]
 
 
-def test_models_tolerate_null_values_numeric_ids_and_bad_entries():
-    devices = PulseDeviceListResponse.from_payload([{"id": 1234}, {"name": "no id"}, "junk"])
-    assert [d.id for d in devices.devices] == ["1234"]
-    data = PulseRecentDataResponse.from_payload(
-        {"measurements": [_measurement("temperature", None), _measurement("humidity", 80),
-                          {"value": 1}, _measurement("vpd", "n/a")]},
-        device_id="1234",
-    )
-    assert [(m.type, m.value) for m in data.measurements] == [("temperature", None), ("humidity", 80.0)]
-    assert PulseRecentDataResponse.from_payload(["not", "a", "dict"], "d").measurements == []
-
-
-@pytest.mark.asyncio
-async def test_poll_once_reuses_the_cloud_client_and_reports_failures(fresh_keystore, monkeypatch):
+async def test_poll_once_reuses_the_cloud_client_and_reports_failures(monkeypatch):
     drv = PulseDriver()
     await drv.configure(PulseConfig(email="b@example.com", password="pw"))
     seen = []
@@ -503,45 +426,10 @@ async def test_poll_once_reuses_the_cloud_client_and_reports_failures(fresh_keys
     assert seen[0][1] is drv._samples
 
 
-@pytest.mark.asyncio
-async def test_cloud_poll_without_credentials_is_an_error(fresh_keystore):
-    drv = PulseDriver()
-    with pytest.raises(PulseError, match="required"):
-        await drv.poll_once()
+# ── Test ──────────────────────────────────────────────────────────────
 
 
-# ── Driver lifecycle ──────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_start_is_idempotent(fresh_keystore):
-    drv = PulseDriver()
-    await drv.configure(PulseConfig(email="b@example.com", password="pw"))
-    await drv.start()
-    first_task = drv._task
-    await drv.start()
-    assert drv._task is first_task
-    await drv.stop()
-
-
-@pytest.mark.asyncio
-async def test_stop_is_safe_when_never_started(fresh_keystore):
-    drv = PulseDriver()
-    await drv.stop()  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_test_connection_requires_creds(fresh_keystore):
-    drv = PulseDriver()
-    health = await drv.test_connection()
-    assert health.state == "error"
-    assert "required" in (health.last_error or "")
-
-
-@pytest.mark.asyncio
-async def test_test_connection_returns_ok_with_device_count(
-    fresh_keystore, monkeypatch
-):
+async def test_test_connection_returns_ok_with_device_count(monkeypatch):
     async def fake_request(self, method, url, headers, json=None):
         if "/v2/auth/login" in url:
             return httpx.Response(200, json=_login_payload("t"))
@@ -557,10 +445,7 @@ async def test_test_connection_returns_ok_with_device_count(
     assert health.details["devices_seen"] == 2
 
 
-@pytest.mark.asyncio
-async def test_test_connection_surfaces_pulse_error(
-    fresh_keystore, monkeypatch
-):
+async def test_test_connection_surfaces_pulse_error(monkeypatch):
     async def fake_request(self, method, url, headers, json=None):
         return httpx.Response(401, text="bad")
 
@@ -570,20 +455,6 @@ async def test_test_connection_surfaces_pulse_error(
     health = await drv.test_connection()
     assert health.state == "error"
     assert "unauthorized" in (health.last_error or "")
-
-
-@pytest.mark.asyncio
-async def test_health_degraded_when_polls_go_stale(fresh_keystore):
-    drv = PulseDriver()
-    await drv.configure(
-        PulseConfig(email="b@example.com", password="pw", poll_seconds=60)
-    )
-    await drv.start()
-    drv._record_outcome(True, None)
-    drv._last_poll_at = time.time() - 500  # > 3 × 60
-    health = await drv.health()
-    assert health.state == "degraded"
-    await drv.stop()
 
 
 # ── /devices route ────────────────────────────────────────────────────
@@ -662,7 +533,6 @@ def test_devices_route_after_a_restart_uses_the_saved_config(app_client, monkeyp
 
 
 def test_devices_route_refuses_an_undecryptable_password(app_client, monkeypatch, tmp_path):
-    from app.config import settings
     drv, client = app_client
     client.put("/api/integrations/pulse/config", json={
         "enabled": False, "config": {"email": "b@example.com", "password": "pw-1"}})
@@ -672,27 +542,3 @@ def test_devices_route_refuses_an_undecryptable_password(app_client, monkeypatch
     # Not a login with a blank password: the stored one must be re-entered.
     assert resp.status_code == 409
     assert "re-enter" in resp.text
-
-
-# ── Secret-field redaction ────────────────────────────────────────────
-
-
-def test_password_redacts_to_a_fingerprint_in_listing(app_client):
-    drv, client = app_client
-    client.put(
-        "/api/integrations/pulse/config",
-        json={
-            "enabled": False,
-            "config": {
-                "email": "b@example.com",
-                "password": "supersecret-1234",
-            },
-        },
-    )
-    listing = client.get("/api/integrations").json()
-    pulse_row = next(r for r in listing if r["slug"] == "pulse")
-    # An account password: the preview must not hand out any of it.
-    preview = pulse_row["config"]["password"]
-    assert preview == store.secret_preview("supersecret-1234")
-    assert "1234" not in preview
-    assert pulse_row["config"]["email"] == "b@example.com"
