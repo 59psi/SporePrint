@@ -755,6 +755,13 @@ turn on "RPC status notifications over MQTT" and "Generic status update over
 MQTT". Saving reboots the plug; it registers itself when it comes back. More
 in [integrations/smart-plugs.md](integrations/smart-plugs.md).
 
+**More than one chamber, each with its own plugs?** Name each plug after its
+chamber instead of its role (Topic `heater-a`, prefix `shellies/heater-a`),
+give it its role in the app and list its id (`plug-heater-a`) in its chamber.
+A hold or a safety lockout is kept under the plug's id, so one on a plug
+whose id is the role's own name (`plug-heater`) pauses that role's rules in
+every chamber ([integrations/smart-plugs.md](integrations/smart-plugs.md#a-plug-for-each-chamber)).
+
 Humidifier inside the chamber (or piped in); dehumidifier outside with its
 intake facing the chamber; heater outside, aimed at the intake; Peltier cooler
 at the chamber wall. Keep a space heater ≤ 1500 W (≤ 1200 W preferred) on one

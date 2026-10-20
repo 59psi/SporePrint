@@ -322,6 +322,62 @@ async def test_another_grows_plug_does_not_silence_a_fallback(mock_mqtt, mock_mq
     assert _powers(mock_mqtt_raw, "plug-fan") == ["ON"]
 
 
+def _vent():
+    return _rule("vent", RuleAction(target="relay-01", channel="fae", state="on", pwm=200),
+                 _threshold("co2_ppm", "gt", 1000))
+
+
+def _node_cmds(mqtt):
+    return [t for t, _ in mqtt if "/cmd/" in t]
+
+
+async def test_nodes_in_no_chamber_drive_the_relay_and_light_no_chamber_lists(mock_mqtt):
+    """For nodes in no chamber, relay-01 and light-01 resolved to the node of
+    the role seen last anywhere: chamber A's fan and light ran the closet's
+    grow while the closet's own stayed off."""
+    await seed_builtins()
+    now = time.time()
+    for name, node_type, channels in (("relay", "relay", _RELAY_CHANNELS),
+                                      ("light", "lighting", _LIGHT_CHANNELS)):
+        await _node(f"{name}-closet", node_type, channels, now - 10)
+        await _node(f"{name}-a", node_type, channels, now)
+    a = await _chamber("A", ["climate-a", "relay-a", "light-a"])
+    await _session("blue_oyster", "fruiting", chamber_id=a)
+    await _session("blue_oyster", "fruiting")  # the closet's grow: no chamber
+    await create_rule(_vent())
+    await create_rule(_rule("lights", RuleAction(target="light-01", scene="fruiting_standard",
+                                                 state="on")))
+    await evaluate_rules("climate-1", {"co2_ppm": 1500, "temp_f": 70})
+    assert sorted(_node_cmds(mock_mqtt)) == [
+        "sporeprint/light-closet/cmd/scene", "sporeprint/relay-closet/cmd/fae"]
+    await evaluate_rules("climate-a", {"co2_ppm": 1500, "temp_f": 70})
+    assert sorted(_node_cmds(mock_mqtt)) == [
+        "sporeprint/light-a/cmd/scene", "sporeprint/light-closet/cmd/scene",
+        "sporeprint/relay-a/cmd/fae", "sporeprint/relay-closet/cmd/fae"]
+
+
+@pytest.mark.parametrize("chamber_grow, expected", [
+    (False, ["sporeprint/relay-a/cmd/fae"]), (True, [])])
+async def test_nodes_in_no_chamber_borrow_only_a_relay_of_their_own_grow(
+        mock_mqtt, chamber_grow, expected):
+    """With no relay that no chamber lists, nodes in no chamber drive the
+    relay of a chamber that runs their grow (one with no grow of its own
+    does), never one of a chamber that runs a grow of its own; with none,
+    nothing goes out, not even to the placeholder, which no node answers."""
+    await seed_builtins()
+    await _node("relay-a", "relay", _RELAY_CHANNELS)
+    a = await _chamber("A", ["climate-a", "relay-a"])
+    if chamber_grow:
+        await _session("blue_oyster", "fruiting", chamber_id=a)
+    await _session("blue_oyster", "fruiting")
+    await create_rule(_vent())
+    await evaluate_rules("climate-1", {"co2_ppm": 1500})
+    assert _node_cmds(mock_mqtt) == expected
+    async with get_db() as db:
+        cursor = await db.execute("SELECT status FROM automation_firings WHERE rule_name = 'vent'")
+        assert [r["status"] for r in await cursor.fetchall()] == ["sent"] * len(expected)
+
+
 async def test_a_chamber_without_a_relay_publishes_nothing_to_the_placeholder(mock_mqtt):
     """Another chamber's relay used to satisfy the channel check while the
     command went to sporeprint/relay-01, reaching nothing and reading 'sent'."""
@@ -371,9 +427,9 @@ async def test_each_target_is_resolved_once_per_frame(mock_mqtt, monkeypatch):
     calls: list[str] = []
     real = engine.resolve_node_target
 
-    async def _counting(target, chamber_nodes=None):
+    async def _counting(target, chamber_nodes=None, **kwargs):
         calls.append(target)
-        return await real(target, chamber_nodes)
+        return await real(target, chamber_nodes, **kwargs)
 
     monkeypatch.setattr(engine, "resolve_node_target", _counting)
     with _clock(_local(12)):

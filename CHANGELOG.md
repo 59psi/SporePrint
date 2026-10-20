@@ -568,6 +568,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the firing read "sent". Cooldowns are now kept per device, a chamber that
   lists its plugs' ids among its node ids drives its own plug of each role,
   and a placeholder rule with no node in its chamber does not fire.
+- **A grow in no chamber drove another chamber's fans and lights.** For
+  nodes in no chamber, the `relay-01` / `light-01` placeholders reached
+  whichever relay or lighting node of the role was seen last, even one a
+  chamber running its own grow lists, so a closet grow's FAE or light-scene
+  rule switched that chamber's fan or light. They now resolve the way a plug
+  role does: a node no chamber lists, else one of a chamber that runs the same
+  grow, never one of a chamber that runs a grow of its own; with none, the
+  rule does not fire. The smart-plug guide now says to name each chamber's
+  plugs after the chamber (`heater-a`), because a hold or a safety lockout on a
+  plug whose id is the role's own name pauses that role's rules in every
+  chamber.
 - **A plug named by role and by id was two devices.** Two rules naming one
   plug the two ways both owned it, and an OFF through one name left a ceiling
   armed through the other running, which then tripped (a false warning and a

@@ -517,22 +517,30 @@ _CHAMBER_NODE_IDS_SQL = (
 
 
 async def resolve_node_target(
-    target: str, chamber_nodes: list[str] | None = None,
+    target: str, chamber_nodes: list[str] | None = None, *, grow_id: int | None = None,
 ) -> str | None:
     """Map a native-node target to the node_id that should actually receive it.
 
     - A non-placeholder target (a real node id, a `plug-*` id, a `vendor:*`
       override key) is returned unchanged — resolution is a no-op for it.
-    - A seeded placeholder (`relay-01` / `light-01`):
+    - A seeded placeholder (`relay-01` / `light-01`) stands for a node of its
+      role, chosen in the steps smart_plugs.chamber_plug takes for a plug
+      role, the node seen last first within each step:
         * if a node is registered under the placeholder id itself (a real
           deployment may literally have named its node relay-01) → that id;
         * with ``chamber_nodes`` (the node ids of the chamber the rule is
-          acting for): that chamber's most-recently-seen node of the
-          placeholder's role, else a node of that role listed in NO chamber —
-          never another chamber's node, which would drive the wrong closet;
-        * without: the most-recently-seen node whose `node_type` matches the
-          role the placeholder stands for → its node_id;
-        * else ``None`` — no node of that role is paired, so the caller
+          acting for): that chamber's node of the placeholder's role, else a
+          node of that role listed in NO chamber — never another chamber's
+          node, which would drive the wrong closet;
+        * without (nodes in no chamber): a node of the role listed in no
+          chamber, else one of a chamber that runs the same grow
+          (``grow_id``, the grow those nodes run;
+          sessions.service.chamber_nodes_running names those chambers'
+          nodes), never one of a chamber that runs a grow of its own. With
+          no grow given (rule validation, the coverage verdict, nodes in no
+          chamber that run no grow) that last step takes the node of the
+          role seen last anywhere;
+        * else ``None`` — no node of that role answers, so the caller
           (validate_action_channel / coverage / engine) can surface the gap
           instead of publishing into the void.
     """
@@ -545,30 +553,27 @@ async def resolve_node_target(
         )
         if await cursor.fetchone() is not None:
             return target
-        if chamber_nodes:
-            marks = ",".join("?" for _ in chamber_nodes)
-            cursor = await db.execute(
-                f"SELECT node_id FROM hardware_nodes WHERE node_type = ? "
-                f"AND node_id IN ({marks}) ORDER BY last_seen DESC LIMIT 1",
-                (node_type, *chamber_nodes),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                cursor = await db.execute(
-                    f"SELECT node_id FROM hardware_nodes WHERE node_type = ? "
-                    f"AND node_id NOT IN ({_CHAMBER_NODE_IDS_SQL}) "
-                    f"ORDER BY last_seen DESC LIMIT 1",
-                    (node_type,),
-                )
-                row = await cursor.fetchone()
-            return row["node_id"] if row else None
         cursor = await db.execute(
-            "SELECT node_id FROM hardware_nodes WHERE node_type = ? "
-            "ORDER BY last_seen DESC LIMIT 1",
+            f"SELECT node_id, node_id IN ({_CHAMBER_NODE_IDS_SQL}) AS chamber_listed "
+            "FROM hardware_nodes WHERE node_type = ? ORDER BY last_seen DESC, node_id",
             (node_type,),
         )
-        row = await cursor.fetchone()
-    return row["node_id"] if row else None
+        nodes = [(r["node_id"], bool(r["chamber_listed"])) for r in await cursor.fetchall()]
+    unlisted = [node for node, listed in nodes if not listed]
+    if chamber_nodes:
+        found = [node for node, _listed in nodes if node in chamber_nodes] or unlisted
+        return found[0] if found else None
+    if unlisted:
+        return unlisted[0]
+    if not nodes:
+        return None
+    if grow_id is None:
+        return nodes[0][0]
+    # sessions.service imports this module at its top: a module-level import
+    # here would be circular.
+    from ..sessions.service import chamber_nodes_running
+    same_grow = set(await chamber_nodes_running(grow_id))
+    return next((node for node, _listed in nodes if node in same_grow), None)
 
 
 async def placeholder_nodes(target: str) -> list[str] | None:
@@ -621,7 +626,8 @@ async def validate_action_channel(
     actions (routed through the integrations dispatcher, not MQTT), smart-plug /
     non-node targets, and nodes that have never reported channels all pass
     through. With ``chamber_nodes`` a placeholder resolves for that chamber,
-    the way the engine resolves it when it drives the chamber.
+    the way the engine resolves it when it drives the chamber; without, for
+    nodes in no chamber with no grow given (resolve_node_target).
     """
     if action.vendor_slug:
         return None

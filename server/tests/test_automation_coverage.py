@@ -295,6 +295,23 @@ async def test_another_chambers_relay_does_not_cover_this_chamber():
     assert await _actuator_present(RuleAction(target="relay-01", channel="fae"), ["relay-b"])
 
 
+async def test_nodes_in_no_chamber_are_covered_by_the_relay_they_drive():
+    """With no chamber (the verdict the cloud asks for, or a chamber that
+    lists no nodes) a placeholder stands for the node that nodes in no
+    chamber drive: one no chamber lists. The relay seen last anywhere,
+    another chamber's, used to answer for them."""
+    await _register_node("relay-closet", ["fae", "exhaust", "circulation"])
+    await _register_node("relay-a", ["fae", "exhaust", "circulation", "aux"])
+    await _chamber("A", ["relay-a"])
+    async with get_db() as db:  # chamber A's relay reported last
+        await db.execute("UPDATE hardware_nodes SET last_seen = last_seen + 60 "
+                         "WHERE node_id = 'relay-a'")
+        await db.commit()
+    assert await _actuator_present(RuleAction(target="relay-01", channel="fae"))
+    assert not await _actuator_present(RuleAction(target="relay-01", channel="aux"))
+    assert await _actuator_present(RuleAction(target="relay-01", channel="aux"), ["relay-a"])
+
+
 async def test_a_node_that_has_not_reported_channels_offers_its_personalitys():
     await _register_node("relay-x", None)
     assert await _actuator_present(RuleAction(target="relay-x", channel="fae"))
