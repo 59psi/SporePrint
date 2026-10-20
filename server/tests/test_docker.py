@@ -96,9 +96,11 @@ def test_compose_has_all_services():
         assert name in services, f"Missing service: {name}"
 
 
-def test_ntfy_image_is_correct():
+def test_ntfy_image_is_pinned():
+    # An exact release tag, never a moving one: Dependabot bumps the tag, and
+    # a `latest` image would change under an operator between pulls.
     services = _load_compose()["services"]
-    assert services["ntfy"]["image"] == "binwiederhier/ntfy:v2.28.0"
+    assert re.fullmatch(r"binwiederhier/ntfy:v\d+\.\d+\.\d+", services["ntfy"]["image"])
 
 
 def test_mosquitto_image_is_correct():
