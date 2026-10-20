@@ -280,7 +280,7 @@ async def test_analyze_experiment_with_mock_claude(monkeypatch):
     assert "comparison" in result
 
 
-# ── srv-rest#14: lower-is-better metrics + contamination_count ─────────
+# ── lower-is-better metrics + contamination_count ──────────────────────
 
 
 async def _set_colonization(session_id, days):
@@ -358,7 +358,7 @@ async def test_non_numeric_metric_does_not_crash_comparison():
     assert all(m["winner"] is None for m in comparison["metrics"])
 
 
-# ── srv-rest#28: /analyze error handling + POST ────────────────────────
+# ── /analyze error handling + POST ─────────────────────────────────────
 
 
 async def test_analyze_api_error_returns_error_payload(monkeypatch):
@@ -393,6 +393,49 @@ def test_analyze_endpoint_accepts_post(client, monkeypatch):
     r = client.post(f"/api/experiments/{exp['id']}/analyze")
     assert r.status_code == 200
     assert r.json()["error"] == "Claude API not configured"
-    # The shipped Pi UI still calls GET; keep it working.
+    # Dashboard bundles from before the move to POST still call GET (a
+    # server-only update keeps the bundle a Pi serves); keep it working.
     assert client.get(f"/api/experiments/{exp['id']}/analyze").status_code == 200
     assert client.post("/api/experiments/9999/analyze").status_code == 404
+    # Only the POST is current: the API schema says so of the GET.
+    paths = client.app.openapi()["paths"]
+    analyze = paths["/api/experiments/{experiment_id}/analyze"]
+    assert analyze["get"].get("deprecated") is True
+    assert not analyze["post"].get("deprecated")
+
+
+# ── Input the comparison cannot use ─────────────────────────────
+
+
+_BODY = {"title": "t", "hypothesis": "h", "independent_variable": "x",
+         "control_value": "a", "variant_value": "b"}
+
+
+def test_a_session_compared_with_itself_is_422(client):
+    """Every metric of a session against itself is a tie; the pair was
+    accepted (and the paid analysis ran on it)."""
+    s = client.post("/api/sessions", json={"name": "S", "species_profile_id": "blue_oyster"}).json()
+    r = client.post("/api/experiments", json={
+        **_BODY, "control_session_id": s["id"], "variant_session_id": s["id"]})
+    assert r.status_code == 422
+    assert client.get("/api/experiments").json() == []
+
+
+def test_unknown_sessions_are_422_not_500(client):
+    s = client.post("/api/sessions", json={"name": "S", "species_profile_id": "blue_oyster"}).json()
+    r = client.post("/api/experiments", json={
+        **_BODY, "control_session_id": s["id"], "variant_session_id": 9999})
+    assert r.status_code == 422, r.text  # was a FOREIGN KEY 500
+    assert "variant_session_id 9999" in r.json()["detail"]
+
+
+async def test_status_is_one_of_the_three_states(client):
+    control = await _make_session("Control")
+    variant = await _make_session("Variant")
+    exp = await _make_experiment(control["id"], variant["id"])
+    for bad in ("Completed", "done", ""):
+        r = client.patch(f"/api/experiments/{exp['id']}", json={"status": bad})
+        assert r.status_code == 422, bad
+    assert (await get_experiment(exp["id"]))["status"] == "active"
+    r = client.patch(f"/api/experiments/{exp['id']}", json={"status": "cancelled"})
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"

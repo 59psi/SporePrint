@@ -1,4 +1,6 @@
 from ..db import get_db
+from ..species.profiles import canonical_species_id
+from ..species.service import stored_species_id
 from .models import CultureCreate, CultureUpdate
 
 
@@ -27,13 +29,15 @@ class CultureHasDescendants(Exception):
 
 
 async def create_culture(data: CultureCreate) -> dict:
-    """Create a culture. Auto-calculates generation from parent chain."""
+    """Create a culture. Auto-calculates generation from parent chain. The
+    species id is stored the way a session stores it (stored_species_id)."""
     generation = 0
     if data.parent_id is not None:
         parent = await get_culture(data.parent_id)
         if parent is None:
             raise ParentCultureNotFound(data.parent_id)
         generation = parent["generation"] + 1
+    species_id = await stored_species_id(data.species_profile_id)
 
     async with get_db() as db:
         cursor = await db.execute(
@@ -41,7 +45,7 @@ async def create_culture(data: CultureCreate) -> dict:
                vendor_name, lot_number, generation, notes, spore_print_quality,
                tissue_source_location, storage_location)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (data.type, data.species_profile_id, data.source, data.parent_id,
+            (data.type, species_id, data.source, data.parent_id,
              data.vendor_name, data.lot_number, generation, data.notes,
              data.spore_print_quality, data.tissue_source_location,
              data.storage_location),
@@ -60,12 +64,14 @@ async def get_culture(culture_id: int) -> dict | None:
 
 
 async def list_cultures(species_id: str | None = None, status: str | None = None) -> list[dict]:
-    """List cultures with optional filters, ordered by created_at DESC."""
+    """List cultures with optional filters, ordered by created_at DESC. The
+    species matches in any separator spelling ('lions_mane' finds a culture
+    stored 'lions-mane' and the reverse)."""
     query = "SELECT * FROM cultures WHERE 1=1"
     params = []
     if species_id:
-        query += " AND species_profile_id = ?"
-        params.append(species_id)
+        query += " AND replace(species_profile_id, '_', '-') = ?"
+        params.append(canonical_species_id(species_id))
     if status:
         query += " AND status = ?"
         params.append(status)

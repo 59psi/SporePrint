@@ -7,6 +7,8 @@ substrate, goal, and commitment.  Returns the top 5 matches with reasons.
 
 from __future__ import annotations
 
+import re
+
 from .models import GrowPhase, SpeciesProfile
 
 # ── Temperature range presets (°F) ──────────────────────────────────
@@ -26,12 +28,26 @@ SUBSTRATE_KEYWORDS: dict[str, list[str]] = {
     "manure": ["manure", "compost", "dung"],
 }
 
-# ── Experience-level tag mapping ────────────────────────────────────
-EXPERIENCE_TAGS: dict[str, list[str]] = {
-    "first_time": ["beginner"],
-    "some_experience": ["beginner", "intermediate"],
-    "advanced": ["beginner", "intermediate", "advanced"],
-}
+# ── Experience levels from a profile's tags ─────────────────────────
+_LEVELS = ("beginner", "intermediate", "advanced")
+# "easy" marks a beginner species (the cloud's species library reads it so).
+_LEVEL_ALIASES = {"easy": "beginner"}
+
+
+def difficulty_levels(profile: SpeciesProfile) -> set[str]:
+    """The experience levels a profile's tags place it at.
+
+    A compound tag names each of its levels ("beginner-intermediate",
+    "very-advanced"). A profile tagged with none reads as intermediate, as
+    the cloud's species library shows it, rather than as beyond everyone.
+    """
+    levels: set[str] = set()
+    for tag in profile.tags:
+        for part in re.split(r"[-_/\s]+", tag.lower()):
+            part = _LEVEL_ALIASES.get(part, part)
+            if part in _LEVELS:
+                levels.add(part)
+    return levels or {"intermediate"}
 
 # Environments with no chamber; every other choice is an indoor chamber.
 _OUTDOOR_ENVIRONMENTS = ("outdoor_beds", "logs")
@@ -110,48 +126,26 @@ def score_profile(
     scores: dict[str, float] = {}
 
     # ── 1. Experience match (0-25) ──────────────────────────────────
-    allowed_tags = EXPERIENCE_TAGS.get(experience, ["beginner", "intermediate", "advanced"])
     profile_tags_lower = [t.lower() for t in profile.tags]
-
-    # Check if the species difficulty level is within the user's ability
-    has_match = False
-    for tag in allowed_tags:
-        if tag in profile_tags_lower:
-            has_match = True
-            break
-        # Handle compound tags like "beginner-intermediate"
-        for pt in profile_tags_lower:
-            if tag in pt:
-                has_match = True
-                break
-        if has_match:
-            break
-
-    if has_match:
-        # Bonus points if the species is exactly at the user's level
-        if experience == "first_time" and "beginner" in profile_tags_lower:
-            scores["experience"] = 25.0
-            reasons.append("Beginner-friendly species")
-        elif experience == "some_experience":
-            if "intermediate" in profile_tags_lower:
-                scores["experience"] = 25.0
-                reasons.append("Good match for your experience level")
-            elif "beginner" in profile_tags_lower:
-                scores["experience"] = 20.0
-                reasons.append("Easy for your experience level")
-        elif experience == "advanced":
-            if "advanced" in profile_tags_lower:
-                scores["experience"] = 25.0
-                reasons.append("Challenging species suited for advanced growers")
-            else:
-                scores["experience"] = 18.0
-                reasons.append("Within your skill level")
+    levels = difficulty_levels(profile)
+    above = (5.0, "May be above your current experience level")
+    if experience == "first_time":
+        scored = (25.0, "Beginner-friendly species") if "beginner" in levels else above
+    elif experience == "some_experience":
+        if "intermediate" in levels:
+            scored = (25.0, "Good match for your experience level")
+        elif "beginner" in levels:
+            scored = (20.0, "Easy for your experience level")
         else:
-            scores["experience"] = 20.0
+            scored = above
+    elif experience == "advanced":
+        scored = ((25.0, "Challenging species suited for advanced growers") if "advanced" in levels
+                  else (18.0, "Within your skill level"))
     else:
-        # Species is too advanced for user
-        scores["experience"] = 5.0
-        reasons.append("May be above your current experience level")
+        scored = (20.0, None)
+    scores["experience"] = scored[0]
+    if scored[1]:
+        reasons.append(scored[1])
 
     # ── 2. Environment match (0-20) ─────────────────────────────────
     is_outdoor = environment in _OUTDOOR_ENVIRONMENTS
@@ -202,22 +196,17 @@ def score_profile(
         scores["substrate"] = 15.0
         reasons.append("You have all substrate types available")
     else:
+        # The species' substrates the grower can use: one is enough to grow
+        # it, so a species that takes many is not marked down for it (the
+        # user's picks used to be divided by the species' count, which also
+        # read "3/2" when one pick matched several).
         species_subs_lower = [s.lower() for s in profile.substrate_types]
-        matched = 0
-        total = len(species_subs_lower) or 1
-        for user_sub in substrates:
-            keywords = SUBSTRATE_KEYWORDS.get(user_sub, [user_sub])
-            for sp_sub in species_subs_lower:
-                if any(kw.lower() in sp_sub for kw in keywords):
-                    matched += 1
-                    break
-        frac = matched / total
-        if frac >= 0.5:
-            scores["substrate"] = round(15.0 * min(frac * 1.5, 1.0), 1)
-            reasons.append(f"Compatible substrates available ({matched}/{total})")
-        elif matched > 0:
-            scores["substrate"] = round(15.0 * frac, 1)
-            reasons.append(f"Limited substrate match ({matched}/{total})")
+        user_keywords = [kw.lower() for u in substrates for kw in SUBSTRATE_KEYWORDS.get(u, [u])]
+        usable = [s for s in species_subs_lower if any(kw in s for kw in user_keywords)]
+        if usable:
+            scores["substrate"] = 15.0
+            reasons.append(
+                f"Compatible substrates available ({len(usable)}/{len(species_subs_lower)})")
         else:
             scores["substrate"] = 0.0
             reasons.append("None of your substrates match this species")

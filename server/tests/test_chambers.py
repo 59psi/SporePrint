@@ -1,7 +1,12 @@
 import time
 
+import pytest
+
+import app.sessions.service as sessions_service
 from app.chambers.models import ChamberCreate, ChamberUpdate
 from app.chambers.service import (
+    ChamberBusyError,
+    ChamberInUseError,
     create_chamber,
     get_chamber,
     list_chambers,
@@ -10,8 +15,13 @@ from app.chambers.service import (
     compare_chambers,
 )
 from app.db import get_db
-from app.sessions.models import SessionCreate
-from app.sessions.service import create_session
+from app.sessions.models import PhaseAdvance, SessionCreate
+from app.sessions.service import (
+    advance_phase,
+    complete_session,
+    create_session,
+    get_active_session_for_node,
+)
 
 
 def _make_chamber(**overrides):
@@ -113,13 +123,14 @@ async def test_delete_chamber_not_found():
 
 
 async def test_delete_chamber_with_history_detaches_it():
-    """srv-auto#25: a chamber that ever hosted a session (or has maintenance,
+    """A chamber that ever hosted a session (or has maintenance,
     contamination or planned events) used to raise FOREIGN KEY constraint
     failed. History outlives the chamber with chamber_id = NULL."""
     c = await create_chamber(_make_chamber())
     session = await create_session(SessionCreate(
         name="Grow", species_profile_id="blue_oyster", chamber_id=c["id"],
     ))
+    await complete_session(session["id"])
     async with get_db() as db:
         await db.execute(
             "INSERT INTO chamber_maintenance (chamber_id, kind) VALUES (?, 'clean')", (c["id"],)
@@ -150,12 +161,81 @@ async def test_delete_chamber_with_history_detaches_it():
 
 def test_delete_chamber_endpoint_with_session_is_not_500(client):
     chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
-    client.post("/api/sessions", json={
+    session = client.post("/api/sessions", json={
         "name": "G", "species_profile_id": "blue_oyster", "chamber_id": chamber["id"],
-    })
+    }).json()
+    assert client.post(f"/api/sessions/{session['id']}/complete").status_code == 200
     r = client.delete(f"/api/chambers/{chamber['id']}")
     assert r.status_code == 200
     assert r.json() == {"deleted": True}
+
+
+async def test_delete_chamber_running_a_grow_is_refused():
+    """Detaching a live grow made it the newest session bound to no chamber:
+    an idle chamber's nodes (and every unlisted node) then ran its setpoints."""
+    a = await create_chamber(_make_chamber(name="A", node_ids=["climate-a"]))
+    await create_chamber(_make_chamber(name="B", node_ids=["climate-b"]))
+    grow = await create_session(SessionCreate(
+        name="A grow", species_profile_id="blue_oyster", chamber_id=a["id"],
+    ))
+    assert await get_active_session_for_node("climate-b") is None
+
+    with pytest.raises(ChamberInUseError, match="complete or abort"):
+        await delete_chamber(a["id"])
+
+    assert await get_chamber(a["id"]) is not None
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT chamber_id FROM sessions WHERE id = ?", (grow["id"],))).fetchone()
+    assert row["chamber_id"] == a["id"]
+    assert await get_active_session_for_node("climate-b") is None
+
+
+async def test_delete_chamber_linked_to_a_live_grow_is_refused():
+    """A fridge chamber linked to a jar in cold storage (bound to the closet
+    it grew in) is in use until the link is dropped."""
+    closet = await create_chamber(_make_chamber(name="Closet", node_ids=["climate-1"]))
+    fridge = await create_chamber(_make_chamber(name="Fridge", node_ids=["fridge-1"]))
+    jar = await create_session(SessionCreate(
+        name="Jar", species_profile_id="blue_oyster", current_phase="grain_colonization",
+        container_type="grain_jar", chamber_id=closet["id"],
+    ))
+    await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
+    await update_chamber(fridge["id"], ChamberUpdate(active_session_id=jar["id"]))
+    with pytest.raises(ChamberInUseError, match="unlink"):
+        await delete_chamber(fridge["id"])
+    await update_chamber(fridge["id"], ChamberUpdate(active_session_id=None))
+    assert await delete_chamber(fridge["id"]) is True
+
+
+def test_delete_chamber_endpoint_running_a_grow_is_409(client):
+    chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
+    session = client.post("/api/sessions", json={
+        "name": "G", "species_profile_id": "blue_oyster", "chamber_id": chamber["id"],
+    }).json()
+    r = client.delete(f"/api/chambers/{chamber['id']}")
+    assert r.status_code == 409
+    assert str(session["id"]) in r.json()["detail"]
+    assert client.get(f"/api/chambers/{chamber['id']}").status_code == 200
+
+
+async def test_delete_chamber_resyncs_the_sessions_it_detaches(monkeypatch):
+    """The cloud snapshot names a session's chamber: detaching history must
+    reach the session-change listeners."""
+    changed: list[int] = []
+
+    async def _listener(session_id):
+        changed.append(session_id)
+
+    monkeypatch.setattr(sessions_service, "_session_change_listeners", [_listener])
+    c = await create_chamber(_make_chamber())
+    grow = await create_session(SessionCreate(
+        name="Grow", species_profile_id="blue_oyster", chamber_id=c["id"],
+    ))
+    await complete_session(grow["id"])
+    changed.clear()
+    assert await delete_chamber(c["id"]) is True
+    assert changed == [grow["id"]]
 
 
 # ── Session assignment ─────────────────────────────────────────
@@ -173,8 +253,28 @@ async def test_reassign_session():
     s2 = await _make_session("Grow 2")
     c = await create_chamber(_make_chamber())
     await update_chamber(c["id"], ChamberUpdate(active_session_id=s1["id"]))
+    # The chamber still runs Grow 1 (linking bound it): a second grow is
+    # refused, or both would be bound to it and the newer would take it over.
+    with pytest.raises(ChamberBusyError, match="Grow 1"):
+        await update_chamber(c["id"], ChamberUpdate(active_session_id=s2["id"]))
+    assert (await get_chamber(c["id"]))["active_session_id"] == s1["id"]
+    await complete_session(s1["id"])
     updated = await update_chamber(c["id"], ChamberUpdate(active_session_id=s2["id"]))
     assert updated["active_session_id"] == s2["id"]
+    # Linking the grow the chamber already runs is no conflict.
+    again = await update_chamber(c["id"], ChamberUpdate(active_session_id=s2["id"]))
+    assert again["active_session_id"] == s2["id"]
+
+
+def test_linking_a_second_grow_to_a_busy_chamber_is_409(client):
+    chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
+    first = client.post("/api/sessions", json={
+        "name": "Tub", "species_profile_id": "blue_oyster", "chamber_id": chamber["id"]}).json()
+    second = client.post("/api/sessions", json={"name": "Jar", "species_profile_id": "blue_oyster"}).json()
+    r = client.patch(f"/api/chambers/{chamber['id']}", json={"active_session_id": second["id"]})
+    assert r.status_code == 409, r.text
+    assert "Tub" in r.json()["detail"]
+    assert client.get(f"/api/chambers/{chamber['id']}").json()["active_session_id"] == first["id"]
 
 
 # ── Comparison ────────────────────────────────────────────────
@@ -250,3 +350,33 @@ async def test_compare_chambers_ignores_old_data():
     results = await compare_chambers([c1["id"]])
     assert len(results) == 1
     assert results[0]["telemetry"] == {}
+
+
+async def test_compare_chambers_aggregates_every_node_of_a_chamber():
+    """Two nodes reporting the same sensor are one series: the per-node loop
+    kept only the last node's stats."""
+    c = await create_chamber(_make_chamber(name="Two nodes", node_ids=["n0a", "n0b", "n0a"]))
+    now = time.time()
+    await _insert_telemetry("n0a", "temp_f", 60.0, now - 100)
+    await _insert_telemetry("n0b", "temp_f", 80.0, now - 50)
+    await _insert_telemetry("elsewhere", "temp_f", 99.0, now - 50)
+
+    [result] = await compare_chambers([c["id"]])
+    assert result["telemetry"]["temp_f"] == {"avg": 70.0, "min": 60.0, "max": 80.0, "readings": 2}
+    assert result["node_ids"] == ["n0a", "n0b", "n0a"]
+
+
+async def test_compare_chambers_keeps_the_requested_order():
+    a = await create_chamber(_make_chamber(name="A"))
+    b = await create_chamber(_make_chamber(name="B"))
+    results = await compare_chambers([b["id"], 9999, a["id"]])
+    assert [r["chamber_name"] for r in results] == ["B", "A"]
+
+
+def test_compare_endpoint_rejects_malformed_ids(client):
+    chamber = client.post("/api/chambers", json={"name": "Closet"}).json()
+    assert client.get("/api/chambers/compare?ids=1,abc").status_code == 422
+    assert client.get("/api/chambers/compare?ids=,").status_code == 422
+    r = client.get(f"/api/chambers/compare?ids={chamber['id']},")
+    assert r.status_code == 200
+    assert [c["chamber_id"] for c in r.json()] == [chamber["id"]]

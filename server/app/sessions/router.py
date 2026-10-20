@@ -3,7 +3,15 @@ from fastapi.responses import Response
 
 from ..species.service import get_profile
 from ..telemetry.service import get_history
-from .models import SessionCreate, SessionUpdate, PhaseAdvance, NoteCreate, HarvestCreate, DryingLogEntry
+from .models import (
+    ContaminationMark,
+    DryingLogEntry,
+    HarvestCreate,
+    NoteCreate,
+    PhaseAdvance,
+    SessionCreate,
+    SessionUpdate,
+)
 from . import service
 
 router = APIRouter()
@@ -15,6 +23,8 @@ async def create_session(data: SessionCreate):
         return await service.create_session(data)
     except (service.InvalidPhaseError, service.UnknownChamberError) as e:
         raise HTTPException(422, str(e))
+    except service.ChamberBusyError as e:
+        raise HTTPException(409, str(e))
 
 
 @router.get("")
@@ -22,11 +32,14 @@ async def list_sessions(
     status: str | None = None,
     species: str | None = None,
     include_phase_history: bool = False,
+    yield_since: float | None = None,
 ):
     """List sessions. `include_phase_history=true` attaches each session's
     phase_history (same shape as GET /{id}) so the fleet view can compute
-    "day N of M" without fanning out one request per session."""
-    return await service.list_sessions(status, species, include_phase_history)
+    "day N of M" without fanning out one request per session.
+    `yield_since=<unix seconds>` adds `wet_yield_since_g` to each row: the wet
+    grams harvested at or after that time (the dashboard's 30-day yield)."""
+    return await service.list_sessions(status, species, include_phase_history, yield_since)
 
 
 @router.get("/calendar.ics")
@@ -96,6 +109,8 @@ async def advance_phase(session_id: int, data: PhaseAdvance):
         session = await service.advance_phase(session_id, data)
     except service.InvalidPhaseError as e:
         raise HTTPException(422, str(e))
+    except service.SessionConflictError as e:
+        raise HTTPException(409, str(e))
     if not session:
         raise HTTPException(404, "Session not found")
     return session
@@ -103,12 +118,18 @@ async def advance_phase(session_id: int, data: PhaseAdvance):
 
 @router.post("/{session_id}/note")
 async def add_note(session_id: int, data: NoteCreate):
-    return await service.add_note(session_id, data)
+    note = await service.add_note(session_id, data)
+    if note is None:
+        raise HTTPException(404, "Session not found")
+    return note
 
 
 @router.post("/{session_id}/harvest")
 async def add_harvest(session_id: int, data: HarvestCreate):
-    return await service.add_harvest(session_id, data)
+    harvest = await service.add_harvest(session_id, data)
+    if harvest is None:
+        raise HTTPException(404, "Session not found")
+    return harvest
 
 
 @router.get("/{session_id}/events")
@@ -184,7 +205,23 @@ async def get_drying_progress(session_id: int, harvest_id: int):
 
 @router.post("/{session_id}/abort")
 async def abort_session(session_id: int):
-    session = await service.abort_session(session_id)
+    try:
+        session = await service.abort_session(session_id)
+    except service.SessionConflictError as e:
+        raise HTTPException(409, str(e))
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return session
+
+
+@router.post("/{session_id}/contaminated")
+async def mark_contaminated(session_id: int, data: ContaminationMark | None = None):
+    """Abort a grow lost to contamination and log the contamination against
+    it (and its chamber), as one step."""
+    try:
+        session = await service.mark_contaminated(session_id, data or ContaminationMark())
+    except service.SessionConflictError as e:
+        raise HTTPException(409, str(e))
     if not session:
         raise HTTPException(404, "Session not found")
     return session
@@ -192,7 +229,10 @@ async def abort_session(session_id: int):
 
 @router.post("/{session_id}/complete")
 async def complete_session(session_id: int):
-    session = await service.complete_session(session_id)
+    try:
+        session = await service.complete_session(session_id)
+    except service.SessionConflictError as e:
+        raise HTTPException(409, str(e))
     if not session:
         raise HTTPException(404, "Session not found")
     return session

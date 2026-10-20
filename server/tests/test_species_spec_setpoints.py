@@ -2,7 +2,7 @@
 
 The CO2 ceiling (co2_max_ppm) drives the CO2→FAE rule and the warning /
 emergency bands, so a ceiling above the spec means fresh air arrives only after
-the fruit has already etiolated. (audit srv-rest#17, #18, #19)
+the fruit has already etiolated.
 """
 
 from app.species.models import GrowPhase

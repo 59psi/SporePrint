@@ -22,6 +22,7 @@ from app.chambers.service import create_chamber
 from app.db import get_db
 from app.sessions.models import SessionCreate
 from app.sessions.service import (
+    abort_session,
     create_session,
     get_session,
     handle_remote_command,
@@ -98,6 +99,22 @@ async def test_cloud_dispatch_system_command_session_seam():
     ok, err = await _dispatch_system_command("session_end", {"session_id": s["id"]})
     assert (ok, err) == (True, None)
     assert (await get_session(s["id"]))["status"] == "completed"
+
+
+async def test_remote_end_of_nothing_reports_failure():
+    """An end for an unknown session (or one that is not an id) used to ack
+    success: the client was told a grow ended when nothing had."""
+    from app.cloud.service import _dispatch_system_command
+
+    for bad in (99999, "abc", None, 1.5, True):
+        ok, err = await _dispatch_system_command("session_end", {"session_id": bad})
+        assert ok is False and err, bad
+    # An aborted grow is not turned into a completed one.
+    s = await create_session(_session(name="Lost"))
+    await abort_session(s["id"])
+    ok, err = await _dispatch_system_command("session_end", {"session_id": str(s["id"])})
+    assert ok is False and "aborted" in err
+    assert (await get_session(s["id"]))["status"] == "aborted"
 
 
 # ── H4-1: per-session telemetry resolves the real node ──────────
