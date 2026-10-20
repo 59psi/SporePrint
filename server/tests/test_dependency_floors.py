@@ -53,7 +53,9 @@ def test_pyproject_floor_excludes_vulnerable_release(dist):
     req = _declared().get(dist)
     assert req is not None, f"{dist} must be declared with a security floor"
     assert not req.specifier.contains(vulnerable), f"{req} still admits {vulnerable}"
-    assert req.specifier.contains(fixed), f"{req} excludes the fixed {fixed}"
+    # The floor may sit above the fix (a later bump raises it); never below.
+    floors = [Version(s.version) for s in req.specifier if s.operator in (">=", ">")]
+    assert floors and max(floors) >= Version(fixed), f"{req} has no floor at or above {fixed}"
 
 
 @pytest.mark.parametrize("dist", sorted(SECURITY_FLOORS))
