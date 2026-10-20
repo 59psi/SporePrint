@@ -175,6 +175,20 @@ void test_mhz19_timeout() {
     TEST_ASSERT_TRUE(mhz.request_read());
 }
 
+// After a power-up the MH-Z19C answers during its 3-minute preheat with
+// readings it does not stand behind; the node must not publish them as
+// co2_ppm (the Pi's CO2 rules act on them). A warm reset leaves the sensor
+// powered and warm: its replies count at once.
+void test_mhz19_preheat_gates_readings_after_a_power_up_only() {
+    const uint32_t preheat = sp::Mhz19::kPreheatMs;
+    TEST_ASSERT_EQUAL_UINT32(180000u, preheat);
+    TEST_ASSERT_FALSE(sp::Mhz19::reading_usable(/*cold_start=*/true, 0));
+    TEST_ASSERT_FALSE(sp::Mhz19::reading_usable(true, preheat - 1));
+    TEST_ASSERT_TRUE(sp::Mhz19::reading_usable(true, preheat));
+    TEST_ASSERT_TRUE(sp::Mhz19::reading_usable(/*cold_start=*/false, 0));
+    TEST_ASSERT_TRUE(sp::Mhz19::reading_usable(false, preheat - 1));
+}
+
 // ── HX711 ──────────────────────────────────────────────────────
 
 static void no_delay(uint32_t) {}
@@ -232,6 +246,81 @@ void test_hx711_to_grams_math_and_uncalibrated_guard() {
     grams = 123.0f;
     TEST_ASSERT_FALSE(sp::Hx711::to_grams(152300, 148000, 0.0f, &grams));
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 123.0f, grams);
+}
+
+// One 24-bit code, MSB first, on the scripted DOUT pin.
+static void script_hx711_code(MockPin& dout, uint32_t code) {
+    for (int i = 23; i >= 0; --i) dout.read_script.push_back((code >> i) & 1);
+}
+
+// An unplugged module leaves DOUT floating; a floating pin reads LOW often
+// enough to pass for "ready" and clock out noise that was published as a
+// fresh weight. Pulled up, an absent module reads HIGH: never ready.
+void test_hx711_begin_pulls_dout_up_so_an_absent_module_is_never_ready() {
+    MockPin dout, sck;
+    sp::Hx711 hx(dout, sck, no_delay);
+    hx.begin();
+    TEST_ASSERT_EQUAL_INT((int)sp::PinMode::InputPullup, (int)dout.mode);
+    TEST_ASSERT_EQUAL_INT((int)sp::PinMode::Output, (int)sck.mode);
+    dout.level = true;  // what the pull-up holds with nothing connected
+    TEST_ASSERT_FALSE(hx.is_ready());
+}
+
+// An open load-cell wire saturates the input: the ADC returns a rail code,
+// which is not a weight and must not keep the reading fresh.
+void test_hx711_read_refuses_rail_codes() {
+    MockPin dout, sck;
+    sp::Hx711 hx(dout, sck, no_delay);
+    hx.begin();
+    int32_t counts = 4242;
+    script_hx711_code(dout, 0x7FFFFF);
+    TEST_ASSERT_FALSE(hx.read(&counts));
+    TEST_ASSERT_EQUAL_INT32(4242, counts);  // untouched
+    TEST_ASSERT_EQUAL_UINT32(1, hx.health().fails);
+    TEST_ASSERT_EQUAL_STRING("saturated (rail code)", hx.health().last_error);
+    script_hx711_code(dout, 0x800000);
+    TEST_ASSERT_FALSE(hx.read(&counts));
+    TEST_ASSERT_EQUAL_UINT32(2, hx.health().fails);
+    // One step inside either rail is a real (if extreme) reading.
+    script_hx711_code(dout, 0x7FFFFE);
+    TEST_ASSERT_TRUE(hx.read(&counts));
+    TEST_ASSERT_EQUAL_INT32(0x7FFFFE, counts);
+    script_hx711_code(dout, 0x800001);
+    TEST_ASSERT_TRUE(hx.read(&counts));
+    TEST_ASSERT_EQUAL_INT32((int32_t)0xFF800001, counts);
+    TEST_ASSERT_NULL(hx.health().last_error);
+}
+
+// A module wired but unpowered holds DOUT low through its input protection:
+// always "ready", always the same zeros. A live ADC never repeats one code
+// kStuckRun times in a row.
+void test_hx711_read_refuses_a_stuck_line() {
+    MockPin dout, sck;
+    sp::Hx711 hx(dout, sck, no_delay);
+    hx.begin();
+    int32_t counts = 0;
+    for (uint32_t i = 1; i < sp::Hx711::kStuckRun; ++i) {
+        script_hx711_code(dout, 0);
+        TEST_ASSERT_TRUE(hx.read(&counts));
+    }
+    script_hx711_code(dout, 0);
+    TEST_ASSERT_FALSE(hx.read(&counts));
+    TEST_ASSERT_EQUAL_STRING("stuck (identical samples)", hx.health().last_error);
+    script_hx711_code(dout, 0);
+    TEST_ASSERT_FALSE(hx.read(&counts));  // still stuck
+    // The line comes back to life: the first different code is a sample again.
+    script_hx711_code(dout, 152300);
+    TEST_ASSERT_TRUE(hx.read(&counts));
+    TEST_ASSERT_EQUAL_INT32(152300, counts);
+    TEST_ASSERT_NULL(hx.health().last_error);
+    // Ordinary noisy samples never trip it.
+    const uint32_t noisy[] = {152301, 152298, 152305, 152300, 152299,
+                              152302, 152297, 152300, 152303, 152301};
+    for (uint32_t c : noisy) {
+        script_hx711_code(dout, c);
+        TEST_ASSERT_TRUE(hx.read(&counts));
+    }
+    TEST_ASSERT_EQUAL_UINT32(2, hx.health().fails);
 }
 
 // ── reed switch ────────────────────────────────────────────────
@@ -339,11 +428,15 @@ int main(int, char**) {
     RUN_TEST(test_mhz19_resyncs_on_noise);
     RUN_TEST(test_mhz19_bad_checksum_is_fail_not_zero);
     RUN_TEST(test_mhz19_timeout);
+    RUN_TEST(test_mhz19_preheat_gates_readings_after_a_power_up_only);
     RUN_TEST(test_mhz19b_datasheet_frames_byte_for_byte);
     RUN_TEST(test_hx711_ready_is_single_pin_read);
     RUN_TEST(test_hx711_reads_24_bits_with_gain_pulse);
     RUN_TEST(test_hx711_sign_extends_negative);
     RUN_TEST(test_hx711_to_grams_math_and_uncalibrated_guard);
+    RUN_TEST(test_hx711_begin_pulls_dout_up_so_an_absent_module_is_never_ready);
+    RUN_TEST(test_hx711_read_refuses_rail_codes);
+    RUN_TEST(test_hx711_read_refuses_a_stuck_line);
     RUN_TEST(test_reed_debounce);
     RUN_TEST(test_reed_inverted_reads_high_as_closed);
     RUN_TEST(test_reed_default_is_not_inverted);

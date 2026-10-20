@@ -1,6 +1,6 @@
 # 4 MB flash layout — node_esp32 (ESP32-WROOM-32) and cam (AI-Thinker ESP32-CAM).
 #
-# v4 archaeology fix #12 added the coredump partition; the 64 KB came
+# v4 added the coredump partition; the 64 KB came
 # out of spiffs (loss-tolerant caches that reformat cleanly on first boot
 # under the new table). app0/app1 offsets match platformio's default.csv
 # so pre-fix OTAs still boot under the new layout.

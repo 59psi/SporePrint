@@ -72,4 +72,26 @@ private:
     uint32_t last_ok_ms_ = 0;
 };
 
+// Pacing for a recovery action on a stale sensor (re-starting an SCD4x that
+// lost power and woke idle): due on the first pass the reading is stale,
+// then at most once per staleness window while it stays stale; a fresh
+// reading resets it. Wrap-safe.
+class StaleRecovery {
+public:
+    bool due(bool stale, uint32_t now_ms, uint32_t window_ms) {
+        if (!stale) {
+            tried_ = false;
+            return false;
+        }
+        if (tried_ && elapsed_ms(now_ms, last_try_ms_) < window_ms) return false;
+        tried_ = true;
+        last_try_ms_ = now_ms;
+        return true;
+    }
+
+private:
+    bool tried_ = false;
+    uint32_t last_try_ms_ = 0;
+};
+
 }  // namespace sp

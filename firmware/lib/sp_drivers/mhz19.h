@@ -28,6 +28,19 @@ namespace sp {
 
 class Mhz19 {
 public:
+    // Winsen's preheat after power-up: the sensor answers during it, but its
+    // readings are not reliable yet.
+    static constexpr uint32_t kPreheatMs = 3UL * 60UL * 1000UL;
+
+    // May a reply at `uptime_ms` be used as a reading? `cold_start`: the node
+    // itself just powered up (power-on / brown-out reset), so the sensor on
+    // its supply did too — its replies are discarded until the preheat has
+    // run. After a warm reset (OTA, watchdog, a requested restart) the
+    // sensor kept its power and its replies count at once.
+    static bool reading_usable(bool cold_start, uint32_t uptime_ms) {
+        return !cold_start || uptime_ms >= kPreheatMs;
+    }
+
     Mhz19(UartPort& uart, Clock& clock) : uart_(uart), clock_(clock) {}
 
     // Send the ABC on/off frame (default off — the chamber posture).

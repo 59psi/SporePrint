@@ -1,15 +1,15 @@
 // test_core_boot — boot-time WiFi fallback, the BOOT-button hold actions,
 // OTA image confirmation, and the MQTT connect-attempt time budget.
 //
-// Regressions pinned here (hardware audit):
-//   fw-node#8  — a TLS connect attempt could block loop() for 30 s (TCP) +
-//     120 s (handshake) against a 30 s task WDT: panic-reboot loop while the
+// Regressions pinned here:
+//   a TLS connect attempt could block loop() for 30 s (TCP) + 120 s
+//     (handshake) against a 30 s task WDT: panic-reboot loop while the
 //     broker was unreachable
-//   fw-node#9  — ANY boot-time WiFi failure opened an unauthenticated setup
-//     AP for 10 minutes on an already-provisioned node
-//   fw-node#12 — OTA rollback compiled in but defeated: the new image was
-//     marked valid before setup(), so a bad OTA crash-looped forever
-//   review of the above — (a) a 3-10 s BOOT press sampled across a blocked
+//   ANY boot-time WiFi failure opened an unauthenticated setup AP for 10
+//     minutes on an already-provisioned node
+//   OTA rollback compiled in but defeated: the new image was marked valid
+//     before setup(), so a bad OTA crash-looped forever
+//   and, after those were fixed — (a) a 3-10 s BOOT press sampled across a blocked
 //     loop pass (15 s .local DNS / 3 s TCP timeout with the broker down) was
 //     timed across the gap and factory-reset the node; (b) a deliberate
 //     restart confirmed an OTA image that had never reached MQTT; (c) ticking
@@ -26,7 +26,7 @@
 void setUp() {}
 void tearDown() {}
 
-// ── boot WiFi fallback (fw-node#9) ─────────────────────────────
+// ── boot WiFi fallback ─────────────────────────────────────────
 
 void test_unprovisioned_node_opens_the_portal() {
     TEST_ASSERT_TRUE(sp::portal_at_boot(/*provisioned=*/false, false));
@@ -213,7 +213,7 @@ void test_release_seen_late_is_timed_to_the_last_pressed_sample() {
                           (int)c.update(17000, false));
 }
 
-// ── OTA image confirmation (fw-node#12) ────────────────────────
+// ── OTA image confirmation ─────────────────────────────────────
 
 void test_image_confirms_after_stable_mqtt() {
     sp::ImageConfirm c;
@@ -270,7 +270,60 @@ void test_explicit_confirm_is_final() {
     TEST_ASSERT_FALSE(c.update(10UL * sp::ImageConfirm::kStableMs, true));
 }
 
-// ── connect-attempt time budget (fw-node#8) ────────────────────
+void test_failed_confirm_is_retried_with_backoff() {
+    // esp_ota_mark_app_valid_cancel_rollback() can fail (the OTA data write
+    // is refused). The image is then still on probation and the next reset
+    // would boot the previous one — so the confirm must be tried again, not
+    // latched done.
+    sp::ImageConfirm c;
+    const uint32_t stable = sp::ImageConfirm::kStableMs;
+    c.update(0, true);
+    TEST_ASSERT_TRUE(c.update(stable, true));
+    c.confirm_failed();
+    TEST_ASSERT_FALSE(c.done());
+    TEST_ASSERT_EQUAL_UINT32(2 * stable, c.retry_after_ms());
+    // The retry waits for another, longer stretch of continuous MQTT.
+    uint32_t t = stable + 1000;
+    TEST_ASSERT_FALSE(c.update(t, true));
+    TEST_ASSERT_FALSE(c.update(t + 2 * stable - 1, true));
+    TEST_ASSERT_TRUE(c.update(t + 2 * stable, true));
+    // Failing again doubles the wait, up to the ceiling.
+    uint32_t want = 2 * stable;
+    for (int i = 0; i < 10; ++i) {
+        c.confirm_failed();
+        want = want >= sp::ImageConfirm::kMaxRetryMs / 2
+                   ? sp::ImageConfirm::kMaxRetryMs
+                   : want * 2;
+        TEST_ASSERT_EQUAL_UINT32(want, c.retry_after_ms());
+    }
+    TEST_ASSERT_EQUAL_UINT32(sp::ImageConfirm::kMaxRetryMs, c.retry_after_ms());
+    // A drop during the wait restarts it.
+    t = 10UL * 3600UL * 1000UL;
+    c.update(t, true);
+    c.update(t + 1000, false);
+    TEST_ASSERT_FALSE(c.update(t + sp::ImageConfirm::kMaxRetryMs, true));
+    TEST_ASSERT_TRUE(c.update(t + 2 * sp::ImageConfirm::kMaxRetryMs, true));
+    // A success ends it for good.
+    c.mark_done();
+    TEST_ASSERT_FALSE(c.update(t + 10 * sp::ImageConfirm::kMaxRetryMs, true));
+    TEST_ASSERT_TRUE(c.reached_broker());
+}
+
+void test_ota_push_on_probation_never_overwrites_the_confirmed_image() {
+    using G = sp::OtaProbation;
+    // A confirmed / USB-flashed image: nothing to protect.
+    TEST_ASSERT_EQUAL_INT((int)G::Proceed, (int)sp::ota_probation_gate(false, false));
+    TEST_ASSERT_EQUAL_INT((int)G::Proceed, (int)sp::ota_probation_gate(false, true));
+    // On probation and it reached MQTT: confirm it first, then flash (the
+    // flash then replaces the old image, keeping this one to fall back to).
+    TEST_ASSERT_EQUAL_INT((int)G::ConfirmFirst,
+                          (int)sp::ota_probation_gate(true, true));
+    // On probation and it never reached MQTT: refuse — the other slot is
+    // the only confirmed image left.
+    TEST_ASSERT_EQUAL_INT((int)G::Refuse, (int)sp::ota_probation_gate(true, false));
+}
+
+// ── connect-attempt time budget ────────────────────────────────
 
 void test_connect_attempt_fits_inside_the_loop_wdt() {
     // One MqttLink::connect_attempt() runs synchronously in loop() right after
@@ -308,6 +361,8 @@ int main(int, char**) {
     RUN_TEST(test_never_connected_never_confirms);
     RUN_TEST(test_reached_broker_gates_deliberate_restart_confirmation);
     RUN_TEST(test_explicit_confirm_is_final);
+    RUN_TEST(test_failed_confirm_is_retried_with_backoff);
+    RUN_TEST(test_ota_push_on_probation_never_overwrites_the_confirmed_image);
     RUN_TEST(test_connect_attempt_fits_inside_the_loop_wdt);
     return UNITY_END();
 }

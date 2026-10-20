@@ -2,12 +2,12 @@
 // averaged HX711 tare/calibration state machine. All pure sp_core logic the
 // node composition root drives with millis() timestamps.
 //
-// Regressions pinned here (hardware audit):
-//   fw-node#5 / fw-drivers-cam#2 — a dead CO2/lux/scale sensor kept
-//     publishing its last value forever (have_* never cleared)
-//   fw-node#20 — threshold alerts re-fired every read pass (2,880/day)
-//   fw-drivers-cam#9 — tare/calibrate used a cached sample up to 30 s old
-//     and saved a noise-level scale to NVS
+// Regressions pinned here:
+//   a dead CO2/lux/scale sensor kept publishing its last value forever
+//     (have_* never cleared)
+//   threshold alerts re-fired every read pass (2,880/day)
+//   tare/calibrate used a cached sample up to 30 s old and saved a
+//     noise-level scale to NVS
 
 #include <unity.h>
 
@@ -16,7 +16,9 @@
 
 #include "alert_latch.h"
 #include "freshness.h"
+#include "kv_store.h"
 #include "scale_calibrator.h"
+#include "sensor_memory.h"
 
 void setUp() {}
 void tearDown() {}
@@ -259,6 +261,145 @@ void test_scale_times_out_without_samples() {
     TEST_ASSERT_FALSE(c.busy());
 }
 
+// ── StaleRecovery ──────────────────────────────────────────────
+
+// An SCD4x that lost power on its own wakes idle and never reports a sample
+// again; the node re-starts it once per staleness window while its reading
+// stays stale (not every pass: each try is two bus writes).
+void test_stale_recovery_is_paced_once_per_window() {
+    sp::StaleRecovery r;
+    const uint32_t w = 90000;
+    TEST_ASSERT_FALSE(r.due(false, 1000, w));     // fresh: nothing to do
+    TEST_ASSERT_TRUE(r.due(true, 2000, w));       // went stale: try now
+    TEST_ASSERT_FALSE(r.due(true, 2000 + w - 1, w));
+    TEST_ASSERT_TRUE(r.due(true, 2000 + w, w));   // still stale: again
+    TEST_ASSERT_FALSE(r.due(true, 2000 + w + 1, w));
+    TEST_ASSERT_FALSE(r.due(false, 2000 + w + 2, w));  // recovered: reset
+    TEST_ASSERT_TRUE(r.due(true, 2000 + w + 3, w));    // a new stale spell
+    // Wrap-safe.
+    sp::StaleRecovery wrap;
+    const uint32_t t0 = 0xFFFFFFFFu - 1000u;
+    TEST_ASSERT_TRUE(wrap.due(true, t0, w));
+    TEST_ASSERT_FALSE(wrap.due(true, t0 + w - 1, w));
+    TEST_ASSERT_TRUE(wrap.due(true, t0 + w, w));
+}
+
+// ── EdgeAlertQueue (door edges) ────────────────────────────────
+
+// A door that opened or closed while MQTT was down used to raise nothing:
+// emit_alert() refuses while disconnected and the edge was never retried.
+void test_edge_alert_queue_delivers_edges_raised_while_offline() {
+    sp::EdgeAlertQueue q;
+    TEST_ASSERT_FALSE(q.pending());
+    // Online: pushed and delivered on the same pass, not late.
+    q.push(true);
+    TEST_ASSERT_TRUE(q.pending());
+    TEST_ASSERT_TRUE(q.front().high);
+    TEST_ASSERT_FALSE(q.front().late);
+    q.delivered();
+    TEST_ASSERT_FALSE(q.pending());
+
+    // Offline: the door closes, the delivery fails, then it opens again.
+    q.push(false);
+    q.undeliverable();
+    q.push(true);
+    q.undeliverable();
+    TEST_ASSERT_TRUE(q.pending());
+    // MQTT is back: both go out, in order, both marked late.
+    TEST_ASSERT_FALSE(q.front().high);
+    TEST_ASSERT_TRUE(q.front().late);
+    q.delivered();
+    TEST_ASSERT_TRUE(q.front().high);
+    TEST_ASSERT_TRUE(q.front().late);
+    q.delivered();
+    TEST_ASSERT_FALSE(q.pending());
+}
+
+void test_edge_alert_queue_collapses_back_to_the_first_state() {
+    sp::EdgeAlertQueue q;
+    // opened, closed, opened while offline → "opened" (it is open now).
+    q.push(true);
+    q.push(false);
+    q.push(true);
+    TEST_ASSERT_TRUE(q.front().high);
+    q.delivered();
+    TEST_ASSERT_FALSE(q.pending());
+    // opened, closed, opened, closed → opened then closed.
+    q.push(true);
+    q.push(false);
+    q.push(true);
+    q.push(false);
+    TEST_ASSERT_TRUE(q.front().high);
+    q.delivered();
+    TEST_ASSERT_FALSE(q.front().high);
+    q.delivered();
+    TEST_ASSERT_FALSE(q.pending());
+    // A repeated state is not an edge.
+    q.push(false);
+    q.push(false);
+    q.delivered();
+    TEST_ASSERT_FALSE(q.pending());
+    q.delivered();  // empty: harmless
+    TEST_ASSERT_FALSE(q.pending());
+}
+
+// ── sensor_memory (autodetected sensors seen before) ───────────
+
+// A CO2 sensor that died before a reboot was simply not built: no staleness,
+// no alert, no expected_missing — and the Pi's CO2 rules went quiet. The
+// node now remembers what it found and reports a remembered sensor that is
+// missing at boot.
+void test_seen_sensors_report_a_remembered_sensor_missing_at_boot() {
+    sp::MemKvStore kv;
+    // First boot with an SCD4x (Co2Kind 1) and a BH1750: learned, stored.
+    sp::SeenCheck c = sp::check_seen_sensors(sp::load_seen_sensors(kv), 1, true);
+    TEST_ASSERT_FALSE(c.co2_missing);
+    TEST_ASSERT_FALSE(c.lux_missing);
+    TEST_ASSERT_TRUE(c.changed);
+    sp::store_seen_sensors(kv, c.remember);
+    TEST_ASSERT_EQUAL_INT32(1, kv.get_int(sp::kSeenCo2Key, 0));
+    TEST_ASSERT_TRUE(kv.get_bool(sp::kSeenLuxKey, false));
+
+    // Same hardware: nothing to write (no NVS wear every boot).
+    c = sp::check_seen_sensors(sp::load_seen_sensors(kv), 1, true);
+    TEST_ASSERT_FALSE(c.changed);
+    TEST_ASSERT_FALSE(c.co2_missing);
+
+    // The SCD4x stopped answering: missing, and still remembered.
+    c = sp::check_seen_sensors(sp::load_seen_sensors(kv), 0, true);
+    TEST_ASSERT_TRUE(c.co2_missing);
+    TEST_ASSERT_EQUAL_INT32(1, c.co2_missing_kind);
+    TEST_ASSERT_FALSE(c.lux_missing);
+    TEST_ASSERT_FALSE(c.changed);
+    TEST_ASSERT_EQUAL_INT32(1, c.remember.co2);
+    // …every boot until it is back.
+    c = sp::check_seen_sensors(sp::load_seen_sensors(kv), 0, false);
+    TEST_ASSERT_TRUE(c.co2_missing);
+    TEST_ASSERT_TRUE(c.lux_missing);
+
+    // A swap (SCD30 = Co2Kind 2 replacing the SCD4x) is no alert.
+    c = sp::check_seen_sensors(sp::load_seen_sensors(kv), 2, true);
+    TEST_ASSERT_FALSE(c.co2_missing);
+    TEST_ASSERT_TRUE(c.changed);
+    sp::store_seen_sensors(kv, c.remember);
+    TEST_ASSERT_EQUAL_INT32(2, kv.get_int(sp::kSeenCo2Key, 0));
+
+    // Removed on purpose: forgotten (portal box / factory reset), and the
+    // next boot without the parts reports nothing.
+    sp::forget_seen_sensors(kv);
+    c = sp::check_seen_sensors(sp::load_seen_sensors(kv), 0, false);
+    TEST_ASSERT_FALSE(c.co2_missing);
+    TEST_ASSERT_FALSE(c.lux_missing);
+    TEST_ASSERT_FALSE(c.changed);
+
+    // A node that never had either behaves exactly as before.
+    sp::MemKvStore fresh;
+    c = sp::check_seen_sensors(sp::load_seen_sensors(fresh), 0, false);
+    TEST_ASSERT_FALSE(c.co2_missing);
+    TEST_ASSERT_FALSE(c.lux_missing);
+    TEST_ASSERT_FALSE(c.changed);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_stale_window_floor_and_scaling);
@@ -279,5 +420,9 @@ int main(int, char**) {
     RUN_TEST(test_scale_calibrate_rejects_noise_level_delta);
     RUN_TEST(test_scale_calibrate_rejects_bad_known_mass);
     RUN_TEST(test_scale_times_out_without_samples);
+    RUN_TEST(test_stale_recovery_is_paced_once_per_window);
+    RUN_TEST(test_edge_alert_queue_delivers_edges_raised_while_offline);
+    RUN_TEST(test_edge_alert_queue_collapses_back_to_the_first_state);
+    RUN_TEST(test_seen_sensors_report_a_remembered_sensor_missing_at_boot);
     return UNITY_END();
 }

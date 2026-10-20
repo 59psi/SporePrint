@@ -24,4 +24,15 @@ inline uint32_t elapsed_ms(uint32_t now_ms, uint32_t since_ms) {
     return now_ms - since_ms;
 }
 
+// Elapsed milliseconds since `since`, where a `now` slightly EARLIER than
+// `since` counts as 0 instead of wrapping to ~49.7 days. A loop pass reads
+// millis() once at its top, and a command handled later in the same pass
+// stamps its state with a fresh millis(), so that pass's `now` can trail the
+// stamp by a few ms. Signed difference: valid for spans under ~24.8 days,
+// like deadline_reached().
+inline uint32_t elapsed_since(uint32_t now_ms, uint32_t since_ms) {
+    const int32_t d = (int32_t)(now_ms - since_ms);
+    return d < 0 ? 0u : (uint32_t)d;
+}
+
 }  // namespace sp

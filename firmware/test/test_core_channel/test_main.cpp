@@ -11,6 +11,7 @@
 #include "clamps.h"
 #include "cmd_router.h"
 #include "personality.h"
+#include "publish_cadence.h"
 #include "scene_table.h"
 #include "wrap_time.h"
 
@@ -97,6 +98,9 @@ void test_duration_expiry_and_clamp() {
     TEST_ASSERT_FALSE(ch.is_on());
     TEST_ASSERT_TRUE(ch.last_change_was_cutoff());
     TEST_ASSERT_EQUAL_UINT32(1, ch.health().safety_cutoffs);
+    // A pulse ending on schedule is a timer expiry, not a max-on trip.
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Timer, (int)ch.last_cutoff());
+    TEST_ASSERT_EQUAL_UINT32(0, ch.health().max_on_trips);
 }
 
 void test_max_on_dominates_long_duration() {
@@ -149,6 +153,282 @@ void test_max_on_fires_and_reon_does_not_extend() {
     TEST_ASSERT_EQUAL_STRING("auto-off (max-on exceeded)", ch.reason());
     TEST_ASSERT_EQUAL_UINT32(1, ch.health().safety_cutoffs);
     TEST_ASSERT_EQUAL_UINT32(1, ch.health().cycle_count);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn, (int)ch.last_cutoff());
+    TEST_ASSERT_EQUAL_UINT32(1, ch.health().max_on_trips);
+}
+
+// ── production ordering: command inside mqtt->loop(), tick after ─
+// loop() reads `now` once at the top; a command handled inside
+// mqtt->loop() later in the same pass stamps the channel with a fresh,
+// LATER millis(). A tick with that pass's `now` must read as no time
+// elapsed — it used to read as ~49.7 days and cut the channel at once.
+
+void test_tick_older_than_the_on_stamp_is_not_a_cutoff() {
+    sp::ChannelConfig cfgs[4];
+    sp::personality_channels(sp::Personality::RelayBank, cfgs);
+    for (int i = 0; i < 4; ++i) {  // 30-min channels and the 60 s aux
+        sp::Channel ch;
+        ch.configure(cfgs[i]);
+        sp::ChannelCommand on;
+        on.has_state = true;
+        on.state_on = true;
+        ch.apply(on, 1001);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)sp::ChannelEvent::None,
+                                      (int)ch.tick(1000), cfgs[i].name);
+        TEST_ASSERT_TRUE_MESSAGE(ch.is_on(), cfgs[i].name);
+        TEST_ASSERT_EQUAL_UINT32(0, ch.health().safety_cutoffs);
+        TEST_ASSERT_EQUAL_UINT32(0, ch.health().max_on_trips);
+        TEST_ASSERT_EQUAL_UINT32(0, ch.on_time_sec_live(1000));
+        // The backstop still fires on time.
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                              (int)ch.tick(1001 + cfgs[i].max_on_ms));
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                              (int)ch.tick(1001 + cfgs[i].max_on_ms + 1));
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn,
+                              (int)ch.last_cutoff());
+    }
+
+    // A timed pulse and a pwm-only ON, same ordering.
+    sp::Channel fae;
+    fae.configure(switch_cfg());
+    sp::ChannelCommand pulse;
+    pulse.has_state = true;
+    pulse.state_on = true;
+    pulse.has_duration = true;
+    pulse.duration_sec = 300;
+    fae.apply(pulse, 5005);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)fae.tick(5000));
+    TEST_ASSERT_TRUE(fae.is_on());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)fae.tick(5005 + 300000));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Timer, (int)fae.last_cutoff());
+    TEST_ASSERT_EQUAL_UINT32(300, fae.health().on_time_sec);
+
+    sp::Channel ex;
+    ex.configure(switch_cfg("exhaust"));
+    sp::ChannelCommand pwm;
+    pwm.has_pwm = true;
+    pwm.pwm = 180;
+    // Also across the millis() wrap: stamped just after it, ticked with the
+    // pass's `now` read just before it.
+    ex.apply(pwm, 5u);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ex.tick(0xFFFFFFF0u));
+    TEST_ASSERT_TRUE(ex.is_on());
+    TEST_ASSERT_EQUAL_UINT8(180, ex.pwm8());
+    TEST_ASSERT_EQUAL_UINT32(0, ex.health().safety_cutoffs);
+}
+
+void test_ramp_tick_older_than_its_start_stays_in_range() {
+    // From dark: {level:1023, ramp_sec:60} stamped at t+1, ticked at t. The
+    // level used to wrap to ~25480 — a full-brightness flash on LEDC and an
+    // out-of-range level on the wire.
+    sp::Channel ch;
+    ch.configure(dim_cfg());
+    sp::ChannelCommand ramp;
+    ramp.has_level = true;
+    ramp.level = 1023;
+    ramp.has_ramp = true;
+    ramp.ramp_sec = 60;
+    ch.apply(ramp, 7001);
+    TEST_ASSERT_EQUAL_UINT16(0, ch.level10());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(7000));
+    TEST_ASSERT_EQUAL_UINT16(0, ch.level10());
+    TEST_ASSERT_TRUE(ch.duty10() <= 1023);
+    ch.tick(7001 + 30000);  // halfway
+    TEST_ASSERT_TRUE(ch.level10() >= 500 && ch.level10() <= 523);
+    ch.tick(7001 + 60000);
+    TEST_ASSERT_EQUAL_UINT16(1023, ch.level10());
+
+    // Ramp down between two lit levels, same ordering.
+    sp::Channel dn;
+    dn.configure(dim_cfg("blue"));
+    sp::ChannelCommand lit;
+    lit.has_level = true;
+    lit.level = 900;
+    dn.apply(lit, 0);
+    sp::ChannelCommand down;
+    down.has_level = true;
+    down.level = 100;
+    down.has_ramp = true;
+    down.ramp_sec = 10;
+    dn.apply(down, 2002);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)dn.tick(2000));
+    TEST_ASSERT_EQUAL_UINT16(900, dn.level10());
+    for (uint32_t t = 2002; t <= 2002 + 10000; t += 250) {
+        dn.tick(t);
+        TEST_ASSERT_TRUE(dn.level10() >= 100 && dn.level10() <= 900);
+    }
+    TEST_ASSERT_EQUAL_UINT16(100, dn.level10());
+}
+
+void test_off_stamped_before_the_on_adds_no_on_time() {
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    sp::ChannelCommand on, off;
+    on.has_state = true;
+    on.state_on = true;
+    off.has_state = true;
+    off.state_on = false;
+    ch.apply(on, 1001);
+    ch.apply(off, 1000);
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT32(0, ch.health().on_time_sec);
+    TEST_ASSERT_EQUAL_UINT32(1, ch.health().cycle_count);
+}
+
+void test_on_time_counts_runs_longer_than_the_wrap_window() {
+    // A lit channel with no max-on can run for weeks: ticked every pass,
+    // its on-time stays exact past 24.8 days (the signed window) and past
+    // the 49.7-day millis() wrap.
+    sp::Channel ch;
+    ch.configure(dim_cfg());
+    sp::ChannelCommand lit;
+    lit.has_level = true;
+    lit.level = 600;
+    const uint32_t t0 = 123456789u;
+    ch.apply(lit, t0);
+    const uint64_t hour = 3600ULL * 1000ULL;
+    const uint64_t days = 60;
+    for (uint64_t t = hour; t <= days * 24ULL * hour; t += hour) {
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                              (int)ch.tick((uint32_t)(t0 + t)));
+    }
+    const uint32_t end = (uint32_t)(t0 + days * 24ULL * hour + 500);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)(days * 86400ULL), ch.on_time_sec_live(end));
+    sp::ChannelCommand off;
+    off.has_state = true;
+    off.state_on = false;
+    ch.apply(off, end);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)(days * 86400ULL), ch.health().on_time_sec);
+}
+
+// ── cutoff kinds: what counts as a stuck channel ───────────────
+
+void test_cutoff_kinds_and_max_on_trips() {
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    sp::ChannelCommand pulse;
+    pulse.has_state = true;
+    pulse.state_on = true;
+    pulse.has_duration = true;
+    pulse.duration_sec = 120;
+    // Scheduled pulses ending on time: safety_cutoffs (its wire meaning),
+    // never max-on trips.
+    for (int i = 0; i < 3; ++i) {
+        const uint32_t t = (uint32_t)i * 1000000u;
+        ch.apply(pulse, t);
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                              (int)ch.tick(t + 120000));
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Timer,
+                              (int)ch.last_cutoff());
+    }
+    TEST_ASSERT_EQUAL_UINT32(3, ch.health().safety_cutoffs);
+    TEST_ASSERT_EQUAL_UINT32(0, ch.health().max_on_trips);
+
+    // A forced off (safe mode / OTA start) is not a max-on trip either.
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    ch.apply(on, 5000000);
+    ch.force_off(5000500, "safe mode");
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Forced, (int)ch.last_cutoff());
+    TEST_ASSERT_EQUAL_UINT32(4, ch.health().safety_cutoffs);
+    TEST_ASSERT_EQUAL_UINT32(0, ch.health().max_on_trips);
+
+    // A plain ON that nothing turns off: the max-on backstop trips.
+    ch.apply(on, 6000000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)ch.tick(6000000 + sp::kDefaultMaxOnMs + 1));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn, (int)ch.last_cutoff());
+    TEST_ASSERT_EQUAL_UINT32(5, ch.health().safety_cutoffs);
+    TEST_ASSERT_EQUAL_UINT32(1, ch.health().max_on_trips);
+
+    // A command or a ramp step is not a cutoff.
+    ch.apply(on, 9000000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::None, (int)ch.last_cutoff());
+    TEST_ASSERT_FALSE(ch.last_change_was_cutoff());
+}
+
+// ── a plain ON ends a running pulse; tweaks keep its deadline ──
+
+void test_plain_on_ends_a_running_pulse() {
+    sp::ChannelCommand pulse;
+    pulse.has_state = true;
+    pulse.state_on = true;
+    pulse.has_duration = true;
+    pulse.duration_sec = 300;
+    sp::ChannelCommand plain_on;
+    plain_on.has_state = true;
+    plain_on.state_on = true;
+
+    // {state:on,duration_sec:300}, then {state:on}: held until max-on.
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    ch.apply(pulse, 0);
+    ch.apply(plain_on, 60000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(300001));
+    TEST_ASSERT_TRUE(ch.is_on());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)ch.tick(sp::kDefaultMaxOnMs + 1));  // from t=0
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::MaxOn, (int)ch.last_cutoff());
+
+    // An ON whose duration_sec is ignored (<= 0) is indefinite too.
+    sp::Channel neg;
+    neg.configure(switch_cfg());
+    neg.apply(pulse, 0);
+    sp::ChannelCommand bad_duration = plain_on;
+    bad_duration.has_duration = true;
+    bad_duration.duration_sec = 0;
+    neg.apply(bad_duration, 1000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)neg.tick(300001));
+
+    // A pwm-only tweak mid-pulse keeps the deadline.
+    sp::Channel tweak;
+    tweak.configure(switch_cfg());
+    tweak.apply(pulse, 0);
+    sp::ChannelCommand pwm;
+    pwm.has_pwm = true;
+    pwm.pwm = 128;
+    tweak.apply(pwm, 60000);
+    TEST_ASSERT_EQUAL_UINT8(128, tweak.pwm8());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)tweak.tick(300001));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelCutoff::Timer, (int)tweak.last_cutoff());
+
+    // An ON with its own duration re-arms from its own start.
+    sp::Channel rearm;
+    rearm.configure(switch_cfg());
+    rearm.apply(pulse, 0);
+    sp::ChannelCommand longer = pulse;
+    longer.duration_sec = 600;
+    rearm.apply(longer, 60000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)rearm.tick(300001));
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)rearm.tick(660001));
+
+    // Dim: a level-only change (what a scene sends) keeps a timed level's
+    // deadline; an explicit {state:on} ends it.
+    sp::Channel dim;
+    dim.configure(dim_cfg());
+    sp::ChannelCommand timed_level;
+    timed_level.has_level = true;
+    timed_level.level = 800;
+    timed_level.has_duration = true;
+    timed_level.duration_sec = 300;
+    dim.apply(timed_level, 0);
+    sp::ChannelCommand scene_level;
+    scene_level.has_level = true;
+    scene_level.level = 500;
+    dim.apply(scene_level, 60000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)dim.tick(300001));
+    TEST_ASSERT_FALSE(dim.is_on());
+
+    sp::Channel dim2;
+    dim2.configure(dim_cfg("red"));
+    dim2.apply(timed_level, 0);
+    dim2.apply(plain_on, 60000);
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)dim2.tick(300001));
+    TEST_ASSERT_EQUAL_UINT16(1023, dim2.level10());
 }
 
 void test_millis_wrap_boundary() {
@@ -284,6 +564,9 @@ void test_channel_name_validation() {
     TEST_ASSERT_FALSE(sp::channel_name_valid("coredump"));
     TEST_ASSERT_FALSE(sp::channel_name_valid("coredump_ack"));
     TEST_ASSERT_FALSE(sp::channel_name_valid("ota_manifest"));
+    // The lighting-level doc's envelope keys.
+    TEST_ASSERT_FALSE(sp::channel_name_valid("ts"));
+    TEST_ASSERT_FALSE(sp::channel_name_valid("report"));
     // Length cap.
     TEST_ASSERT_FALSE(sp::channel_name_valid("abcdefghijklmnopqrstuvwxyz"));
 }
@@ -347,6 +630,12 @@ void test_wrap_helpers() {
     TEST_ASSERT_FALSE(sp::deadline_reached(0xFFFFFFF0u, 5u));
     TEST_ASSERT_TRUE(sp::deadline_reached(6u, 5u));
     TEST_ASSERT_EQUAL_UINT32(21, sp::elapsed_ms(5u, 0xFFFFFFF0u));
+    // elapsed_since: a `now` older than the stamp is 0, not ~49.7 days.
+    TEST_ASSERT_EQUAL_UINT32(0, sp::elapsed_since(1000u, 1001u));
+    TEST_ASSERT_EQUAL_UINT32(0, sp::elapsed_since(0xFFFFFFF0u, 5u));
+    TEST_ASSERT_EQUAL_UINT32(21, sp::elapsed_since(5u, 0xFFFFFFF0u));
+    TEST_ASSERT_EQUAL_UINT32(1, sp::elapsed_since(1001u, 1000u));
+    TEST_ASSERT_EQUAL_UINT32(0, sp::elapsed_since(7u, 7u));
 }
 
 // ── personality (wire contract: node type + channel preset names) ──
@@ -413,7 +702,7 @@ void test_personality_channels_relay_bank_presets() {
         TEST_ASSERT_EQUAL_STRING(names[i], out[i].name);
         TEST_ASSERT_EQUAL_INT((int)sp::ChannelMode::Switch, (int)out[i].mode);
         // Switch channels carry the 30-min max-on backstop — except aux,
-        // the documented misting-pump channel, which gets 60 s (docs#9).
+        // the documented misting-pump channel, which gets 60 s.
         TEST_ASSERT_EQUAL_UINT32(i == 3 ? sp::kAuxMaxOnMs : sp::kDefaultMaxOnMs,
                                  out[i].max_on_ms);
         // Preset names must survive channel-name validation (topic-safe, not
@@ -541,7 +830,7 @@ void test_scene_table_level_values() {
 // ── audit regressions (hardware-audit) ─────────────────────────
 
 void test_switch_explicit_off_wins_over_pwm() {
-    // fw-node#4: {"state":"off","pwm":200} used to turn the channel ON at
+    // {"state":"off","pwm":200} used to turn the channel ON at
     // 200 (pwm overrode the explicit off) while the Pi recorded it as off
     // and cleared its safety watchdog. An explicit off always wins.
     sp::Channel ch;
@@ -622,7 +911,7 @@ void test_off_command_never_leaves_a_stale_off_timer() {
 }
 
 void test_dim_accepts_pwm_as_level() {
-    // fw-node#6: the Pi automation only has `pwm` (documented 0-1023 for
+    // The Pi automation only has `pwm` (documented 0-1023 for
     // lighting). A dim channel used to ignore it and jump to 1023 on
     // {"state":"on","pwm":300}, and reject a bare {"pwm":300}.
     sp::Channel ch;
@@ -739,7 +1028,7 @@ void test_force_off_is_a_counted_cutoff_and_disarms_timers() {
 }
 
 void test_max_on_override_runtime_and_bounds() {
-    // docs#9: per-channel max-on is operator-tunable (cmd/config
+    // Per-channel max-on is operator-tunable (cmd/config
     // {"max_on_sec":{...}}) without resetting channel state.
     sp::Channel ch;
     ch.configure(switch_cfg("aux"));
@@ -779,7 +1068,7 @@ void test_max_on_override_runtime_and_bounds() {
 }
 
 void test_relay_aux_preset_has_short_pump_backstop() {
-    // docs#9: aux drives the misting pump in every documented build — a
+    // aux drives the misting pump in every documented build — a
     // lost off must not run it for 30 min (~3 L). Aux defaults to 60 s.
     sp::ChannelConfig out[4];
     sp::personality_channels(sp::Personality::RelayBank, out);
@@ -797,7 +1086,7 @@ void test_relay_aux_preset_has_short_pump_backstop() {
 }
 
 void test_co2_calibration_target_range() {
-    // fw-node#19 / fw-drivers-cam#13: FRC targets outside Sensirion's
+    // FRC targets outside Sensirion's
     // 400-2000 ppm reference range are refused before any sensor is told.
     TEST_ASSERT_TRUE(sp::co2_cal_target_valid(400));
     TEST_ASSERT_TRUE(sp::co2_cal_target_valid(420));
@@ -810,6 +1099,126 @@ void test_co2_calibration_target_range() {
     TEST_ASSERT_FALSE(sp::co2_cal_target_valid(65535));
 }
 
+// ── output stage failure (LEDC attach / duty write) ────────────
+
+// A channel whose LEDC attach failed has its gate held LOW. It used to stay
+// routed and accept {state:on}, then report state:on / pwm:255 while the fan
+// or heater was off. Now it refuses anything that would turn it on and
+// reports off; an explicit off is still accepted.
+void test_output_fault_refuses_on_and_reports_off() {
+    sp::Channel ch;
+    ch.configure(switch_cfg());
+    TEST_ASSERT_NULL(ch.output_fault());
+    sp::ChannelCommand on;
+    on.has_state = true;
+    on.state_on = true;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.apply(on, 0));
+    TEST_ASSERT_TRUE(ch.is_on());
+
+    // The fault turns a running channel off (a forced off).
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed,
+                          (int)ch.set_output_fault(100, "LEDC attach failed"));
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_UINT8(0, ch.pwm8());
+    TEST_ASSERT_EQUAL_UINT16(0, ch.duty10());
+    TEST_ASSERT_EQUAL_STRING("LEDC attach failed", ch.output_fault());
+
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected, (int)ch.apply(on, 200));
+    TEST_ASSERT_EQUAL_STRING("LEDC attach failed", ch.reason());
+    TEST_ASSERT_FALSE(ch.is_on());
+    sp::ChannelCommand pwm;
+    pwm.has_pwm = true;
+    pwm.pwm = 180;
+    pwm.has_duration = true;
+    pwm.duration_sec = 30;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected, (int)ch.apply(pwm, 300));
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)ch.tick(40000));
+
+    sp::ChannelCommand off;
+    off.has_state = true;
+    off.state_on = false;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)ch.apply(off, 400));
+    TEST_ASSERT_FALSE(ch.is_on());
+    TEST_ASSERT_EQUAL_STRING("LEDC attach failed", ch.output_fault());
+
+    // A dim channel faulted at boot (never on): no level, no scene, no ramp.
+    sp::Channel light;
+    light.configure(dim_cfg());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None,
+                          (int)light.set_output_fault(0, "LEDC attach failed"));
+    sp::ChannelCommand level;
+    level.has_level = true;
+    level.level = 800;
+    level.has_ramp = true;
+    level.ramp_sec = 10;
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Rejected, (int)light.apply(level, 10));
+    TEST_ASSERT_FALSE(light.ramping());
+    TEST_ASSERT_EQUAL_UINT16(0, light.level10());
+    TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::None, (int)light.tick(20000));
+}
+
+// The lighting bank's level report during a ramp_sec ramp: the duty follows
+// every step, but the report used to go out on every 1-LSB step of every
+// channel (~17/s per channel for 0→1023 over 60 s), each one a live
+// telemetry frame on the Pi. DimReportThrottle sends it at most once a
+// second while only ramp steps are pending, and at once when the ramp ends.
+void test_dim_ramp_level_report_is_throttled() {
+    sp::Channel ch[2];
+    ch[0].configure(dim_cfg("white"));
+    ch[1].configure(dim_cfg("blue"));
+    sp::DimReportThrottle throttle;
+    sp::ChannelCommand up;
+    up.has_level = true;
+    up.level = 1023;
+    up.has_ramp = true;
+    up.ramp_sec = 60;
+    for (sp::Channel& c : ch) {
+        TEST_ASSERT_EQUAL_INT((int)sp::ChannelEvent::Changed, (int)c.apply(up, 0));
+        TEST_ASSERT_TRUE(c.ramping());
+    }
+    throttle.reported(0);  // the command's own report
+
+    int changes = 0, reports = 0;
+    uint32_t last_report = 0, longest_gap = 0;
+    for (uint32_t now = 5; now <= 61000; now += 5) {  // a 5 ms loop pass
+        for (sp::Channel& c : ch) {
+            if (c.tick(now) == sp::ChannelEvent::Changed) {
+                ++changes;
+                throttle.note_change(c.ramping());
+            }
+        }
+        if (throttle.due(now)) {
+            ++reports;
+            if (now - last_report > longest_gap) longest_gap = now - last_report;
+            last_report = now;
+            throttle.reported(now);
+        }
+    }
+    TEST_ASSERT_FALSE(ch[0].ramping());
+    TEST_ASSERT_EQUAL_UINT16(1023, ch[0].level10());
+    TEST_ASSERT_TRUE(changes > 2000);  // every step still reached the duty
+    // ~1 per second for 60 s (+ the final level), not one per step.
+    TEST_ASSERT_TRUE(reports >= 60 && reports <= 62);
+    TEST_ASSERT_TRUE(longest_gap <= 1005);
+    // The ramp's end went out on the pass it happened.
+    TEST_ASSERT_EQUAL_UINT32(60000, last_report);
+
+    // A non-ramp change (a timer cutoff) is reported on the same pass.
+    sp::DimReportThrottle t2;
+    t2.reported(1000);
+    t2.note_change(/*ramp_step=*/true);
+    TEST_ASSERT_FALSE(t2.due(1500));
+    t2.note_change(/*ramp_step=*/false);
+    TEST_ASSERT_TRUE(t2.due(1500));
+    t2.reported(1500);
+    TEST_ASSERT_FALSE(t2.due(1600));  // nothing pending
+    // A `now` taken before a command's report in the same pass is not a
+    // ~49.7-day gap.
+    t2.note_change(true);
+    TEST_ASSERT_FALSE(t2.due(1499));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_switch_empty_payload_rejected);
@@ -818,6 +1227,12 @@ int main(int, char**) {
     RUN_TEST(test_max_on_dominates_long_duration);
     RUN_TEST(test_negative_duration_ignored_rest_applies);
     RUN_TEST(test_max_on_fires_and_reon_does_not_extend);
+    RUN_TEST(test_tick_older_than_the_on_stamp_is_not_a_cutoff);
+    RUN_TEST(test_ramp_tick_older_than_its_start_stays_in_range);
+    RUN_TEST(test_off_stamped_before_the_on_adds_no_on_time);
+    RUN_TEST(test_on_time_counts_runs_longer_than_the_wrap_window);
+    RUN_TEST(test_cutoff_kinds_and_max_on_trips);
+    RUN_TEST(test_plain_on_ends_a_running_pulse);
     RUN_TEST(test_millis_wrap_boundary);
     RUN_TEST(test_on_time_accounting);
     RUN_TEST(test_dim_level_and_off);
@@ -845,5 +1260,7 @@ int main(int, char**) {
     RUN_TEST(test_max_on_override_runtime_and_bounds);
     RUN_TEST(test_relay_aux_preset_has_short_pump_backstop);
     RUN_TEST(test_co2_calibration_target_range);
+    RUN_TEST(test_output_fault_refuses_on_and_reports_off);
+    RUN_TEST(test_dim_ramp_level_report_is_throttled);
     return UNITY_END();
 }

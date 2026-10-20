@@ -15,6 +15,8 @@
 //                        the id must match the server's NODE_ID_RE
 //   * is_ipv4_literal   — Secure MQTT with an IP host only verifies if the
 //                        Pi's certificate lists that IP
+//   * portal_save_resets_server_url — a new Pi address re-points the
+//                        camera's frame uploads
 //   * apply_peripheral_cmd — the Tier-3 peripheral enable flags (MH-Z19C,
 //                        HX711, reed) had no writer at all; plus the reed's
 //                        level-invert option (reed_inv)
@@ -98,6 +100,33 @@ inline const char* resolve_node_id(const std::string& form_node_id,
     return nullptr;
 }
 
+// ── v1 → v2 migration ──────────────────────────────────────────
+// The v1 per-role images ran under a hard-coded node id unless NVS held one,
+// and none of them ever wrote it: climate-01, relay-01, light-01 and cam-01,
+// by the Preferences namespace each used. nullptr for any other namespace.
+inline const char* legacy_default_node_id(const char* v1_namespace) {
+    if (v1_namespace == nullptr) return nullptr;
+    if (strcmp(v1_namespace, "climate") == 0) return "climate-01";
+    if (strcmp(v1_namespace, "relay") == 0) return "relay-01";
+    if (strcmp(v1_namespace, "lighting") == 0) return "light-01";
+    if (strcmp(v1_namespace, "camera") == 0) return "cam-01";
+    return nullptr;
+}
+
+// The node id a migrated v1 node keeps, so an OTA to v2 does not turn it into
+// a new MAC-derived node-XXXX (orphaning its rules, history and chamber): the
+// v1 namespace's own node_id when one was stored, else its MQTT username (the
+// identity the broker's per-node ACL grants — resolve_node_id's rule), else
+// the role's v1 default. Only valid ids are kept; "" = none (the MAC default).
+inline std::string migrated_node_id(const std::string& v1_node_id,
+                                    const std::string& v1_mqtt_user,
+                                    const char* v1_namespace) {
+    if (node_id_valid(v1_node_id)) return v1_node_id;
+    if (node_id_valid(v1_mqtt_user)) return v1_mqtt_user;
+    const char* def = legacy_default_node_id(v1_namespace);
+    return def != nullptr ? std::string(def) : std::string();
+}
+
 // Dotted-quad IPv4 literal: exactly four 0-255 decimal octets.
 inline bool is_ipv4_literal(const std::string& host) {
     int octets = 0;
@@ -119,6 +148,27 @@ inline bool is_ipv4_literal(const std::string& host) {
         if (i == n) return false;  // trailing dot
     }
     return octets == 4;
+}
+
+// The camera uploads frames to a stored server_url (an MQTT command, or a v1
+// migration) when it has one, else to http://<Pi address>:8000. A stored URL
+// used to outlive re-provisioning, so a camera whose Pi moved kept uploading
+// to the old address until a factory reset. A portal save that CHANGES the Pi
+// address (hostnames compare case-insensitively) therefore drops the stored
+// URL: uploads follow the address just typed. The node image never reads
+// server_url, so clearing it there is harmless.
+constexpr const char* kServerUrlKey = "server_url";  // NVS, camera image
+
+inline bool portal_save_resets_server_url(const std::string& old_pi_host,
+                                          const std::string& new_pi_host) {
+    if (old_pi_host.size() != new_pi_host.size()) return true;
+    for (size_t i = 0; i < old_pi_host.size(); ++i) {
+        char a = old_pi_host[i], b = new_pi_host[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return true;
+    }
+    return false;
 }
 
 // ── Tier-3 peripheral enable flags ─────────────────────────────
