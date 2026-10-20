@@ -68,7 +68,7 @@ async def test_notify_publishes_json_to_ntfy_root(ntfy):
 
 
 async def test_non_ascii_title_is_delivered(ntfy):
-    """srv-rest#0: httpx encodes header values as ASCII, so an em-dash or °F in
+    """httpx encodes header values as ASCII, so an em-dash or °F in
     the old `Title:` header raised UnicodeEncodeError before any connection and
     every contamination / harvest / temperature page was silently dropped."""
     await contamination_alert("Blue Oyster", "trichoderma", 0.9)
@@ -103,7 +103,7 @@ async def test_dedup_expired_window_passes(ntfy):
 
 
 async def test_failed_publish_does_not_consume_dedup_window(ntfy):
-    """srv-rest#4: a POST that fails must not arm the dedup window, otherwise a
+    """A POST that fails must not arm the dedup window, otherwise a
     transient ntfy outage suppresses the retry for the whole window."""
     ntfy.status = 503
     await notify("Title", "Msg", dedup_key="k", dedup_seconds=300)
@@ -129,7 +129,7 @@ async def test_notify_no_url_noop(ntfy, monkeypatch):
 
 
 async def test_critical_repeats_are_deduped(ntfy):
-    """srv-rest#4: the automation engine pages notify_critical on every telemetry
+    """The automation engine pages notify_critical on every telemetry
     frame while an emergency persists; identical CRITICAL pages must collapse."""
     for _ in range(5):
         await notify_critical("Temperature EMERGENCY", "temperature 120 (high); threshold 85")
@@ -146,7 +146,7 @@ async def test_critical_explicit_dedup_key(ntfy):
 
 
 async def test_node_offline_is_critical_tier(ntfy):
-    """srv-rest#27: node offline belongs to the CRITICAL tier (spec §6)."""
+    """Node offline belongs to the CRITICAL tier (spec §6)."""
     await node_offline("climate-01")
     assert len(ntfy) == 1
     assert _body(ntfy[0])["priority"] == 5
@@ -173,3 +173,54 @@ def test_module_docstring_describes_the_info_tier_that_exists():
     doc = notif.__doc__ or ""
     assert "batched hourly" not in doc and "daily summary" not in doc
     assert "at most once an hour" in doc
+
+
+# ── pages keyed per source ────────────────────────────────────────────────
+
+
+async def test_co2_pages_name_their_node_and_never_share_a_key(ntfy):
+    await notif.co2_alert(2500, "node-a")
+    await notif.co2_alert(45000, "node-b", life_safety=True)
+    await notif.co2_alert(2600, "node-a")  # node-a's own repeat collapses
+    titles = [_body(r)["title"] for r in ntfy]
+    assert titles == ["CO2 CRITICAL on node-a: 2500 ppm", "CO2 CRITICAL on node-b: 45000 ppm"]
+    assert "dangerous to people" in _body(ntfy[1])["message"]
+
+
+def test_a_co2_page_needs_its_node():
+    with pytest.raises(TypeError):
+        notif.co2_alert(2500)  # no shared, node-less key any more
+
+
+def test_the_unused_shared_key_temperature_wrapper_is_gone():
+    assert not hasattr(notif, "temperature_alert")
+
+
+async def test_phase_reminders_of_same_named_sessions_both_go_out(ntfy):
+    await notif.phase_reminder(1, "Blue Oyster", "fruiting", 40, 7)
+    await notif.phase_reminder(2, "Blue Oyster", "fruiting", 40, 7)
+    await notif.phase_reminder(1, "Blue Oyster", "fruiting", 41, 7)  # same session
+    assert len(ntfy) == 2
+
+
+async def test_each_page_reuses_one_tls_context(monkeypatch):
+    seen = []
+
+    class _Client:
+        def __init__(self, *args, verify=None, **kwargs):
+            seen.append(verify)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, timeout=None):
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("app.config.settings.ntfy_url", "https://ntfy.example")
+    monkeypatch.setattr(notif.httpx, "AsyncClient", _Client)
+    await notify("one", "m")
+    await notify("two", "m")
+    assert len(seen) == 2 and seen[0] is seen[1] and seen[0] is not None

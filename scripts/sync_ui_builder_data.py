@@ -21,17 +21,23 @@ scripts/port_builder.py (into design/src/data/builder.generated.ts):
   + the firmware images' PlatformIO envs <- firmware/platformio.ini (the
     /api/builder/firmware listing has no envs, so the page ALWAYS uses these
     to decide which images a tier needs)
+  + the tier SVGs themselves, byte for byte, in their own lazy chunk
+    (assets/builder.wiring.generated-*.js, from builder.wiring.generated.ts):
+    the page ALWAYS draws the tier-card thumbnails from it, and the main
+    diagram whenever the Pi's own copy can't be fetched
 
 This script checks two things in ui/dist:
 
   structure  the bundle calls the live endpoints above and carries none of the
              stale static Builder's tells (the 404 GitHub paths hardware/3d and
              hardware/wiring, the false "slicer-ready STL exports" claim, the
-             old /*sp-sync:*/ patch markers). Only a rebuild in the private
-             repo fixes these.
+             old /*sp-sync:*/ patch markers), and its embedded wiring SVGs are
+             docs/wiring-tier*.svg byte for byte (SHA-256). Only a rebuild in
+             the private repo fixes these: the SVG chunk is content-hashed and
+             imported by name, so it is never patched here, and regenerating
+             an SVG needs a dashboard rebuild.
   data       the built-in fallback equals what this server would serve. Model
-             and diagram sizes (sizeKb, a display label) are not compared, so
-             regenerating an SVG does not need a dashboard rebuild.
+             and diagram sizes (sizeKb, a display label) are not compared.
 
 Usage (needs the server's environment for the BOM imports):
     cd server && uv run python ../scripts/sync_ui_builder_data.py --check   # verify; exit 1 on any problem
@@ -45,11 +51,13 @@ the real fix is `python3 scripts/port_builder.py` + a pi-ui rebuild there (see
 README "Development"). A structural problem is never patched: the script
 exits 1 and asks for that rebuild.
 
-server/tests/test_ui_builder_sync.py runs these checks, so a BOM, model or
-firmware-env change that the dashboard does not carry fails the test suite.
+server/tests/test_ui_builder_sync.py runs these checks, so a BOM, model,
+wiring-SVG or firmware-env change that the dashboard does not carry fails the
+test suite.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -62,8 +70,7 @@ if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
 from app.builder.hardware_guides import TIERS  # noqa: E402
-from app.builder.models_router import MODELS_REPO_URL, _list_models  # noqa: E402
-from app.builder.service import platformio_image_envs  # noqa: E402
+from app.builder.service import MODELS_REPO_URL, list_models, platformio_image_envs  # noqa: E402
 
 DIST = REPO / "ui" / "dist"
 DOCS = REPO / "docs"
@@ -71,6 +78,8 @@ PLATFORMIO_INI = REPO / "firmware" / "platformio.ini"
 GITHUB_BLOB = "https://github.com/59psi/SporePrint/blob/main"
 MODELS_BUNDLE_URL = "/api/builder/models-bundle.zip"
 _BUNDLE_REF = re.compile(r"/assets/(index-[A-Za-z0-9_-]+)\.js")
+# The lazy chunk holding the tier SVGs, imported by the index bundle by name.
+_WIRING_CHUNK_REF = re.compile(r"\./(builder\.wiring\.generated-[A-Za-z0-9_-]+\.js)")
 
 # Tier id -> its wiring diagram's filename prefix under docs/ (the same map as
 # pi-ui's DIAGRAM_PREFIX and the private repo's port_builder.py).
@@ -162,7 +171,7 @@ def expected_tiers() -> list[dict]:
             "name": t.name,
             "tagline": t.tagline,
             "estimatedCost": t.estimated_cost,
-            "componentCount": sum(c.quantity for c in t.components),
+            "componentCount": len(t.components),
             "bestFor": t.best_for,
             "speciesSupport": t.species_support,
             "whatYouGet": list(t.what_you_get),
@@ -189,12 +198,22 @@ def expected_models() -> list[dict]:
             "filename": m["filename"],
             "title": m["title"],
             "description": m["description"],
+            "descriptionTruncated": m["description_truncated"],
             "url": m["url"],
             "sourceUrl": m["source_url"],
             "sizeKb": round(m["size_bytes"] / 1024, 1),
         }
-        for m in _list_models()
+        for m in list_models()
     ]
+
+
+def _tier_svg(tier_id: str) -> Path:
+    """The tier's one docs/wiring-tierN-*.svg."""
+    prefix = _DIAGRAM_PREFIX[tier_id]
+    matches = sorted(DOCS.glob(f"{prefix}*.svg"))
+    if len(matches) != 1:
+        raise SystemExit(f"expected one docs/{prefix}*.svg, found {[p.name for p in matches]}")
+    return matches[0]
 
 
 def expected_diagrams() -> list[dict]:
@@ -202,10 +221,7 @@ def expected_diagrams() -> list[dict]:
     out = []
     for t in TIERS:
         prefix = _DIAGRAM_PREFIX[t.id]
-        matches = sorted(DOCS.glob(f"{prefix}*.svg"))
-        if len(matches) != 1:
-            raise SystemExit(f"expected one docs/{prefix}*.svg, found {[p.name for p in matches]}")
-        svg = matches[0]
+        svg = _tier_svg(t.id)
         out.append({
             "tierId": t.id,
             "label": svg.stem.removeprefix(prefix),
@@ -221,6 +237,17 @@ def expected_firmware_envs() -> dict[str, list[str]]:
     """Image source dir -> its PlatformIO envs ({"src/node": [...], ...})."""
     envs = platformio_image_envs(PLATFORMIO_INI)
     return {path: envs[image] for image, path in _IMAGE_PATHS.items()}
+
+
+def expected_wiring_svgs() -> list[dict]:
+    """Per tier, the docs/ SVG the bundle must embed: name, size and SHA-256
+    of its bytes (port_builder.py's BuilderWiringSvg `bytes` / `sha256`)."""
+    out = []
+    for t in TIERS:
+        raw = _tier_svg(t.id).read_bytes()
+        out.append({"tierId": t.id, "filename": _tier_svg(t.id).name,
+                    "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+    return out
 
 
 def expected() -> dict:
@@ -431,6 +458,71 @@ def _without_size(items: list) -> list:
     return [{k: v for k, v in d.items() if k != "sizeKb"} if isinstance(d, dict) else d for d in items]
 
 
+# The chunk's BUILDER_WIRING_SVGS object: {bare_bones: {tierId: ..., svg: ...}, ...}.
+_WIRING_BLOCK = re.compile(rf"\{{\s*{_key('bare_bones')}\{{\s*{_key('tierId')}")
+
+
+@functools.lru_cache(maxsize=4)
+def _parse_wiring_chunk(path: str, size: int, mtime_ns: int) -> object:
+    """The chunk's tier-SVG object (cached per file version: it is ~170 KB of
+    JS and every check reads it). Raises LookupError."""
+    text = Path(path).read_text(encoding="utf-8")
+    hits = list(_WIRING_BLOCK.finditer(text))
+    if len(hits) != 1:
+        raise LookupError(f"found the built-in wiring SVGs {len(hits)} times in "
+                          f"{Path(path).name}, expected once")
+    try:
+        return parse_js_literal(text, hits[0].start())[0]
+    except JsLiteralError as exc:
+        raise LookupError(f"could not read the built-in wiring SVGs: {exc}") from exc
+
+
+def read_wiring_svgs(js: str) -> dict:
+    """The tier SVGs in the lazy chunk the bundle `js` imports, by tier id
+    (raises LookupError)."""
+    names = sorted(set(_WIRING_CHUNK_REF.findall(js)))
+    if len(names) != 1:
+        raise LookupError(f"the bundle imports {len(names)} builder.wiring.generated chunks, "
+                          "expected one")
+    chunk = DIST / "assets" / names[0]
+    if not chunk.is_file():
+        raise LookupError(f"the bundle imports {names[0]}, which is missing")
+    stat = chunk.stat()
+    svgs = _parse_wiring_chunk(str(chunk), stat.st_size, stat.st_mtime_ns)
+    if not isinstance(svgs, dict):
+        raise LookupError("the built-in wiring SVGs are not an object keyed by tier")
+    return svgs
+
+
+def wiring_problems(js: str) -> list[str]:
+    """Where the bundle's embedded tier SVGs differ from docs/wiring-tier*.svg.
+
+    The page draws every tier-card thumbnail from this copy, and the main
+    diagram whenever the Pi's own copy can't be fetched, so a regenerated SVG
+    the bundle does not carry shows the old wiring. Compared by the bytes of
+    the embedded text, not just its recorded size and hash.
+    """
+    try:
+        svgs = read_wiring_svgs(js)
+    except LookupError as exc:
+        return [str(exc)]
+    problems = []
+    for want in expected_wiring_svgs():
+        have = svgs.get(want["tierId"])
+        if not isinstance(have, dict) or not isinstance(have.get("svg"), str):
+            problems.append(f"the built-in wiring SVGs have no {want['tierId']} diagram")
+            continue
+        embedded = have["svg"].encode("utf-8")
+        got = (have.get("filename"), have.get("bytes"), have.get("sha256"),
+               len(embedded), hashlib.sha256(embedded).hexdigest())
+        if got != (want["filename"], want["bytes"], want["sha256"], want["bytes"], want["sha256"]):
+            problems.append(
+                f"the built-in wiring SVG for {want['tierId']} ({have.get('filename')}, sha256 "
+                f"{str(have.get('sha256'))[:12]}…) is not docs/{want['filename']} (sha256 "
+                f"{want['sha256'][:12]}…): its tier cards and offline diagram show old wiring")
+    return problems
+
+
 def structural_problems(js: str) -> list[str]:
     """What only a rebuild of pi-ui (private repo) can fix."""
     problems = []
@@ -451,6 +543,7 @@ def structural_problems(js: str) -> list[str]:
             _locate(js, name)
         except LookupError as exc:
             problems.append(str(exc))
+    problems.extend(wiring_problems(js))
     return problems
 
 
@@ -534,7 +627,7 @@ def write() -> str:
 
 def _rebuild_message(structural: list[str]) -> str:
     return (
-        "ui/dist's Builder page is not the live-data dashboard:\n  - "
+        "ui/dist's Builder page needs a rebuild (this script cannot patch these):\n  - "
         + "\n  - ".join(structural)
         + "\nRebuild it in the private monorepo: python3 scripts/port_builder.py "
         "--public-repo <this repo>, then `pnpm --filter @sporeprint/pi-ui build` and "

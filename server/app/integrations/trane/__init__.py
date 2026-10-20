@@ -1,9 +1,9 @@
-"""v4.1.1 Trane HVAC integration — Trane Nexia / BAS bridge (premium).
+"""v4.1.1 Trane HVAC integration — Trane Nexia / BAS bridge (free).
 
 Trane's residential Nexia APIs and commercial BAS APIs are both cloud-
-mediated; the operator authenticates with their Trane account and we
-hold the access token on the Pi (encrypted at rest). Premium per
-``feedback_tier_model``.
+mediated; the operator authenticates with their Trane account, whose
+password stays on the Pi (encrypted at rest), and the Pi holds the access
+token in memory. Free like every driver on the Pi.
 
 ⚠ Live-device verification needed: Trane's API revisions vary across
 account types (Nexia vs Tracer); the parsing layer is tolerant by

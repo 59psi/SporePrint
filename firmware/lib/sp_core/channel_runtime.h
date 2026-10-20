@@ -25,8 +25,18 @@
 //     Pi clears its safety watchdog on an off it sends
 //   * the off-timer is only ever armed for a channel that ends up ON
 //   * duration_sec <= 0 is ignored with a reason; > 3600 clamps
+//   * an explicit "state":"on" without a positive duration_sec is an
+//     indefinite ON: it ends a pulse that is still timing out (the Pi holds
+//     a native ON without a duration until it sends an off). pwm / level
+//     tweaks and scenes keep a running pulse's deadline. Max-on backstops
+//     both.
 //   * re-ON while already on does NOT restart the max-on clock
-//   * all deadline math is millis-wrap-safe
+//   * a channel whose output stage failed (set_output_fault) stays off and
+//     refuses every command that would turn it on, so it never reports a
+//     state its gate — held LOW — does not have
+//   * all deadline math is millis-wrap-safe, and a `now` a few ms older than
+//     the last command's stamp (taken earlier in the same loop pass) reads
+//     as no time elapsed, never as a ~49.7-day run
 //   * health counters live HERE, mutated by the same code that changes
 //     state — there is no parallel struct for a composition root to forget
 //
@@ -69,8 +79,23 @@ struct ChannelConfig {
 
 struct ChannelHealth {
     uint32_t cycle_count = 0;     // off→on transitions
-    uint32_t on_time_sec = 0;     // accumulated completed-run seconds
-    uint32_t safety_cutoffs = 0;  // duration expiries + max-on trips
+    // Accumulated on-time in whole seconds; tick() folds the running run in,
+    // so a long run never outgrows the wrap-safe window.
+    uint32_t on_time_sec = 0;
+    // Every firmware-imposed off: duration expiries, max-on trips and forced
+    // offs (safe mode, OTA start). A timed pulse ending on schedule counts.
+    uint32_t safety_cutoffs = 0;
+    // Max-on backstop trips only: the channel stayed on past its max-on
+    // without the Pi turning it off (a lost off, a stuck rule).
+    uint32_t max_on_trips = 0;
+};
+
+// Why the last Changed event switched the channel off on its own.
+enum class ChannelCutoff : uint8_t {
+    None = 0,  // not a cutoff (a command, a ramp step)
+    Timer,     // the command's duration_sec ran out: a pulse ending normally
+    MaxOn,     // the max-on backstop fired
+    Forced,    // force_off(): link-loss safe mode, OTA start
 };
 
 // Neutral parsed command (the JSON → struct parse lives at the MQTT edge).
@@ -103,7 +128,9 @@ public:
     ChannelEvent apply(const ChannelCommand& cmd, uint32_t now_ms);
 
     // Advance time: duration expiry, max-on cutoff, ramp interpolation.
-    // Returns Changed when the output moved (cutoffs set reason()).
+    // Returns Changed when the output moved (cutoffs set reason() and
+    // last_cutoff()). Pass a fresh millis(): a `now` older than the last
+    // command's stamp is treated as no time elapsed.
     ChannelEvent tick(uint32_t now_ms);
     // Firmware-imposed off (link-loss safe mode, OTA start): output off,
     // off-timer and ramp disarmed, counted as a safety cutoff. Returns
@@ -115,7 +142,18 @@ public:
     // coercion as configure(): a switch channel cannot drop its backstop.
     void set_max_on_ms(uint32_t max_on_ms);
 
+    // The output stage is unusable (the LEDC attach or a duty write failed):
+    // the channel goes off (a forced off) and from then on refuses any
+    // command that would turn it on, with `reason` (static) as the refusal;
+    // an explicit off is still accepted. Returns Changed when it was on.
+    ChannelEvent set_output_fault(uint32_t now_ms, const char* reason);
+    // The fault set_output_fault() recorded; nullptr while the output works.
+    const char* output_fault() const { return fault_; }
+
     bool is_on() const { return on_; }
+    // A ramp_sec ramp is still moving the level: tick()'s Changed events
+    // are its intermediate steps until it reaches the target.
+    bool ramping() const { return ramping_; }
     uint8_t pwm8() const { return pwm8_; }       // switch-mode output
     uint16_t level10() const { return level10_; }  // dim-mode output
     // Unified 10-bit duty for the LEDC write site.
@@ -128,18 +166,25 @@ public:
     // Live on-time including the current run (for health reports).
     uint32_t on_time_sec_live(uint32_t now_ms) const;
     const char* reason() const { return reason_; }
-    // True when the last Changed event was a safety cutoff (reporting hook).
-    bool last_change_was_cutoff() const { return last_was_cutoff_; }
+    // Why the last Changed event switched the channel off (reporting hook:
+    // the switch report's trigger and the log level).
+    ChannelCutoff last_cutoff() const { return last_cutoff_; }
+    // True when the last Changed event was any firmware-imposed off.
+    bool last_change_was_cutoff() const {
+        return last_cutoff_ != ChannelCutoff::None;
+    }
 
 private:
     void set_output(bool on, uint8_t pwm8, uint16_t level10, uint32_t now_ms);
+    void cut_off(ChannelCutoff why, const char* reason, uint32_t now_ms);
 
     ChannelConfig cfg_;
     ChannelHealth health_;
     bool on_ = false;
     uint8_t pwm8_ = 0;
     uint16_t level10_ = 0;
-    uint32_t on_since_ms_ = 0;
+    uint32_t on_since_ms_ = 0;  // the OFF→ON edge (max-on clock)
+    uint32_t run_mark_ms_ = 0;  // on-time counted up to here (whole seconds)
     bool off_timer_armed_ = false;
     uint32_t off_at_ms_ = 0;
     // Dim ramp state.
@@ -149,7 +194,8 @@ private:
     uint32_t ramp_start_ms_ = 0;
     uint32_t ramp_end_ms_ = 0;
     const char* reason_ = "";
-    bool last_was_cutoff_ = false;
+    ChannelCutoff last_cutoff_ = ChannelCutoff::None;
+    const char* fault_ = nullptr;  // output stage unusable (set_output_fault)
 };
 
 }  // namespace sp

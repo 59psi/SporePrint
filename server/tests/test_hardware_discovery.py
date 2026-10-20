@@ -86,6 +86,34 @@ def test_claim_rejects_path_injection_node_id(client):
     ).status_code == 400
 
 
+async def test_a_claim_naming_a_chamber_lists_the_node_there(client):
+    """A claim alone puts the node in no chamber, so chamber scoping (and the
+    Fleet page) never saw it; with chamber_id the node joins that chamber."""
+    await _register_node("relay-01")
+    await _register_node("climate-01", "climate")
+    chamber = client.post("/api/chambers", json={"name": "Closet", "node_ids": ["climate-01"]}).json()
+    r = client.post("/api/hardware/claim", json={"node_id": "relay-01", "chamber_id": chamber["id"]})
+    assert r.status_code == 200
+    assert r.json() == {"status": "claimed", "node_id": "relay-01", "chamber_id": chamber["id"]}
+    assert client.get(f"/api/chambers/{chamber['id']}").json()["node_ids"] == ["climate-01", "relay-01"]
+    # Claiming into it again does not list the node twice.
+    client.post("/api/hardware/claim", json={"node_id": "relay-01", "chamber_id": chamber["id"]})
+    assert client.get(f"/api/chambers/{chamber['id']}").json()["node_ids"] == ["climate-01", "relay-01"]
+    nodes = {n["node_id"]: n for n in client.get("/api/hardware/discover").json()["nodes"]}
+    assert nodes["relay-01"]["claimed"] is True
+
+
+async def test_a_claim_into_a_missing_chamber_writes_nothing(client):
+    await _register_node("relay-01")
+    r = client.post("/api/hardware/claim", json={"node_id": "relay-01", "chamber_id": 999})
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Chamber not found"
+    assert client.get("/api/hardware/discover").json()["nodes"][0]["claimed"] is False
+    for bad in ("1", 1.5, True):
+        r = client.post("/api/hardware/claim", json={"node_id": "relay-01", "chamber_id": bad})
+        assert r.status_code == 400
+
+
 # ── service layer directly ────────────────────────────────────────────────
 
 

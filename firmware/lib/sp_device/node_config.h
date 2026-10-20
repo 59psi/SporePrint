@@ -21,11 +21,14 @@
 #include <string>
 
 #include "kv_store.h"
+#include "log_forward.h"
 #include "personality.h"
 
 namespace sp_device {
 
-// KvStore over ESP32 Preferences/NVS, one namespace.
+// KvStore over ESP32 Preferences/NVS, one namespace. A write NVS refuses
+// (full partition, flash fault) is logged, never silent; code whose safety
+// depends on a write reads it back (tls_policy.h persist_verified_ca).
 class NvsKvStore : public sp::KvStore {
 public:
     explicit NvsKvStore(const char* ns = "spnode") : ns_(ns) {}
@@ -39,9 +42,11 @@ public:
     }
     void set_string(const char* key, const std::string& value) override {
         Preferences p;
-        p.begin(ns_, false);
-        p.putString(key, value.c_str());
+        // putString returns the string's length on success (so 0 for "").
+        const bool ok = p.begin(ns_, false) &&
+                        p.putString(key, value.c_str()) == value.size();
         p.end();
+        if (!ok) write_failed(key);
     }
     int32_t get_int(const char* key, int32_t def) override {
         Preferences p;
@@ -52,9 +57,9 @@ public:
     }
     void set_int(const char* key, int32_t value) override {
         Preferences p;
-        p.begin(ns_, false);
-        p.putInt(key, value);
+        const bool ok = p.begin(ns_, false) && p.putInt(key, value) > 0;
         p.end();
+        if (!ok) write_failed(key);
     }
     bool get_bool(const char* key, bool def) override {
         Preferences p;
@@ -65,9 +70,9 @@ public:
     }
     void set_bool(const char* key, bool value) override {
         Preferences p;
-        p.begin(ns_, false);
-        p.putBool(key, value);
+        const bool ok = p.begin(ns_, false) && p.putBool(key, value) > 0;
         p.end();
+        if (!ok) write_failed(key);
     }
     void erase_all() override {
         Preferences p;
@@ -77,6 +82,11 @@ public:
     }
 
 private:
+    void write_failed(const char* key) const {
+        SP_LOG(LOG_ERROR, "[NVS] write of %s/%s FAILED (NVS full or flash fault)",
+               ns_, key);
+    }
+
     const char* ns_;
 };
 
@@ -90,6 +100,10 @@ struct NodeConfig {
     std::string mqtt_pass;
     std::string node_id;       // default node-XXXX from MAC
     std::string hmac_key;      // empty = unprovisioned (warn+accept posture)
+    // NVS "hmac_key_prev": the key a portal save replaced, still accepted
+    // until hmac_key verifies a frame (a key rotation under way; empty =
+    // none). command_auth retires it (sp_core/hmac_verify.h).
+    std::string hmac_key_prev;
     std::string ota_pass;      // empty = OTA disabled
     std::string ntp_host;      // default pool.ntp.org (Pi-as-NTP for airgap)
     std::string paired_pi_host;

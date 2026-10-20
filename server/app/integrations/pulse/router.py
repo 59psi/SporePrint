@@ -23,11 +23,12 @@ def _driver():
 async def list_devices_for_mapping():
     """Live device-list scan for the settings UI's mapping table.
 
-    Uses the *staged* config so the operator can preview their account's
-    devices before flipping the driver enabled. Returns 400 if creds
-    are not yet saved, 502 on Pulse-side errors.
+    Uses the saved config (even with the driver disabled) so the operator
+    can preview their account's devices before flipping the driver enabled.
+    Returns 400 if creds are not yet saved, 502 on Pulse-side errors.
     """
     drv = _driver()
+    await _registry.apply_stored_config("pulse")
     cfg = drv.config
     if not cfg.email or not cfg.password:
         raise HTTPException(400, "configure email and password first")

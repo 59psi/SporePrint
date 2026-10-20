@@ -15,6 +15,7 @@ import time
 import httpx
 
 from ..config import settings
+from ..http_tls import tls_context
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +76,9 @@ async def notify(
         payload["tags"] = list(tags)
 
     try:
-        async with httpx.AsyncClient() as client:
+        # The shared TLS context: a client of its own would load the CA
+        # bundle on the event loop for every page.
+        async with httpx.AsyncClient(verify=tls_context()) as client:
             response = await client.post(
                 settings.ntfy_url.rstrip("/") + "/", json=payload, timeout=5,
             )
@@ -141,21 +144,31 @@ async def contamination_alert(
     )
 
 
-async def temperature_alert(temp_f: float, direction: str):
-    await notify_critical(
-        f"Temperature {'HIGH' if direction == 'high' else 'LOW'}: {temp_f:.1f}°F",
-        f"Temperature is critically {direction}. Check environment immediately.",
-        tags=["thermometer"],
-        dedup_key=f"temperature:{direction}",
+async def co2_alert(
+    co2_ppm: int,
+    node_id: str,
+    *,
+    dedup_key: str | None = None,
+    life_safety: bool = False,
+) -> bool:
+    """CRITICAL CO2 page naming its node. True when it was published.
+
+    Collapsed per node (``dedup_key``, else one key per ``node_id``), never
+    under a shared key: one shared key let a CO2 emergency on one node
+    silence every other node's page, the life-safety one included, for as
+    long as the first kept re-paging. ``life_safety`` marks a level
+    dangerous to people, not just to the grow.
+    """
+    message = (
+        "CO2 is at a level dangerous to people. Ventilate the room before going in."
+        if life_safety else
+        "CO2 levels dangerously high. Check ventilation."
     )
-
-
-async def co2_alert(co2_ppm: int):
-    await notify_critical(
-        f"CO2 CRITICAL: {co2_ppm} ppm",
-        "CO2 levels dangerously high. Check ventilation.",
-        tags=["cloud"],
-        dedup_key="co2:critical",
+    return await notify(
+        f"CO2 CRITICAL on {node_id}: {co2_ppm} ppm", message,
+        priority="critical", tags=["cloud"],
+        dedup_key=dedup_key or f"co2:critical:{node_id}",
+        dedup_seconds=CRITICAL_DEDUP_SECONDS,
     )
 
 
@@ -188,18 +201,26 @@ async def harvest_ready(
     )
 
 
-async def phase_reminder(session_name: str, phase: str, days_in_phase: int, expected_max: int):
+async def phase_reminder(
+    session_id: int, session_name: str, phase: str, days_in_phase: int, expected_max: int,
+):
+    """INFO: a session has overrun its phase. Deduplicated per session, not
+    per name: sessions are named after their species, so a second grow of
+    the same species lost its reminder every day."""
     await notify_info(
         f"Phase check — {session_name}",
         f"Day {days_in_phase}/{expected_max} of {phase.replace('_', ' ')}. Consider advancing if ready.",
-        dedup_key=f"phase:{session_name}:{phase}",
+        dedup_key=f"phase:{session_id}:{phase}",
     )
 
 
-async def pink_oyster_harvest():
-    """Pink oyster specific: cannot be refrigerated."""
+async def harvest_notice(species_name: str, notice: str, dedup_key: str | None = None):
+    """CRITICAL: a harvest that must be handled at once — the species
+    profile's harvest_notice (pink oyster cannot be refrigerated; shaggy mane
+    turns to ink within hours)."""
     await notify_critical(
-        "PINK OYSTER — Process Immediately!",
-        "Pink oyster harvest detected. CANNOT be refrigerated. Process/cook within hours.",
+        f"{species_name.upper()} — Process Immediately!",
+        notice,
         tags=["warning", "mushroom"],
+        dedup_key=dedup_key,
     )

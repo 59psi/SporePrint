@@ -125,7 +125,7 @@ def test_klap_session_round_trip():
     # Frame is 32-byte sig + ciphertext (length must be 16-byte aligned).
     assert len(frame) >= 32 + 16
     assert (len(frame) - 32) % 16 == 0
-    decrypted = session.decrypt(frame)
+    decrypted = session.decrypt(frame, seq)
     assert decrypted == plaintext
 
 
@@ -313,7 +313,7 @@ async def test_set_power_drives_handshake_then_encrypted_request(
                 "pw",
             )
             mirror.seq += 1
-            decoded = mirror.decrypt(bytes(content))
+            decoded = mirror.decrypt(bytes(content), mirror.seq)
             captured["request_payload"] = _json.loads(decoded)
             # Returning a non-2xx skips the driver's response-decrypt
             # path, which we don't need to exercise here.

@@ -108,4 +108,9 @@ bool Scd4x::recalibrate(uint16_t reference_ppm) {
     return ok;
 }
 
+bool Scd4x::restart_periodic() {
+    if (xport_.cmd_arg(kCmdSetAsc, 0)) clock_.delay_ms(kShortDelayMs);
+    return xport_.cmd(kCmdStartPeriodic);
+}
+
 }  // namespace sp

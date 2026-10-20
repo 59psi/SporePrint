@@ -30,6 +30,7 @@ from app.mqtt import (
     RESERVED_NODE_IDS,
     _handle_message,
     is_reserved_node_id,
+    is_service_account,
     purge_reserved_nodes,
 )
 
@@ -277,6 +278,77 @@ def test_plug_account_cannot_touch_node_topics():
     assert not can_subscribe("sp-3p", "sporeprint/#")
 
 
+# ── per-plug logins (scripts/add-plug-mqtt-user.sh) ─────────────────────
+
+
+def test_a_per_plug_login_reaches_its_own_plug_only():
+    """sp-3p is one password in every plug, readable from an unprotected
+    plug's web page: it switches every other plug and fakes their state. A
+    login named after the plug's topic level is scoped to that tree."""
+    for topic in ("tasmota/heater/stat/POWER", "tasmota/heater/stat/RESULT",
+                  "tasmota/heater/tele/SENSOR", "tasmota/heater/tele/LWT",
+                  "shellies/heater/relay/0", "shellies/heater/relay/0/power",
+                  "shellies/heater/events/rpc", "shellies/heater/status/switch:0",
+                  "shellies/heater/online", "shellies/heater/sporeprint/rpc"):
+        assert can_publish("heater", topic), topic
+    for sub in ("tasmota/heater/cmnd/POWER", "shellies/heater/rpc",
+                "shellies/heater/relay/0/command", "shellies/heater/command/#"):
+        assert can_subscribe("heater", sub), sub
+    for topic in ("tasmota/humidifier/stat/POWER", "tasmota/humidifier/cmnd/POWER",
+                  "shellies/humidifier/relay/0", "shellies/humidifier/rpc",
+                  "sporeprint/relay-01/cmd/fae"):
+        assert not can_publish("heater", topic), topic
+    for sub in ("tasmota/#", "shellies/#", "tasmota/humidifier/cmnd/POWER"):
+        assert not can_subscribe("heater", sub), sub
+    # The shared login keeps working for plugs already set up with it.
+    assert can_publish("sp-3p", "tasmota/humidifier/stat/POWER")
+    _users, patterns = _parse_acl()
+    assert ("readwrite", "tasmota/%u/#") in patterns and ("readwrite", "shellies/%u/#") in patterns
+
+
+async def test_plug_logins_never_become_nodes_and_stay_plugs(monkeypatch):
+    """The per-node patterns apply to every login: a plug login could post
+    sporeprint/<its name>/… and register as a node feeding the rules. Listed
+    in SPOREPRINT_MQTT_PLUG_USERS, it is reserved like a service account,
+    while its plug frames still make a plug."""
+    monkeypatch.setattr(settings, "mqtt_plug_users", "heater, Humidifier")
+    assert is_reserved_node_id("HEATER") and is_reserved_node_id("humidifier")
+    assert not is_service_account("heater")
+    sio = _Sio()
+    await _handle_message(sio, "sporeprint/heater/status/heartbeat", {"type": "relay", "ip": "10.0.0.9"})
+    await _handle_message(sio, "sporeprint/humidifier/telemetry", {"temp_f": 50.0, "ts": 5000})
+    assert await _node_rows() == []
+    await _handle_message(sio, "tasmota/heater/stat/POWER", "ON")
+    async with get_db() as db:
+        rows = await (await db.execute("SELECT plug_id FROM smart_plugs")).fetchall()
+    assert [r["plug_id"] for r in rows] == ["plug-heater"]
+
+
+async def test_service_accounts_never_become_plugs(monkeypatch):
+    """The per-plug patterns let every login post under tasmota/<its name>/
+    and shellies/<its name>/: a service account's frames there are dropped."""
+    monkeypatch.setattr(settings, "mqtt_username", "pi-core")
+    sio = _Sio()
+    for account in (*sorted(RESERVED_NODE_IDS), "pi-core", "SP-Telemetry"):
+        await _handle_message(sio, f"tasmota/{account}/stat/POWER", "ON")
+        await _handle_message(sio, f"shellies/{account}/relay/0", "on")
+        await _handle_message(sio, f"shellies/{account}/online", "true")
+    async with get_db() as db:
+        rows = await (await db.execute("SELECT plug_id FROM smart_plugs")).fetchall()
+    assert rows == [] and sio.events == []
+
+
+async def test_plug_login_rows_registered_earlier_are_purged(monkeypatch):
+    monkeypatch.setattr(settings, "mqtt_plug_users", "heater")
+    async with get_db() as db:
+        for node_id in ("heater", "climate-01"):
+            await db.execute("INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
+                             "VALUES (?, 'relay', 1)", (node_id,))
+        await db.commit()
+    assert await purge_reserved_nodes() == 1
+    assert await _node_rows() == ["climate-01"]
+
+
 # ── per-node pattern scoping ─────────────────────────────────────────────
 
 
@@ -349,8 +421,12 @@ def test_every_firmware_topic_is_granted_to_the_node():
 
 def test_setup_provisions_the_accounts():
     setup = SETUP_SH.read_text()
-    assert "mosquitto_passwd -b config/mosquitto/passwd server" in setup, (
+    # Both paths: the broker image (docker) and the host's mosquitto_passwd.
+    assert 'server "$MQTT_SERVER_PASS" sp-3p "$MQTT_3P_PASS"' in setup, (
         "setup.sh no longer provisions the `server` broker user"
+    )
+    assert 'sp_host_passwd_set config/mosquitto/passwd server "$MQTT_SERVER_PASS"' in setup, (
+        "setup.sh no longer provisions the `server` broker user without docker"
     )
     assert "sp-3p" in setup, (
         "setup.sh no longer provisions the sp-3p (smart plug) broker user — "
@@ -417,6 +493,21 @@ def test_every_service_account_is_a_reserved_node_id():
     )
 
 
+def test_add_node_script_refuses_exactly_the_reserved_ids():
+    """add-node-mqtt-user.sh gives its argument a fresh password and reloads
+    the broker. For a service account that locks the real owner out (the Pi
+    server, or every smart plug), so the script refuses every id the server
+    reserves, through the shared sp_service_account (which also covers the
+    configured SPOREPRINT_MQTT_USERNAME)."""
+    lib = (REPO_ROOT / "scripts" / "lib" / "broker.sh").read_text()
+    body = re.search(r"^sp_service_account\(\) \{\n(.*?)^\}", lib, re.M | re.S)
+    assert body, "scripts/lib/broker.sh no longer defines sp_service_account"
+    m = re.search(r'for account in ([a-z0-9_ -]+) "\$server_user"', body.group(1))
+    assert m, "sp_service_account no longer lists the service accounts"
+    assert set(m.group(1).split()) == set(RESERVED_NODE_IDS)
+    assert re.search(r'sp_service_account "\$ROOT" "\$NODE_ID"', ADD_NODE_SH.read_text())
+
+
 class _Sio:
     def __init__(self):
         self.events: list[tuple[str, dict]] = []
@@ -434,7 +525,7 @@ async def _node_rows() -> list[str]:
 async def test_service_accounts_never_become_nodes(monkeypatch):
     reached: list[str] = []
 
-    async def _spy(node_id, readings, sio=None):
+    async def _spy(node_id, readings, sio=None, **kwargs):
         reached.append(f"rules:{node_id}")
 
     async def _forward(*args, **kwargs):

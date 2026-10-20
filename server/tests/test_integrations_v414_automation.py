@@ -204,12 +204,13 @@ async def test_signed_rpc_frame_passes_verification(fresh_keystore, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_unsigned_frame_still_accepted_during_rollout(
+async def test_unsigned_frames_need_the_rollout_setting(
     fresh_keystore, monkeypatch
 ):
-    """Pi v4.1.4 still accepts unsigned frames so a cloud running an
-    older version doesn't break. Once both sides are at v4.1.4+ we can
-    flip to require signatures."""
+    """Pi v4.1.4 accepted unsigned frames so a cloud running an older
+    version didn't break. Every cloud signs them now, so they are refused
+    unless the operator sets SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS
+    to false."""
     from app.cloud import integrations_proxy
     from app.config import settings
 
@@ -223,6 +224,13 @@ async def test_unsigned_frame_still_accepted_during_rollout(
     sio = _FakeSio()
     await integrations_proxy.handle_request(
         sio, {"id": "x", "action": "list"}  # no signature
+    )
+    fake_dispatch.assert_not_awaited()
+    assert sio.emits[0][1]["status"] == 401
+
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
+    await integrations_proxy.handle_request(
+        sio, {"id": "y", "action": "list"}  # no signature
     )
     fake_dispatch.assert_awaited_once()
 

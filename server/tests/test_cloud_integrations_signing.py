@@ -7,12 +7,14 @@ must not be weaker than the command channel:
 * a signed frame is verified and its id is replay-deduped (namespaced so it
   can never collide with a command id);
 * a frame carrying a ``signature`` is never dispatched unverified, even when
-  no signing key is configured;
-* unsigned frames stay accepted for backward compatibility with a cloud that
-  has never signed them — UNTIL this Pi has seen a validly signed
-  integrations_request (proof the cloud signs this channel), after which an
-  unsigned frame is a downgrade and is rejected. The latch is persisted so a
-  restart does not re-open the window.
+  no signing key is configured, and a signature or ts the check cannot even
+  evaluate is answered with 401 (the cloud must not wait out its timeout);
+* an unsigned frame is rejected by default (strict mode: the cloud signs
+  every frame). With strict mode turned off, unsigned frames are accepted
+  UNTIL this Pi has seen a validly signed integrations_request (proof the
+  cloud signs this channel), after which an unsigned frame is a downgrade and
+  is rejected. The latch is persisted so a restart does not re-open the
+  window.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ import pytest
 
 import app.cloud.service as service
 from app.cloud import integrations_proxy
+from app.cloud.service import claim_replay_id, handle_cloud_command
+from app.config import settings
 from app.integrations import _registry
 
 
@@ -71,11 +75,71 @@ def _cloud_env(monkeypatch):
     service._seen_command_ids.clear()
 
 
-async def test_unsigned_frame_still_accepted_before_cloud_ever_signed(_cloud_env):
+@pytest.fixture
+def lax(monkeypatch):
+    """Strict mode off: the old migration posture (latch only)."""
+    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
+
+
+async def test_unsigned_frame_rejected_by_default_on_a_fresh_pi(_cloud_env):
+    """No signed frame seen yet, no setting touched: an unsigned
+    automation_create (actuation) is still refused."""
+    sio = _FakeSio()
+    await integrations_proxy.handle_request(sio, {
+        "id": "u0", "action": "automation_create",
+        "payload": {"rule": {"name": "x", "condition": {"type": "threshold"},
+                             "action": {"target": "relay-01"}}},
+    })
+    resp = sio.last()
+    assert resp["success"] is False
+    assert resp["status"] == 401
+    assert len(sio.emits) == 1
+    assert await integrations_proxy._signed_frames_seen() is False
+
+
+async def test_unsigned_frame_accepted_before_cloud_ever_signed_when_not_strict(_cloud_env, lax):
     sio = _FakeSio()
     await integrations_proxy.handle_request(sio, {"id": "u1", "action": "list"})
     assert sio.last()["success"] is True
     assert _cloud_env == ["list"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("signature", "é" * 64),        # hmac.compare_digest raises TypeError
+    ("ts", 10 ** 400),              # float() of the ts overflows
+])
+async def test_an_unevaluable_frame_gets_one_401(_cloud_env, field, value):
+    sio = _FakeSio()
+    frame = _sign(_frame("bad-1"))
+    frame[field] = value
+    await integrations_proxy.handle_request(sio, frame)
+    assert len(sio.emits) == 1, sio.emits
+    resp = sio.last()
+    assert resp["success"] is False
+    assert resp["status"] == 401
+    assert _cloud_env == []
+
+
+async def test_command_and_integrations_ids_share_one_replay_gate(_cloud_env, mock_mqtt):
+    """The same value used as a command id and as an integrations request id
+    is two different keys; a replay of either is refused through the one
+    helper (claim_replay_id)."""
+    sio = _FakeSio()
+    await integrations_proxy.handle_request(sio, _sign(_frame("same-id")))
+    assert sio.last()["success"] is True
+    # The command channel's own copy of the id is still free...
+    assert await claim_replay_id("same-id") is True
+    # ...and now taken, as is the integrations one.
+    assert await claim_replay_id("same-id") is False
+    assert await claim_replay_id("integrations:same-id") is False
+
+    cmd = _sign({"id": "same-id", "tier": "premium", "target_kind": "system",
+                 "channel": "automation", "payload": {"paused": False}, "ts": time.time()})
+    await handle_cloud_command(sio, cmd)
+    assert sio.emits[-1] == ("command_result", {
+        "id": "same-id", "success": False, "error": "Replayed command id"})
+    await integrations_proxy.handle_request(sio, _sign(_frame("same-id")))
+    assert sio.last()["status"] == 409
 
 
 async def test_valid_signed_frame_dispatches(_cloud_env):
@@ -129,7 +193,7 @@ async def test_replay_namespace_does_not_collide_with_command_ids(_cloud_env):
     assert sio.last()["success"] is True
 
 
-async def test_unsigned_frame_rejected_after_a_signed_one_was_seen(_cloud_env):
+async def test_unsigned_frame_rejected_after_a_signed_one_was_seen(_cloud_env, lax):
     sio = _FakeSio()
     await integrations_proxy.handle_request(sio, _sign(_frame("s5")))
     assert sio.last()["success"] is True
@@ -162,7 +226,7 @@ async def test_strict_setting_rejects_unsigned_even_without_latch(monkeypatch, _
     assert _cloud_env == []
 
 
-async def test_repairing_resets_the_latch(_cloud_env):
+async def test_repairing_resets_the_latch(_cloud_env, lax):
     sio = _FakeSio()
     await integrations_proxy.handle_request(sio, _sign(_frame("s7")))
     assert await integrations_proxy._signed_frames_seen() is True

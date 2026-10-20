@@ -194,7 +194,7 @@ def test_the_pi_accepts_what_the_check_passes(tmp_path, monkeypatch):
     members = _members(tmp_path, "cam")
     monkeypatch.setattr(settings, "ota_pubkey_b64", PUBKEY_B64)
     checked = check_node_manifest(members["cam.manifest.json"], members["cam.manifest.json.sig"],
-                                  members["firmware.bin"], "5.0.0")
+                                  members["firmware.bin"], "5.0.0", "camera")
     assert checked.manifest == vfr.check_image(members, "cam", PUBKEY, version=VERSION,
                                                channel="stable")
 

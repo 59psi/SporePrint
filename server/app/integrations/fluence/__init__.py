@@ -1,8 +1,8 @@
-"""Fluence horticultural lighting (cloud, premium).
+"""Fluence horticultural lighting (vendor cloud, free on the Pi).
 
 Fluence's FluenceID cloud platform exposes per-fixture telemetry over
-REST. Operator authenticates with FluenceID credentials; we hold the
-session token on the Pi (encrypted at rest).
+REST. Operator authenticates with FluenceID credentials, stored on the
+Pi (encrypted at rest); the Pi holds the session token in memory.
 
 ⚠ Live-device verification needed.
 """

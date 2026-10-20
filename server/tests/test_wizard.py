@@ -4,7 +4,7 @@ import pytest
 
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins, get_all_profiles
-from app.species.wizard import recommend
+from app.species.wizard import difficulty_levels, recommend, score_profile
 
 
 async def test_beginner_culinary_recommends_blue_oyster():
@@ -114,7 +114,7 @@ _NOT_CULTIVABLE = {p.id for p in BUILTIN_PROFILES if not p.chamber_cultivable}
 
 @pytest.mark.parametrize("env", ["indoor_closet", "indoor_tent"])
 def test_indoor_recommendations_exclude_non_chamber_cultivable_species(env):
-    """srv-rest#30: chaga (a ~10-year sclerotium on living birch) was ranked #4
+    """Chaga (a ~10-year sclerotium on living birch) was ranked #4
     for an indoor closet with the reason 'Suitable for closet growing'."""
     assert "chaga" in _NOT_CULTIVABLE
     results = recommend(
@@ -186,3 +186,57 @@ def test_the_endpoint_takes_the_opt_in(client):
     assert opted.status_code == 200 and len(opted.json()) == 5
     # For a research goal the opted-in pool ranks an active species in the top 5.
     assert _ACTIVE & {r["species_id"] for r in opted.json()}
+
+
+# ── experience and substrate scoring ───────────────────────────────────
+
+_BLUE = next(p for p in BUILTIN_PROFILES if p.id == "blue_oyster")
+_SCORE_ARGS = dict(environment="indoor_tent", temp_range="moderate", goal="both",
+                   commitment="daily_attention")
+
+
+def _experience(tags, level):
+    result = score_profile(_BLUE.model_copy(update={"tags": tags}), experience=level,
+                           substrates=["all"], **_SCORE_ARGS)
+    return result["reasons"][0], result["score"]
+
+
+def test_compound_and_alias_tags_score_the_experience_dimension():
+    """A compound difficulty tag matched but scored nothing for some
+    experience (0 of 25, no reason); 'easy' read as above a first-timer."""
+    assert difficulty_levels(_BLUE.model_copy(update={"tags": ["beginner-intermediate"]})) == {
+        "beginner", "intermediate"}
+    assert _experience(["beginner-intermediate"], "some_experience")[0] == "Good match for your experience level"
+    assert _experience(["intermediate-advanced"], "some_experience")[0] == "Good match for your experience level"
+    assert _experience(["very-advanced"], "some_experience")[0] == "May be above your current experience level"
+    assert _experience(["easy"], "first_time")[0] == "Beginner-friendly species"
+    every = [score_profile(p, experience="some_experience", substrates=["all"], **_SCORE_ARGS)
+             for p in BUILTIN_PROFILES]
+    assert all(r["reasons"][0].startswith(("Good match", "Easy for", "May be above")) for r in every)
+
+
+def test_an_untagged_profile_reads_as_intermediate():
+    """Untagged profiles were 'above your level' even for advanced growers."""
+    assert difficulty_levels(_BLUE.model_copy(update={"tags": ["medicinal"]})) == {"intermediate"}
+    assert _experience(["medicinal"], "advanced")[0] == "Within your skill level"
+    assert _experience(["medicinal"], "some_experience")[0] == "Good match for your experience level"
+
+
+def _substrate_reason(pid, picks):
+    profile = next(p for p in BUILTIN_PROFILES if p.id == pid)
+    result = score_profile(profile, experience="advanced", substrates=picks, **_SCORE_ARGS)
+    return next(r for r in result["reasons"] if "ubstrate" in r)
+
+
+def test_substrate_score_counts_the_species_substrates_the_grower_has():
+    """Picks were divided by the species' substrate count: three picks read
+    '3/2', and a flexible species scored lower for being flexible."""
+    assert _substrate_reason("lyophyllum_decastes", ["sawdust", "grain", "manure"]) == \
+        "Compatible substrates available (2/2)"
+    flexible = score_profile(next(p for p in BUILTIN_PROFILES if p.id == "pearl_oyster"),
+                             experience="advanced", substrates=["sawdust"], **_SCORE_ARGS)
+    narrow = score_profile(next(p for p in BUILTIN_PROFILES if p.id == "snow_fungus"),
+                           experience="advanced", substrates=["sawdust"], **_SCORE_ARGS)
+    for result in (flexible, narrow):
+        assert any(r.startswith("Compatible substrates available") for r in result["reasons"])
+    assert _substrate_reason("pearl_oyster", ["manure"]) == "None of your substrates match this species"

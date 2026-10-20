@@ -8,6 +8,236 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A firmware release runs the host tests before it builds anything.**
+  `firmware-release.yml` built, signed and published images without running
+  `pio test -e native`. It now runs the native suite, the firmware/server
+  fixture parity checks and the Arduino-free check on the tagged commit, and
+  builds and signs nothing unless they pass. It also stops when the signing
+  key's public half is not the repository variable `OTA_PUBKEY_B64` (the key
+  every Pi pins), so a wrong key can no longer ship images every Pi refuses.
+- The camera's health document is built by the shared, host-tested wire
+  contract like every other device document (same keys and values).
+- The command signature check, the coredump-ack / OTA-manifest commands,
+  the deferred restart and the boot-time WiFi / setup-portal step are shared
+  by the node and camera images instead of being copied in each.
+
+### Fixed
+
+- **A fan or pump switched on by a command could switch straight back off.**
+  A command handled while the node read its MQTT messages stamped the channel
+  with a later clock reading than the one that loop pass then used for its
+  safety checks, and the max-on backstop read the difference as a 49-day run:
+  the channel was cut at once, reported as a safety cutoff, and its on-time
+  jumped by about 49 days. The checks now take a fresh clock reading, and a
+  reading older than the channel's own stamp counts as no time elapsed. The
+  same ordering could start a lighting ramp with a full-brightness flash and
+  an out-of-range level on the wire; ramp levels now stay between their start
+  and target. On-time also stays exact for a channel lit for weeks.
+- **A timed pulse ending on schedule no longer reads as a fault.** Every
+  `duration_sec` expiry was reported with trigger `safety_cutoff` and logged
+  as an error. It now reports trigger `timer` and logs at info; the max-on
+  backstop, safe mode and an OTA start still report `safety_cutoff`. The
+  health document gains `max_on_trips` per channel (the max-on backstop
+  alone: the stuck-channel signal); `safety_cutoffs` keeps its meaning.
+- **A plain ON now holds.** A `{"state":"on"}` without `duration_sec`, sent
+  while an earlier timed pulse was still running, was cut at that pulse's
+  deadline. It now holds until an off or the max-on backstop, as the Pi
+  expects; `pwm` / `level` tweaks and scenes still keep a running pulse's
+  deadline.
+- **Command replay protection holds under load.** The replay guard remembers
+  32 frames; more than 32 accepted frames within a minute let a frame it had
+  to forget be replayed, and then every frame of that minute in turn. A
+  frame the guard forgot early is now refused when it comes back.
+- **A lighting node's level report carries a timestamp** and marks itself
+  `"report": "dim_levels"` (both additive), so the Pi can tell it from
+  sensor telemetry.
+- **A working image is no longer rolled back after a failed confirm.** When
+  confirming a freshly updated image failed (the OTA data write was
+  refused), nothing tried again and the next reset booted the previous
+  image. The confirm is retried after more MQTT time, backing off to an hour.
+- **Log lines reach the Pi promptly, and a failed batch is kept.** Lines went
+  out only once eight had queued, so a quiet node's few lines (often the
+  ones saying why it rebooted) waited in RAM and were lost with the restart,
+  and a batch whose publish failed vanished without being counted as
+  dropped. A batch now also goes out when its oldest line is 5 s old or a
+  warning or error is queued, everything queued is sent before a deliberate
+  restart or factory reset, and a batch leaves the queue only once it was
+  published.
+- **Publishing sends whole chunks.** A document went to the network one
+  character per write: on Secure MQTT one TLS record per byte, tens of times
+  the bytes on the wire, and on a stalled plaintext socket up to 10 s per
+  byte, past the watchdog. Documents now go out in 256-byte writes, and a
+  write that falls short drops the connection at once.
+- **Oversize and unparseable command frames are logged to the Pi**, not only
+  to the serial console.
+- **A v1 node keeps its identity through the v2 migration.** No v1 image
+  stored a node id (each ran as `relay-01`, `light-01`, `climate-01` or
+  `cam-01`), so a migrated node came up as a new `node-XXXX` and its rules,
+  history and chamber pointed at a node that no longer reported. The
+  migration now keeps the v1 identity: a stored node id, else the MQTT
+  username, else the role's v1 default. Nodes already migrated keep the id
+  they run with now.
+- **A failed NVS write can no longer pin an unverified CA.** The Secure MQTT
+  verified marker is set only once the stored CA reads back as the one that
+  verified, so a write that NVS refused can't leave the marker vouching for
+  an older CA (which, pinned without a trial, would lock the node out of
+  TLS). Refused NVS writes are logged.
+- **An OTA push no longer overwrites the only confirmed image.** A push that
+  arrived while the running image was still on probation flashed over the
+  other slot, the last confirmed image, so a failure of the new image could
+  no longer be recovered with a power cycle. The node now confirms the
+  running image first if it reached MQTT, and otherwise refuses the push
+  (`image_on_probation`: power-cycle back to the previous image, then push
+  again).
+- **A refused OTA push says why.** The signed-manifest gate and the image
+  size were checked only after the node had answered the push with "OK", so
+  the Pi saw only a connect-back that never came. Every refusal is now
+  decided first and answered `ERR <reason>`.
+- **The anti-rollback floor rises only for an image that passed its
+  probation.** A manifest-verified image raised the floor as soon as it was
+  flashed, so one that failed and rolled back left the node refusing every
+  signed image below the version that had just failed. The version is now
+  pending until that image is confirmed on the node.
+- **Secure MQTT no longer drops a working node off MQTT every 15 minutes.**
+  On the plaintext fallback, every fetched Pi CA used to move the live MQTT
+  link to TLS to try it; a broker certificate that does not list the node's
+  Pi address (DHCP moved the Pi, a certificate older than the IP entries) or
+  nothing answering on 8883 failed every try, so the node published
+  `offline`, lost the commands sent in the gap and reconnected — every 15
+  minutes for as long as that lasted. A fetched CA is now first checked with
+  a bare TLS handshake to 8883 while MQTT stays up on plaintext; only a CA
+  whose handshake verifies moves the link to TLS. A broker that then refuses
+  the MQTT login on 8883 (which a handshake cannot see) is retried hourly.
+- **The Pi-CA fetch can no longer stall or exhaust a node.** The runtime
+  fetch read the response with only a per-read timeout and, for a chunked
+  or unsized body, no size cap: anything answering on the Pi's port 8000 with
+  a slow drip could hold the loop past its watchdog, or fill the heap. The
+  whole response is now read under one deadline into a bounded buffer, and a
+  200 without a `Content-Length` (the Pi always sends one) or over 4000 bytes
+  is refused before its body is read.
+- **A CO₂ or light sensor that dies before a reboot is no longer silently
+  dropped.** I²C sensors are autodetected at boot, so an SCD4x / SCD30 /
+  BH1750 that came unplugged or failed while the node was off was simply not
+  built: no stale alert, no `expected_missing` entry, and every CO₂ rule on
+  the Pi (FAE, emergency exhaust) stopped evaluating without a word. The node
+  now remembers the CO₂ and light sensors it has found; one that does not
+  answer at boot is listed in `expected_missing` (`scd4x` / `scd30` /
+  `bh1750`) and raises a `sensor_failure` alert until it is back. To retire a
+  sensor removed on purpose, tick "Forget I²C sensors removed on purpose" in
+  the setup portal (a factory reset forgets too).
+- **An SCD4x that lost power recovers without a reboot.** A sensor-only power
+  cycle (a loose cable) leaves the SCD4x idle; it never reported a sample
+  again and CO₂ stayed stale until the node rebooted. While its reading is
+  stale the node now re-starts periodic measurement once per staleness window
+  (this also finishes a start-up that failed at boot).
+- **A BH1750 that lost power no longer reports 0 lx forever.** It wakes
+  powered down and answers 0, which looked like a healthy dark chamber. The
+  node now re-arms continuous measurement after every read, so the next read
+  pass reports light again.
+- **An unplugged HX711 scale no longer publishes made-up weights.** Its data
+  pin floated, read "ready" and clocked out noise as a fresh `weight_g`, so
+  the scale was never reported missing. The pin is now pulled up (an absent
+  module reads not-ready and goes stale), and the saturated codes of an open
+  load-cell wire and a stuck run of identical samples (a module wired but not
+  powered) are refused as read failures.
+- **MH-Z19C readings during its preheat are no longer published.** After a
+  power-up the sensor answers for 3 minutes with readings it does not stand
+  behind, and they went out as live `co2_ppm` that the Pi's CO₂ rules acted
+  on. They are now discarded until the preheat has run (a warm restart keeps
+  the sensor powered and is not affected).
+- **0 % humidity no longer costs the Pi the whole telemetry frame.** At 0 %
+  RH the dew point is not a number and went out as `"dew_point_f": null`,
+  which the Pi refused to store — losing every reading in that frame. A
+  dew point that is not a number is now left out.
+- **Telemetry buffered before the clock synced keeps its real times.**
+  Frames buffered during a broker outage before NTP synced carried uptime,
+  and the Pi stamped the whole outage at one instant. Once the clock has
+  synced the node now dates them (now minus their age on its own clock)
+  before sending them; they stay marked as replayed.
+- **Lighting ramps no longer flood the Pi.** A `ramp_sec` command published
+  the full lighting-level document on every one-step change of every channel
+  — about 17 messages a second per channel for a 60 s ramp to full — each a
+  live telemetry frame on the Pi. The outputs still follow every step; the
+  level report now goes out at most once a second during a ramp and at once
+  when it ends or a cutoff fires.
+- **Door alerts raised while MQTT is down are no longer lost.** A door opened
+  or closed during an outage raised nothing (only `door_open` in buffered
+  telemetry survived). The edges are now kept in order and sent when MQTT
+  returns, with "while MQTT was down" in the message.
+- **A channel whose PWM output failed no longer claims to be on.** If the
+  LEDC attach failed at boot (or a duty write fails later) the gate is held
+  LOW, yet the channel accepted commands and reported `state: on` / `pwm:
+  255` while the fan or heater stayed off. It now refuses any command that
+  would turn it on, reports itself off, logs the failure to the Pi, and its
+  health carries `"fault": "ledc_attach_failed"` (or `"ledc_write_failed"`;
+  additive).
+- **Camera: a slow or stalled upload can no longer panic the camera.** The
+  frame upload used HTTPClient's own network clients: an unbounded DNS
+  lookup and a 120 s TLS handshake default, which together could outlast the
+  camera's 90 s watchdog. Uploads now use bounded clients (15 s DNS, 10 s
+  connect, 10 s handshake, 10 s socket waits), and a capture never starts in
+  a loop pass that already blocked on an MQTT connect or a CA fetch.
+- **Camera: on-demand captures no longer knock it off MQTT.** A `capture`
+  command ran the whole capture and POST inside the MQTT message handler,
+  deep on the loop stack and with MQTT unserviced for up to 30 s, long past
+  the broker's 22 s keepalive limit — the camera showed offline after a slow
+  upload. The command now only records the request and the loop takes it on
+  its next pass, and the camera's MQTT keepalive is 60 s.
+- **Camera: re-provisioning a moved Pi now moves the frame uploads too.** A
+  stored upload URL (from a `server_url` command or a v1 migration) always
+  won over the Pi address typed in the portal, and could not be removed
+  without a factory reset. Saving a new Pi address in the portal now drops
+  the stored URL, and `{"server_url": ""}` resets uploads to the portal's Pi
+  address.
+- **Rotating the command-signing key no longer cuts the nodes off.** A node
+  held one key, so from the moment the Pi signed with a new key until the
+  node was re-keyed in its setup portal (or the other way round) it rejected
+  every command: lights stayed as they were and relay channels could not be
+  switched on. A portal save that changes the key now keeps the key it
+  replaces, and the node accepts commands signed with either one, through
+  the same ±30 s window, topic binding and replay guard, until the first
+  command signed with the new key arrives; that retires the old key for
+  good. Re-key every node first, then apply the key to the Pi. While the old
+  key is held, the node logs which key verified each command. A keyed node
+  still refuses every unsigned command, and the wire is unchanged.
+
+## [5.2.2] - 2026-10-07
+
+### Changed
+
+- Lockstep version bump in step with the cloud parent — no Pi-side server,
+  UI, or firmware code changes in this release.
+
+## [5.2.1] - 2026-10-07
+
+### Changed
+
+- Lockstep version bump in step with the cloud parent — no firmware code
+  changes in this release.
+
+## [5.2.0] - 2026-10-07
+
+### Changed
+
+- Lockstep version bump in step with the cloud parent — no firmware code
+  changes in this release.
+
+## [5.1.2] - 2026-10-06
+
+### Changed
+
+- Lockstep version bump in step with the cloud parent — no Pi-side server,
+  UI, or firmware code changes in this release.
+
+## [5.1.1] - 2026-10-06
+
+### Changed
+
+- Lockstep version bump in step with the cloud parent — no Pi-side server,
+  UI, or firmware code changes in this release.
+
 ## [5.1.0] - 2026-10-06
 
 Two passes since 5.0.0: the **2026-09 hardware audit** and the **2026-10
@@ -56,7 +286,7 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 - **Connect timeouts**: on 3.x `setTimeout()` on a network client is
   Stream's millisecond read timeout and no longer bounds the connect —
   left as it was, the TLS client's 30 s default connect would have
-  outlasted the 30 s loop WDT again (fw-node#8). Now
+  outlasted the 30 s loop WDT again. Now
   `setConnectionTimeout(3000)`; the handshake setter still takes seconds.
 - **DNS** is capped at 15 s again: 3.x's `hostByName()` waits for lwIP to
   give up (7 s per configured DNS server, up to 21 s). The MQTT clients
@@ -250,7 +480,7 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 
 ### Provisioning and the setup portal
 
-- **Setup portal no longer opens on a WiFi hiccup** (fw-node#9), node AND
+- **Setup portal no longer opens on a WiFi hiccup**, node AND
   camera: a provisioned device whose settings have connected before
   boots offline, buffers, and re-begins WiFi every 60 s instead of
   opening the open `SporePrint-Setup` AP for 10 min. Open it on purpose
@@ -272,7 +502,7 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 
 ### Secure MQTT
 
-- **Never downgrades silently** (fw-node#2). With TLS ticked and no Pi CA
+- **Never downgrades silently**. With TLS ticked and no Pi CA
   pinned the node still falls back to plaintext by default, but now logs an
   ERROR, raises a `tls_downgrade` alert (value = the plaintext port; entry +
   hourly), reports `tls:false` + `tls_fallback:true` in the heartbeat, and
@@ -311,7 +541,7 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 
 ### Commands, safety and the MQTT link
 
-- **Signed commands** (fw-node#11), node and camera: a second delivery of
+- **Signed commands**, node and camera: a second delivery of
   the same signed frame on the same topic inside the replay window is
   rejected, and an optional signed `"topic"` member must equal the
   arrival topic. The Pi now signs `"topic"` and a random `"nonce"` into
@@ -335,7 +565,7 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 
 ### Telemetry and heartbeat
 
-- **Heartbeat on its own clock** (srv-hw#22). `status/heartbeat` goes out
+- **Heartbeat on its own clock**. `status/heartbeat` goes out
   every min(`publish_interval_ms`, 5 min) instead of riding in the
   telemetry block, so a node set to publish every 15 min–1 h no longer
   flaps offline/online against the Pi's 900 s sweep. Telemetry + health
@@ -346,7 +576,7 @@ vectors; PubSubClient 2.8 and ArduinoJson 7.4.3 unchanged. The port:
 
 ### OTA
 
-- **OTA rollback works** (fw-node#12), node and camera: a new image is on
+- **OTA rollback works**, node and camera: a new image is on
   probation until MQTT has been up 60 s continuously; a crash, WDT or
   power loss before then boots the previous image. An operator restart
   confirms the image only if it reached MQTT that boot.
@@ -434,7 +664,7 @@ state machine; `sp_device/coredump_uploader.cpp`, the flash/MQTT adapter):
   (release workflow) else `VERSION.txt` else `"dev"`
   (`scripts/fw_version.py`, attached via `extra_configs =
   scripts/*.ini` so a tree without `scripts/` still builds) — local
-  builds no longer heartbeat an empty version (docs#28). Libraries pinned
+  builds no longer heartbeat an empty version. Libraries pinned
   exactly: PubSubClient 2.8, ArduinoJson 7.4.3 (device + native).
 - **`scripts/image_guard.py`** (post-build, every env, attached with the
   version script): fails the build if a partition table differs from the
@@ -661,17 +891,17 @@ Lockstep version bump — no firmware changes. The cloud repo introduced a cache
 
 ## [3.4.9] - 2026-04-24
 
-The archaeology sweep of v3.4.8 (see `analysis/02-security.md` in the parent repo) identified the firmware as the remaining weak plane. This release closes the Critical and every High / Medium finding that lives on-device.
+A security audit of v3.4.8 identified the firmware as the remaining weak plane. This release closes the Critical and every High / Medium finding that lives on-device.
 
 ### Added
 
-- **HMAC-SHA256 verification of inbound MQTT command frames** (`sporeprint_common/frame_verify.h`). The cloud+Pi already signed end-to-end; signing now extends past the broker to the firmware itself. Closes Sentinel finding C-1.
+- **HMAC-SHA256 verification of inbound MQTT command frames** (`sporeprint_common/frame_verify.h`). The cloud+Pi already signed end-to-end; signing now extends past the broker to the firmware itself.
   - Shared canonical-JSON serialization matches the Python `json.dumps(..., sort_keys=True, separators=(",", ":"))` byte-for-byte.
   - 30-second replay window enforced against NTP-disciplined wall clock.
   - Migration-period behavior: if `hmac_key` is not yet in NVS, logs a loud `[SEC] WARNING` on every accepted unsigned command — visible drive toward provisioning, does not brick upgrades.
   - Build-flag provisioning: `-DSPOREPRINT_PROVISION_HMAC=<hex>` writes key into NVS on first boot. Never overwrites existing NVS. Use `scripts/provision-node.sh` to generate a key + get flashing instructions.
 - **NTP sync at WiFi connect** (`wifi_manager.cpp`). Enables meaningful `ts` freshness on signed command frames. pool.ntp.org + time.google.com.
-- **`esp_task_wdt` parity** on climate (30 s), lighting (10 s), and cam (60 s) nodes. Relay already had it; now all four reboot on a main-task deadlock rather than silently freezing. Closes Sentinel M-6.
+- **`esp_task_wdt` parity** on climate (30 s), lighting (10 s), and cam (60 s) nodes. Relay already had it; now all four reboot on a main-task deadlock rather than silently freezing.
 - **`esp_reset_reason()` + reconnect counters** emitted in every heartbeat (`heartbeat.cpp`). Unblocks "is this node cycling every 10 min?" remote diagnosis without Serial-cable access.
 - **`frame_verify` uses mbedtls** (part of ESP-IDF) so no new dependency is added to `lib_deps`.
 - **`firmware/VERSION.txt`** tracks the firmware semver; `scripts/bump.sh` writes it and exports `SPOREPRINT_FW_VERSION` before invoking `pio run`. Replaces the hard-coded `"0.1.0"` string that had been in every heartbeat regardless of actual build.
@@ -680,11 +910,11 @@ The archaeology sweep of v3.4.8 (see `analysis/02-security.md` in the parent rep
 
 ### Changed — firmware safety + correctness
 
-- **Relay command handler refuses bare `{}` payloads** (`relay_node/main.cpp`). Previously defaulted to `on=true, pwm=255` which, paired with a retained broker message surviving a reboot, could latch a heater at full power until the 30-min max-on cutoff. Now rejects frames with neither `state` nor `pwm`. Closes Sentinel M-5.
-- **`millis()` wrap-safe `offAt` compare** on relay_node. `now >= offAt` is naïvely non-wrap-safe and misbehaves once per ~49.7-day wrap; replaced with `(long)(now - offAt) >= 0` which stays correct across the wrap for windows shorter than 24.8 days. Max-on compare was already naturally wrap-safe. Closes Sentinel L-1.
-- **MQTT inbound buffer 1024 B** to match `setBufferSize(1024)` on the publish side (`mqtt_manager.cpp::_handleMessage`). Previously a 512-byte stack buffer silently truncated frames >511 B into garbled JSON. Signed command frames from v3.4.9 land in the 600-900 B range so this matters in practice. Oversize frames are now explicitly dropped with a Serial log. Closes Sentinel L-2.
+- **Relay command handler refuses bare `{}` payloads** (`relay_node/main.cpp`). Previously defaulted to `on=true, pwm=255` which, paired with a retained broker message surviving a reboot, could latch a heater at full power until the 30-min max-on cutoff. Now rejects frames with neither `state` nor `pwm`.
+- **`millis()` wrap-safe `offAt` compare** on relay_node. `now >= offAt` is naïvely non-wrap-safe and misbehaves once per ~49.7-day wrap; replaced with `(long)(now - offAt) >= 0` which stays correct across the wrap for windows shorter than 24.8 days. Max-on compare was already naturally wrap-safe.
+- **MQTT inbound buffer 1024 B** to match `setBufferSize(1024)` on the publish side (`mqtt_manager.cpp::_handleMessage`). Previously a 512-byte stack buffer silently truncated frames >511 B into garbled JSON. Signed command frames from v3.4.9 land in the 600-900 B range so this matters in practice. Oversize frames are now explicitly dropped with a Serial log.
 - **Case-insensitive `state` parsing** on relay_node (previously case-sensitive — `"ON"` silently fell through to default behavior). Per the MQTT contract `state` may be `on`/`off`/`ON`/`OFF`.
-- **`server_url` allow-list on cam_node** (`cam_node/main.cpp::onCommand`). Previously accepted any string from MQTT and persisted to NVS, so a LAN actor with broker creds could redirect every captured frame. Now validates: http/https scheme, no userinfo / query / fragment, host in {paired Pi, sporeprint.local, sporeprint.ai, RFC1918 ranges}, length ≤128. Closes Sentinel H-1.
+- **`server_url` allow-list on cam_node** (`cam_node/main.cpp::onCommand`). Previously accepted any string from MQTT and persisted to NVS, so a LAN actor with broker creds could redirect every captured frame. Now validates: http/https scheme, no userinfo / query / fragment, host in {paired Pi, sporeprint.local, sporeprint.ai, RFC1918 ranges}, length ≤128.
 
 ### Deployment
 
@@ -705,5 +935,5 @@ Then re-flash each node with `SPOREPRINT_PROVISION_HMAC=<key> pio run -e <env> -
 ### Known follow-ups
 
 - **Per-node HMAC keys** (currently a single shared key across the Pi + all four nodes). Rotation compromise scope is per-Pi. Per-node scheme lands in v3.5.0 alongside cloud-mediated provisioning.
-- **Secure boot v2 + flash encryption + signed OTA** (Sentinel H-2 + H-3). Requires board-level key custody + rollback-counter tooling; scoped as a separate hardening PR after v3.4.9 stabilizes in-field.
+- **Secure boot v2 + flash encryption + signed OTA**. Requires board-level key custody + rollback-counter tooling; scoped as a separate hardening PR after v3.4.9 stabilizes in-field.
 - **Unity/Catch2 firmware test harness**. 0 tests today; coverage for `offline_buffer`, `frame_verify::canonicalize`, the clamps, and the wrap-safe timer compare is the next-most-valuable addition.

@@ -21,7 +21,11 @@ bool Bh1750::begin() {
 
 bool Bh1750::read(float* lux) {
     uint8_t raw[2];
-    if (!bus_.read(addr_, raw, sizeof(raw))) {
+    const bool got = bus_.read(addr_, raw, sizeof(raw));
+    // A part that lost power since the last pass sits in power-down: this
+    // puts it back into continuous mode for the next pass.
+    begin();
+    if (!got) {
         health_.fail("read error");
         return false;
     }

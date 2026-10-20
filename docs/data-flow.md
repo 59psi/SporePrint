@@ -15,7 +15,7 @@ flowchart TB
         Cam["ESP32-CAM<br/>still every 15 min"]
         Mosq["Mosquitto<br/>credentialed · per-node ACL<br/>1883 + TLS 8883"]
         PiSrv["Pi server · mqtt._handle_message<br/>ts below 1e9 = unsynced → arrival time<br/>replay / out-of-order frames stored, not evaluated"]
-        SQLite["SQLite<br/>33 tables · WAL · foreign_keys ON<br/>incremental auto-vacuum"]
+        SQLite["SQLite<br/>35 tables · WAL · foreign_keys ON<br/>incremental auto-vacuum"]
         Retention["Retention<br/>nightly 03:00 UTC · weighted-merge rollups<br/>raw 7 d → 5 min 30 d → hourly 1 y → daily"]
         SIO["Socket.IO<br/>live events for other clients"]
         WebUI["Web UI (ui/dist)<br/>REST page loads"]
@@ -45,7 +45,7 @@ flowchart TB
 
     subgraph UserFlow["③ User actions"]
         User["User<br/>configure · control · view"]
-        REST["REST API<br/>150 endpoints · 20 modules<br/>Host allow-list · optional bearer SPOREPRINT_API_KEY"]
+        REST["REST API<br/>152 endpoints · 20 modules<br/>Host allow-list · optional bearer SPOREPRINT_API_KEY"]
         Sessions["Session manager<br/>phases incl. browning · reminders"]
         Auto["Automation engine<br/>priority ownership · safety ceilings"]
         Vision["Vision pipeline<br/>Claude every 6 h, on phase change, on demand"]
@@ -105,7 +105,11 @@ flowchart TB
 
 - **Timestamps.** A node stamps each frame with epoch seconds once NTP has
   synced. The Pi treats `ts < 1e9` as unsynced firmware uptime and stamps the
-  arrival time instead.
+  arrival time instead, and does the same for a synced `ts` more than 5 min
+  ahead of its own clock (a bogus sync), which would otherwise read as the
+  latest reading until real time caught up with it. A field that is not a
+  finite number (a NaN dew point arrives as `null`) is skipped; the frame's
+  other readings are stored.
 - **Liveness.** Frames flagged `"replay": true` (drained from the node's
   16 KB offline buffer) and out-of-order frames (up to 120 s older than the
   node's newest live frame; a bigger step back is a clock correction and
@@ -113,9 +117,13 @@ flowchart TB
   socket and never evaluated by the rules. The Pi's own clock never decides
   whether a frame is live. Pi-vs-node skew is logged past 120 s and reported
   per node under `reliability` in `GET /api/health/detail/system`.
-- **Session tagging.** Each reading is tagged with the grow its node belongs
-  to: a node listed in a chamber belongs to that chamber's grow; a node in no
-  chamber belongs to the newest grow bound to no chamber.
+- **Session tagging.** Each reading is tagged with the grow the rules engine
+  runs on it (the per-node session rule, `sessions.service`
+  `get_active_session_for_node`): a node listed in a chamber belongs to that
+  chamber's grow (or, in a chamber with no grow of its own, to the newest grow
+  bound to no chamber); a node in no chamber belongs to the newest grow bound
+  to no chamber. A replayed reading never belongs to a grow started after it
+  was taken.
 - **Node health.** Nodes send a heartbeat every min(publish interval, 5 min);
   any telemetry frame from a registered node also refreshes `last_seen`.
   `health` carries per-sensor driver status, and `logs` forwards the node's
@@ -133,15 +141,20 @@ flowchart TB
   and hourly ones older than a year into daily ones, with an
   `INSERT … ON CONFLICT DO UPDATE` weighted-mean merge, so a retried run never
   loses rows. It also prunes `automation_firings` older than 90 days that
-  belong to no session. New databases use incremental auto-vacuum.
+  belong to no session, and relay switch reports (`actuator_events`, one per
+  channel a minute) older than 7 days; their lifetime totals, which the
+  Grafana counter reads, live in `actuator_event_counts`, kept by the ingest.
+  New databases use incremental auto-vacuum.
 
 ## ② Weather + intelligence
 
-The weather poller (every `SPOREPRINT_WEATHER_POLL_MINUTES`, default 10)
-fails over across Open-Meteo, OpenWeatherMap and NWS. The prediction model
-learns how outdoor weather moves the closet and warns up to 72 hours ahead
-when a species target is at risk; the planner scores species against the
-local climate history.
+The weather poller (every `SPOREPRINT_WEATHER_POLL_MINUTES`, default 10,
+never under a minute) tries `SPOREPRINT_WEATHER_PROVIDER` first and fails
+over to the others: Open-Meteo, NWS, and OpenWeatherMap when a key is set.
+The prediction model learns how outdoor weather moves the closet and warns up
+to 72 hours ahead when an active grow's targets are at risk, too hot or too
+cold, checking every active session against the setpoints its phase runs on;
+the planner scores species against the local climate history.
 
 ## ③ User actions
 
@@ -152,9 +165,9 @@ local climate history.
   primordia induction; its exit reminder (the cold-water soak) reaches the
   session log, the daily 09:00 phase reminder and `GET /next-phase`, and
   vision reports `browning_percent`.
-- **Vision.** Claude auto-analysis runs every 6 h per session
-  (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`), on the first frame after each
-  phase change, and on demand. A confident contamination read (≥ 0.6) pages
+- **Vision.** Claude auto-analysis runs every 6 h per camera of a session
+  (`SPOREPRINT_VISION_AUTO_INTERVAL_MIN`), on each camera's first frame after
+  a phase change, and on demand. A confident contamination read (≥ 0.6) pages
   CRITICAL; 0.3–0.6 sends one WARNING. The local CNN layer is still a stub.
 - **Node commands.** Every `cmd/*` frame is HMAC-signed with
   `SPOREPRINT_MQTT_HMAC_KEY`, with the destination `topic` and a random

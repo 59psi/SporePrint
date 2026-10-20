@@ -28,6 +28,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.builder import models_router as mr
+from app.builder import service as builder_service
 
 _REPO_MODELS = Path(__file__).resolve().parents[2] / "models"
 _STATEMENT_RE = re.compile(r"^\s*(include|use)\s*<([^>]*)>")
@@ -42,7 +43,7 @@ def _code_lines(text: str) -> list[str]:
     in_block = False
     for line in text.splitlines():
         starts_in_block = in_block
-        in_block = mr._block_comment_after(line, in_block)
+        in_block = builder_service._block_comment_after(line, in_block)
         if not starts_in_block:
             lines.append(line.split("//", 1)[0])
     return lines
@@ -61,11 +62,11 @@ def _app_client() -> TestClient:
 
 @pytest.fixture
 def models_dir(tmp_path, monkeypatch):
-    """Point the router at an empty tmp models/ (+ lib/) and reset its cache."""
+    """Point the Builder service at an empty tmp models/ (+ lib/) and reset its cache."""
     root = tmp_path / "models"
     (root / "lib").mkdir(parents=True)
-    monkeypatch.setattr(mr, "_MODELS_DIR", root)
-    monkeypatch.setattr(mr, "_models_cache", {"data": [], "ts": 0})
+    monkeypatch.setattr(builder_service, "_MODELS_DIR", root)
+    monkeypatch.setattr(builder_service, "_models_cache", {"data": [], "ts": 0})
     return root
 
 
@@ -77,8 +78,8 @@ def api():
 @pytest.fixture
 def repo_models(monkeypatch):
     assert _REPO_MODELS.is_dir(), _REPO_MODELS
-    monkeypatch.setattr(mr, "_MODELS_DIR", _REPO_MODELS)
-    monkeypatch.setattr(mr, "_models_cache", {"data": [], "ts": 0})
+    monkeypatch.setattr(builder_service, "_MODELS_DIR", _REPO_MODELS)
+    monkeypatch.setattr(builder_service, "_models_cache", {"data": [], "ts": 0})
     return _REPO_MODELS
 
 
@@ -152,7 +153,7 @@ def test_include_cycle_is_rejected(models_dir, api):
 
 def test_include_depth_limit(models_dir, api):
     lib = models_dir / "lib"
-    depth = mr._INLINE_MAX_DEPTH + 2
+    depth = builder_service._INLINE_MAX_DEPTH + 2
     for i in range(depth):
         nxt = f"include <l{i + 1}.scad>\n" if i + 1 < depth else ""
         (lib / f"l{i}.scad").write_text(f"{nxt}L{i} = {i};\n")
@@ -165,7 +166,7 @@ def test_include_depth_limit(models_dir, api):
 
 def test_depth_at_limit_is_fine(models_dir, api):
     lib = models_dir / "lib"
-    depth = mr._INLINE_MAX_DEPTH
+    depth = builder_service._INLINE_MAX_DEPTH
     for i in range(depth):
         nxt = f"include <l{i + 1}.scad>\n" if i + 1 < depth else ""
         (lib / f"l{i}.scad").write_text(f"{nxt}L{i} = {i};\n")
@@ -224,7 +225,8 @@ def test_listing_excludes_lib(models_dir, api):
         # No header comment: the title falls back to the stem.
         assert m["title"] == m["filename"][:-5]
         assert m["description"] == ""
-        assert m["source_url"] == f"{mr.MODELS_REPO_URL.replace('/tree/', '/blob/')}/{m['filename']}"
+        assert m["source_url"] == \
+            f"{builder_service.MODELS_REPO_URL.replace('/tree/', '/blob/')}/{m['filename']}"
 
 
 def test_listing_reads_title_and_description_from_the_header(models_dir, api):
@@ -239,21 +241,62 @@ def test_listing_reads_title_and_description_from_the_header(models_dir, api):
     (m,) = api.get("/api/builder/models").json()
     assert m["title"] == "Widget Holder"
     assert m["description"] == "Two printed pieces joined by 4 x M3 heat-set inserts."
+    assert m["description_truncated"] is False
+
+
+def _long_header(sentences: list[str]) -> str:
+    return "// SporePrint Long Widget\n" + "".join(f"// {s}\n" for s in sentences) + "//\ncube(1);\n"
+
+
+def test_listing_flags_a_description_cut_at_a_sentence_end(models_dir, api):
+    # Cut at the last ". " past character 80: no "…" marks the cut, so the
+    # listing says so — the Builder's "more" toggle depends on it.
+    first = "Two printed pieces joined by four M3 heat-set inserts and a pair of M5 bolts."
+    second = "The base mounts OUTSIDE the grow chamber, on the shelf upright, never inside it."
+    third = "Keep every solder joint off a metal wire shelf; a rubber pad under the base is enough."
+    (models_dir / "long.scad").write_text(_long_header([first, second, third, "Fixture end."]))
+    (m,) = api.get("/api/builder/models").json()
+    assert not m["description"].endswith("…")
+    assert m["description"] == f"{first} {second}"
+    assert m["description_truncated"] is True
+
+
+def test_listing_flags_a_description_cut_mid_word(models_dir, api):
+    (models_dir / "word.scad").write_text(_long_header(["x" * 300]))
+    (m,) = api.get("/api/builder/models").json()
+    assert m["description"].endswith("…")
+    assert m["description_truncated"] is True
 
 
 def test_every_shipped_model_has_a_title_and_description():
     # The Builder's Models tab renders these; a model without a summary
     # paragraph shows up blank.
-    for f in sorted((mr._REPO_ROOT / "models").glob("*.scad")):
-        title, description = mr._model_header(f)
+    for f in sorted((builder_service._REPO_ROOT / "models").glob("*.scad")):
+        title, description, truncated = builder_service.model_header(f)
         assert title and title != f.stem, f.name
         assert len(description) >= 40, (f.name, description)
         assert not description[0].islower(), (f.name, description)
+        # a cut description is flagged, whichever way it was cut
+        assert truncated == (description.endswith("…") or len(description) < len(_full_paragraph(f))), f.name
+
+
+def _full_paragraph(path) -> str:
+    """The whole header paragraph (no length cap), as the Builder's 'more' reads it."""
+    lines = []
+    for raw in path.read_text(encoding="utf-8").splitlines()[1:]:
+        text = raw.strip()
+        if not text.startswith("//"):
+            break
+        text = text[2:].strip()
+        if not text or text.startswith("─"):
+            break
+        lines.append(text)
+    return " ".join(" ".join(lines).split())
 
 
 def test_models_repo_url_points_at_the_models_directory():
-    assert mr.MODELS_REPO_URL == "https://github.com/59psi/SporePrint/tree/main/models"
-    assert (mr._REPO_ROOT / "models").is_dir()
+    assert builder_service.MODELS_REPO_URL == "https://github.com/59psi/SporePrint/tree/main/models"
+    assert (builder_service._REPO_ROOT / "models").is_dir()
 
 
 @pytest.mark.parametrize("path", [
@@ -334,6 +377,62 @@ def test_repo_models_have_no_sibling_includes():
             if not ok:
                 offenders.append(f"{path.relative_to(_REPO_MODELS)}: {kind} <{target}>")
     assert offenders == []
+
+
+# Top-level names a model assigns that no geometry, echo or assert reads,
+# each kept on purpose. Any other unread name is a -D knob that silently
+# does nothing: overriding it renders the same part, with no warning.
+_UNREAD_ON_PURPOSE = {
+    # A legacy knob kept so older command lines still run; the header says it
+    # is no longer used (the end openings are open to the top).
+    "power_supply_mount.scad": {"cable_slot_h"},
+    # The bought heatsink's depth and height, recorded beside its width and
+    # tab pitch (which do place the parts), as the header quotes them.
+    "relay_board_mount.scad": {"heatsink_d", "heatsink_h"},
+}
+_SCAD_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+_SCAD_ASSIGN_RE = re.compile(r"^([A-Za-z_]\w*)\s*=(?!=)")
+
+
+def _unread_top_level_names(text: str) -> set[str]:
+    """Names a .scad file assigns at top level and never reads: no occurrence
+    outside comments and strings except as the left side of an assignment or
+    a named argument (`name = ...`)."""
+    blanked = "\n".join(_SCAD_STRING_RE.sub('""', line) for line in text.splitlines())
+    lines = _code_lines(blanked)
+    assigned, depth = set(), 0
+    for line in lines:
+        if depth == 0 and (m := _SCAD_ASSIGN_RE.match(line)):
+            assigned.add(m.group(1))
+        depth += line.count("{") - line.count("}")
+    code = "\n".join(lines)
+    return {name for name in assigned
+            if not any(not re.match(r"\s*=(?!=)", code[m.end():])
+                       for m in re.finditer(rf"(?<![\w$]){re.escape(name)}(?!\w)", code))}
+
+
+def test_unread_name_check_tells_reads_from_assignments():
+    text = (
+        "a = 1;  // read below\n"
+        "b = 2;\n"
+        "c = 3;  // only ever a named-argument key\n"
+        "d = 4;\n"
+        'echo(str("b is ", b));\n'
+        "module m(c = 0) { cube(a); }\n"
+        "m(c = 5);\n"
+        "e = d == 4 ? 1 : 0;\n"
+        '// a comment naming e and "f"\n'
+        'f = "x // not a comment";\n'
+    )
+    assert _unread_top_level_names(text) == {"c", "e", "f"}
+
+
+def test_every_model_parameter_is_read():
+    unread = {}
+    for path in sorted(_REPO_MODELS.glob("*.scad")):
+        if names := _unread_top_level_names(path.read_text(encoding="utf-8")):
+            unread[path.name] = names
+    assert unread == _UNREAD_ON_PURPOSE
 
 
 def test_repo_listing_is_top_level_only(repo_models, api):
@@ -445,10 +544,14 @@ def test_downloaded_model_renders_without_lib(repo_models, api, openscad, tmp_pa
     assert rc == 0, log
     assert _problems(log) == [], log
 
-    # Same geometry as the original rendered next to its lib/.
+    # Same geometry as the original rendered next to its lib/: the same
+    # facets, in any order (OpenSCAD 2021.01 writes one mesh's facets in a
+    # different order from run to run, so two renders of one file differ in
+    # bytes).
     rc0, log0 = _render(openscad, repo_models / name, tmp_path / "orig.stl")
     assert rc0 == 0, log0
-    assert (tmp_path / "flat.stl").read_bytes() == (tmp_path / "orig.stl").read_bytes()
+    flat_facets = _facets((tmp_path / "flat.stl").read_text())
+    assert flat_facets and flat_facets == _facets((tmp_path / "orig.stl").read_text())
 
     # Control: the un-inlined original, alone in a dir without lib/, cannot
     # find its includes, which shows the flat render above needed no lib/.
@@ -458,3 +561,98 @@ def test_downloaded_model_renders_without_lib(repo_models, api, openscad, tmp_pa
         shutil.copy(repo_models / name, bare_dir / name)
         _rc1, log1 = _render(openscad, bare_dir / name, tmp_path / "bare.stl")
         assert re.search(r"Can't (open|find) include file '?lib/", log1), log1
+
+
+# ── parameters that change the geometry ─────────────────────────
+
+
+_STL_VERTEX_RE = re.compile(r"^\s*vertex\s+(\S+)\s+(\S+)\s+(\S+)", re.M)
+
+
+def _stl_pieces(stl_text: str) -> int:
+    """How many separate pieces an ASCII STL holds (facets that share a
+    vertex are one piece). OpenSCAD exports two solids that do not touch as
+    one valid file, so a successful render alone proves nothing."""
+    vertices = [" ".join(v) for v in _STL_VERTEX_RE.findall(stl_text)]
+    assert vertices and len(vertices) % 3 == 0, "not an ASCII STL"
+    parent = {v: v for v in vertices}
+
+    def root(v: str) -> str:
+        while parent[v] != v:
+            parent[v] = parent[parent[v]]
+            v = parent[v]
+        return v
+
+    for i in range(0, len(vertices), 3):
+        for v in vertices[i + 1:i + 3]:
+            parent[root(v)] = root(vertices[i])
+    return len({root(v) for v in vertices})
+
+
+def _facets(stl_text: str) -> list[tuple[str, ...]]:
+    """The STL's triangles, order-free (some OpenSCAD builds write the same
+    mesh in a different facet order from run to run)."""
+    vertices = [" ".join(v) for v in _STL_VERTEX_RE.findall(stl_text)]
+    return sorted(tuple(sorted(vertices[i:i + 3])) for i in range(0, len(vertices), 3))
+
+
+def test_stl_piece_count_sees_separate_solids():
+    def facet(*pts):
+        return "facet normal 0 0 1\nouter loop\n" + "".join(
+            f"vertex {x} {y} {z}\n" for x, y, z in pts) + "endloop\nendfacet\n"
+    a = facet((0, 0, 0), (1, 0, 0), (0, 1, 0))
+    touching = facet((1, 0, 0), (2, 0, 0), (1, 1, 0))
+    apart = facet((5, 5, 5), (6, 5, 5), (5, 6, 5))
+    assert _stl_pieces(a + touching) == 1
+    assert _stl_pieces(a + touching + apart) == 2
+
+
+@pytest.mark.parametrize("tilt", [10, 30])
+def test_tilted_bracket_platform_stays_on_its_arm(repo_models, openscad, tmp_path, tilt):
+    """tilt_angle raises the platform's outer end, pivoting on the edge the
+    arm holds, so the bracket stays one piece and nothing dips below the
+    bed. Pivoting on the platform's far corner instead lifted the joint end
+    clear of the 4 mm arm: two loose parts."""
+    stl = tmp_path / "bracket.stl"
+    rc, log = _render(openscad + ["-D", f"tilt_angle={tilt}"],
+                      repo_models / "sensor_bracket.scad", stl)
+    assert rc == 0, log
+    assert _problems(log) == [], log
+    text = stl.read_text()
+    assert _stl_pieces(text) == 1
+    assert min(float(z) for _x, _y, z in _STL_VERTEX_RE.findall(text)) >= 0
+
+
+@pytest.mark.parametrize("tilt", [-5, 31])
+def test_bracket_refuses_a_tilt_it_cannot_print(repo_models, openscad, tmp_path, tilt):
+    rc, log = _render(openscad + ["-D", f"tilt_angle={tilt}"],
+                      repo_models / "sensor_bracket.scad", tmp_path / "bracket.stl")
+    assert rc != 0 and "tilt_angle must be 0-30 degrees" in log, log
+
+
+@pytest.mark.parametrize("override, message", [
+    ("pin_row_spacing=15.24", "the header rows would sit on the support ribs"),
+    ("plug_w=15", "smaller than the cable overmould"),
+])
+def test_esp32_case_refuses_a_board_it_cannot_hold(repo_models, openscad, tmp_path,
+                                                    override, message):
+    rc, log = _render(openscad + ["-D", override],
+                      repo_models / "esp32_case.scad", tmp_path / "case.stl")
+    assert rc != 0 and message in log, log
+
+
+def test_esp32_case_lid_pads_follow_the_board(repo_models, openscad, tmp_path):
+    """usb_conn_w and module_w size the lid's hold-down pads: a smaller USB
+    receptacle or module gives a different lid, not the stock one."""
+    def lid(*overrides: str) -> list[tuple[str, ...]]:
+        args = ["-D", 'part="lid"']
+        for override in overrides:
+            args += ["-D", override]
+        stl = tmp_path / f"lid-{len(overrides)}-{'-'.join(overrides)}.stl"
+        rc, log = _render(openscad + args, repo_models / "esp32_case.scad", stl)
+        assert rc == 0, log
+        return _facets(stl.read_text())
+
+    stock = lid()
+    assert lid("usb_conn_w=4") != stock
+    assert lid("module_w=13.2") != stock

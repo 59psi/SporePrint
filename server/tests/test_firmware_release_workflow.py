@@ -15,6 +15,8 @@ public repository. These pin its security properties:
   and checks every zip with verify_firmware_release.py (no secret); the
   release job checks them again before it creates the release (the sign,
   package and verify scripts themselves run here under bash);
+* nothing is signed unless the firmware's host test suite and the fixture
+  parity checks pass on the tagged tree;
 * every image env in platformio.ini is built, signed, checked and shipped.
 """
 
@@ -116,7 +118,7 @@ def test_runs_only_for_release_tags_and_manual_dispatch():
 
 def test_the_token_is_read_only_except_in_the_release_job():
     assert WF["permissions"] == {"contents": "read"}
-    assert set(JOBS) == {"release-key", "build", "sign", "release"}
+    assert set(JOBS) == {"release-key", "build", "native-tests", "sign", "release"}
     assert JOBS["release"]["permissions"] == {"contents": "write"}
     for name, job in JOBS.items():
         if name != "release":
@@ -277,6 +279,37 @@ def test_the_derive_step_fails_closed_and_outputs_only_the_public_key():
     assert outputs == {"pubkey"}
 
 
+def _pin_check() -> dict:
+    return _step("release-key", "Check the signing key is the one every Pi pins")
+
+
+def test_the_derived_key_must_be_the_one_every_pi_pins():
+    """A wrong OTA_SIGNING_KEY derives its own public half: every image would
+    carry it and every Pi (which pins OTA_PUBKEY_B64) would refuse them. The
+    check runs right after the derive step, holds no key and stops the job,
+    so nothing downstream starts."""
+    check = _pin_check()
+    assert _index("release-key", check) == _index("release-key", _step("release-key", "Derive")) + 1
+    assert check["env"] == {"PUBKEY": "${{ steps.derive.outputs.pubkey }}",
+                            "PINNED_PUBKEY": "${{ vars.OTA_PUBKEY_B64 }}"}
+    assert "secrets" not in yaml.safe_dump(check)
+    for name in JOBS.keys() - {"release-key"}:
+        assert "release-key" in JOBS[name]["needs"], name
+
+
+@pytest.mark.skipif(BASH is None, reason="needs bash")
+def test_the_pin_check_refuses_a_missing_or_different_key(tmp_path):
+    pinned = VECTORS["public_key_b64"]
+    other = base64.b64encode(
+        Ed25519PrivateKey.generate().public_key().public_bytes_raw()).decode()
+    for pubkey, pin, ok in ((pinned, pinned, True), (pinned, "", False), (pinned, "not-a-key", False),
+                            (other, pinned, False), ("", pinned, False)):
+        result = _run_step(_pin_check(), {"PUBKEY": pubkey, "PINNED_PUBKEY": pin}, tmp_path)
+        assert (result.returncode == 0) is ok, (pubkey, pin, result.stdout)
+        if not ok:
+            assert "OTA_PUBKEY_B64" in result.stdout
+
+
 def test_the_sign_step_uses_a_shredded_0600_key_file():
     run = _step("sign", "Sign each image's release manifest")["run"]
     assert '[ -z "${OTA_SIGNING_KEY:-}" ]' in run
@@ -365,6 +398,46 @@ def test_every_image_env_is_built_signed_and_checked():
     assert JOBS["sign"]["env"]["FIRMWARE_ENVS"].split() == envs
     assert JOBS["release"]["env"]["FIRMWARE_ENVS"].split() == envs
     assert sorted(vfr.ENV_CHIPS) == sorted(envs)
+
+
+# ─── The host tests gate the build and the signing ────────────────────────
+
+
+def test_nothing_is_built_or_signed_unless_the_native_suite_passes():
+    """firmware-ci.yml runs only on demand, so this job is where a release
+    runs the host suites: a tag whose channel-safety, HMAC or OTA manifest
+    tests fail, or whose firmware fixture copies drifted from the server's,
+    publishes nothing."""
+    job = JOBS["native-tests"]
+    assert job["needs"] == "release-key"
+    assert set(JOBS["build"]["needs"]) == {"release-key", "native-tests"}
+    assert set(JOBS["sign"]["needs"]) == {"release-key", "build", "native-tests"}
+    assert "secrets" not in yaml.safe_dump(job)
+    suite = _step("native-tests", "Native test suite")
+    assert suite["run"].strip() == "pio test -e native" and suite["working-directory"] == "firmware"
+    install = _step("native-tests", "Install PlatformIO")
+    assert install["run"] == _step("build", "Install PlatformIO")["run"]
+    assert _index("native-tests", install) < _index("native-tests", suite)
+    parity = _step("native-tests", "Golden-fixture parity")["run"]
+    for fixture in ("signing_vectors.json", "ota_manifest_vectors.json"):
+        assert f"diff -q firmware/test/fixtures/{fixture}" in parity, fixture
+        assert f"server/tests/fixtures/{fixture}" in parity, fixture
+    grep = _step("native-tests", "Arduino-free core check")["run"]
+    assert "firmware/lib/sp_core firmware/lib/sp_drivers" in grep and "exit 1" in grep
+
+
+@pytest.mark.skipif(BASH is None or shutil.which("diff") is None, reason="needs bash and diff")
+def test_the_parity_step_fails_on_a_drifted_fixture(tmp_path):
+    parity = _step("native-tests", "Golden-fixture parity")
+    assert _run_step(parity, {}, ROOT).returncode == 0
+    for name in ("signing_vectors.json", "ota_manifest_vectors.json"):
+        for rel in ("firmware/test/fixtures", "server/tests/fixtures"):
+            (tmp_path / rel).mkdir(parents=True, exist_ok=True)
+            shutil.copy(ROOT / "server" / "tests" / "fixtures" / name, tmp_path / rel / name)
+    assert _run_step(parity, {}, tmp_path).returncode == 0
+    drifted = tmp_path / "firmware" / "test" / "fixtures" / "signing_vectors.json"
+    drifted.write_bytes(drifted.read_bytes() + b"\n")
+    assert _run_step(parity, {}, tmp_path).returncode != 0
 
 
 # ─── Untrusted input ──────────────────────────────────────────────────────
@@ -546,7 +619,7 @@ def test_release_key_records_the_tagged_commit_and_every_later_job_checks_it():
     assert _index("release-key", checkout) < _index("release-key", record)
     assert record["id"] == "commit" and "git rev-parse HEAD" in record["run"]
     assert JOBS["release-key"]["outputs"]["sha"] == "${{ steps.commit.outputs.sha }}"
-    for name in ("build", "sign", "release"):
+    for name in ("build", "native-tests", "sign", "release"):
         check = _step(name, "Check the tag still names the commit")
         steps = _steps(name)
         checkout_at = next(i for i, s in enumerate(steps) if s.get("uses", "").startswith("actions/checkout@"))

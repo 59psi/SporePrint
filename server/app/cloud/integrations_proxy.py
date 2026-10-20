@@ -43,6 +43,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ..automation.engine import add_held_by
 from ..config import settings
 from ..db import get_db
 from ..integrations import _registry
@@ -59,20 +60,23 @@ logger = logging.getLogger(__name__)
 # collide with (and falsely "replay") a command id, or vice versa.
 _REPLAY_NAMESPACE = "integrations:"
 
-# Downgrade latch. Once this Pi has verified ONE signed integrations_request,
-# the cloud it is paired with provably signs this channel, so an unsigned
-# frame from then on can only be a stripped/injected frame and is rejected.
-# Until then unsigned frames stay accepted (backward compatibility with a
-# cloud that has never signed the channel). Persisted in `user_settings` so a
-# Pi restart does not reopen the window.
+# Downgrade latch, for a Pi whose operator turned strict mode off
+# (SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=false). Once this Pi has
+# verified ONE signed integrations_request, the cloud it is paired with
+# provably signs this channel, so an unsigned frame from then on can only be
+# a stripped/injected frame and is rejected. Persisted in `user_settings` so
+# a Pi restart does not reopen the window.
 _SIGNED_LATCH_KEY = "cloud_integrations_signed_seen"
 
 
 def _require_signed_setting() -> bool:
-    """Operator opt-in to reject every unsigned integrations_request, even
-    before the latch engages. Reads `settings.cloud_require_signed_integrations`
-    when the config field exists; defaults to False (today's behaviour)."""
-    return bool(getattr(settings, "cloud_require_signed_integrations", False))
+    """Strict mode: reject every unsigned integrations_request, latch or not.
+
+    On by default (`settings.cloud_require_signed_integrations`): the cloud
+    signs every integrations_request, and this channel reaches automation
+    rules and vendor actuation, so an unsigned frame can only be a forged one.
+    """
+    return bool(getattr(settings, "cloud_require_signed_integrations", True))
 
 
 async def _signed_frames_seen() -> bool:
@@ -128,24 +132,10 @@ async def _check_signed_frame(sio_client, cmd_id: str, data: dict[str, Any]) -> 
         await _reject(sio_client, cmd_id, 400, "invalid request id")
         return False
 
-    replay_key = f"{_REPLAY_NAMESPACE}{cmd_id}"
-    already_seen = False
-    async with _cloud_service._replay_lock:
-        seen = _cloud_service._seen_command_ids
-        if replay_key in seen:
-            already_seen = True
-        else:
-            seen[replay_key] = None
-            while len(seen) > _cloud_service._COMMAND_ID_CACHE_CAP:
-                seen.popitem(last=False)
-    if already_seen:
+    if not await _cloud_service.claim_replay_id(f"{_REPLAY_NAMESPACE}{cmd_id}"):
         logger.warning("integrations_request replay rejected (id=%s)", cmd_id)
         await _reject(sio_client, cmd_id, 409, "Replayed request id")
         return False
-    try:
-        await _cloud_service._persist_replay_id(replay_key)
-    except Exception as e:  # noqa: BLE001 — in-memory cache still dedups
-        logger.warning("integrations_request replay persist failed: %s", e)
 
     try:
         if not await _signed_frames_seen():
@@ -182,7 +172,8 @@ async def _dispatch_automation(
     as the Pi's own ``/api/automation/rules`` surface.
 
     Frames:
-      - automation_list    → returns list[dict]
+      - automation_list    → returns list[dict], each rule with its
+                            ``held_by`` holds, as GET /api/automation/rules
       - automation_create  → payload = {rule: AutomationRule dict}
                             returns the persisted rule (with id)
       - automation_update  → payload = {rule_id: int, rule: dict}
@@ -194,7 +185,7 @@ async def _dispatch_automation(
     from ..automation.service import normalize_rule_id
 
     if action == "automation_list":
-        return await automation_service.list_rules_with_created_at()
+        return await add_held_by(await automation_service.list_rules_with_created_at())
 
     payload = payload or {}
 
@@ -203,7 +194,8 @@ async def _dispatch_automation(
         if not isinstance(raw, dict):
             raise ValueError("automation_create requires payload.rule")
         rule = AutomationRule(**raw)
-        new_id = await automation_service.create_rule(rule)
+        # The same checks as POST /api/automation/rules (422 when refused).
+        new_id = await automation_service.create_validated_rule(rule)
         rule.id = new_id
         return rule.model_dump()
 
@@ -215,7 +207,8 @@ async def _dispatch_automation(
         if not isinstance(raw, dict):
             raise ValueError("automation_update requires payload.rule")
         rule = AutomationRule(**raw)
-        ok = await automation_service.update_rule(rule_id, rule)
+        # The same checks as PUT /api/automation/rules/{id} (422 when refused).
+        ok = await automation_service.update_validated_rule(rule_id, rule)
         if not ok:
             raise HTTPException(404, "Rule not found")
         rule.id = rule_id
@@ -319,7 +312,9 @@ async def _dispatch(action: str, slug: str | None, payload: dict[str, Any] | Non
         if not isinstance(inner, str):
             raise ValueError("vendor_action requires payload.action")
         rest = {k: v for k, v in (payload or {}).items() if k != "action"}
-        return await _vendor_actions.dispatch(slug, inner, rest)
+        # A manual write: dispatch_manual also clears the safety ceiling a
+        # manual OFF ends, as the Pi's own actions route does.
+        return await _vendor_actions.dispatch_manual(slug, inner, rest)
     raise ValueError(f"unknown action {action!r}")
 
 
@@ -330,23 +325,32 @@ async def handle_request(sio_client, data: dict[str, Any]) -> None:
         logger.warning("integrations_request missing id; dropping")
         return
 
-    # v4.1.4 — verify the HMAC signature on signed frames (and, since the
-    # audit fix, replay-dedup their id). Unsigned frames are still accepted
-    # for a cloud that has never signed this channel, but NOT once a signed
-    # frame has been seen (downgrade latch) or when the operator opted into
-    # strict mode — see _SIGNED_LATCH_KEY.
-    if "signature" in data:
-        if not await _check_signed_frame(sio_client, cmd_id, data):
-            return
-    elif _require_signed_setting() or await _signed_frames_seen():
-        logger.warning(
-            "integrations_request rejected: unsigned frame (id=%s) but this Pi "
-            "requires signed integrations frames", cmd_id,
-        )
-        await _reject(
-            sio_client, cmd_id, 401,
-            "unsigned integrations_request rejected — this Pi requires signed frames",
-        )
+    # Verify the HMAC signature on signed frames and replay-dedup their id.
+    # An unsigned frame is rejected in strict mode (the default) and, with
+    # strict mode off, once a signed frame has been seen (downgrade latch,
+    # _SIGNED_LATCH_KEY). The gate fails closed: a frame it cannot evaluate
+    # (a malformed signature or ts that makes the check raise) is answered
+    # with 401 rather than left for the cloud to time out on.
+    try:
+        if "signature" in data:
+            allowed = await _check_signed_frame(sio_client, cmd_id, data)
+        elif _require_signed_setting() or await _signed_frames_seen():
+            logger.warning(
+                "integrations_request rejected: unsigned frame (id=%s) but this Pi "
+                "requires signed integrations frames", cmd_id,
+            )
+            await _reject(
+                sio_client, cmd_id, 401,
+                "unsigned integrations_request rejected — this Pi requires signed frames",
+            )
+            allowed = False
+        else:
+            allowed = True
+    except Exception as e:  # noqa: BLE001 — the gate fails closed
+        logger.warning("integrations_request signature check failed (id=%s): %s", cmd_id, e)
+        await _reject(sio_client, cmd_id, 401, "signature check failed")
+        return
+    if not allowed:
         return
 
     action = data.get("action")

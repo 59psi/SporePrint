@@ -1,5 +1,10 @@
 """Tests for yield statistics + biological efficiency (Task 7)."""
 
+import time
+
+import pytest
+
+from app.db import get_db
 from app.sessions.models import SessionCreate, HarvestCreate
 from app.sessions.service import (
     create_session,
@@ -37,6 +42,43 @@ def test_parse_volume_none():
 
 def test_parse_volume_unparseable():
     assert _parse_volume_to_liters("a bunch") is None
+
+
+@pytest.mark.parametrize("text", [
+    "approx. L", "1.5.2 l", "2.5. L", "1..5 L", "Std. qt jar", "... gallon bag", "5 lbs",
+])
+def test_parse_volume_reads_no_volume_rather_than_failing(text):
+    """'[\\d.]+' took a lone '.', and float('.') turned /stats, the report
+    and the session list into 500s."""
+    assert _parse_volume_to_liters(text) is None
+
+
+def test_parse_volume_counts_decimal_commas_and_multiples():
+    assert _parse_volume_to_liters("1,5 l") == 1.5
+    assert _parse_volume_to_liters("12 x 1.5 L") == 18.0
+    assert _parse_volume_to_liters("3×2 l bags") == 6.0
+    assert _parse_volume_to_liters(".5 gal") == pytest.approx(1.8927, rel=1e-3)
+
+
+def test_parse_volume_is_linear_on_a_long_run_of_digits():
+    """The pattern backtracked quadratically: 20,000 digits took seconds on
+    the event loop."""
+    started = time.perf_counter()
+    assert _parse_volume_to_liters("9" * 200_000) is None
+    assert _parse_volume_to_liters("." * 200_000 + "1 L") is None
+    assert time.perf_counter() - started < 1.0
+
+
+async def test_an_unreadable_volume_gives_no_efficiency_not_an_error():
+    s = await create_session(_make_session(substrate_volume="approx. L"))
+    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
+    assert (await get_session_stats(s["id"]))["biological_efficiency"] is None
+
+
+def test_an_overlong_volume_is_422(client):
+    r = client.post("/api/sessions", json={
+        "name": "V", "species_profile_id": "blue_oyster", "substrate_volume": "9" * 101})
+    assert r.status_code == 422
 
 
 # ── Stats with no harvests ──────────────────────────────────────
@@ -118,6 +160,31 @@ async def test_stats_nonexistent_session():
     assert stats is None
 
 
+# ── When the newest harvest was logged ──────────────────────────
+
+
+async def test_stats_report_when_the_newest_harvest_was_logged():
+    """The dashboard numbers a grow's next flush from its newest harvest's
+    time; the stats carry it, so the dashboard need not read the grow's
+    whole event history to find it."""
+    s = await create_session(_make_session())
+    assert (await get_session_stats(s["id"]))["last_harvest_at"] is None
+    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
+    await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=120.0))
+    async with get_db() as db:
+        # The newest by time, whatever its flush number.
+        await db.execute(
+            "UPDATE harvests SET timestamp = ? WHERE session_id = ? AND flush_number = 1",
+            (1_700_000_500.0, s["id"]),
+        )
+        await db.execute(
+            "UPDATE harvests SET timestamp = ? WHERE session_id = ? AND flush_number = 2",
+            (1_700_000_100.0, s["id"]),
+        )
+        await db.commit()
+    assert (await get_session_stats(s["id"]))["last_harvest_at"] == 1_700_000_500.0
+
+
 # ── HTTP endpoint tests ─────────────────────────────────────────
 
 
@@ -145,3 +212,31 @@ def test_stats_endpoint(client):
 def test_stats_endpoint_404(client):
     r = client.get("/api/sessions/99999/stats")
     assert r.status_code == 404
+
+
+def test_session_rows_carry_the_stats_biological_efficiency(client):
+    """sessions.biological_efficiency is never written, so every GET
+    /api/sessions row carried null while /stats computed a value."""
+    r = client.post("/api/sessions", json={
+        "name": "BE Grow", "species_profile_id": "blue_oyster",
+        "substrate_volume": "5 quarts",
+    })
+    session_id = r.json()["id"]
+    assert r.json()["biological_efficiency"] == 0.0  # volume known, nothing harvested
+    client.post(f"/api/sessions/{session_id}/harvest", json={
+        "flush_number": 1, "wet_weight_g": 400.0})
+    client.post(f"/api/sessions/{session_id}/harvest", json={
+        "flush_number": 2, "wet_weight_g": 150.0})
+
+    stats_be = client.get(f"/api/sessions/{session_id}/stats").json()["biological_efficiency"]
+    assert stats_be == round(550 / (5 * 0.946353 * 300) * 100, 1)
+    listed = next(s for s in client.get("/api/sessions").json() if s["id"] == session_id)
+    assert listed["biological_efficiency"] == stats_be
+    assert client.get(f"/api/sessions/{session_id}").json()["biological_efficiency"] == stats_be
+
+
+def test_a_session_without_a_volume_has_no_biological_efficiency(client):
+    r = client.post("/api/sessions", json={"name": "No volume", "species_profile_id": "blue_oyster"})
+    assert r.json()["biological_efficiency"] is None
+    listed = client.get("/api/sessions").json()
+    assert all(s["biological_efficiency"] is None for s in listed)

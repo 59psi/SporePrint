@@ -1,11 +1,11 @@
 """Claude model id + response-shape robustness across every Claude call site.
 
-deps-infra#1 / srv-rest#3 / docs#23 — all five call sites (vision frame
+Model id — all five call sites (vision frame
     analysis, contamination identify, transcript analysis, experiment analysis,
     Builder's Assistant) hardcoded the retired `claude-sonnet-4-20250514`, with
     no setting to change it. The id now comes from `settings.claude_model`
     (env SPOREPRINT_CLAUDE_MODEL, default `claude-sonnet-5`).
-srv-rest#3 / srv-hw#13 — current models think by default, so `content[0]` can
+Response shape — current models think by default, so `content[0]` can
     be a `thinking` block (no `.text`), thinking counts against a small
     `max_tokens`, and a `refusal` / `max_tokens` stop_reason was never checked.
     The Builder saved guides cut off at 4096 tokens as if they were complete.
@@ -20,7 +20,7 @@ import pytest
 from anthropic.types import TextBlock, ThinkingBlock
 
 import app.builder.service as builder_service
-import app.contamination.router as crouter
+import app.contamination.identify as cidentify
 import app.experiments.service as experiments_service
 import app.transcript.service as transcript_service
 from app.config import DEFAULT_CLAUDE_MODEL, Settings, settings
@@ -190,7 +190,7 @@ async def test_vision_truncated_unparseable_response_is_an_error(tmp_path, monke
 
 
 def test_identify_uses_configured_model_and_survives_thinking_block(client, monkeypatch, claude_env):
-    rec = _install(monkeypatch, crouter, _message(
+    rec = _install(monkeypatch, cidentify, _message(
         _thinking(), _text('{"contamination_detected": false, "contaminants": []}'),
     ))
     r = client.post("/api/contamination/identify", files={"file": ("f.jpg", JPEG, "image/jpeg")})
@@ -201,14 +201,14 @@ def test_identify_uses_configured_model_and_survives_thinking_block(client, monk
 
 
 def test_identify_refusal_is_a_clear_502(client, monkeypatch, claude_env):
-    _install(monkeypatch, crouter, _message(_thinking(), stop_reason="refusal"))
+    _install(monkeypatch, cidentify, _message(_thinking(), stop_reason="refusal"))
     r = client.post("/api/contamination/identify", files={"file": ("f.jpg", JPEG, "image/jpeg")})
     assert r.status_code == 502
     assert "declined" in r.json()["detail"]
 
 
 def test_identify_truncation_is_flagged(client, monkeypatch, claude_env):
-    _install(monkeypatch, crouter, _message(
+    _install(monkeypatch, cidentify, _message(
         _text('```json\n{"contamination_detected": true, "contam'), stop_reason="max_tokens",
     ))
     r = client.post("/api/contamination/identify", files={"file": ("f.jpg", JPEG, "image/jpeg")})

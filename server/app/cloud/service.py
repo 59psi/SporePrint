@@ -1,30 +1,40 @@
 """Cloud connector: pushes telemetry upstream and receives remote commands.
 
-Opt-in — inactive unless SPOREPRINT_CLOUD_URL and SPOREPRINT_CLOUD_TOKEN are set.
+Opt-in — inactive unless SPOREPRINT_CLOUD_URL, SPOREPRINT_CLOUD_TOKEN and
+SPOREPRINT_CLOUD_DEVICE_ID are set (pairing writes all three).
 Uses python-socketio AsyncClient to maintain a persistent WebSocket to the cloud relay.
-Buffers telemetry during disconnects and drains on reconnect.
+Buffers telemetry during disconnects and drains it on reconnect as replayed
+history; a frame counts as delivered only once the relay acknowledges it.
 """
 
 import asyncio
 import ipaddress
+import itertools
+import json
 import logging
+import math
 import os
-import re as _re
 import tempfile
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from pathlib import Path as _Path
 from urllib.parse import urlparse
 
 import socketio
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
-from ..automation.service import drop_duty_from_off, is_off_command
+from ..automation.models import ManualOverride
 from ..config import settings
+from ..db import get_db
 from ..health.service import get_system_metrics
 from ..integrations import _health_sweeper
+from ..integrations._actions import LAX_BOOL
+from ..node_ids import is_safe_id
+from ..system_actions import reboot_unsupported_reason, schedule_reboot
 from . import ota as _ota
 from .signing import verify_frame
+from .version import server_version
 
 log = logging.getLogger(__name__)
 
@@ -38,17 +48,61 @@ _reconnect_attempts: int = 0
 _heartbeat_task: asyncio.Task | None = None
 _queue_drops: int = 0
 
-# The cloud refuses a device whose owner has no active subscription
-# (`subscription_required` at connect, 402 on REST ingest). That is a STANDING
-# condition, not a transient fault: it clears only when the user resubscribes.
-# Treated as a normal error it would mean a 5-minute reconnect storm forever
-# against a relay that has storm detection, plus a telemetry queue quietly
-# filling with frames that can never be delivered. So: back off far, say why,
-# and stop buffering. The Pi itself keeps working — local control never depended
-# on the cloud.
-_subscription_blocked: bool = False
-_SUBSCRIPTION_RETRY_SECONDS = 900  # 15 min — long enough not to be a storm,
-                                   # short enough that resubscribing feels instant
+# The relay refuses a device at connect for two STANDING reasons (the reason
+# string it raises ConnectionRefusedError with, cloud/app/relay/service.py):
+# the owner has no active subscription, or the device token is not valid (the
+# device was deleted, revoked or its token rotated). Neither is a transient
+# fault: one clears when the user resubscribes, the other when the Pi is
+# re-paired. Treated as a normal error each would mean a 5-minute reconnect
+# storm forever against a relay that has storm detection, plus a telemetry
+# queue quietly filling with frames that can never be delivered. So: back off
+# far, say why, and stop buffering. The Pi itself keeps working — local
+# control never depended on the cloud.
+_STANDING_REFUSALS: dict[str, str] = {
+    "subscription_required": "paused — subscription required",
+    "Invalid device token": "unauthorized — re-pair this Pi with the cloud",
+}
+_standing_refusal: str | None = None  # the relay's reason, while it stands
+_STANDING_REFUSAL_RETRY_SECONDS = 900  # 15 min — long enough not to be a storm,
+                                       # short enough that resubscribing feels instant
+# "Invalid device token" stands only once it repeats on consecutive attempts;
+# until then it is retried like any other failure, so one wrong answer can't
+# silence the Pi for 15 minutes. (A relay that could not check the token or
+# read the owner's subscription at all, its database unreachable, answers
+# service_unavailable: an ordinary failure, like every reason not listed
+# above.)
+_TOKEN_REFUSALS_TO_STAND = 3
+_token_refusals = 0
+# python-socketio reports a refused connect as a generic ConnectionError; the
+# relay's reason arrives only as the `connect_error` event's payload, kept
+# here for the attempt that just failed.
+_connect_error: str | None = None
+
+# How long connect() waits for the relay to accept the namespace. The relay
+# checks the device token and the owner's tier (Supabase round trips) before
+# it answers; python-socketio's default of 1 s fails every attempt whenever
+# that takes longer.
+_CONNECT_WAIT_TIMEOUT_SECONDS = 10
+
+# Telemetry handed to the socket but not yet acknowledged by the relay, by
+# send sequence: (sent_at, frame). A socket that died without a FIN keeps
+# accepting emits until the ping timeout notices (~45 s), and those frames
+# never arrive; the unacknowledged ones go back into the queue on disconnect.
+# A frame unacknowledged for longer than _INFLIGHT_MAX_AGE_SECONDS was sent
+# over a live socket and the relay did not ack it (it never will), so it is
+# dropped from tracking instead of being resent forever.
+_inflight: OrderedDict[int, tuple[float, dict]] = OrderedDict()
+_inflight_seq = itertools.count()
+_INFLIGHT_MAX_AGE_SECONDS = 120.0
+
+# A confirmed event (forward_event(confirm=True)) waits this long for the
+# relay's acknowledgement before it counts as undelivered.
+_EVENT_ACK_TIMEOUT_SECONDS = 10.0
+
+# The relay caches the integrations snapshot for 5 minutes; the heartbeat
+# re-pushes it inside that window so the fleet view never goes blank.
+_INTEGRATIONS_SNAPSHOT_INTERVAL_SECONDS = 240
+_last_snapshot_push: float = 0
 
 # Replayed-command protection. Cache is a real FIFO/LRU — popitem(last=False)
 # evicts the oldest-inserted id. A burst of >1024 distinct ids no longer lets
@@ -84,32 +138,44 @@ _ota_task: asyncio.Task | None = None
 # Task registry for health reporting
 _task_status: dict = {"cloud_connector": {"status": "idle", "last_run": None}}
 
-# Lax bool for command payload flags: true/false, on/off, 1/0 (int or string).
-# `bool("false")` is True — a plain bool() cast would PAUSE automation on
-# {"paused": "false"}.
-_BOOL = TypeAdapter(bool)
 
+def _connect_error_reason(*args) -> str | None:
+    """The relay's refusal reason from a `connect_error` event payload.
 
-def _is_subscription_refusal(exc: Exception) -> bool:
-    """Did the cloud refuse us because the owner has no active subscription?
-
-    python-socketio surfaces a server-side ConnectionRefusedError as a generic
-    ConnectionError carrying the server's rejection payload in its message, so
-    the reason is only available as text. Matching on the wire token the cloud
-    sends (`subscription_required`) is the whole contract — keep it in step with
-    cloud/app/relay/service.py.
+    The relay's ConnectionRefusedError("<reason>") arrives as
+    ``{"message": "<reason>"}``; a transport-level failure as a plain string.
     """
-    return "subscription_required" in str(exc)
+    data = args[0] if args else None
+    if isinstance(data, dict):
+        data = data.get("message")
+    return data if isinstance(data, str) else None
+
+
+def _standing_refusal_of(exc: Exception) -> str | None:
+    """The standing refusal behind a failed connect, or None for a transient fault.
+
+    python-socketio raises a generic ConnectionError ("One or more namespaces
+    failed to connect") for a refused connect and delivers the relay's reason
+    only through `connect_error`, captured in ``_connect_error``. The reason
+    strings are the contract — keep them in step with
+    cloud/app/relay/service.py. An exception text that carries a reason is
+    accepted too, for a client library that reports it there.
+    """
+    for reason in _STANDING_REFUSALS:
+        if _connect_error == reason or (_connect_error is None and reason in str(exc)):
+            return reason
+    return None
 
 
 def _drop_undeliverable_queue() -> None:
     """Empty the forward queue when the cloud will not take our data.
 
-    Buffering exists to survive a flaky link, not a lapsed subscription. Holding
-    frames the cloud is refusing on principle just churns the drop-oldest ring
-    for as long as the lapse lasts, and inflates the drop counter with data loss
-    that never actually happened. The readings are still on the Pi — SQLite is
-    the record; the cloud is a mirror.
+    Buffering exists to survive a flaky link, not a standing refusal (a lapsed
+    subscription, a revoked device). Holding frames the cloud is refusing on
+    principle just churns the drop-oldest ring for as long as the refusal
+    lasts, and inflates the drop counter with data loss that never actually
+    happened. The readings are still on the Pi — SQLite is the record; the
+    cloud is a mirror.
     """
     global _queue_drops
     dropped = 0
@@ -124,14 +190,105 @@ def _drop_undeliverable_queue() -> None:
                  "readings remain in the Pi's local database", dropped)
 
 
+def _enqueue(msg: dict) -> None:
+    """Buffer a telemetry frame for the next connect (drop-oldest when full)."""
+    global _queue_drops
+    try:
+        _queue.put_nowait(msg)
+        return
+    except asyncio.QueueFull:
+        pass
+    # True drop-oldest: evict the stalest item, enqueue the new one.
+    try:
+        _queue.get_nowait()
+    except asyncio.QueueEmpty:
+        pass
+    try:
+        _queue.put_nowait(msg)
+    except asyncio.QueueFull:
+        return
+    _queue_drops += 1
+    if _queue_drops == 1 or _queue_drops % 100 == 0:
+        log.warning(
+            "Cloud: queue overflow, dropped oldest (total drops=%d)",
+            _queue_drops,
+        )
+
+
+def _prune_inflight(now: float) -> None:
+    """Forget frames the relay never acknowledged within the max age."""
+    while _inflight:
+        seq, (sent_at, _msg) = next(iter(_inflight.items()))
+        if now - sent_at <= _INFLIGHT_MAX_AGE_SECONDS and len(_inflight) <= _queue.maxsize:
+            return
+        _inflight.pop(seq, None)
+
+
+async def _emit_telemetry(msg: dict) -> None:
+    """Hand a telemetry frame to the socket, tracked until the relay acks it."""
+    now = time.time()
+    seq = next(_inflight_seq)
+    _inflight[seq] = (now, msg)
+    _prune_inflight(now)
+
+    def _acked(*_args) -> None:
+        global _last_forward
+        if _inflight.pop(seq, None) is not None:
+            _last_forward = time.time()
+
+    try:
+        await _sio.emit("telemetry", msg, callback=_acked)
+    except Exception:
+        _inflight.pop(seq, None)
+        raise
+
+
+def _requeue_unacked() -> int:
+    """Move frames the relay never acknowledged back into the queue.
+
+    Called when the socket drops: they were sent into a dead connection (or
+    their ack was lost with it) and go out again, as replayed history, on the
+    next connect. A rare duplicate is the price of not losing them.
+    """
+    now = time.time()
+    frames = [msg for sent_at, msg in _inflight.values()
+              if now - sent_at <= _INFLIGHT_MAX_AGE_SECONDS]
+    _inflight.clear()
+    for msg in frames:
+        _enqueue(msg)
+    return len(frames)
+
+
+async def _drain_queue() -> int:
+    """Send the frames buffered while the link was down; returns how many.
+
+    They go out flagged ``"replay": true`` (the flag the Pi already puts on a
+    node's own late frames): the relay then stores each at its own ``ts`` and
+    neither broadcasts it as the current reading nor runs alert rules on it,
+    so hours-old values never show as live or page anyone.
+    """
+    drained = 0
+    while _connected and _sio:
+        try:
+            item = _queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        try:
+            await _emit_telemetry({**item, "replay": True})
+        except Exception as e:
+            _enqueue(item)
+            log.debug("Cloud: buffered frame not sent: %s", e)
+            break
+        drained += 1
+    return drained
+
+
 async def _rehydrate_replay_cache() -> int:
     """Load persisted command ids from SQLite into the in-memory FIFO.
 
     Called once at connector startup. Entries older than ``_REPLAY_WINDOW_SECONDS``
     are pruned from disk. Returns the number of entries loaded.
     """
-    from ..db import get_db  # lazy import — avoid circular with main.py lifespan
-
     now = time.time()
     loaded = 0
     try:
@@ -183,10 +340,14 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
       - session_start / session_end: forward to the sessions service.
       - rule: payload `{rule_id: str, minutes: int}` — temporarily suspend
         a single automation rule.
-      - reboot: schedule `systemctl reboot` after a 5s grace period so the
-        ack flushes before the box goes down.
-      - ota: schedule a firmware update (placeholder — Pi-side updater
-        is the next piece).
+      - reboot: `systemctl reboot` after a 5 s grace period so the ack flushes
+        before the box goes down; refused before the ack where the host
+        cannot be rebooted from here (the Docker install).
+      - ota: self-update the Pi server (cloud/ota.py): the signed release
+        manifest is verified against the locally pinned key, then the bundle
+        is downloaded, checked against it, staged, promoted and the service
+        restarted. Refused before the ack on the Docker install, for another
+        release channel, for a downgrade, and while an update is running.
     """
     if not channel:
         return False, "system command requires a channel"
@@ -197,7 +358,9 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
         except ImportError:
             return False, "automation engine not available on this Pi"
         try:
-            paused = _BOOL.validate_python(payload.get("paused", False))
+            # Lax: `bool("false")` is True — a plain cast would PAUSE
+            # automation on {"paused": "false"}.
+            paused = LAX_BOOL.validate_python(payload.get("paused", False))
         except ValidationError:
             return False, f"automation.paused must be a boolean, got {payload.get('paused')!r}"
         try:
@@ -237,11 +400,14 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
             return False, f"rule suspend failed: {type(e).__name__}: {e}"
 
     if channel == "reboot":
-        # Canonical grace-period reboot lives in system_actions (shared
-        # with the LAN REST route) — the delay lets this ack flush before
-        # the box goes down.
-        from ..system_actions import schedule_reboot
-
+        # Refuse BEFORE acking when this process cannot reboot the host (the
+        # Docker install has no sudo, no systemd and no host access): a
+        # success ack followed by nothing would tell the operator it worked.
+        unsupported = reboot_unsupported_reason()
+        if unsupported:
+            return False, unsupported
+        # Canonical grace-period reboot lives in system_actions — the delay
+        # lets this ack flush before the box goes down.
         schedule_reboot()
         return True, None
 
@@ -298,19 +464,94 @@ async def _dispatch_system_command(channel: str | None, payload: dict) -> tuple[
     return False, f"Unknown system channel '{channel}'"
 
 
-# Firmware actuator channel → the hardware node type that drives it. The cloud's
-# POST /devices/{id}/actuator maps a design ActuatorKey to a firmware channel
-# (mister→aux, fan→fae, light→white — see cloud devices/service.py
-# ACTUATOR_CHANNELS) and emits the override twin carrying that firmware channel.
-# We map it back to a node type so the override pins the SAME (node, channel) a
-# rule's action targets. heater/pump are smart plugs the cloud rejects (400)
-# before emit; any channel absent here has no relay/lighting node to pin, so the
-# override degrades to a logged no-op rather than crashing.
+# Firmware actuator channel → the personality of the node bank that has it,
+# for nodes that have not reported their channels yet (a node that has is
+# matched on its own list). The cloud's POST /devices/{id}/actuator maps a
+# design ActuatorKey to a firmware channel (mister→aux, fan→fae, light→white —
+# see cloud devices/service.py ACTUATOR_CHANNELS) and sends the hardware
+# command plus an override twin carrying that channel; both resolve through
+# _fitting_nodes, so the override pins the SAME (node, channel) the command
+# reached and a rule's action targets. heater/pump are smart plugs the cloud
+# rejects (400) before emit.
 _OVERRIDE_CHANNEL_NODE_TYPE: dict[str, str] = {
     "aux": "relay",
     "fae": "relay",
     "white": "lighting",
 }
+
+# Command suffixes addressed to the node itself, not to one of its channels
+# (builder/service.py _HARDWARE_CONTRACT: cmd/config, cmd/scene, ...).
+_NODE_COMMANDS = frozenset({"config", "scene", "coredump_ack", "ota_manifest"})
+
+
+def _json_list(raw) -> list:
+    try:
+        value = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+async def _fitting_nodes(kind: str | None, channel: str | None) -> tuple[list[str], bool]:
+    """Registered nodes a cloud command or override for ``channel`` may mean.
+
+    Returns ``(node_ids, any_of_kind)``; the second is whether any node of
+    ``kind`` is registered at all (for the error message).
+
+    - ``kind`` (a hardware target_kind) is matched against the node's
+      personality or its roles: a combined sensors+relay node reports
+      node_type 'relay' and roles ['climate', 'relay']. An override has no
+      kind (None).
+    - A channel command fits a node whose reported channels list it. Channel
+      names are bank-specific, so this finds the lighting node for 'white'
+      even when the frame says target_kind 'relay' (older clouds send that).
+      A node that has never reported its channels fits when it is of
+      ``kind`` or of the channel's bank (_OVERRIDE_CHANNEL_NODE_TYPE).
+    - A node-level command (no channel, cmd/config, cmd/scene) fits every
+      node of ``kind``.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT node_id, node_type, roles, channels FROM hardware_nodes ORDER BY node_id"
+        )
+        rows = await cursor.fetchall()
+
+    def is_kind(row, wanted: str | None) -> bool:
+        return wanted is not None and (row["node_type"] == wanted or wanted in _json_list(row["roles"]))
+
+    any_of_kind = any(is_kind(row, kind) for row in rows)
+    if not channel or channel in _NODE_COMMANDS:
+        return [row["node_id"] for row in rows if is_kind(row, kind)], any_of_kind
+    bank = _OVERRIDE_CHANNEL_NODE_TYPE.get(channel)
+    fits = []
+    for row in rows:
+        reported = _json_list(row["channels"])
+        if channel in reported or (not reported and (is_kind(row, kind) or is_kind(row, bank))):
+            fits.append(row["node_id"])
+    return fits, any_of_kind
+
+
+def _ambiguous(node_ids: list[str], channel: str | None) -> str:
+    what = f"channel '{channel}'" if channel else "this command"
+    return (
+        f"Ambiguous target: {len(node_ids)} registered nodes have {what} "
+        f"({', '.join(node_ids)}) — refusing to guess; control it from the Pi"
+    )
+
+
+async def _resolve_command_node(kind: str, channel: str | None) -> tuple[str | None, str | None]:
+    """The one node a hardware cloud command addresses: ``(node_id, None)``,
+    or ``(None, error)`` when none or several fit. The cloud frame names no
+    node, so on a Pi with two relay nodes (two chambers, or two banks in one)
+    it is refused rather than sent to whichever node reported last."""
+    fits, any_of_kind = await _fitting_nodes(kind, channel)
+    if len(fits) == 1:
+        return fits[0], None
+    if fits:
+        return None, _ambiguous(fits, channel)
+    if any_of_kind and channel and channel not in _NODE_COMMANDS:
+        return None, f"No registered {kind} node has a '{channel}' channel"
+    return None, f"No registered {kind} node"
 
 
 async def _dispatch_automation_command(channel: str | None, payload: dict) -> tuple[bool, str | None]:
@@ -336,46 +577,56 @@ async def _dispatch_automation_command(channel: str | None, payload: dict) -> tu
     if not isinstance(fw_channel, str) or not fw_channel:
         return False, "automation override requires payload.channel"
 
-    node_type = _OVERRIDE_CHANNEL_NODE_TYPE.get(fw_channel)
-    if node_type is None:
-        # A smart-plug actuator (heater/pump) or a channel this Pi can't pin on a
-        # relay/lighting node. Degrade honestly — log + no-op, never crash.
-        log.warning(
-            "Cloud: automation override for unmappable channel %r — no-op "
-            "(not a relay/lighting channel)", fw_channel,
-        )
-        return False, f"Channel '{fw_channel}' maps to no relay/lighting node — override not registered"
-
-    node_id = await _resolve_node_id_by_type(node_type)
-    if not node_id:
+    # The same resolution as the hardware command this override accompanies,
+    # so the hold pins the node the command actually reached.
+    fits, _ = await _fitting_nodes(None, fw_channel)
+    if len(fits) > 1:
+        log.warning("Cloud: automation override for %r — %d nodes have it — no-op",
+                    fw_channel, len(fits))
+        return False, _ambiguous(fits, fw_channel)
+    if not fits:
+        node_type = _OVERRIDE_CHANNEL_NODE_TYPE.get(fw_channel)
+        if node_type is None:
+            # A smart-plug actuator (heater/pump) or a channel no registered
+            # relay/lighting node has. Degrade honestly — log + no-op, never crash.
+            log.warning(
+                "Cloud: automation override for unmappable channel %r — no-op "
+                "(not a relay/lighting channel)", fw_channel,
+            )
+            return False, f"Channel '{fw_channel}' maps to no relay/lighting node — override not registered"
         log.warning(
             "Cloud: automation override for %r — no registered %s node — no-op",
             fw_channel, node_type,
         )
         return False, f"No registered {node_type} node to override"
+    node_id = fits[0]
 
     # Reuse the engine's override API — the exact mechanism the LAN UI's
-    # /api/automation/overrides endpoint and suspend_rule already drive.
+    # /api/automation/overrides endpoint and suspend_rule already drive. Late
+    # import: the engine imports mqtt.py, which imports this module.
     from ..automation.engine import clear_override, set_override
-    from ..automation.models import ManualOverride
 
     if payload.get("release"):
         await clear_override(node_id, fw_channel)
         log.info("Cloud: cleared manual override %s:%s", node_id, fw_channel)
         return True, None
 
-    # set — pin the channel out of automation's reach until it expires. The cloud
-    # sends an absolute `expires_at`; fall back to duration-from-now, then to None
-    # (ManualOverride clamps None / over-long to its 24h TTL ceiling, so a hold
-    # can never go sticky-forever).
-    expires_at = payload.get("expires_at")
-    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
-        duration = payload.get("duration_sec")
-        expires_at = (
-            time.time() + duration
-            if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-            else None
-        )
+    # set — pin the channel out of automation's reach until it expires. The hold
+    # runs `duration_sec` from now on the Pi's own clock; the absolute
+    # `expires_at` the cloud sends with it is read off the cloud's clock, which
+    # a Pi with no battery-backed clock that booted without NTP can be hours
+    # away from, so it is only the fallback. Then None (ManualOverride clamps
+    # None / over-long to its 24h TTL ceiling, so a hold can never go
+    # sticky-forever). A non-finite number (NaN / inf) is no expiry at all:
+    # NaN compares false against every deadline, so it would never read as
+    # expired.
+    duration = payload.get("duration_sec")
+    if _finite_number(duration):
+        expires_at = time.time() + duration
+    else:
+        expires_at = payload.get("expires_at")
+        if not _finite_number(expires_at):
+            expires_at = None
     state = payload.get("state")
     await set_override(ManualOverride(
         target=node_id,
@@ -383,6 +634,9 @@ async def _dispatch_automation_command(channel: str | None, payload: dict) -> tu
         locked=True,
         reason=f"cloud manual override ({fw_channel}={state})" if state else "cloud manual override",
         expires_at=expires_at,
+        # An ON pin ends when the node's own safety cutoff switches the
+        # channel off (engine.end_on_hold_after_cutoff).
+        held_state=state,
     ))
     log.info(
         "Cloud: registered manual override %s:%s (state=%s expires_at=%s)",
@@ -391,31 +645,35 @@ async def _dispatch_automation_command(channel: str | None, payload: dict) -> tu
     return True, None
 
 
-async def _resolve_node_id_by_type(node_type: str) -> str | None:
-    """Pick the chamber's hardware node of the given type. Most chambers
-    have exactly one of each kind; we pick the most-recently-seen if
-    multiple are registered. Returns None when no matching node exists,
-    in which case the command is rejected upstream.
+def _finite_number(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
 
-    v4.2: combined firmware-v2 nodes report a single `node_type` (their
-    actuator personality) plus a `roles` JSON list of every capability —
-    e.g. a sensors+relay node has node_type='relay', roles=["climate",
-    "relay"]. The roles match makes climate-targeted commands reach it.
+
+async def claim_replay_id(key: str) -> bool:
+    """Record ``key`` as seen. False when it was seen already: a replay.
+
+    The one replay gate for signed cloud frames: command ids and (namespaced
+    by the caller) integrations request ids share this FIFO and the SQLite
+    table that keeps the window shut across a restart. The check and the
+    insert happen under one lock, so two concurrent frames carrying the same
+    id can't both pass. Persisting is best effort: if it fails, the in-memory
+    cache still rejects the replay until this process restarts.
     """
-    from ..db import get_db
-    async with get_db() as db:
-        cursor = await db.execute(
-            """SELECT node_id FROM hardware_nodes
-               WHERE node_type = ?
-                  OR EXISTS (SELECT 1 FROM json_each(hardware_nodes.roles)
-                             WHERE json_each.value = ?)
-               ORDER BY last_seen DESC LIMIT 1""",
-            (node_type, node_type),
-        )
-        row = await cursor.fetchone()
-    if not row:
-        return None
-    return row["node_id"] if hasattr(row, "keys") else row[0]
+    async with _replay_lock:
+        if key in _seen_command_ids:
+            return False
+        _seen_command_ids[key] = None
+        # Evict the OLDEST entry (FIFO) when the cache is over capacity.
+        # OrderedDict.popitem(last=False) is O(1) and — unlike set.pop() —
+        # removes the insertion-order-oldest, not an arbitrary element.
+        while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
+            _seen_command_ids.popitem(last=False)
+    try:
+        await _persist_replay_id(key)
+    except Exception as e:
+        log.warning("Cloud: replay cache persist failed: %s", e)
+    return True
 
 
 async def _persist_replay_id(command_id: str) -> None:
@@ -427,8 +685,6 @@ async def _persist_replay_id(command_id: str) -> None:
     start). The prune runs every accepted command which keeps the table
     size O(replay-window × command-rate), typically under 100 rows.
     """
-    from ..db import get_db
-
     now = time.time()
     async with get_db() as db:
         await db.execute(
@@ -511,38 +767,15 @@ async def handle_cloud_command(sio, data):
             })
             return
 
-        # Atomic check-and-insert under the replay lock so two concurrent
-        # frames carrying the same command_id can't both pass the dedup
-        # test. Without the lock, both would see "not in cache" and both
-        # would proceed to execute the command. We do the socket emit
-        # OUTSIDE the lock to avoid holding it across a network await.
-        already_seen = False
-        async with _replay_lock:
-            if command_id in _seen_command_ids:
-                already_seen = True
-            else:
-                _seen_command_ids[command_id] = None
-                # Evict the OLDEST entry (FIFO) when the cache is over
-                # capacity. OrderedDict.popitem(last=False) is O(1) and —
-                # unlike set.pop() — removes the insertion-order-oldest,
-                # not an arbitrary element.
-                while len(_seen_command_ids) > _COMMAND_ID_CACHE_CAP:
-                    _seen_command_ids.popitem(last=False)
-        if already_seen:
+        # Atomic check-and-insert (claim_replay_id), written through to
+        # SQLite so a restart inside the replay window still rejects it.
+        if not await claim_replay_id(command_id):
             await sio.emit("command_result", {
                 "id": command_id,
                 "success": False,
                 "error": "Replayed command id",
             })
             return
-        # v3.3.3 — persist so a restart inside the replay window still
-        # rejects the replay. Failure to persist is logged but does not
-        # reject the command; replay protection in that window falls back
-        # to the in-memory cache which is always consistent.
-        try:
-            await _persist_replay_id(command_id)
-        except Exception as e:
-            log.warning("Cloud: replay cache persist failed: %s", e)
 
         # v3.4.x coordinated wire shape: every command frame carries
         # `{device_id, target_kind, channel, payload}`. mobile, cloud
@@ -557,7 +790,7 @@ async def handle_cloud_command(sio, data):
         channel = data.get("channel")
         payload = data.get("payload", {})
 
-        if target_kind not in _VALID_TARGET_KINDS or (channel is not None and not _is_safe_channel(channel)):
+        if target_kind not in _VALID_TARGET_KINDS or (channel is not None and not is_safe_id(channel)):
             await sio.emit("command_result", {
                 "id": command_id,
                 "success": False,
@@ -565,21 +798,22 @@ async def handle_cloud_command(sio, data):
             })
             return
 
-        # Resolve target_kind → MQTT node_id. "system" and "automation" are
-        # virtual in-process targets — no hardware node, no MQTT publish.
+        # Resolve target_kind + channel → the one MQTT node_id it addresses.
+        # "system" and "automation" are virtual in-process targets — no
+        # hardware node, no MQTT publish.
         if target_kind in ("system", "automation"):
             target = target_kind
         else:
-            target = await _resolve_node_id_by_type(target_kind)
+            target, unresolved = await _resolve_command_node(target_kind, channel)
             if not target:
                 await sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
-                    "error": f"No registered {target_kind} node",
+                    "error": unresolved,
                 })
                 return
             # Sanity check the resolved node id against the safety regex.
-            if not _is_safe_target(target):
+            if not is_safe_id(target):
                 await sio.emit("command_result", {
                     "id": command_id,
                     "success": False,
@@ -635,46 +869,21 @@ async def handle_cloud_command(sio, data):
                 "executed" if ok else "rejected", channel, tier,
             )
         else:
-            # Late imports: mqtt.py imports this module at top level, and the
-            # automation engine imports mqtt.py, so either at module top here
-            # would be a circular import.
-            from ..automation import engine as _engine
-            from ..mqtt import mqtt_publish
+            # A node drops any body that is not a JSON object.
+            if not isinstance(payload, dict):
+                await sio.emit("command_result", {
+                    "id": command_id,
+                    "success": False,
+                    "error": "Command payload must be a JSON object",
+                })
+                return
+            # The one node-command publisher (topic, OFF without pwm/level,
+            # and the automation bookkeeping every non-automation publish
+            # owes the engine). Late import: hardware.service imports
+            # mqtt.py, which imports this module at top level.
+            from ..hardware.service import send_command
 
-            if channel:
-                topic = f"sporeprint/{target}/cmd/{channel}"
-            else:
-                topic = f"sporeprint/{target}/cmd/config"
-
-            # Automation bookkeeping applies to a switch command on a channel
-            # or scene (cmd/config carries no switch state) with an object
-            # body (a node drops anything else). A scene is keyed on the node
-            # with no channel, as the engine and hardware.service key it.
-            actuates = (bool(channel) and channel != "config"
-                        and isinstance(payload, dict))
-            key_channel = None if channel == "scene" else channel
-            is_off = actuates and is_off_command(payload)
-            if isinstance(payload, dict):
-                # An OFF never carries pwm / level: deployed firmware reads
-                # {"state":"off","pwm":N} as ON at duty N.
-                payload = drop_duty_from_off(payload)
-            sent_at = time.time()
-            published = await mqtt_publish(topic, payload)
-            if published and actuates:
-                try:
-                    if is_off:
-                        # An OFF outside automation ends the ON a safety
-                        # ceiling is timing; otherwise the next automation ON
-                        # inherits the stale deadline and trips early (false
-                        # page + 15 min lockout).
-                        await _engine.note_actuator_off(target, key_channel, sent_at=sent_at)
-                    else:
-                        # An ON outside automation: a rule cutoff must re-send
-                        # its OFF, not skip it as a redundant repeat.
-                        await _engine.note_actuator_on(target, key_channel)
-                except Exception as e:
-                    log.warning("Cloud: automation bookkeeping for %s/%s failed: %s",
-                                target, channel, e)
+            _topic, published = await send_command(target, {**payload, "channel": channel})
 
             await sio.emit("command_result", {
                 "id": command_id,
@@ -746,13 +955,15 @@ async def _backoff_sleep(seconds: float) -> None:
 def request_reconnect() -> str:
     """Wake the connector out of its retry/backoff sleep.
 
-    Returns ``"reconnecting"`` when a retry was triggered, ``"connected"``
-    when already connected (nothing to do), or ``"restart_required"`` when
-    the connector is not running in this process (e.g. credentials were
-    paired after boot).
+    The retry uses the credentials pairing last saved (cloud.env), not the
+    ones this process started with. Returns ``"reconnecting"`` when a retry
+    was triggered, ``"connected"`` when already connected (nothing to do), or
+    ``"restart_required"`` when the connector is not running in this process
+    (e.g. credentials were paired after boot).
     """
     if not _connector_running:
         return "restart_required"
+    load_persisted_cloud_credentials()
     if _connected:
         return "connected"
     if _wake_event is not None:
@@ -760,27 +971,117 @@ def request_reconnect() -> str:
     return "reconnecting"
 
 
+async def apply_paired_credentials() -> bool:
+    """Make credentials pairing just saved (cloud.env) take effect now.
+
+    Returns True when a running connector will use them: the live session,
+    which authenticated with the old token, is closed and the retry sleep cut
+    short, so the connector reconnects with the new token at once (connect()
+    reads settings on every attempt). Without this a re-paired or
+    token-rotated Pi kept retrying its dead token until a restart. False when
+    no connector runs in this process (the Pi was unpaired at boot): a
+    restart starts it.
+    """
+    global _token_refusals
+    load_persisted_cloud_credentials()
+    _token_refusals = 0  # refusals of the old token say nothing about the new one
+    if not _connector_running:
+        return False
+    if _sio is not None and _sio.connected:
+        try:
+            await _sio.disconnect()
+        except Exception as e:  # noqa: BLE001 — the wake below still retries
+            log.warning("Cloud: closing the old session failed: %s", e)
+    if _wake_event is not None:
+        _wake_event.set()
+    return True
+
+
+# Awaited on every (re)connect, after the buffered telemetry drains. Modules
+# that must catch the cloud up after a gap register here (app.cloud.session_sync)
+# instead of this module importing them.
+ConnectListener = Callable[[], Awaitable[None]]
+_connect_listeners: list[ConnectListener] = []
+
+
+def add_connect_listener(listener: ConnectListener) -> None:
+    """Register `listener` to run on every cloud connect (idempotent)."""
+    if listener not in _connect_listeners:
+        _connect_listeners.append(listener)
+
+
+async def _run_connect_listeners() -> None:
+    for listener in list(_connect_listeners):
+        try:
+            await listener()
+        except Exception as e:  # noqa: BLE001 — one listener must not stop the rest
+            log.warning("Cloud: connect listener %s failed: %s", getattr(listener, "__name__", listener), e)
+
+
 async def _push_integrations_snapshot() -> None:
-    """(Re)warm the cloud's integrations fleet cache on every connect — the
-    boot-time snapshot is emitted before the socket exists and is dropped."""
+    """(Re)warm the cloud's integrations fleet cache — on every connect (the
+    boot-time snapshot is emitted before the socket exists and is dropped)
+    and from the heartbeat, inside the relay's cache lifetime."""
+    global _last_snapshot_push
+    _last_snapshot_push = time.time()
     try:
         await _health_sweeper.push_state_snapshot()
     except Exception as e:  # noqa: BLE001 — best effort
         log.debug("Cloud: integrations snapshot push failed: %s", e)
 
 
+_CLOUD_CREDENTIAL_VARS = (
+    ("SPOREPRINT_CLOUD_URL", "cloud_url"),
+    ("SPOREPRINT_CLOUD_TOKEN", "cloud_token"),
+    ("SPOREPRINT_CLOUD_DEVICE_ID", "cloud_device_id"),
+)
+
+
+def _enter_standing_refusal(reason: str) -> None:
+    """The relay refused this Pi for a reason that only the operator clears."""
+    global _standing_refusal
+    _standing_refusal = reason
+    _drop_undeliverable_queue()
+    if reason == "subscription_required":
+        log.warning(
+            "Cloud: subscription required — cloud sync paused (local control "
+            "is unaffected). Rechecking every %ds; resubscribe to resume.",
+            _STANDING_REFUSAL_RETRY_SECONDS,
+        )
+    else:
+        log.warning(
+            "Cloud: the relay refused this Pi's device token (%s: the device was "
+            "removed or its token revoked or rotated) — cloud sync paused (local "
+            "control is unaffected). Re-pair this Pi; rechecking every %ds.",
+            reason, _STANDING_REFUSAL_RETRY_SECONDS,
+        )
+    _task_status["cloud_connector"]["status"] = _STANDING_REFUSALS[reason]
+
+
 async def start_cloud_connector():
     """Background task started in main.py lifespan. No-op if cloud not configured."""
-    global _sio, _connected, _start_time, _reconnect_attempts, _subscription_blocked
-    global _wake_event, _connector_running
+    global _sio, _connected, _start_time, _reconnect_attempts
+    global _wake_event, _connector_running, _connect_error, _token_refusals
 
     # Credentials paired via /api/cloud/configure live on the data volume
     # (see env_path) and override the process env.
     load_persisted_cloud_credentials()
 
-    if not settings.cloud_url or not settings.cloud_token:
-        log.info("Cloud connector disabled — set SPOREPRINT_CLOUD_URL and _TOKEN to enable")
+    missing = [var for var, attr in _CLOUD_CREDENTIAL_VARS if not getattr(settings, attr)]
+    if len(missing) == len(_CLOUD_CREDENTIAL_VARS):
+        log.info("Cloud connector disabled — pair this Pi, or set SPOREPRINT_CLOUD_URL, "
+                 "SPOREPRINT_CLOUD_TOKEN and SPOREPRINT_CLOUD_DEVICE_ID, to enable")
         _task_status["cloud_connector"]["status"] = "disabled"
+        return
+    if missing:
+        # The relay authenticates a Pi by device id AND token, so a partial
+        # configuration could only ever be refused, every retry, forever.
+        log.error(
+            "Cloud connector disabled — %s not set (SPOREPRINT_CLOUD_URL, "
+            "SPOREPRINT_CLOUD_TOKEN and SPOREPRINT_CLOUD_DEVICE_ID are all "
+            "needed; pairing writes them together)", ", ".join(missing),
+        )
+        _task_status["cloud_connector"]["status"] = f"disabled — {', '.join(missing)} not set"
         return
 
     if not cloud_url_transport_ok(settings.cloud_url):
@@ -813,42 +1114,44 @@ async def start_cloud_connector():
 
     @_sio.on("connect")
     async def on_connect():
-        global _connected, _heartbeat_task, _subscription_blocked
+        global _connected, _heartbeat_task, _standing_refusal, _token_refusals
         _connected = True
+        _token_refusals = 0
         # _reconnect_attempts is reset by the connection loop only once a
         # session proves stable — a relay that accepts then immediately kicks
         # us must keep growing the backoff.
-        # A successful connect means the cloud accepted us — the subscription is
-        # live again (or never lapsed). Resume buffering.
-        if _subscription_blocked:
-            _subscription_blocked = False
-            log.info("Cloud: subscription active again — cloud sync resumed")
+        # A successful connect means the cloud accepted us — a refusal that
+        # stood (lapsed subscription, revoked token) has cleared. Resume
+        # buffering.
+        if _standing_refusal:
+            _standing_refusal = None
+            log.info("Cloud: the relay accepts this Pi again — cloud sync resumed")
         _task_status["cloud_connector"]["status"] = "connected"
         log.info("Cloud: connected to %s", settings.cloud_url)
-        # Drain buffered telemetry
-        drained = 0
-        while not _queue.empty():
-            try:
-                item = _queue.get_nowait()
-                await _sio.emit("telemetry", item)
-                drained += 1
-            except asyncio.QueueEmpty:
-                break
+        drained = await _drain_queue()
         if drained:
             log.info("Cloud: drained %d buffered messages", drained)
         # Start health heartbeat
         if _heartbeat_task is None or _heartbeat_task.done():
             _heartbeat_task = asyncio.create_task(_health_heartbeat_loop())
         await _push_integrations_snapshot()
+        await _run_connect_listeners()
 
     @_sio.on("disconnect")
-    async def on_disconnect():
+    async def on_disconnect(*_reason):
         global _connected, _heartbeat_task
         if _heartbeat_task and not _heartbeat_task.done():
             _heartbeat_task.cancel()
         _connected = False
+        requeued = _requeue_unacked()
         _task_status["cloud_connector"]["status"] = "disconnected"
-        log.warning("Cloud: disconnected")
+        log.warning("Cloud: disconnected%s",
+                    f" — {requeued} unacknowledged frame(s) queued for resend" if requeued else "")
+
+    @_sio.on("connect_error")
+    async def on_connect_error(*args):
+        global _connect_error
+        _connect_error = _connect_error_reason(*args)
 
     @_sio.on("command")
     async def on_command(data):
@@ -861,11 +1164,13 @@ async def start_cloud_connector():
     # Connection loop with exponential backoff
     try:
         while True:
+            _connect_error = None
             try:
                 await _sio.connect(
                     settings.cloud_url,
                     auth={"token": settings.cloud_token, "device_id": settings.cloud_device_id},
                     transports=["websocket"],
+                    wait_timeout=_CONNECT_WAIT_TIMEOUT_SECONDS,
                 )
                 connected_at = time.time()
                 await _sio.wait()
@@ -874,23 +1179,27 @@ async def start_cloud_connector():
                     await _sio.disconnect()
                 return
             except Exception as e:
-                if _is_subscription_refusal(e):
-                    # Not a fault — the cloud is correctly refusing an unsubscribed
-                    # account. Retrying hard would achieve nothing but noise.
-                    _subscription_blocked = True
-                    _drop_undeliverable_queue()
-                    log.warning(
-                        "Cloud: subscription required — cloud sync paused (local control "
-                        "is unaffected). Rechecking every %ds; resubscribe to resume.",
-                        _SUBSCRIPTION_RETRY_SECONDS,
-                    )
-                    _task_status["cloud_connector"]["status"] = "paused — subscription required"
-                    await _backoff_sleep(_SUBSCRIPTION_RETRY_SECONDS)
+                refusal = _standing_refusal_of(e)
+                if refusal == "Invalid device token":
+                    _token_refusals += 1
+                    if _token_refusals < _TOKEN_REFUSALS_TO_STAND:
+                        refusal = None
+                else:
+                    _token_refusals = 0
+                if refusal:
+                    # Not a fault — the cloud is correctly refusing this Pi until
+                    # the operator acts. Retrying hard would achieve nothing but
+                    # noise; re-pairing (/api/cloud/configure) wakes the sleep.
+                    _enter_standing_refusal(refusal)
+                    await _backoff_sleep(_STANDING_REFUSAL_RETRY_SECONDS)
                     continue
 
                 _reconnect_attempts += 1
                 backoff = _backoff_seconds(_reconnect_attempts)
-                log.warning("Cloud: connection failed (%s), retry in %ds", e, backoff)
+                # The relay's own reason, when it gave one, beats the client
+                # library's generic "One or more namespaces failed to connect".
+                log.warning("Cloud: connection failed (%s), retry in %ds",
+                            _connect_error or e, backoff)
                 _task_status["cloud_connector"]["status"] = f"reconnecting ({backoff}s)"
                 await _backoff_sleep(backoff)
                 continue
@@ -917,77 +1226,119 @@ async def start_cloud_connector():
 
 async def forward_telemetry(node_id: str, payload: dict):
     """Called from mqtt.py after every telemetry ingest. Enqueues for cloud."""
-    global _last_forward, _queue_drops
-    if not settings.cloud_url:
+    if not settings.cloud_url or not _connector_running:
+        # No connector runs in this process (unpaired, partly configured or
+        # refused at start), so nothing would ever drain a queue.
         return
-    if _subscription_blocked:
-        # The cloud is refusing this account's data. Queueing it would fill the
+    if _standing_refusal:
+        # The cloud is refusing this Pi's data. Queueing it would fill the
         # ring with frames that can never be delivered. SQLite already has them.
         return
-    msg = {"node_id": node_id, "ts": time.time(), **payload}
-    try:
-        if _connected and _sio:
-            await _sio.emit("telemetry", msg)
-            _last_forward = time.time()
-        else:
-            try:
-                _queue.put_nowait(msg)
-            except asyncio.QueueFull:
-                # True drop-oldest: evict the stalest item, enqueue the new one.
-                try:
-                    _queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
-                    _queue.put_nowait(msg)
-                    _queue_drops += 1
-                    if _queue_drops == 1 or _queue_drops % 100 == 0:
-                        log.warning(
-                            "Cloud: queue overflow, dropped oldest (total drops=%d)",
-                            _queue_drops,
-                        )
-                except asyncio.QueueFull:
-                    pass
-    except Exception as e:
-        log.debug("Cloud: forward failed: %s", e)
-
-
-async def forward_component_health(node_id: str, data: dict):
-    """Forward ESP32 component health data to cloud relay."""
-    if not settings.cloud_url or not _connected or not _sio:
+    # The topic's node id goes last: it is the identity the broker's per-node
+    # ACL vouches for, and a node_id inside the node's own payload must not
+    # name a sibling. ts stays before the payload so a frame's own ts wins.
+    msg = {"ts": time.time(), **payload, "node_id": node_id}
+    if not (_connected and _sio):
+        _enqueue(msg)
         return
     try:
-        await _sio.emit("component_health", {"node_id": node_id, "ts": time.time(), **data})
+        await _emit_telemetry(msg)
     except Exception as e:
-        log.debug("Cloud: component health forward failed: %s", e)
+        # The socket went away under us: keep the frame for the next connect.
+        log.debug("Cloud: forward failed, buffered: %s", e)
+        _enqueue(msg)
 
 
-async def forward_event(event_type: str, data: dict) -> bool:
-    """Forward session events, alerts, vision results to cloud.
+async def _emit_if_connected(event: str, payload: dict, *, confirm: bool = False) -> bool:
+    """Send one relay event if the socket is up; never raises.
 
-    `ota_step` rides its own Socket.IO channel so the cloud relay can persist
-    pipeline progress into `ota_progress_events`. Everything else uses the
-    legacy `event` envelope so existing push/escalation handlers fire unchanged.
-
-    Events are NOT queued: while the socket is down they are dropped. Returns
-    True only when the event was handed to the socket, so callers that must
-    not lose a transition (the vendor-health sweeper) can retry.
+    Returns True when the event was handed to the socket, or — with
+    ``confirm`` — only once the relay acknowledged it, within
+    _EVENT_ACK_TIMEOUT_SECONDS. A socket that died without a FIN takes
+    emits for up to the ping timeout and delivers none of them, so a caller
+    that must not lose an event asks for the acknowledgement. An
+    acknowledgement of ``{"ok": false}`` (the relay took the event but did
+    not store it) counts as undelivered too.
     """
     if not settings.cloud_url or not _connected or not _sio:
         return False
     try:
-        if event_type == "ota_step":
-            await _sio.emit("ota_step", {"ts": time.time(), **data})
+        if confirm:
+            answer = await _sio.call(event, payload, timeout=_EVENT_ACK_TIMEOUT_SECONDS)
+            if isinstance(answer, dict) and answer.get("ok") is False:
+                log.debug("Cloud: relay did not store %s", event)
+                return False
         else:
-            await _sio.emit("event", {"type": event_type, "ts": time.time(), **data})
+            await _sio.emit(event, payload)
         return True
     except Exception as e:
-        log.debug("Cloud: event forward failed: %s", e)
+        log.debug("Cloud: %s forward failed: %s", event, e)
         return False
 
 
+async def forward_component_health(node_id: str, data: dict):
+    """Forward ESP32 component health data to cloud relay (the topic's node id
+    wins over any node_id in the payload, as in forward_telemetry)."""
+    await _emit_if_connected("component_health", {"ts": time.time(), **data, "node_id": node_id})
+
+
+# Events that ride their own Socket.IO channel, whose relay handler stores
+# them: `ota_step` persists pipeline progress into `ota_progress_events`;
+# `integrations_state` fills the relay's integrations cache (the web app's
+# fleet view reads it). `integrations_state` also keeps going out in the
+# legacy `event` envelope that older Pis sent it in.
+_DEDICATED_EVENT_CHANNELS = frozenset({"ota_step", "integrations_state"})
+
+
+async def forward_event(event_type: str, data: dict, *, confirm: bool = False) -> bool:
+    """Forward session events, alerts, vision results to cloud.
+
+    Everything outside _DEDICATED_EVENT_CHANNELS uses the legacy `event`
+    envelope so existing push/escalation handlers fire unchanged.
+
+    Events are NOT queued: while the socket is down they are dropped. Returns
+    True only when the event was handed to the socket — with ``confirm``,
+    only once the relay acknowledged it — so callers that must not lose a
+    transition (the vendor-health sweeper) can retry.
+    """
+    ts = time.time()
+    if event_type == "ota_step":
+        return await _emit_if_connected("ota_step", {"ts": ts, **data}, confirm=confirm)
+    if event_type in _DEDICATED_EVENT_CHANNELS:
+        await _emit_if_connected(event_type, {"ts": ts, **data}, confirm=confirm)
+    return await _emit_if_connected("event", {"type": event_type, "ts": ts, **data},
+                                    confirm=confirm)
+
+
+async def forward_session_sync(payload: dict) -> bool:
+    """Send one grow-session snapshot (app.cloud.session_sync) to the cloud.
+
+    Not queued: the caller keeps the session in its outbox and resends it on
+    reconnect. Returns True only once the relay acknowledged it (and, on a
+    relay that answers {"ok": ...}, stored it); the caller sends a session's
+    next snapshot only after that, so they are written in order.
+    """
+    return await _emit_if_connected("session_sync", payload, confirm=True)
+
+
+async def forward_contamination_event(payload: dict) -> bool:
+    """Send one recorded contamination event (app.cloud.session_sync).
+
+    Not queued: the caller keeps the event in its outbox and resends it on
+    reconnect. Returns True only once the relay acknowledged it (and, on a
+    relay that answers {"ok": ...}, stored it).
+    """
+    return await _emit_if_connected("contamination_event", payload, confirm=True)
+
+
 async def _health_heartbeat_loop():
-    """Periodically push Pi system health to cloud so mobile app can see it remotely."""
+    """Periodically push Pi system health to cloud so mobile app can see it remotely.
+
+    The beat carries the running server version (additive ``version``), the
+    only place the cloud learns it after pairing — an OTA or a reinstall
+    otherwise left the cloud showing the pairing-time version. It also
+    re-pushes the integrations snapshot inside the relay's cache lifetime.
+    """
     while _connected and _sio:
         try:
             system = await get_system_metrics()
@@ -995,6 +1346,7 @@ async def _health_heartbeat_loop():
             await _sio.emit("device_health", {
                 "ts": time.time(),
                 "device_id": settings.cloud_device_id,
+                "version": server_version(),
                 "system": system,
                 "cloud": {
                     "connected": cloud["connected"],
@@ -1004,6 +1356,8 @@ async def _health_heartbeat_loop():
                     "reconnect_attempts": cloud["reconnect_attempts"],
                 },
             })
+            if time.time() - _last_snapshot_push >= _INTEGRATIONS_SNAPSHOT_INTERVAL_SECONDS:
+                await _push_integrations_snapshot()
         except asyncio.CancelledError:
             return
         except Exception as e:
@@ -1012,10 +1366,18 @@ async def _health_heartbeat_loop():
 
 
 def get_cloud_status() -> dict:
-    """Returns connection status for health endpoint."""
+    """Returns connection status for health endpoint.
+
+    ``restart_required``: the Pi holds a full set of cloud credentials but no
+    connector runs in this process — it was unpaired when the server started,
+    and pairing saved them since (apply_paired_credentials loads them; only a
+    connector started at boot uses them), so a server restart connects it.
+    """
+    credentials = all(getattr(settings, attr) for _, attr in _CLOUD_CREDENTIAL_VARS)
     return {
         "configured": bool(settings.cloud_url),
         "connected": _connected,
+        "restart_required": credentials and not _connector_running,
         "cloud_url": settings.cloud_url or None,
         "device_id": settings.cloud_device_id or None,
         "queue_depth": _queue.qsize(),
@@ -1031,20 +1393,8 @@ def get_task_status() -> dict:
     return dict(_task_status)
 
 
-_SAFE_ID_RE = _re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-
-def _is_safe_target(value) -> bool:
-    return isinstance(value, str) and bool(_SAFE_ID_RE.match(value))
-
-
-def _is_safe_channel(value) -> bool:
-    return isinstance(value, str) and bool(_SAFE_ID_RE.match(value))
-
-
 async def _target_is_registered(target: str) -> bool:
     """A cloud command can only target a known hardware node or smart plug."""
-    from ..db import get_db
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT 1 FROM hardware_nodes WHERE node_id = ? LIMIT 1", (target,)

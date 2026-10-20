@@ -1,6 +1,6 @@
 """Nightly weather_history aggregation reads the real chamber sensor names.
 
-srv-auto#24: aggregate_daily_weather queried `sensor = 'temperature'`, which
+aggregate_daily_weather queried `sensor = 'temperature'`, which
 nothing writes (ESP32 nodes publish temp_f; integrations write temp_c), so the
 chamber columns were always NULL. Once fixed, a day with chamber data but no
 weather provider inserts NULL outdoor temps, which get_calendar_data then fed

@@ -1,7 +1,13 @@
 """Tests for the seasonal grow planner — scoring, recommendations, calendar, warnings."""
 
 import time
+from datetime import datetime, timedelta
 
+import pytest
+
+import app.weather.service as weather_svc
+from app.sessions.models import PhaseAdvance, SessionCreate
+from app.sessions.service import advance_phase, create_session
 from app.species.models import GrowPhase, PhaseParams, SpeciesProfile
 from app.species.service import seed_builtins, get_all_profiles
 from app.planner.service import (
@@ -243,6 +249,70 @@ async def test_warnings_critical_heat(monkeypatch):
 
     result = await get_session_warnings(session_id)
     assert result["level"] == "critical"
+
+
+async def test_warnings_for_a_rest_session_use_the_fruiting_envelope():
+    """Rest borrows the fruiting envelope the engine runs it on; the warnings
+    answered "No parameters for phase 'rest'" and stayed silent."""
+    await seed_builtins()
+    s = await create_session(SessionCreate(name="Resting", species_profile_id="blue_oyster",
+                                           current_phase="fruiting"))
+    await advance_phase(s["id"], PhaseAdvance(phase="rest"))
+    weather_svc._cache = {"outdoor_temp_f": 80.0, "outdoor_humidity": 50}
+    weather_svc._cache_ts = time.time()
+
+    result = await get_session_warnings(s["id"])
+    assert result["level"] == "critical"
+
+
+async def test_stale_weather_is_not_reported_as_current():
+    """Once the providers stop answering, the last reading ages out (the
+    rules' get_current_weather): the warnings read it unchecked and called a
+    days-old outdoor temperature 'Current ... Immediate action needed'."""
+    await seed_builtins()
+    s = await create_session(SessionCreate(name="Hot", species_profile_id="blue_oyster",
+                                           current_phase="fruiting"))
+    weather_svc._cache = {"outdoor_temp_f": 80.0, "outdoor_humidity": 50}
+    weather_svc._cache_ts = time.time() - 3 * 86400
+    weather_svc._forecast_cache = [{"timestamp": time.time() + 7200, "temp_f": 95.0}]
+    weather_svc._forecast_cache_ts = time.time() - 3 * 86400
+
+    result = await get_session_warnings(s["id"])
+    assert result["level"] == "ok"
+    assert "Current outdoor temp" not in result["message"]
+    assert result["forecast_warnings"] == []
+
+    weather_svc._cache_ts = time.time()
+    assert (await get_session_warnings(s["id"]))["level"] == "critical"
+
+
+@pytest.fixture()
+def pacific_host(monkeypatch):
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+async def test_forecast_warnings_skip_null_hours_and_use_the_local_day(pacific_host):
+    """A null forecast temperature made the day average raise TypeError (a
+    500), and an evening hour was filed under the next UTC day."""
+    await seed_builtins()
+    s = await create_session(SessionCreate(name="Warm", species_profile_id="blue_oyster",
+                                           current_phase="fruiting"))
+    evening = (datetime.now() + timedelta(days=1)).replace(hour=20, minute=0, second=0,
+                                                           microsecond=0)
+    weather_svc._forecast_cache = [
+        {"timestamp": evening.timestamp(), "temp_f": None, "humidity": 50},
+        {"timestamp": evening.timestamp() + 3600, "temp_f": 80.0, "humidity": None},
+    ]
+    weather_svc._forecast_cache_ts = time.time()
+
+    [warning] = (await get_session_warnings(s["id"]))["forecast_warnings"]
+    assert warning["date"] == evening.date().isoformat()
+    assert warning["day"] == evening.strftime("%a")
+    assert warning["issue"] == "hot"
 
 
 async def test_aggregate_daily_weather_idempotent():

@@ -4,6 +4,9 @@
 
 #include <math.h>
 
+#include "hmac_verify.h"   // kHmacPrevKeyNvsKey
+#include "provisioning.h"  // migrated_node_id
+
 namespace sp_device {
 
 namespace {
@@ -34,6 +37,7 @@ NodeConfig NodeConfig::load(sp::KvStore& kv) {
     c.node_id = kv.get_string("node_id", "");
     if (c.node_id.empty()) c.node_id = default_node_id();
     c.hmac_key = kv.get_string("hmac_key", "");
+    c.hmac_key_prev = kv.get_string(sp::kHmacPrevKeyNvsKey, "");
     c.ota_pass = kv.get_string("ota_pass", "");
     c.ntp_host = kv.get_string("ntp_host", "pool.ntp.org");
     c.paired_pi_host = kv.get_string("paired_pi_host", "");
@@ -67,6 +71,7 @@ void NodeConfig::save(sp::KvStore& kv) const {
     kv.set_string("mqtt_pass", mqtt_pass);
     kv.set_string("node_id", node_id);
     kv.set_string("hmac_key", hmac_key);
+    kv.set_string(sp::kHmacPrevKeyNvsKey, hmac_key_prev);
     kv.set_string("ota_pass", ota_pass);
     kv.set_string("ntp_host", ntp_host);
     kv.set_string("paired_pi_host", paired_pi_host);
@@ -137,7 +142,11 @@ std::string migrate_legacy(sp::KvStore& kv) {
         if (port) kv.set_int("port", port);
         if (mqtt_user.length()) kv.set_string("mqtt_user", mqtt_user.c_str());
         if (mqtt_pass.length()) kv.set_string("mqtt_pass", mqtt_pass.c_str());
-        if (node_id.length()) kv.set_string("node_id", node_id.c_str());
+        // The identity the v1 image actually ran under (it never stored one;
+        // it used its role's default), never the MAC-derived default.
+        const std::string id =
+            sp::migrated_node_id(node_id.c_str(), mqtt_user.c_str(), l.ns);
+        if (!id.empty()) kv.set_string("node_id", id);
         if (hmac.length()) kv.set_string("hmac_key", hmac.c_str());
         if (ota.length()) kv.set_string("ota_pass", ota.c_str());
         if (server_url.length()) kv.set_string("server_url", server_url.c_str());

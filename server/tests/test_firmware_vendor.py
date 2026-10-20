@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.builder import models_router as mr
+from app.builder import service as builder_service
 
 _REPO_FIRMWARE = Path(__file__).resolve().parents[2] / "firmware"
 VENDOR = _REPO_FIRMWARE / "lib" / "sp_core" / "vendor" / "monocypher"
@@ -78,8 +79,8 @@ def test_licence_is_the_complete_dual_licence():
 @pytest.fixture
 def api(monkeypatch):
     assert _REPO_FIRMWARE.is_dir(), _REPO_FIRMWARE
-    monkeypatch.setattr(mr, "_FIRMWARE_DIR", _REPO_FIRMWARE)
-    monkeypatch.setattr(mr, "_firmware_cache", {"data": [], "ts": 0})
+    monkeypatch.setattr(builder_service, "_FIRMWARE_DIR", _REPO_FIRMWARE)
+    monkeypatch.setattr(builder_service, "_firmware_cache", {"data": [], "ts": 0})
     app = FastAPI()
     app.include_router(mr.router, prefix="/api/builder")
     return TestClient(app, raise_server_exceptions=False)

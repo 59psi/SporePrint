@@ -45,7 +45,7 @@ def _plain(text: str) -> str:
     return text.replace("`", "")
 
 
-# srv-hw#15: the S3 is a supported alternative, but it has its own pin map.
+# The S3 is a supported alternative, but it has its own pin map.
 _S3_PIN_MAP_STEP = (
     "ESP32-S3-DevKitC-1 builds use env `node_esp32s3` (N8 / N8R8 / N16R8) or "
     "`node_esp32s3_n32r16v` (the Espressif N32R16V sold on Amazon — plain `node_esp32s3` does "
@@ -102,7 +102,7 @@ def _flash_nodes_step(boards: str) -> str:
 
 
 def _mqtt_credential_step(node_ids: str) -> str:
-    # srv-hw#8: the broker refuses anonymous clients and scopes each node by
+    # The broker refuses anonymous clients and scopes each node by
     # username == node id, so every node needs its own credential first.
     return (
         "Create each node's MQTT login BEFORE provisioning it — on the Pi, in the SporePrint "
@@ -147,23 +147,27 @@ _CAM_FLASH_STEP = (
 
 
 def _tasmota_step(plugs: str, topics: str) -> str:
-    # srv-hw#9 / docs#2 / deps-infra#11: without sp-3p and this FullTopic the
+    # Without a broker login and this FullTopic the
     # broker drops every plug frame and the Pi can never command the plug.
     return (
         f"SMART PLUG SETUP — {plugs} Plug each Athom Tasmota plug into an outlet OUTSIDE the "
         "humid chamber. Power it on, join its 'tasmota-XXXXXX-NNNN' WiFi AP, open 192.168.4.1 "
-        "and enter your WiFi credentials. Then in the Tasmota web UI: Configuration → MQTT → "
-        "Host = the Pi's IP, Port = `1883`, User = `sp-3p`, Password = "
-        "`SPOREPRINT_MQTT_3P_PASSWORD` (from the `.env` in the Pi's SporePrint folder), Topic = "
-        f"the plug's role ({topics}), Full Topic = `tasmota/%topic%/%prefix%/` — REQUIRED: "
+        "and enter your WiFi credentials. Give each plug its own MQTT login: on the Pi, in the "
+        "SporePrint folder, run `./scripts/add-plug-mqtt-user.sh <role>` (it prints the User "
+        "and Password) — a plug's web page shows its password, and the shared `sp-3p` login "
+        "switches every plug. Then in the Tasmota web UI: Configuration → MQTT → "
+        "Host = the Pi's IP, Port = `1883`, User and Password = that login (or User = `sp-3p`, "
+        "Password = `SPOREPRINT_MQTT_3P_PASSWORD` from the `.env` in the Pi's SporePrint "
+        f"folder), Topic = the plug's role ({topics}), Full Topic = `tasmota/%topic%/%prefix%/` — REQUIRED: "
         "Tasmota's default `%prefix%/%topic%/` publishes `stat/<topic>/POWER`, which the broker "
         "silently drops, so the plug never appears. Console equivalent: `Backlog MqttHost <pi-ip>; "
         "MqttPort 1883; MqttUser sp-3p; MqttPassword <password>; Topic humidifier; FullTopic "
         "tasmota/%topic%/%prefix%/`. The Topic becomes the plug id (`humidifier` → "
         "`plug-humidifier`), which is exactly what the built-in rules drive. A Shelly Gen2+ plug "
         "(Plus, Gen3, Gen4) instead: in its web UI, Settings → Connectivity → MQTT, turn MQTT on "
-        "with Server = the Pi's IP and port `1883` (ip:port), Username = `sp-3p`, Password = "
-        "`SPOREPRINT_MQTT_3P_PASSWORD`, MQTT prefix = `shellies/<role>` (e.g. "
+        "with Server = the Pi's IP and port `1883` (ip:port), Username / Password = its own "
+        "login (or Username = `sp-3p`, Password = `SPOREPRINT_MQTT_3P_PASSWORD`), MQTT prefix = "
+        "`shellies/<role>` (e.g. "
         "`shellies/humidifier` → `plug-humidifier`) — REQUIRED: the factory prefix (the device "
         "id) is a topic tree the broker drops — and 'RPC status notifications over MQTT' and "
         "'Generic status update over MQTT' both on; saving reboots the plug. Toggle the plug and "
@@ -269,7 +273,7 @@ _QT_TO_SOCKETS = Component(
     role="ESP32 header pins (3V3 / GND / GPIO 21 / GPIO 22) → first sensor's STEMMA QT port",
     price_approx="$0.95",
     url="https://www.adafruit.com/product/4397",
-    category="misc",
+    category="wiring",
     notes="One per climate node. Red = 3V3, black = GND, blue = SDA (GPIO 21), yellow = SCL "
           "(GPIO 22); the female sockets push onto the DevKit's downward header pins and the QT "
           "plug goes into the first sensor board.",
@@ -280,7 +284,7 @@ _QT_TO_QT = Component(
     role="Daisy-chains the sensor boards (each has two STEMMA QT ports)",
     price_approx="$0.95",
     url="https://www.adafruit.com/product/4210",
-    category="misc",
+    category="wiring",
     notes="One between each pair of sensor boards — the bus is a chain, not a star, so nothing "
           "needs splicing and no breadboard is required. Same cable carries 3V3/GND/SDA/SCL. "
           "Need more reach between boards: Adafruit 4401 (200 mm, $1.25) or 5384 (300 mm, "
@@ -418,7 +422,7 @@ _DUPONT = Component(
     pack_price="$7",
     pack_size=40,
     url="https://www.amazon.com/dp/B01EV70C78",
-    category="misc",
+    category="wiring",
     notes="ELEGOO 120-pc mix: 40 each of M-F, M-M and F-F. Counted in M-F jumpers, one per J1 "
           "terminal an ESP32 drives (each wired gate + one GND per switch board). Female end "
           "onto the ESP32's downward header pin, male end into the J1 screw terminal (IN = "
@@ -980,8 +984,9 @@ def _tasmota_plug(quantity: int, roles: str) -> Component:
               "(SKU PG03V2-…), which SporePrint can't talk to. $10 is Athom's sale price (list "
               "$18.40); the 2-pack is $17.50. Also on Tindie ($14.90 + shipping). Fallback if V2 "
               "sells out: Athom Tasmota ESP32-C3 US Plug V3 ($14.35, "
-              "https://www.athom.tech/blank-1/tasmota-esp32-c3-us-plug-v3). MQTT setup: User "
-              "sp-3p, Password SPOREPRINT_MQTT_3P_PASSWORD, Topic = the plug's role, Full Topic "
+              "https://www.athom.tech/blank-1/tasmota-esp32-c3-us-plug-v3). MQTT setup: the "
+              "plug's own login from scripts/add-plug-mqtt-user.sh (or User sp-3p, Password "
+              "SPOREPRINT_MQTT_3P_PASSWORD), Topic = the plug's role, Full Topic "
               "tasmota/%topic%/%prefix%/ (see the setup steps). Not UL/ETL listed: keep plugs "
               "outside the humid chamber, and a space heater ≤ 1500 W (≤ 1200 W preferred) on "
               "one plug.",

@@ -66,7 +66,7 @@ void test_structure_rules() {
     TEST_ASSERT_FALSE(sp::server_url_allowed("http://evil.com", ""));
 }
 
-// ── default upload URL (fw-drivers-cam#6 / docs#20) ────────────
+// ── default upload URL ─────────────────────────────────────────
 
 void test_default_server_url_follows_portal_pi_address() {
     // The portal's "Pi address" (cfg.broker_host) is the Pi — the same host
@@ -123,7 +123,46 @@ void test_cmd_allowlist_accepts_portal_pi_address() {
         sp_cam::server_url_cmd_allowed("http://sporeprint.local:8000", "", ""));
 }
 
-// ── X-Timestamp (fw-drivers-cam#5, shared contract 2) ──────────
+// A stored server_url could only be replaced, never removed: an empty URL was
+// refused by the allow-list, so a stale one (a v1 migration, an old command)
+// stayed in force until a factory reset. {"server_url": ""} now resets the
+// cam to the portal default; every other value still goes through the
+// allow-list.
+void test_empty_server_url_cmd_resets_to_the_portal_default() {
+    using sp_cam::ServerUrlCmd;
+    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Reset,
+                          (int)sp_cam::server_url_cmd("", "", "192.168.1.60"));
+    TEST_ASSERT_EQUAL_STRING(
+        "http://192.168.1.60:8000",
+        sp_cam::resolve_server_url("", "192.168.1.60").c_str());
+    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Set,
+                          (int)sp_cam::server_url_cmd("http://mypi.lan:8000", "",
+                                                      "mypi.lan"));
+    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Reject,
+                          (int)sp_cam::server_url_cmd("http://evil.com", "",
+                                                      "mypi.lan"));
+    TEST_ASSERT_EQUAL_INT((int)ServerUrlCmd::Reject,
+                          (int)sp_cam::server_url_cmd(nullptr, "", "mypi.lan"));
+}
+
+// The upload used HTTPClient's own clients: an unbounded DNS lookup (up to
+// 21 s on core 3.x) and a 120 s TLS handshake default against the cam's 90 s
+// loop WDT. Every wait of a capture + upload pass is bounded now, and the
+// sum leaves room for the body transfer.
+void test_capture_and_upload_fit_inside_the_cam_wdt() {
+    TEST_ASSERT_EQUAL_UINT32(90u, sp_cam::kCamLoopWdtTimeoutS);
+    TEST_ASSERT_EQUAL_UINT32(
+        sp_cam::kCaptureWorstCaseS + sp::kDnsWorstCaseS +
+            sp_cam::kUploadConnectTimeoutS + sp_cam::kUploadHandshakeTimeoutS +
+            2 * sp_cam::kUploadIoTimeoutS,
+        sp_cam::kCaptureUploadWorstCaseS);
+    TEST_ASSERT_TRUE(sp_cam::kCaptureUploadWorstCaseS + sp::kLoopWdtMarginS <
+                     sp_cam::kCamLoopWdtTimeoutS);
+    // The core's 120 s handshake default alone would overrun it.
+    TEST_ASSERT_TRUE(sp_cam::kUploadHandshakeTimeoutS < 120u);
+}
+
+// ── X-Timestamp (shared contract 2) ────────────────────────────
 
 void test_timestamp_header_only_when_epoch_synced() {
     char buf[24];
@@ -141,7 +180,7 @@ void test_timestamp_header_only_when_epoch_synced() {
     TEST_ASSERT_FALSE(sp_cam::frame_timestamp(1790000000LL, tiny, sizeof(tiny)));
 }
 
-// ── HTTPS uploads (fw-drivers-cam#14) ──────────────────────────
+// ── HTTPS uploads ──────────────────────────────────────────────
 
 void test_https_upload_requires_pinned_ca() {
     using sp_cam::UploadTransport;
@@ -158,7 +197,7 @@ void test_https_upload_requires_pinned_ca() {
                           (int)sp_cam::upload_transport("https://mypi.lan", true));
 }
 
-// ── sensor identity + tuning (fw-drivers-cam#4) ────────────────
+// ── sensor identity + tuning ───────────────────────────────────
 
 void test_sensor_profile_ov2640_keeps_legacy_behavior() {
     sp_cam::SensorProfile p = sp_cam::sensor_profile(0x26);
@@ -260,6 +299,8 @@ int main(int, char**) {
     RUN_TEST(test_stored_server_url_still_wins);
     RUN_TEST(test_default_server_url_rejects_malformed_pi_address);
     RUN_TEST(test_cmd_allowlist_accepts_portal_pi_address);
+    RUN_TEST(test_empty_server_url_cmd_resets_to_the_portal_default);
+    RUN_TEST(test_capture_and_upload_fit_inside_the_cam_wdt);
     RUN_TEST(test_timestamp_header_only_when_epoch_synced);
     RUN_TEST(test_https_upload_requires_pinned_ca);
     RUN_TEST(test_sensor_profile_ov2640_keeps_legacy_behavior);

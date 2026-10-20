@@ -20,6 +20,8 @@ import time
 import pytest
 
 import app.cloud.service as service
+from app.automation.engine import is_overridden
+from app.cloud import ota
 from app.cloud.service import handle_cloud_command
 from app.db import get_db
 
@@ -130,6 +132,8 @@ def off_hook(monkeypatch):
         calls.append((target, channel, sent_at))
 
     monkeypatch.setattr("app.automation.engine.note_actuator_off", _spy)
+    # The cloud's hardware commands publish through hardware.service.send_command.
+    monkeypatch.setattr("app.hardware.service.note_actuator_off", _spy)
     return calls
 
 
@@ -176,7 +180,9 @@ async def test_cloud_off_never_carries_a_duty_value(mock_mqtt, off_hook):
         "cmd-off-pwm", channel="fae",
         payload={"state": "OFF", "pwm": 180, "level": 400, "reason": "app"})))
     (_topic, published) = mock_mqtt[0]
-    assert published == {"state": "OFF", "reason": "app"}
+    # The one node-command publisher (hardware.service.send_command) also
+    # spells the state the way the firmware reads it.
+    assert published == {"state": "off", "reason": "app"}
     assert [(t, c) for t, c, _ in off_hook] == [(RELAY_NODE, "fae")]
 
 
@@ -186,7 +192,7 @@ async def test_cloud_off_cancels_a_real_armed_ceiling(mock_mqtt):
     import app.automation.engine as engine
 
     await _register_relay_node()
-    key = engine._safety_key(RELAY_NODE, "fae")
+    key = engine._override_key(RELAY_NODE, "fae")
     armed = asyncio.create_task(asyncio.sleep(3600))
     engine._safety_tasks[key] = armed
     engine._safety_last_on[key] = time.time() - 60   # ON went out a minute ago
@@ -287,6 +293,16 @@ async def test_bad_channel_is_rejected_before_publish(mock_mqtt):
     assert "Invalid target_kind or channel" in sio.last_result()["error"]
 
 
+async def test_a_channel_with_a_trailing_newline_is_rejected(mock_mqtt):
+    # A regex `$` matches before a trailing newline: "fae\n" used to pass and
+    # publish to a topic the node never routes, reported as success.
+    await _register_relay_node()
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-newline", channel="fae\n")))
+    assert mock_mqtt == []
+    assert "Invalid target_kind or channel" in sio.last_result()["error"]
+
+
 async def test_unknown_target_kind_is_rejected(mock_mqtt):
     await _register_relay_node()
     sio = _FakeSio()
@@ -368,3 +384,136 @@ async def test_signature_gate_precedes_tier_gate(mock_mqtt):
     assert result["reject_reason"] == "signature_mismatch"
     # Rejected at the signature layer, NOT the tier layer.
     assert result["error"] != "Remote control requires premium tier"
+
+
+# ── which node a hardware command reaches ──────────────────────────────────
+#
+# A frame names a kind and a channel, never a node. The relay bank has fae /
+# exhaust / circulation / aux and the lighting bank white / blue / red /
+# far_red; resolving by kind alone sent the cloud's light toggle (relay/white)
+# to the relay bank, which drops cmd/white, and with two relay nodes sent a
+# fan toggle to whichever node reported last.
+
+LIGHT_NODE = "node-light-4b2e9d"
+RELAY_BANK = ["aux", "circulation", "exhaust", "fae"]
+LIGHT_BANK = ["blue", "far_red", "red", "white"]
+
+
+async def _register(node_id: str, node_type: str, channels: list[str] | None,
+                    last_seen: float = 1_752_700_000.0) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, channels, last_seen) "
+            "VALUES (?, ?, ?, ?)",
+            (node_id, node_type, json.dumps(channels) if channels is not None else None,
+             last_seen),
+        )
+        await db.commit()
+
+
+async def test_a_light_command_reaches_the_lighting_node(mock_mqtt):
+    await _register(RELAY_NODE, "relay", RELAY_BANK, last_seen=time.time())
+    await _register(LIGHT_NODE, "lighting", LIGHT_BANK)
+    for kind in ("lighting", "relay"):          # older clouds send "relay"
+        sio = _FakeSio()
+        await handle_cloud_command(sio, _sign(_cmd(f"cmd-light-{kind}", target_kind=kind,
+                                                   channel="white")))
+        assert sio.last_result()["success"] is True, sio.last_result()
+        assert sio.last_result()["target"] == LIGHT_NODE
+    assert [t for t, _ in mock_mqtt] == [f"sporeprint/{LIGHT_NODE}/cmd/white"] * 2
+
+
+async def test_a_channel_no_node_of_the_kind_has_is_refused(mock_mqtt):
+    await _register(RELAY_NODE, "relay", RELAY_BANK)
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-mist", channel="mister")))
+    assert mock_mqtt == []
+    assert sio.last_result()["error"] == "No registered relay node has a 'mister' channel"
+
+
+async def test_two_nodes_with_the_channel_are_refused_not_guessed(mock_mqtt):
+    """Two chambers, one relay node each: the frame cannot say which."""
+    await _register("relay-chamber-a", "relay", RELAY_BANK, last_seen=time.time())
+    await _register("relay-chamber-b", "relay", RELAY_BANK)
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-fan", channel="fae")))
+    assert mock_mqtt == []
+    result = sio.last_result()
+    assert result["success"] is False
+    assert result["error"].startswith("Ambiguous target")
+    assert "relay-chamber-a" in result["error"] and "relay-chamber-b" in result["error"]
+
+
+async def test_a_node_that_never_reported_channels_still_resolves(mock_mqtt):
+    await _register(RELAY_NODE, "relay", None)
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-old-fw", channel="fae")))
+    assert [t for t, _ in mock_mqtt] == [f"sporeprint/{RELAY_NODE}/cmd/fae"]
+
+
+async def test_the_override_pins_the_node_the_command_reached(mock_mqtt):
+    await _register(RELAY_NODE, "relay", RELAY_BANK, last_seen=time.time())
+    await _register(LIGHT_NODE, "lighting", LIGHT_BANK)
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-on", target_kind="relay", channel="white",
+                                               payload={"state": "on", "duration_sec": 600})))
+    await handle_cloud_command(sio, _sign(_cmd(
+        "cmd-hold", target_kind="automation", channel="override",
+        payload={"channel": "white", "state": "on", "duration_sec": 600,
+                 "expires_at": time.time() + 600})))
+    assert sio.last_result()["success"] is True
+    assert sio.emits[0][1]["target"] == LIGHT_NODE
+    assert is_overridden(LIGHT_NODE, "white") is True
+    assert is_overridden(RELAY_NODE, "white") is False
+
+
+async def test_a_non_object_payload_is_refused(mock_mqtt):
+    await _register_relay_node()
+    sio = _FakeSio()
+    frame = _cmd("cmd-list")
+    frame["payload"] = ["on"]
+    await handle_cloud_command(sio, _sign(frame))
+    assert mock_mqtt == []
+    assert sio.last_result()["error"] == "Command payload must be a JSON object"
+
+
+# ── system commands refused before the ack ─────────────────────────────────
+
+
+async def test_reboot_is_refused_on_the_docker_install(mock_mqtt, monkeypatch, tmp_path):
+    """The shipped install cannot reboot the host; a success ack followed by
+    nothing told the operator it did."""
+    dockerenv = tmp_path / ".dockerenv"
+    dockerenv.touch()
+    monkeypatch.setattr(ota, "_DOCKERENV", dockerenv)
+    scheduled = []
+    monkeypatch.setattr(service, "schedule_reboot", lambda: scheduled.append(1))
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-reboot", target_kind="system",
+                                               channel="reboot", payload={})))
+    result = sio.last_result()
+    assert result["success"] is False
+    assert "Docker" in result["error"]
+    assert scheduled == []
+
+
+async def test_reboot_is_acked_and_scheduled_where_it_can_run(mock_mqtt, monkeypatch, tmp_path):
+    monkeypatch.setattr(ota, "_DOCKERENV", tmp_path / "no-dockerenv")
+    monkeypatch.setattr("app.system_actions.shutil.which", lambda tool: f"/usr/bin/{tool}")
+    scheduled = []
+    monkeypatch.setattr(service, "schedule_reboot", lambda: scheduled.append(1))
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd("cmd-reboot-ok", target_kind="system",
+                                               channel="reboot", payload={})))
+    assert sio.last_result()["success"] is True
+    assert scheduled == [1]
+
+
+async def test_a_descriptive_rule_change_frame_is_never_acked_as_applied(mock_mqtt):
+    """Older clouds sent the grow advisor's suggestion as system/rule_apply_diff
+    with only free text; the Pi cannot apply that, and says so."""
+    sio = _FakeSio()
+    await handle_cloud_command(sio, _sign(_cmd(
+        "cmd-diff", target_kind="system", channel="rule_apply_diff",
+        payload={"rule_label": "RH floor", "current": "92%", "proposed": "94%"})))
+    assert sio.last_result()["success"] is False

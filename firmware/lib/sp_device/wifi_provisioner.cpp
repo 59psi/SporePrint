@@ -6,14 +6,18 @@
 
 #include <string>
 
+#include "autodetect.h"  // co2_kind_str
 #include "boot_policy.h"
+#include "hmac_verify.h"  // prev_key_after_rekey
 #include "provisioning.h"
+#include "sensor_memory.h"
 
 namespace sp_device {
 
 namespace {
 
 constexpr uint32_t kPortalCeilingMs = 10UL * 60UL * 1000UL;
+constexpr const char* kPortalRequestKey = "portal_req";
 
 const char kFormHead[] =
     "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -83,7 +87,49 @@ const char kTlsIpNote[] =
     "(install.sh adds the Pi's IPs; a DHCP change moves the IP) &mdash; "
     "sporeprint.local is the most robust choice.";
 
+// "scd4x, bh1750": the autodetected sensors this node expects at boot
+// because it found them before (sensor_memory.h); "" when none.
+std::string remembered_sensors(sp::KvStore& kv) {
+    const sp::SeenSensors seen = sp::load_seen_sensors(kv);
+    std::string out;
+    if (seen.co2 != 0) out += sp::co2_kind_str((sp::Co2Kind)seen.co2);
+    if (seen.lux) {
+        if (!out.empty()) out += ", ";
+        out += "bh1750";
+    }
+    return out;
+}
+
 }  // namespace
+
+void WifiProvisioner::bring_up(NodeConfig& cfg, const char* offline_hint) {
+    const bool portal_requested = kv_.get_bool(kPortalRequestKey, false);
+    if (portal_requested) kv_.set_bool(kPortalRequestKey, false);  // one-shot
+    if (sp::portal_at_boot(cfg.provisioned(), portal_requested)) {
+        run_portal(cfg);  // never returns (10-min ceiling)
+    }
+    if (connect(cfg)) {
+        if (!cfg.wifi_verified) {
+            cfg.wifi_verified = true;
+            kv_.set_bool("wifi_ok", true);
+        }
+    } else if (sp::portal_after_connect_failure(cfg.wifi_verified)) {
+        // Credentials just typed in the portal never connected — likely a
+        // typo, and the operator is right there: give the form back.
+        run_portal(cfg);  // never returns
+    } else {
+        // These credentials have worked before: boot offline. The link
+        // watchdog re-begins the STA connection every 60 s.
+        Serial.printf("[WIFI] Network unreachable - booting offline and "
+                      "retrying. %s\n",
+                      offline_hint != nullptr ? offline_hint : "");
+    }
+    start_ntp(cfg);
+}
+
+void WifiProvisioner::request_portal_at_next_boot() {
+    kv_.set_bool(kPortalRequestKey, true);
+}
 
 bool WifiProvisioner::connect(const NodeConfig& cfg, uint32_t timeout_ms) {
     if (cfg.ssid.empty()) return false;
@@ -133,6 +179,8 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
     const bool node_id_auto = kv_.get_string("node_id", "").empty();
     const bool peripheral_opts = peripheral_opts_;
     const bool personality_opt = personality_opt_;
+    const std::string remembered =
+        peripheral_opts ? remembered_sensors(kv_) : std::string();
 
     // Secrets are never pre-filled from NVS. A refused /save, though, hands
     // the form back with what was just SUBMITTED — the operator's own values,
@@ -196,7 +244,9 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
         page += text_field("Command signing key (HMAC)", "hmac_key",
                            echo.hmac_key, "password",
                            "from the Pi's provision tool; blank keeps the "
-                           "saved one; none saved = warn mode");
+                           "saved one; none saved = warn mode; a new key "
+                           "leaves the old one working until the Pi signs "
+                           "with the new one");
         page += checkbox("tls", v.tls_enabled,
                          "Secure MQTT (TLS \u2014 pins the Pi's certificate)");
         page += checkbox("tls_req", v.tls_required,
@@ -210,7 +260,7 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
                            "set to the Pi's address for airgapped rooms");
         if (peripheral_opts) {
             // Tier-3 drivers are built only when these NVS flags are set
-            // (docs#0: there used to be no way to set them at all).
+            // (there used to be no way to set them at all).
             page += "<fieldset style='margin:4px 0 12px;'>"
                     "<legend>Optional peripherals</legend>";
             page += checkbox("mhz19", v.mhz19_enabled,
@@ -221,6 +271,15 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
             page += checkbox("reed_inv", v.reed_invert,
                              "&nbsp;&nbsp;Door contact wired on its NO "
                              "terminal (open with the door shut) \u2014 invert");
+            // An autodetected sensor this node found before is reported
+            // missing when it stops answering (sensor_memory.h): one removed
+            // on purpose is forgotten here.
+            if (!remembered.empty()) {
+                const std::string label =
+                    "Forget I&sup2;C sensors removed on purpose (expected: " +
+                    remembered + ")";
+                page += checkbox("forget_sensors", false, label.c_str());
+            }
             page += "</fieldset>";
         }
         page += kFormTail;
@@ -251,7 +310,15 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
             sp::personality_from_str(portal.arg("personality").c_str(), &p))
             cfg.personality = p;
         if (portal.arg("ota_pass").length()) cfg.ota_pass = arg_str(portal, "ota_pass");
-        if (portal.arg("hmac_key").length()) cfg.hmac_key = arg_str(portal, "hmac_key");
+        if (portal.arg("hmac_key").length()) {
+            // A new key keeps the one it replaces until the new key verifies
+            // a frame, so a node can be re-keyed before the Pi switches keys
+            // (sp_core/hmac_verify.h, key rotation).
+            const std::string key = arg_str(portal, "hmac_key");
+            cfg.hmac_key_prev = sp::prev_key_after_rekey(
+                current.hmac_key, current.hmac_key_prev, key);
+            cfg.hmac_key = key;
+        }
         if (portal.arg("ntp_host").length()) cfg.ntp_host = arg_str(portal, "ntp_host");
         cfg.tls_enabled = portal.arg("tls") == "1";
         cfg.tls_required = portal.arg("tls_req") == "1";
@@ -293,6 +360,14 @@ void WifiProvisioner::run_portal(const NodeConfig& current) {
                 cfg.tls_enabled, !kv_.get_string("broker_ca", "").empty()))
             cfg.wifi_verified = false;
         cfg.save(kv_);
+        // A new Pi address re-points the camera's frame uploads: a stored
+        // server_url (an MQTT command, a v1 migration) would keep them on the
+        // old Pi.
+        if (sp::portal_save_resets_server_url(current.broker_host,
+                                              cfg.broker_host))
+            kv_.set_string(sp::kServerUrlKey, "");
+        if (peripheral_opts && portal.arg("forget_sensors") == "1")
+            sp::forget_seen_sensors(kv_);
 
         String saved =
             "<html><body style='font-family:sans-serif;max-width:420px;"

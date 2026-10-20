@@ -30,10 +30,10 @@ class DriverConfigError(ValueError):
 class IntegrationHealth:
     """Snapshot of a driver's last self-check.
 
-    Persisted to `integration_settings.last_health_*` and surfaced to the
-    settings UI via `GET /api/integrations`. `details` is free-form per
-    driver — keep it short and human-readable; the UI shows it under the
-    status pill.
+    A Test's result is persisted to `integration_settings.last_health_*`;
+    `GET /api/integrations` shows each driver's live `health()`. `details`
+    is free-form per driver — keep it short and human-readable; the UI
+    shows it under the status pill.
     """
 
     state: IntegrationState
@@ -76,9 +76,10 @@ class IntegrationDriver(ABC):
     # the URL segment under `/api/integrations/{slug}`.
     name: ClassVar[str]
 
-    # `free` for LAN-only integrations (Grafana exporter, Aranet poll); set
-    # to `premium` when the driver requires our cloud (cloud-API tokens we
-    # hold, relay roundtrips, etc.) per feedback_tier_model.
+    # Reported to the integrations UI. The Pi has no paygate, so every
+    # driver that runs on it is `free` — a driver that talks to a vendor's
+    # cloud with the operator's own credentials included. `premium` would
+    # only fit a driver that needs the SporePrint cloud itself.
     tier_required: ClassVar[IntegrationTier]
 
     # Pydantic model the registry uses to validate incoming config. Drivers
@@ -91,7 +92,7 @@ class IntegrationDriver(ABC):
 
     # Config fields that decide WHERE the secrets are sent (a caller-set
     # base_url/host the driver authenticates to). A PUT that omits a secret,
-    # or sends back its ``••••last4`` preview, keeps the stored value only
+    # or sends back its ``••••`` preview, keeps the stored value only
     # while every one of these is unchanged; changing one means re-entering
     # the secret (422). Without this, anyone who can PUT a config could point
     # the stored key at their own host without ever seeing it. Leave empty

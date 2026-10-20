@@ -5,18 +5,15 @@ nothing switched off. Each test below pins one way it used to be a silent
 no-op:
 
   * vendor targets (Kasa/Tapo/Wemo/...) got their auto-OFF published to
-    sporeprint/vendor:*/cmd/config — no subscriber — and logged as success
-    (srv-cloud-int#0 / srv-auto#3);
+    sporeprint/vendor:*/cmd/config — no subscriber — and logged as success;
   * boot rehydration sent expired OFFs inline before MQTT was connected (and to
-    the wrong topic for plugs), then deleted the row regardless (srv-hw#0 /
-    srv-auto#1);
-  * every re-fire of a held-ON rule re-armed the ceiling, so it never tripped
-    (srv-auto#0);
+    the wrong topic for plugs), then deleted the row regardless;
+  * every re-fire of a held-ON rule re-armed the ceiling, so it never tripped;
   * channel-less (plug) watchdog upserts never conflicted, piling up rows that
-    rehydrate turned into orphaned tasks (srv-auto#20);
+    rehydrate turned into orphaned tasks;
   * the Dry Weather Humidity Boost template ran the humidifier with no chamber
     humidity check, phase gate or ceiling, and cancelled Humidity Boost's
-    ceiling on every fire (srv-auto#6).
+    ceiling on every fire.
 
 A tripped held-ON ceiling locks automation out of the actuator; the lockout and
 the actuator's ON commands are serialized per actuator so a re-fire racing the
@@ -208,7 +205,7 @@ async def _firings() -> list[dict]:
         return [dict(r) for r in await cursor.fetchall()]
 
 
-# ─── srv-cloud-int#0 / srv-auto#3 — vendor OFF goes through the dispatcher ─────
+# ─── vendor OFF goes through the dispatcher ──────────────────────────────────
 
 
 async def test_vendor_watchdog_dispatches_vendor_off_not_mqtt(
@@ -291,7 +288,7 @@ async def test_vendor_lockout_lands_on_rule_override_key(fast_sleep, dispatch_ca
     assert is_overridden("vendor:kasa-heater", None)
 
 
-# ─── srv-hw#0 / srv-auto#1 — boot rehydration ────────────────────────────
+# ─── boot rehydration ─────────────────────────────────────────────────────
 
 
 async def test_rehydrate_never_sends_or_deletes_inline(frozen_sleep, mock_mqtt):
@@ -354,7 +351,7 @@ async def test_rehydrate_legacy_vendor_row_recovers_device_from_rule(
     assert dispatch_calls == [("kasa", "set_power", {"ip": "10.0.0.20", "on": False})]
 
 
-# ─── srv-auto#0 — a re-fired held-ON keeps its ceiling ───────────────────
+# ─── a re-fired held-ON keeps its ceiling ─────────────────────────────────
 
 
 async def test_refire_of_held_on_plug_keeps_original_deadline(frozen_sleep, mock_mqtt, mock_mqtt_raw, monkeypatch):
@@ -364,7 +361,8 @@ async def test_refire_of_held_on_plug_keeps_original_deadline(frozen_sleep, mock
     t0 = time.time()
     monkeypatch.setattr(engine.time, "time", lambda: t0)
     await _fire_rule(heat, {"temp_f": 50}, session=None)
-    first = _safety_tasks["plug-heater:*"]
+    # Kept under the plug's own id, whichever name the rule used.
+    first = _safety_tasks["plug-a1b2c3:*"]
     rows_before = await _watchdog_rows()
 
     # Heating Trigger's cooldown is 300 s: it re-fires while temp stays low.
@@ -372,9 +370,9 @@ async def test_refire_of_held_on_plug_keeps_original_deadline(frozen_sleep, mock
         monkeypatch.setattr(engine.time, "time", lambda k=k: t0 + 300 * k)
         await _fire_rule(heat, {"temp_f": 50}, session=None)
 
-    assert _safety_tasks["plug-heater:*"] is first, "re-fire must not re-arm the ceiling"
+    assert _safety_tasks["plug-a1b2c3:*"] is first, "re-fire must not re-arm the ceiling"
     assert not first.done()
-    assert _safety_deadlines["plug-heater:*"] == pytest.approx(t0 + 3600)
+    assert _safety_deadlines["plug-a1b2c3:*"] == pytest.approx(t0 + 3600)
     assert await _watchdog_rows() == rows_before
 
 
@@ -422,20 +420,20 @@ async def test_pulse_trip_is_a_benign_redundant_off(fast_sleep, mock_mqtt, notes
 
 async def test_on_without_ceiling_leaves_running_watchdog(frozen_sleep, mock_mqtt, mock_mqtt_raw):
     """Dry Weather Humidity Boost firing after Humidity Boost used to cancel
-    Humidity Boost's 1800 s ceiling and arm nothing (srv-auto#6)."""
+    Humidity Boost's 1800 s ceiling and arm nothing."""
     await _register_plug("plug-9f7e", "shelly", "shellies/9f7e", role="humidifier")
     boost = _rule(RuleAction(target="plug-humidifier", state="on"), 1800, "Humidity Boost")
     extra = _rule(RuleAction(target="plug-humidifier", state="on"), None, "No Ceiling", 2)
 
     await _fire_rule(boost, {}, None)
-    armed = _safety_tasks["plug-humidifier:*"]
+    armed = _safety_tasks["plug-9f7e:*"]
     await _fire_rule(extra, {}, None)
 
-    assert _safety_tasks["plug-humidifier:*"] is armed and not armed.done()
+    assert _safety_tasks["plug-9f7e:*"] is armed and not armed.done()
     assert len(await _watchdog_rows()) == 1
 
 
-# ─── srv-auto#2 — holds / suspends leave the ceiling armed ────────────────
+# ─── holds / suspends leave the ceiling armed ─────────────────────────────
 
 
 async def test_cloud_suspend_rule_keeps_watchdog(frozen_sleep, mock_mqtt):
@@ -452,7 +450,7 @@ async def test_cloud_suspend_rule_keeps_watchdog(frozen_sleep, mock_mqtt):
     assert len(await _watchdog_rows()) == 1
 
 
-# ─── srv-auto#20 — channel-less rows are replaced, not piled up ──────────
+# ─── channel-less rows are replaced, not piled up ────────────────────────
 
 
 async def test_channel_less_watchdog_persist_is_an_upsert():
@@ -484,7 +482,7 @@ async def test_rehydrate_replaces_rather_than_orphans_a_live_task(frozen_sleep):
     assert _safety_tasks["relay-01:heater"] is not first
 
 
-# ─── srv-auto#6 — Dry Weather Humidity Boost template ────────────────────
+# ─── Dry Weather Humidity Boost template ──────────────────────────────────
 
 
 def _dry_weather() -> AutomationRule:
@@ -550,7 +548,7 @@ async def test_seed_leaves_operator_edited_rule_alone():
     assert stored.safety_max_on_seconds is None
 
 
-# ─── srv-auto#0 follow-up — a re-fire racing the trip ─────────────────────
+# ─── a re-fire racing the trip ────────────────────────────────────────────
 
 
 def _powers(raw: list[tuple[str, str]], prefix: str = "tasmota/a1b2c3") -> list[str]:
@@ -576,12 +574,12 @@ async def test_refire_right_after_the_trip_off_is_refused(
 
     monkeypatch.setattr(engine, "send_plug_command", _send)
     await _fire_rule(heat, {"temp_f": 50}, None)
-    await _drain("plug-heater:*")
+    await _drain("plug-a1b2c3:*")  # the plug's own id, whichever name the rule used
 
     assert raced
     assert _powers(mock_mqtt_raw) == ["ON", "OFF"]
-    assert is_overridden("plug-heater", None)
-    assert ("warning", "Safety cutoff: plug-heater") in notes
+    assert is_overridden("plug-a1b2c3", None)
+    assert ("warning", "Safety cutoff: plug-a1b2c3") in notes
 
 
 async def test_trip_waits_for_an_in_flight_on_then_switches_it_off(
@@ -592,7 +590,7 @@ async def test_trip_waits_for_an_in_flight_on_then_switches_it_off(
     await _register_plug("plug-a1b2c3", "tasmota", "tasmota/a1b2c3", role="heater")
     heat = _rule(RuleAction(target="plug-heater", state="on"), 3600, "Heating Trigger")
     await _fire_rule(heat, {"temp_f": 50}, None)
-    trip = _safety_tasks["plug-heater:*"]
+    trip = _safety_tasks["plug-a1b2c3:*"]
 
     real_send = engine.send_plug_command
     on_in_flight, release_on = asyncio.Event(), asyncio.Event()
@@ -614,7 +612,7 @@ async def test_trip_waits_for_an_in_flight_on_then_switches_it_off(
     await asyncio.wait_for(asyncio.shield(trip), 2)
 
     assert _powers(mock_mqtt_raw) == ["ON", "ON", "OFF"]
-    assert is_overridden("plug-heater", None)
+    assert is_overridden("plug-a1b2c3", None)
 
 
 async def test_trip_under_an_operator_hold_keeps_the_hold_and_says_so(
@@ -647,20 +645,20 @@ async def test_overlapping_arms_leave_exactly_one_live_watchdog(frozen_sleep):
     assert live == [_safety_tasks["relay-01:heater"]]
 
 
-async def test_manual_plug_off_clears_the_ceiling_armed_under_its_role(
+async def test_manual_plug_off_clears_the_ceiling_a_role_rule_armed(
     frozen_sleep, mock_mqtt, mock_mqtt_raw,
 ):
     """An OFF sent outside automation must clear the ceiling, or the next
     automation ON keeps the stale deadline and trips early with a false page."""
     await _register_plug("plug-a1b2c3", "tasmota", "tasmota/a1b2c3", role="heater")
     await _fire_rule(_rule(RuleAction(target="plug-heater", state="on"), 3600, "Heating Trigger"), {}, None)
-    armed = _safety_tasks["plug-heater:*"]
+    armed = _safety_tasks["plug-a1b2c3:*"]
 
-    await command_plug("plug-a1b2c3", {"state": "off"})
+    await command_plug("plug-heater", {"state": "off"})
 
     await _real_sleep(0)
     assert armed.cancelled() or armed.done()
-    assert "plug-heater:*" not in _safety_tasks
+    assert "plug-a1b2c3:*" not in _safety_tasks
     assert await _watchdog_rows() == []
 
 
@@ -689,7 +687,7 @@ async def test_note_actuator_off_keeps_a_ceiling_whose_on_went_out_later(frozen_
     assert len(await _watchdog_rows()) == 1
 
 
-# ─── srv-cloud-int#0 follow-up — vendor on/off meaning, reboot lockout ─────
+# ─── vendor on/off meaning, reboot lockout ───────────────────────────────────
 
 
 async def test_vendor_string_false_is_read_as_an_off(frozen_sleep, dispatch_calls, mock_mqtt):

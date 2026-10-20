@@ -1,11 +1,11 @@
 """Retention math and storage reclamation.
 
-srv-rest#23: the hourly and daily rollups used AVG(avg_value), an unweighted
+Weighting: the hourly and daily rollups used AVG(avg_value), an unweighted
 mean of means, while the 5-minute step and the conflict-merge path are
 count-weighted. Buckets with unequal counts (partial buckets, offline-buffer
 flushes, a changed publish interval) biased long-term history.
 
-srv-rest#24: `PRAGMA incremental_vacuum` is a no-op unless the database is in
+Vacuum: `PRAGMA incremental_vacuum` is a no-op unless the database is in
 auto_vacuum=INCREMENTAL mode, which init_db never sets, and even then a single
 execute frees only one page. The nightly "reclaim storage" step did nothing.
 Switching modes takes a full VACUUM that stalls every writer, so the nightly

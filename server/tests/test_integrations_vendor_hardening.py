@@ -34,7 +34,6 @@ from app.integrations.fluence.driver import FluenceConfig, FluenceDriver
 from app.integrations.fohse.driver import FohseConfig, FohseDriver
 from app.integrations.kasa.driver import KasaConfig, KasaDriver
 from app.integrations.pulse.config import PulseConfig
-from app.integrations.pulse import poller
 from app.integrations.pulse.driver import PulseDriver
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import _TAPO_CLOUD_BASE_BY_REGION, TapoDriver, TapoError
@@ -341,21 +340,8 @@ async def test_pulse_cloud_poll_reuses_session_token(monkeypatch):
     drv = PulseDriver()
     await drv.configure(PulseConfig(transport="cloud", email="a@x.co", password="pw"))
 
-    polls = 0
-
-    async def fake_sleep(_s):
-        nonlocal polls
-        polls += 1
-        if polls >= 3:
-            raise asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        await poller.poll_loop(
-            lambda: drv._cfg,
-            record_outcome=drv._record_outcome,
-            sleep=fake_sleep,
-            client_provider=drv._client_for,
-        )
+    for _ in range(3):
+        await drv.poll_once()
     assert sum(1 for u in calls if "/v2/auth/login" in u) == 1
     assert sum(1 for u in calls if u.endswith("/v2/devices")) == 3
 

@@ -19,12 +19,24 @@
 // key (SPOREPRINT_OTA_PUBKEY_B64 at build time, ota_build.h) accepts
 // cmd/ota_manifest {manifest_b64, sig_b64} from the Pi. A manifest that
 // verifies, names this image's PlatformIO env and is not older than the
-// running image or the last manifest-verified update (NVS "ota_floor") arms
+// running image or the last manifest-verified update confirmed on this node
+// (NVS "ota_floor") arms
 // the gate: the next push must be exactly that image (size + SHA-256 of every
 // flashed byte) or it is aborted before Update.end(). Without a manifest the
 // push is flashed unverified, as before — unless the image was built with
 // SPOREPRINT_OTA_REQUIRE_MANIFEST=1. Results go out on sporeprint/<id>/ota as
 // manifest_armed {version, sha256} / manifest_rejected {reason}.
+//
+// A verified flash records its version as PENDING ("ota_floor_next"); the
+// floor itself rises only once that image is confirmed on this node
+// (image_confirmed(); sp::ota_floor_promotable), so an image that fails its
+// probation and rolls back does not lock the node to versions at or above
+// the one that failed.
+//
+// Every refusal of an authenticated push (the manifest gate, an image on
+// probation, Update.begin) is decided BEFORE the espota "OK": the node
+// answers "ERR <reason>" instead, so the pusher reports why. (After "OK" the
+// pusher only waits for a connect-back that never comes.)
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -62,6 +74,16 @@ public:
         start_ctx_ = ctx;
     }
 
+    // Probation hook, run when an authenticated FIRMWARE push is about to be
+    // accepted, before anything is written: nullptr to go ahead, or the
+    // refusal reason (static) the push is answered with. The composition
+    // roots wire sp_device::clear_probation_for_ota (image_rollback.h).
+    using ReadyFn = const char* (*)(void* ctx);
+    void before_flash(ReadyFn fn, void* ctx) {
+        ready_fn_ = fn;
+        ready_ctx_ = ctx;
+    }
+
     // Call before begin(). Without it, manifests are unsupported.
     void configure_manifests(const OtaManifestConfig& cfg);
 
@@ -75,10 +97,18 @@ public:
     void loop();
     bool armed() const { return armed_; }
 
+    // The running image was just confirmed: raise the anti-rollback floor to
+    // the version a manifest-verified push left pending, if that is this
+    // image (sp::ota_floor_promotable). The pending record is consumed.
+    void image_confirmed();
+
 private:
     enum class State : uint8_t { Idle, WaitAuth };
 
     void on_datagram(const char* data, size_t len);
+    // Every check that can refuse the push, before the espota "OK":
+    // nullptr = accepted (Update begun), else the refusal reason.
+    const char* prepare_update();
     void run_update();
     void reply(const char* text, const char* arg = nullptr);
     void fail(const char* reason);
@@ -94,6 +124,8 @@ private:
     bool armed_ = false;
     StartFn start_fn_ = nullptr;
     void* start_ctx_ = nullptr;
+    ReadyFn ready_fn_ = nullptr;
+    void* ready_ctx_ = nullptr;
 
     WiFiUDP udp_;
     State state_ = State::Idle;
@@ -106,6 +138,10 @@ private:
     uint8_t pubkey_[sp::kOtaPubkeyBytes] = {0};
     bool pubkey_ok_ = false;
     sp::OtaGate gate_;
+    // The accepted push (prepare_update → run_update).
+    sp::OtaGate::Begin gate_result_ = sp::OtaGate::Begin::Unverified;
+    // Copied at acceptance: the arming is consumed, the events outlive it.
+    char manifest_version_[sp::kOtaVersionMaxLen + 1] = {0};
 };
 
 }  // namespace sp_device

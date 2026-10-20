@@ -33,6 +33,9 @@
 //  Any other board: pick the closest preset and override board_w/board_l/
 //  pcb_l/pin_row_spacing/usb_dx/... individually (every -D wins over the
 //  preset). The cavity keeps `tolerance` (0.5 mm) per side around the PCB.
+//  usb_conn_w/usb_conn_d/usb_overhang and module_w size the lid's hold-down
+//  pads; an assert stops the render when pin_row_spacing puts the header
+//  rows over the support ribs or plug_w/plug_h overmoulds miss the opening.
 //
 // ── What else goes inside ───────────────────────────────────────────────
 //  - Cables: USB-A -> USB-C data cable (BOM), plug overmould up to 13 x 7 mm;
@@ -97,8 +100,9 @@ include <lib/sp_inserts.scad>
 
 // ── Board presets ────────────────────────────────────────────────────────
 //  name, board_w, board_l (overall, incl. module overhang), pcb_l,
-//  pin_row_spacing, header_pins, header_y0 (header start from USB edge),
-//  usb_dx (connector centres from board centre), usb receptacle w/d/h,
+//  pin_row_spacing, header_pins (pins per row: a record of the board that
+//  no geometry reads), header_y0 (header start from USB edge), usb_dx
+//  (connector centres from board centre), usb receptacle w/d/h,
 //  usb_overhang, usb_w, usb_h (opening), plug_w, plug_h (overmould)
 _ESP32_PRESETS = [
     ["narrow_usbc", 25.5,  52.00, 52.00, 22.86, 19, 0.00, [0],
@@ -127,20 +131,21 @@ board_w         = _P[1];  // mm — PCB width
 board_l         = _P[2];  // mm — overall length incl. any module/antenna overhang
 pcb_l           = _P[3];  // mm — PCB length alone (ribs stay under it)
 pin_row_spacing = _P[4];  // mm — centre-to-centre of the two header rows
-header_pins     = _P[5];  // pins per row
+                          //      (they must clear the support ribs)
 header_y0       = _P[6];  // mm — header plastic start, from the USB edge
 usb_dx          = _P[7];  // mm — USB connector centre(s) from the board centre
-usb_conn_w      = _P[8];  // mm — receptacle width
-usb_conn_d      = _P[9];  // mm — receptacle depth
+usb_conn_w      = _P[8];  // mm — receptacle width  (the lid pad stays on it)
+usb_conn_d      = _P[9];  // mm — receptacle depth  (the lid pad stays on it)
 usb_conn_h      = _P[10]; // mm — receptacle height above the PCB
 usb_overhang    = _P[11]; // mm — receptacle overhang past the PCB edge
 usb_w           = _P[12]; // mm — USB opening width (all plugs + overmoulds)
 usb_h           = _P[13]; // mm — USB opening height, centred on the plug axis
-plug_w          = _P[14]; // mm — cable overmould width  (fit proof / docs)
-plug_h          = _P[15]; // mm — cable overmould height (fit proof / docs)
+plug_w          = _P[14]; // mm — cable overmould width  (must pass usb_w)
+plug_h          = _P[15]; // mm — cable overmould height (must pass usb_h)
 board_h   = 4.0;   // mm — max component height above the PCB (buttons, caps)
 pcb_thick = 1.6;   // mm — PCB thickness
-module_w  = 18.0;  // mm — WROOM module (ESP32-WROOM-32 / -S3-WROOM-1)
+module_w  = 18.0;  // mm — WROOM module (ESP32-WROOM-32 / -S3-WROOM-1); the
+                   //      lid pad sits 3 mm inside each side of it
 module_l  = 25.5;  // mm
 module_h  = 3.3;   // mm — 3.1 nominal + tolerance/solder
 
@@ -181,7 +186,13 @@ LID_SCREW = "M3";
 // ── Derived dimensions ─────────────────────────────────────────────────
 _usb_x  = [for (o = usb_dx) board_w / 2 + o];     // board coords
 _usb_cx = (min(_usb_x) + max(_usb_x)) / 2;
-_pin_x  = (board_w - pin_row_spacing) / 2;       // pin centre from each long edge
+
+// Lid hold-down pads. Over each USB receptacle (board y -usb_overhang ..
+// usb_conn_d - usb_overhang): from y = 1.0, kept 0.5 mm inside its sides and
+// back edge. Over the module shield: 3 mm inside each side.
+_usb_pad_hw = min(2.5, usb_conn_w / 2 - 0.5);       // half-width
+_usb_pad_y1 = min(3.5, usb_conn_d - usb_overhang - 0.5);
+_mod_pad_w  = min(12, module_w - 6);
 
 col_r    = sp_insert_boss_d(LID_SCREW) / 2;      // insert column radius
 corner_r = max(col_r, sp_screw_head_d(LID_SCREW) / 2 + 1.0, wall);
@@ -236,6 +247,16 @@ lid_screw_len = _stock_len(sp_screw_len(LID_SCREW, lid_t, true));
 assert(_bear >= 2 || header_y0 >= 2,
        "esp32_case: USB opening is as wide as the board and there is no header clearance for end stops");
 assert(rib_y1 - rib_y0 >= 10, "esp32_case: board too short for the support ribs");
+// The ribs stand between the header rows: the rows' 2.54 mm header plastic,
+// and the sockets pushed onto the pins, must clear them.
+assert(pin_row_spacing / 2 - 1.27 >= rib_sep / 2 + rib_t / 2 + 0.5,
+       "esp32_case: pin_row_spacing too narrow - the header rows would sit on the support ribs");
+// The opening passes every cable overmould, each centred on its connector.
+assert(usb_w >= max(usb_dx) - min(usb_dx) + plug_w && usb_h >= plug_h,
+       "esp32_case: the USB opening (usb_w x usb_h) is smaller than the cable overmould (plug_w x plug_h)");
+assert(_usb_pad_hw >= 1 && _usb_pad_y1 - 1.0 >= 1,
+       "esp32_case: usb_conn_w / usb_conn_d / usb_overhang leave no room for the lid's pad on the USB receptacle");
+assert(_mod_pad_w >= 4, "esp32_case: module_w is too small for the lid's hold-down pad");
 
 echo(str("esp32_case ", preset, ": outer ", outer_w, " x ", outer_l, " x ", outer_h,
          " mm (flanges add ", mount_tabs ? 2 * tab_w : 0, " mm width); PCB underside at z=",
@@ -400,12 +421,12 @@ module _lid_lip() {
 
 module _lid_pads() {
     zm = z_pcb_top + module_h + hold_gap - z_split;         // module shield
-    translate([outer_w / 2 - 6, by0 + board_l - module_l + 5, zm])
-        cube([12, 8, -zm + 0.01]);
+    translate([outer_w / 2 - _mod_pad_w / 2, by0 + board_l - module_l + 5, zm])
+        cube([_mod_pad_w, 8, -zm + 0.01]);
     zu = z_pcb_top + usb_conn_h + hold_gap - z_split;       // USB receptacle(s)
     for (ux = _usb_x)
-        translate([bx0 + ux - 2.5, by0 + 1.0, zu])
-            cube([5, 2.5, -zu + 0.01]);
+        translate([bx0 + ux - _usb_pad_hw, by0 + 1.0, zu])
+            cube([2 * _usb_pad_hw, _usb_pad_y1 - 1.0, -zu + 0.01]);
 }
 
 // Fills the notch down to the opening top when board_h pushes the lid up.
@@ -418,8 +439,9 @@ module _lid_tongue() {
 
 module _lid_vents() {
     yc0 = by0 + board_l - module_l + 1.5;
+    // Skip the Ø2.2 vents that would cut into the module pad.
     for (dx = [-7.5, -3.75, 0, 3.75, 7.5], y = [yc0 : 3.5 : by0 + board_l - 3])
-        if (!(abs(dx) < 7.2 && y > by0 + board_l - module_l + 3.9
+        if (!(abs(dx) < _mod_pad_w / 2 + 1.2 && y > by0 + board_l - module_l + 3.9
                             && y < by0 + board_l - module_l + 14.1))
             translate([outer_w / 2 + dx, y, -1])
                 cylinder(h = lid_t + 2, d = 2.2, $fn = 16);

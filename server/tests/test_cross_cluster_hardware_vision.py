@@ -361,11 +361,12 @@ async def test_harvest_signal_notifies_through_harvest_ready(monkeypatch):
     s = await create_session(SessionCreate(name="Flush 1", species_profile_id="blue_oyster",
                                            current_phase="fruiting"))
     frame = {"id": 7, "session_id": s["id"], "node_id": "cam-01"}
+    grow = await vision_service._load_frame_grow(s["id"])
     await vision_service._maybe_harvest_alert(
-        frame, {"harvest_readiness": "overdue", "growth_rate": "stalled"}, "Blue Oyster")
+        frame, {"harvest_readiness": "overdue", "growth_rate": "stalled"}, grow)
     assert sent == [("Blue Oyster", "Flush 1", "fruit body is overdue for harvest",
                      f"harvest:{s['id']}")]
     # One per session per 12 h.
     await vision_service._maybe_harvest_alert(
-        frame, {"harvest_readiness": "overdue"}, "Blue Oyster")
+        frame, {"harvest_readiness": "overdue"}, grow)
     assert len(sent) == 1

@@ -74,3 +74,22 @@ async def test_seed_builtin_rules_idempotent():
         cursor = await db.execute("SELECT COUNT(*) as cnt FROM automation_rules")
         row = await cursor.fetchone()
     assert row["cnt"] == len(BUILTIN_RULES)
+
+
+# ── Each built-in is offered once ─────────────────────────────────────────
+# (Pis seeded by older releases: tests/test_builtin_rule_upgrades.py.)
+
+
+async def _rule_names() -> list[str]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT name FROM automation_rules ORDER BY id")
+        return [r["name"] for r in await cursor.fetchall()]
+
+
+async def test_a_fresh_pi_records_every_builtin_as_offered():
+    await seed_builtin_rules()
+    async with get_db() as db:
+        await db.execute("DELETE FROM automation_rules WHERE name = ?", ("CO2 Floor — Restrict FAE",))
+        await db.commit()
+    await seed_builtin_rules()
+    assert "CO2 Floor — Restrict FAE" not in await _rule_names()

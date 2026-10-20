@@ -61,29 +61,38 @@ bool ReplayGuard::seen(uint32_t topic, const uint8_t mac[32],
 }
 
 void ReplayGuard::remember(uint32_t topic, const uint8_t mac[32],
-                           uint64_t now_epoch_s) {
-    // Reuse a free / expired slot first; otherwise evict the oldest entry.
+                           uint64_t now_epoch_s, double frame_ts) {
+    // Reuse a free / expired slot first; otherwise evict the live entry with
+    // the oldest frame ts and raise the floor to it (see the header).
     Entry* slot = nullptr;
+    bool evicting_live = true;
     for (Entry& e : slots_) {
         if (!e.used || now_epoch_s > e.expires_s) {
             slot = &e;
+            evicting_live = false;
             break;
         }
-        if (slot == nullptr || e.seq < slot->seq) slot = &e;
+        if (slot == nullptr || e.ts < slot->ts) slot = &e;
+    }
+    if (evicting_live && (!has_floor_ || slot->ts > floor_ts_)) {
+        floor_ts_ = slot->ts;
+        has_floor_ = true;
     }
     slot->used = true;
-    slot->seq = next_seq_++;
     slot->topic = topic;
     slot->expires_s = now_epoch_s + kRememberSeconds;
+    slot->ts = frame_ts;
     memcpy(slot->mac, mac, sizeof(slot->mac));
 }
 
 namespace {
 
-// Signature + timestamp + MAC check. On Ok, `mac_out` holds the verified MAC.
+// Signature + timestamp + MAC check. On Ok, `mac_out` holds the verified MAC
+// and `ts_out` the frame's signed ts.
 VerifyStatus verify_mac(const char* payload, size_t len, const char* key,
                         size_t key_len, uint64_t now_epoch_s,
-                        HmacSha256Fn hmac, uint8_t mac_out[32]) {
+                        HmacSha256Fn hmac, uint8_t mac_out[32],
+                        double* ts_out) {
     if (key == nullptr || key_len == 0) return VerifyStatus::NoKey;
 
     // signature — must be a string member of exactly 64 hex chars.
@@ -143,6 +152,7 @@ VerifyStatus verify_mac(const char* payload, size_t len, const char* key,
     }
     if (!const_time_eq((const uint8_t*)computed, theirs, 64))
         return VerifyStatus::Mismatch;
+    *ts_out = ts;
     return VerifyStatus::Ok;
 }
 
@@ -164,16 +174,18 @@ VerifyStatus verify_frame(const char* payload, size_t len,
                           uint64_t now_epoch_s, HmacSha256Fn hmac,
                           const char* topic, ReplayGuard* replay) {
     uint8_t mac[32];
+    double ts = 0.0;
     VerifyStatus st =
-        verify_mac(payload, len, key, key_len, now_epoch_s, hmac, mac);
+        verify_mac(payload, len, key, key_len, now_epoch_s, hmac, mac, &ts);
     if (st != VerifyStatus::Ok) return st;
     // Checked only after the MAC verifies: the member is authentic.
     if (topic != nullptr && !topic_member_matches(payload, len, topic))
         return VerifyStatus::TopicMismatch;
     if (replay != nullptr) {
         uint32_t th = topic_hash(topic);
-        if (replay->seen(th, mac, now_epoch_s)) return VerifyStatus::Replayed;
-        replay->remember(th, mac, now_epoch_s);
+        if (replay->seen(th, mac, now_epoch_s) || replay->below_floor(ts))
+            return VerifyStatus::Replayed;
+        replay->remember(th, mac, now_epoch_s, ts);
     }
     return VerifyStatus::Ok;
 }
@@ -181,7 +193,9 @@ VerifyStatus verify_frame(const char* payload, size_t len,
 CmdAuthResult command_auth_decision(const char* payload, size_t len,
                                     const char* key, size_t key_len,
                                     uint64_t now_epoch_s, HmacSha256Fn hmac,
-                                    const char* topic, ReplayGuard* replay) {
+                                    const char* topic, ReplayGuard* replay,
+                                    const char* prev_key,
+                                    size_t prev_key_len) {
     // No provisioned key: accept unsigned (fail-open migration posture). An
     // empty std::string yields key_len 0 here.
     if (key == nullptr || key_len == 0)
@@ -192,6 +206,15 @@ CmdAuthResult command_auth_decision(const char* payload, size_t len,
         return {CmdAuthDecision::RejectClockUnsynced, VerifyStatus::StaleTimestamp};
     VerifyStatus st = verify_frame(payload, len, key, key_len, now_epoch_s,
                                    hmac, topic, replay);
+    // A key rotation under way: the Pi may still sign with the key this one
+    // replaced. A mismatch remembered nothing, so the second pass runs every
+    // check afresh (window, binding, replay guard) under the previous key.
+    if (st == VerifyStatus::Mismatch && prev_key != nullptr && prev_key_len > 0) {
+        st = verify_frame(payload, len, prev_key, prev_key_len, now_epoch_s,
+                          hmac, topic, replay);
+        if (st == VerifyStatus::Ok)
+            return {CmdAuthDecision::Accept, st, /*with_prev_key=*/true};
+    }
     return {st == VerifyStatus::Ok ? CmdAuthDecision::Accept
                                    : CmdAuthDecision::Reject,
             st};

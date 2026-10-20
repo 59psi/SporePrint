@@ -1,7 +1,7 @@
 #pragma once
 //
 // tls_policy — what the MQTT transport does when "Secure MQTT" is enabled
-// but no Pi CA is pinned (fw-node#2). The device side (sp_device/
+// but no Pi CA is pinned. The device side (sp_device/
 // tls_transport.h) performs the fetches and the transport switch; every
 // decision is here so it is host-tested (test_core_tls).
 //
@@ -42,9 +42,12 @@
 //   * a failed trial reverts — Fallback (plaintext, the tls_downgrade alert
 //     says why: cert name mismatch / other CA, 8883 unreachable, TLS error,
 //     broker refused) or FailClosed — and backs off (CaFetchBackoff) before
-//     the next fetch + trial.
+//     the next fetch + trial;
+//   * on the Fallback a fetched CA is probed (a bare TLS handshake, the
+//     plaintext link untouched) before any trial moves the live link — see
+//     TlsPinMachine.
 // TlsPinMachine holds these decisions; sp_device/tls_transport.h does the
-// fetches, NVS writes and transport switches it asks for.
+// fetches, probes, NVS writes and transport switches it asks for.
 //
 // Native-safe: no Arduino headers.
 
@@ -54,6 +57,8 @@
 #include <string>
 
 #include "alert_latch.h"
+#include "hmac_verify.h"  // to_hex_lower
+#include "kv_store.h"
 #include "sha256.h"
 #include "wrap_time.h"
 
@@ -101,8 +106,8 @@ inline bool tls_mode_wants_ca(TlsMode m) {
 // May this loop pass start a (blocking) MQTT connect attempt? Not in fail-
 // closed mode, not while the BOOT/reset button is held (the hold is timed
 // over densely-sampled passes only), and not in a pass that already ran a
-// blocking CA fetch — the two together would overrun the loop WDT
-// (link_budget.h kCaFetchWorstCaseS).
+// blocking CA fetch or TLS probe — the two together would overrun the loop
+// WDT (link_budget.h kCaFetchWorstCaseS, kTlsProbeWorstCaseS).
 inline bool mqtt_may_connect(TlsMode m, bool fetched_this_pass,
                              bool button_down) {
     return tls_mode_allows_mqtt(m) && !fetched_this_pass && !button_down;
@@ -122,14 +127,138 @@ inline bool ca_pem_acceptable(const char* body, size_t len) {
            s.find("PRIVATE KEY") == std::string::npos;
 }
 
+// ── the CA fetch's HTTP response ───────────────────────────────
+// The runtime fetch runs inside a loop pass, so the WHOLE response — status
+// line, headers and body — is read into one bounded buffer under ONE overall
+// deadline (link_budget.h kCaFetchReadTimeoutS), never a per-read timeout. A
+// host answering on :8000 with a slow drip used to hold the loop past the
+// WDT, and a chunked or close-delimited body was read without any size cap.
+// The Pi always sends Content-Length for its CA, so a 200 without one (or
+// with Transfer-Encoding), or with one at or over the NVS budget, is refused
+// before its body is read. scan_ca_response() is run on the bytes received
+// so far after every read.
+constexpr size_t kMaxCaResponseHeaderBytes = 2048;  // incl. the blank line
+constexpr size_t kMaxCaResponseBytes = kMaxCaResponseHeaderBytes + kMaxCaPemBytes;
+
+struct CaResponseScan {
+    enum class State : uint8_t { NeedMore, Done, Refused };
+    State state = State::NeedMore;
+    int status = 0;             // Done: the HTTP status code
+    size_t body_offset = 0;     // Done, status 200: the body is
+    size_t body_len = 0;        //   buf[body_offset, body_offset + body_len)
+    const char* why = nullptr;  // Refused: static reason for the log
+};
+
+namespace detail {
+
+inline char ascii_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+// Header line `line[0, len)` is "<name>:<value>" for `name` (lowercase,
+// case-insensitive match); *value / *value_len get the value without
+// surrounding blanks.
+inline bool header_is(const char* line, size_t len, const char* name,
+                      const char** value, size_t* value_len) {
+    size_t i = 0;
+    for (; name[i] != '\0'; ++i)
+        if (i >= len || ascii_lower(line[i]) != name[i]) return false;
+    if (i >= len || line[i] != ':') return false;
+    size_t b = i + 1, e = len;
+    while (b < e && (line[b] == ' ' || line[b] == '\t')) ++b;
+    while (e > b && (line[e - 1] == ' ' || line[e - 1] == '\t')) --e;
+    *value = line + b;
+    *value_len = e - b;
+    return true;
+}
+
+}  // namespace detail
+
+inline CaResponseScan scan_ca_response(const char* buf, size_t len) {
+    CaResponseScan r;
+    auto refuse = [&r](const char* why) {
+        r.state = CaResponseScan::State::Refused;
+        r.why = why;
+        return r;
+    };
+    // End of the header block.
+    size_t hdr_end = 0;
+    for (size_t i = 0; i + 3 < len; ++i) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' &&
+            buf[i + 3] == '\n') {
+            hdr_end = i + 4;
+            break;
+        }
+    }
+    if (hdr_end == 0) {
+        if (len >= kMaxCaResponseHeaderBytes)
+            return refuse("response headers too large");
+        return r;  // NeedMore
+    }
+    if (hdr_end > kMaxCaResponseHeaderBytes)
+        return refuse("response headers too large");
+
+    // Status line: "HTTP/1.x NNN ...".
+    if (hdr_end < 12 || buf[0] != 'H' || buf[1] != 'T' || buf[2] != 'T' ||
+        buf[3] != 'P' || buf[4] != '/' || buf[5] != '1' || buf[6] != '.' ||
+        buf[8] != ' ' || buf[9] < '0' || buf[9] > '9' || buf[10] < '0' ||
+        buf[10] > '9' || buf[11] < '0' || buf[11] > '9')
+        return refuse("not an HTTP response");
+    r.status = (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
+    if (r.status != 200) {
+        r.state = CaResponseScan::State::Done;  // the caller logs the status
+        return r;
+    }
+
+    // Headers: exactly one sane Content-Length, no Transfer-Encoding.
+    bool have_length = false;
+    size_t length = 0;
+    size_t pos = 0;
+    while (pos < hdr_end && buf[pos] != '\n') ++pos;  // skip the status line
+    ++pos;
+    while (pos + 2 <= hdr_end - 2) {
+        size_t eol = pos;
+        while (eol < hdr_end && buf[eol] != '\r') ++eol;
+        const char* v = nullptr;
+        size_t vlen = 0;
+        if (detail::header_is(buf + pos, eol - pos, "transfer-encoding", &v,
+                              &vlen))
+            return refuse("Transfer-Encoding body (the Pi sends Content-Length)");
+        if (detail::header_is(buf + pos, eol - pos, "content-length", &v, &vlen)) {
+            if (vlen == 0 || vlen > 7) return refuse("bad Content-Length");
+            size_t n = 0;
+            for (size_t i = 0; i < vlen; ++i) {
+                if (v[i] < '0' || v[i] > '9') return refuse("bad Content-Length");
+                n = n * 10 + (size_t)(v[i] - '0');
+            }
+            if (have_length && n != length) return refuse("bad Content-Length");
+            have_length = true;
+            length = n;
+        }
+        pos = eol + 2;  // past "\r\n"
+    }
+    if (!have_length) return refuse("no Content-Length (the Pi always sends one)");
+    if (length == 0 || length >= kMaxCaPemBytes)
+        return refuse("Content-Length out of range - too large to be the Pi CA");
+    if (len - hdr_end < length) return r;  // NeedMore: the body is still coming
+    r.state = CaResponseScan::State::Done;
+    r.body_offset = hdr_end;
+    r.body_len = length;
+    return r;
+}
+
 // ── runtime CA-fetch backoff ───────────────────────────────────
 // 1, 2, 4, 8 min, then every 15 min. Starts counting at begin() — the
-// boot-time attempt (pre-WDT) is the first try. A failed fetch and a failed
-// trial of a fetched CA both count as a failure.
+// boot-time attempt (pre-WDT) is the first try. A failed fetch, a failed
+// probe and a failed trial of a fetched CA all count as a failure. A trial
+// that dropped the working plaintext link and then failed for a reason a
+// probe cannot see (the broker refused the MQTT login on 8883) waits
+// kLinkTrialRetryMs instead.
 class CaFetchBackoff {
 public:
     static constexpr uint32_t kFirstRetryMs = 60UL * 1000UL;
     static constexpr uint32_t kMaxRetryMs = 15UL * 60UL * 1000UL;
+    static constexpr uint32_t kLinkTrialRetryMs = 60UL * 60UL * 1000UL;
 
     void begin(uint32_t now_ms) {
         last_ms_ = now_ms;
@@ -148,6 +277,14 @@ public:
         last_ms_ = now_ms;
         ++failures_;
         delay_ms_ = delay_ms_ >= kMaxRetryMs / 2 ? kMaxRetryMs : delay_ms_ * 2u;
+    }
+
+    // A trial cost the live link and failed where a probe cannot look: wait
+    // kLinkTrialRetryMs (a later plain failure steps back to the 15 min cap).
+    void failed_long(uint32_t now_ms) {
+        last_ms_ = now_ms;
+        ++failures_;
+        delay_ms_ = kLinkTrialRetryMs;
     }
 
     uint32_t delay_ms() const { return delay_ms_; }
@@ -185,7 +322,7 @@ inline const char* tls_fail_reason_str(TlsFailReason r) {
 }
 
 // The tls_downgrade alert `message` per reason (nullptr: no alert). The
-// no-CA text is the one fw-node#2 shipped.
+// no-CA text is the one the first fallback release shipped.
 inline const char* tls_downgrade_message(TlsFailReason r) {
     switch (r) {
         case TlsFailReason::None:
@@ -239,17 +376,35 @@ inline TlsFailReason classify_tls_trial_failure(int mqtt_state, int tls_error) {
 }
 
 // ── the verify-before-commit state machine ─────────────────────
+//
+// Probe before switching. On the plaintext fallback the MQTT link works; a
+// trial moves it to TLS, so a candidate that fails for a lasting reason (a
+// broker certificate that does not name the node's Pi address, nothing on
+// 8883) used to take a working node off MQTT on every retry — a retained
+// "offline", a 2-5 s gap in which commands were lost — every 15 minutes for
+// as long as the misconfiguration lasted. Now a CA fetched while on the
+// fallback is first PROBED: one bare TLS handshake to 8883 with it, on a
+// pass of its own, with the live plaintext link left alone. Only a candidate
+// whose handshake verifies moves the link (the trial, as before); a failed
+// probe just backs off with its reason. A trial that then fails because the
+// broker refused the MQTT login on TLS — the one thing a handshake cannot
+// see — retries only hourly (CaFetchBackoff::failed_long). With "Require
+// TLS" there is no live link to protect: a fetched candidate is tried at once.
 class TlsPinMachine {
 public:
     // What the caller must do this pass.
     enum class Step : uint8_t {
         Idle,    // nothing
-        Fetch,   // run one CA fetch → fetch_failed() or (link moved to TLS
-                 // with the fetched candidate) trial_started()
+        Fetch,   // run one CA fetch → fetch_failed(), or fetch_succeeded():
+                 // true = move the link to TLS with the candidate now, then
+                 // trial_started(); false = it is probed on a later pass
         Commit,  // the candidate got a CONNACK: persist it (broker_ca, then
                  // broker_ca_ok) → trial_verified()
         Revert,  // the candidate's connect attempt failed: persist nothing,
                  // move the link back → trial_failed(reason)
+        Probe,   // run one bare TLS handshake with the fetched candidate (no
+                 // MQTT, the live link untouched) → probe_passed() (then move
+                 // the link to TLS and trial_started()) or probe_failed(reason)
     };
 
     // Boot. `stored` = a CA is in NVS (broker_ca), `stored_verified` = its
@@ -264,6 +419,7 @@ public:
         // A fresh MqttLink has made no attempt and no connection yet.
         trial_attempts_ = 0;
         trial_connects_ = 0;
+        probe_pending_ = false;
         reason_ = TlsFailReason::None;
         if (!tls_enabled) {
             mode_ = TlsMode::Plain;
@@ -291,6 +447,10 @@ public:
             if (link_attempts != trial_attempts_) return Step::Revert;
             return Step::Idle;
         }
+        // The probe blocks its pass like a fetch: never while the button is
+        // held (its hold is timed over densely-sampled passes only).
+        if (probe_pending_)
+            return wifi_up && !button_down ? Step::Probe : Step::Idle;
         if (tls_mode_wants_ca(mode_) &&
             backoff_.due(now_ms, wifi_up, button_down))
             return Step::Fetch;
@@ -298,6 +458,31 @@ public:
     }
 
     void fetch_failed(uint32_t now_ms) { backoff_.failed(now_ms); }
+
+    // The fetch returned a candidate. On the plaintext fallback it is probed
+    // first (Step::Probe on a later pass): returns false and the caller
+    // leaves the link alone. With Require TLS (fail-closed, nothing is up):
+    // returns true — the caller moves the link to TLS with it now and calls
+    // trial_started().
+    bool fetch_succeeded() {
+        if (mode_ == TlsMode::Fallback) {
+            probe_pending_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    // The candidate's handshake verified: the caller moves the link to TLS
+    // with it and calls trial_started().
+    void probe_passed() { probe_pending_ = false; }
+
+    // The handshake failed: the link was never touched. The reason feeds the
+    // tls_downgrade alert; back off before the next fetch.
+    void probe_failed(TlsFailReason why, uint32_t now_ms) {
+        probe_pending_ = false;
+        reason_ = why == TlsFailReason::None ? TlsFailReason::TlsError : why;
+        backoff_.failed(now_ms);
+    }
 
     // The fetch returned a candidate and the link now runs TLS with it.
     // `reason_` is kept: from Fallback the link is still not on a verified
@@ -316,10 +501,18 @@ public:
     void trial_failed(TlsFailReason why, uint32_t now_ms) {
         mode_ = require_tls_ ? TlsMode::FailClosed : TlsMode::Fallback;
         reason_ = why == TlsFailReason::None ? TlsFailReason::TlsError : why;
-        backoff_.failed(now_ms);
+        // TLS verified but the broker refused the MQTT login on 8883: a probe
+        // cannot see that, and every retry would drop the working plaintext
+        // link again — retry it hourly. (Fail-closed has no link to drop.)
+        if (mode_ == TlsMode::Fallback && reason_ == TlsFailReason::MqttRefused)
+            backoff_.failed_long(now_ms);
+        else
+            backoff_.failed(now_ms);
     }
 
     TlsMode mode() const { return mode_; }
+    // A fetched candidate waits for its probe.
+    bool probe_pending() const { return probe_pending_; }
     // Why the link is not on a verified pin (logs).
     TlsFailReason reason() const { return reason_; }
     // The tls_downgrade alert condition: the reason while the operator's
@@ -339,6 +532,7 @@ private:
     bool require_tls_ = false;
     uint32_t trial_attempts_ = 0;
     uint32_t trial_connects_ = 0;
+    bool probe_pending_ = false;
     TlsFailReason reason_ = TlsFailReason::None;
     CaFetchBackoff backoff_;
 };
@@ -370,14 +564,29 @@ constexpr size_t kCaFingerprintHexLen = 64;
 
 inline void ca_fingerprint_hex(const char* pem, size_t len,
                                char out[kCaFingerprintHexLen + 1]) {
-    static const char kHex[] = "0123456789abcdef";
     uint8_t digest[32];
     sha256_host(reinterpret_cast<const uint8_t*>(pem), len, digest);
-    for (size_t i = 0; i < 32; ++i) {
-        out[2 * i] = kHex[digest[i] >> 4];
-        out[2 * i + 1] = kHex[digest[i] & 0x0F];
+    to_hex_lower(digest, sizeof(digest), out);
+}
+
+// ── persisting a verified pin ──────────────────────────────────
+// A trial connected on `ca`: store it, then set the verified marker — but
+// only once a read-back shows the store holds exactly `ca`. A failed write
+// (full NVS, flash fault) must not leave the marker vouching for an older,
+// unverified CA still stored: the next boot would pin that one without a
+// trial, and Pinned never fetches, so TLS would stay locked out. On a
+// mismatch the marker is cleared instead; the link stays on TLS this boot and
+// the next boot runs the trial again. True when the pin was persisted.
+inline bool persist_verified_ca(KvStore& kv, const char* ca_key,
+                                const char* ok_key, const std::string& ca) {
+    if (ca.empty()) return false;
+    if (kv.get_string(ca_key, "") != ca) kv.set_string(ca_key, ca);
+    if (kv.get_string(ca_key, "") != ca) {
+        kv.set_bool(ok_key, false);
+        return false;
     }
-    out[kCaFingerprintHexLen] = '\0';
+    kv.set_bool(ok_key, true);
+    return true;
 }
 
 }  // namespace sp

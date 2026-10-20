@@ -187,10 +187,10 @@ strap_len    = 2 * (cradle_w + 4) + 2 * (floor_t + psu_h - strap_z0 + 2) + 60;
 kh_xs = [cradle_w / 2 - cav_w / 4, cradle_w / 2 + cav_w / 4];
 kh_y  = cradle_l / 2 - kh_travel / 2;       // entry centre; slides to kh_y + kh_travel
 
-// Countersunk flange holes and zip-tie pairs
+// Countersunk flange holes (each flange's zip-tie pair is centred on it
+// lengthwise: zip_tie_slot() below)
 flange_xs = [-flange_w / 2, cradle_w + flange_w / 2];
 cs_pts    = [for (x = flange_xs) for (y = [cs_inset, cradle_l - cs_inset]) [x, y]];
-zt_ys     = [cradle_l / 2 - zt_spacing / 2, cradle_l / 2 + zt_spacing / 2];
 
 // Floor vents: centred grid inside the brick footprint, clear of the strap
 // channels and the keyholes

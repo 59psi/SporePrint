@@ -49,7 +49,9 @@ static const char* const kSensorFields[] = {
 static constexpr int kNSensorFields = 9;
 // design ALERT_TYPES — the `type` values emit_alert() may publish.
 static const char* const kAlertTypes[] = {
-    "temperature", "humidity", "co2", "door", "sensor_failure"};
+    "temperature", "humidity", "co2", "door", "sensor_failure",
+    "tls_downgrade"};
+static constexpr int kNAlertTypes = 6;
 // design COMPONENT_TYPES — the `type` a node reports in heartbeat/health.
 static const char* const kComponentTypes[] = {
     "climate", "relay", "lighting", "camera"};
@@ -164,7 +166,7 @@ void test_telemetry_uncalibrated_emits_scale_raw_not_weight() {
 }
 
 void test_telemetry_replay_flag_is_optional_envelope_key() {
-    // fw-node#3 / shared contract: frames replayed from the offline buffer
+    // Shared contract: frames replayed from the offline buffer
     // carry "replay": true so the Pi stores them but never runs rules on
     // them or lets them overwrite the latest reading. Live frames omit the
     // key entirely (backward compatible with every existing consumer).
@@ -202,6 +204,94 @@ void test_telemetry_ts_epoch_when_synced_else_uptime() {
     TEST_ASSERT_TRUE(sp::telemetry_ts(1700000000ULL, 3600u) >= 1000000000u);
 }
 
+// 0 % RH (a clamped SHT4x / BME280 reading, an SCD30 at 0.0) makes the
+// Magnus dew point NaN; ArduinoJson writes it as `null` and the Pi's
+// NOT NULL reading column then refused the whole frame. The key is optional:
+// a non-finite dew point is omitted, everything else stays.
+void test_telemetry_omits_a_non_finite_dew_point() {
+    sp::TelemetryInputs in;
+    in.ts = 1700000000u;
+    in.have_temp_rh = true;
+    in.temp_c = 22.0f;
+    in.humidity = 0.0f;
+    in.dew_point_f = NAN;
+    JsonDocument doc;
+    sp::build_telemetry(in, doc);
+    std::set<std::string> k = keys_of(doc.as<JsonObject>());
+    TEST_ASSERT_FALSE(k.count("dew_point_f") == 1);
+    TEST_ASSERT_TRUE(k.count("temp_f") == 1 && k.count("temp_c") == 1 &&
+                     k.count("humidity") == 1);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, doc["humidity"].as<float>());
+    std::string wire;
+    serializeJson(doc, wire);
+    TEST_ASSERT_TRUE(wire.find("null") == std::string::npos);
+
+    in.dew_point_f = -INFINITY;
+    JsonDocument inf;
+    sp::build_telemetry(in, inf);
+    TEST_ASSERT_FALSE(keys_of(inf.as<JsonObject>()).count("dew_point_f") == 1);
+}
+
+// Frames buffered while the broker was down AND before SNTP synced carry an
+// uptime ts; the Pi could only stamp the whole outage at one instant. Once
+// the clock has synced, the flush dates them: now - (uptime now - capture).
+void test_buffered_uptime_ts_is_rebased_once_the_clock_syncs() {
+    const uint64_t now = 1760000000ULL;
+    // Captured at uptime 100 s, flushed at uptime 3700 s: an hour ago.
+    TEST_ASSERT_EQUAL_UINT32(1760000000u - 3600u,
+                             sp::rebase_uptime_ts(100u, now, 3700u));
+    // Already epoch (captured after the sync): untouched.
+    TEST_ASSERT_EQUAL_UINT32(1759990000u,
+                             sp::rebase_uptime_ts(1759990000u, now, 3700u));
+    // Clock still unsynced: nothing can be dated yet.
+    TEST_ASSERT_EQUAL_UINT32(100u, sp::rebase_uptime_ts(100u, 3700ULL, 3700u));
+    // millis() / 1000 restarted from 0 in between (~49.7 days): age taken
+    // across the wrap.
+    TEST_ASSERT_EQUAL_UINT32(1760000000u - 12u,
+                             sp::rebase_uptime_ts(sp::kUptimeWrapS - 7u, now, 5u));
+    // An age the buffer could never hold: left alone.
+    TEST_ASSERT_EQUAL_UINT32(10u, sp::rebase_uptime_ts(
+                                      10u, now, 10u + sp::kMaxRebaseAgeS + 1u));
+
+    // The flush step on a real buffered frame.
+    sp::TelemetryInputs in;
+    in.ts = 100u;  // uptime at capture
+    in.replay = true;
+    in.have_co2 = true;
+    in.co2_ppm = 812;
+    in.have_temp_rh = true;
+    in.temp_c = 21.35f;
+    in.humidity = 55.5f;
+    in.dew_point_f = 51.87f;
+    JsonDocument doc;
+    sp::build_telemetry(in, doc);
+    std::string buffered;
+    serializeJson(doc, buffered);
+    std::string sent;
+    TEST_ASSERT_TRUE(
+        sp::rebase_buffered_telemetry(buffered.c_str(), now, 3700u, &sent));
+    JsonDocument out;
+    TEST_ASSERT_FALSE(deserializeJson(out, sent));
+    TEST_ASSERT_EQUAL_UINT32(1760000000u - 3600u, out["ts"].as<uint32_t>());
+    TEST_ASSERT_TRUE(out["replay"].as<bool>());  // still not a live frame
+    TEST_ASSERT_EQUAL_UINT16(812, out["co2_ppm"].as<uint16_t>());
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 70.4f, out["temp_f"].as<float>());
+    // Same keys as before: only the ts value moved.
+    TEST_ASSERT_TRUE(keys_of(out.as<JsonObject>()) == keys_of(doc.as<JsonObject>()));
+    // Nothing to do: an epoch frame, an unsynced clock, a non-frame payload.
+    in.ts = 1759990000u;
+    JsonDocument epoch_doc;
+    sp::build_telemetry(in, epoch_doc);
+    std::string epoch_frame;
+    serializeJson(epoch_doc, epoch_frame);
+    TEST_ASSERT_FALSE(
+        sp::rebase_buffered_telemetry(epoch_frame.c_str(), now, 3700u, &sent));
+    TEST_ASSERT_FALSE(
+        sp::rebase_buffered_telemetry(buffered.c_str(), 3700ULL, 3700u, &sent));
+    TEST_ASSERT_FALSE(sp::rebase_buffered_telemetry("not json", now, 3700u, &sent));
+    TEST_ASSERT_FALSE(sp::rebase_buffered_telemetry("{\"a\":1}", now, 3700u, &sent));
+}
+
 // ── alert ──────────────────────────────────────────────────────
 
 void test_alert_keys_and_types() {
@@ -222,35 +312,28 @@ void test_alert_keys_and_types() {
 }
 
 void test_alert_every_firmware_type_is_a_known_alert_type() {
-    // Each `type` the firmware's check_alerts/reed paths publish must be a
+    // Each `type` the firmware's check_alerts/reed/TLS paths publish must be a
     // declared ALERT_TYPE the cloud understands.
     const char* fw_types[] = {"temperature", "humidity", "co2",
-                              "door", "sensor_failure"};
+                              "door", "sensor_failure", sp::kAlertTlsDowngrade};
     for (const char* t : fw_types) {
         JsonDocument doc;
         sp::build_alert(t, 1.0f, "m", nullptr, doc);
         TEST_ASSERT_TRUE_MESSAGE(
-            in_list(kAlertTypes, 5, doc["type"].as<const char*>()), t);
+            in_list(kAlertTypes, kNAlertTypes, doc["type"].as<const char*>()), t);
     }
 }
 
-// Firmware alert types that are NOT (yet) in the design ALERT_TYPES. The Pi
-// pages unknown node alert types at WARNING (server/app/mqtt.py
-// _notify_node_alert) and forwards them unchanged, so each is additive; the
-// cloud design list should adopt them (cross-repo follow-up).
-static const char* const kFirmwareOnlyAlertTypes[] = {"tls_downgrade"};
-
 void test_tls_downgrade_alert_shape() {
-    // fw-node#2: Secure MQTT on, no Pi CA pinned, running on plaintext. The
-    // value is the plaintext port in use; no `sensor` (dedup is per type).
+    // Secure MQTT on, no Pi CA pinned, running on plaintext. The value is the
+    // plaintext port in use; no `sensor` (dedup is per type).
     JsonDocument doc;
     sp::build_alert(sp::kAlertTlsDowngrade, 1883.0f,
                     "Secure MQTT is on but no Pi CA is pinned", nullptr, doc);
     const char* expected[] = {"type", "value", "message"};
     assert_exact_keys(doc.as<JsonObject>(), expected, 3, "tls_downgrade alert");
     TEST_ASSERT_EQUAL_STRING("tls_downgrade", doc["type"]);
-    TEST_ASSERT_TRUE(in_list(kFirmwareOnlyAlertTypes, 1, doc["type"].as<const char*>()));
-    TEST_ASSERT_FALSE(in_list(kAlertTypes, 5, doc["type"].as<const char*>()));
+    TEST_ASSERT_TRUE(in_list(kAlertTypes, kNAlertTypes, doc["type"].as<const char*>()));
 }
 
 // ── switch-channel report ──────────────────────────────────────
@@ -269,6 +352,13 @@ void test_switch_report_contract() {
     sp::build_switch_report("fae", false, 0, "safety_cutoff", off);
     TEST_ASSERT_EQUAL_STRING("off", off["state"]);
     TEST_ASSERT_EQUAL_STRING("safety_cutoff", off["trigger"]);
+
+    // The trigger vocabulary: "timer" (a timed pulse ending on schedule) is
+    // additive; "safety_cutoff" now means only a firmware-imposed off.
+    TEST_ASSERT_EQUAL_STRING("command", sp::kTriggerCommand);
+    TEST_ASSERT_EQUAL_STRING("report", sp::kTriggerReport);
+    TEST_ASSERT_EQUAL_STRING("timer", sp::kTriggerTimer);
+    TEST_ASSERT_EQUAL_STRING("safety_cutoff", sp::kTriggerSafetyCutoff);
 }
 
 // ── dim-levels (pins the "feed with no writer" asymmetry) ──────
@@ -283,18 +373,26 @@ void test_dim_levels_keyed_by_channel_name_and_not_persisted() {
         levels[i].level = (uint16_t)(100 * (i + 1));
     }
     JsonDocument doc;
-    sp::build_dim_levels(levels, 4, doc);
+    sp::build_dim_levels(levels, 4, 1700000000u, doc);
     std::set<std::string> k = keys_of(doc.as<JsonObject>());
-    TEST_ASSERT_EQUAL_INT(4, (int)k.size());
+    TEST_ASSERT_EQUAL_INT(6, (int)k.size());
     const char* names[] = {"white", "blue", "red", "far_red"};
     for (const char* nm : names) {
         TEST_ASSERT_TRUE_MESSAGE(k.count(nm) == 1, nm);
         // Documented drop: dim channel names are NOT SENSOR_FIELDS, so the Pi
         // forwards them live but never persists them to telemetry history.
         TEST_ASSERT_FALSE(in_list(kSensorFields, kNSensorFields, nm));
+        // ...and no channel can shadow the envelope keys.
+        TEST_ASSERT_TRUE(strcmp(nm, "ts") != 0 && strcmp(nm, "report") != 0);
     }
     TEST_ASSERT_EQUAL_UINT16(100, doc["white"].as<uint16_t>());
     TEST_ASSERT_EQUAL_UINT16(400, doc["far_red"].as<uint16_t>());
+    // Envelope: the telemetry ts every frame on this topic carries, and the
+    // marker the Pi keys "state report, nothing to store or evaluate" on.
+    TEST_ASSERT_EQUAL_UINT32(1700000000u, doc["ts"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_STRING("dim_levels", doc["report"]);
+    TEST_ASSERT_FALSE(sp::channel_name_valid("ts"));
+    TEST_ASSERT_FALSE(sp::channel_name_valid("report"));
 }
 
 // ── heartbeat ──────────────────────────────────────────────────
@@ -335,7 +433,7 @@ void test_node_heartbeat_contract() {
     TEST_ASSERT_EQUAL_INT(0, doc["wifi_reconnects"].as<int>());
     TEST_ASSERT_EQUAL_INT(3, doc["mqtt_reconnects"].as<int>());
     // wifi_reconnects now carries the node's app-level WiFi re-begin count
-    // (fw-node#7) — same key, same int type.
+    // — same key, same int type.
     in.wifi_reconnects = 5;
     JsonDocument doc_w;
     sp::build_heartbeat(in, doc_w);
@@ -392,7 +490,7 @@ void test_cam_heartbeat_omits_wifi_reconnects_and_pins_literals() {
 }
 
 void test_heartbeat_transport_and_board_keys_are_optional_additions() {
-    // fw-node#2 / new S3 board env: `tls` (the MQTT transport actually in
+    // `tls` (the MQTT transport actually in
     // use), `tls_fallback` (only while Secure MQTT is on but the node runs
     // plaintext) and `board` (which image a node needs for OTA). All are
     // additive: an input set that doesn't ask for them yields exactly the
@@ -475,7 +573,7 @@ void test_node_health_contract_with_sensors_and_channels() {
         {"scd4x", false, 55, 3, "bus write rejected"},
     };
     sp::ChannelHealthView channels[] = {
-        {"fae", true, 200, 42, 7, 1},
+        {"fae", true, 200, 42, 7, 3, 1},
     };
     const char* missing[] = {"hx711"};
     sp::HealthInputs in;
@@ -513,11 +611,13 @@ void test_node_health_contract_with_sensors_and_channels() {
 
     // Channel sub-object keyed by channel name.
     const char* csub[] = {"state", "pwm", "on_time_sec", "cycle_count",
-                          "safety_cutoffs"};
-    assert_exact_keys(doc["channels"]["fae"].as<JsonObject>(), csub, 5,
+                          "safety_cutoffs", "max_on_trips"};
+    assert_exact_keys(doc["channels"]["fae"].as<JsonObject>(), csub, 6,
                       "channel health sub-keys");
     TEST_ASSERT_TRUE(doc["channels"]["fae"]["state"].as<bool>());
-    TEST_ASSERT_EQUAL_INT(1, doc["channels"]["fae"]["safety_cutoffs"].as<int>());
+    TEST_ASSERT_EQUAL_INT(3, doc["channels"]["fae"]["safety_cutoffs"].as<int>());
+    // Additive: max-on trips only, the stuck-channel signal.
+    TEST_ASSERT_EQUAL_INT(1, doc["channels"]["fae"]["max_on_trips"].as<int>());
 
     JsonArray miss = doc["expected_missing"].as<JsonArray>();
     TEST_ASSERT_EQUAL_INT(1, (int)miss.size());
@@ -543,6 +643,71 @@ void test_climate_health_omits_channels_object() {
     TEST_ASSERT_TRUE(k.count("expected_missing") == 1);
 }
 
+// A channel whose LEDC attach failed stays routed but refuses commands and
+// reports off; health says why (additive, only on that channel).
+void test_channel_fault_is_an_optional_health_key() {
+    sp::ChannelHealthView channels[2] = {
+        {"fae", false, 0, 0, 0, 0},
+        {"exhaust", false, 0, 0, 0, 0},
+    };
+    channels[1].fault = sp::kChannelFaultLedcAttach;
+    sp::HealthInputs in;
+    in.node_id = "relay-01";
+    in.type = "relay";
+    in.channels = channels;
+    in.n_channels = 2;
+    JsonDocument doc;
+    sp::build_health(in, doc);
+    TEST_ASSERT_FALSE(
+        keys_of(doc["channels"]["fae"].as<JsonObject>()).count("fault") == 1);
+    TEST_ASSERT_EQUAL_STRING("ledc_attach_failed",
+                             doc["channels"]["exhaust"]["fault"]);
+    TEST_ASSERT_FALSE(doc["channels"]["exhaust"]["state"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("ledc_write_failed", sp::kChannelFaultLedcWrite);
+}
+
+// The camera's health document is built here too, so the camera keys the
+// cloud persists (capture_success / capture_fail / avg_latency_ms) are pinned
+// like every other device→cloud key.
+void test_camera_health_contract() {
+    sp::CameraHealthInputs in;
+    in.node_id = "cam-01";
+    in.uptime_sec = 900;
+    in.free_heap = 120000;
+    in.wifi_rssi = -61;
+    in.capture_success = 41;
+    in.capture_fail = 2;
+    in.avg_latency_ms = 812.5f;
+    in.psram_free = 3500000;
+    in.sensor = "ov3660";
+    in.sensor_pid = 0x3660;
+    in.jpeg_quality = 12;
+    JsonDocument doc;
+    sp::build_camera_health(in, doc);
+    const char* top[] = {"node_id", "type", "uptime_sec", "free_heap",
+                         "wifi_rssi", "camera"};
+    assert_exact_keys(doc.as<JsonObject>(), top, 6, "camera health top-level");
+    TEST_ASSERT_EQUAL_STRING("camera", doc["type"]);
+    TEST_ASSERT_TRUE(in_list(kComponentTypes, 4, doc["type"].as<const char*>()));
+    TEST_ASSERT_EQUAL_STRING("cam-01", doc["node_id"]);
+    const char* cam[] = {"capture_success", "capture_fail", "avg_latency_ms",
+                         "psram_free",      "sensor",       "sensor_pid",
+                         "jpeg_quality"};
+    assert_exact_keys(doc["camera"].as<JsonObject>(), cam, 7, "camera sub-keys");
+    TEST_ASSERT_EQUAL_UINT32(41, doc["camera"]["capture_success"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT32(2, doc["camera"]["capture_fail"].as<uint32_t>());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 812.5f,
+                             doc["camera"]["avg_latency_ms"].as<float>());
+    TEST_ASSERT_EQUAL_STRING("ov3660", doc["camera"]["sensor"]);
+    TEST_ASSERT_EQUAL_UINT16(0x3660, doc["camera"]["sensor_pid"].as<uint16_t>());
+    TEST_ASSERT_EQUAL_UINT8(12, doc["camera"]["jpeg_quality"].as<uint8_t>());
+    // A dead camera module still reports, as "none".
+    sp::CameraHealthInputs none;
+    JsonDocument d0;
+    sp::build_camera_health(none, d0);
+    TEST_ASSERT_EQUAL_STRING("none", d0["camera"]["sensor"]);
+}
+
 // ── log batch entry ────────────────────────────────────────────
 
 void test_log_entry_contract() {
@@ -564,6 +729,8 @@ int main(int, char**) {
     RUN_TEST(test_telemetry_uncalibrated_emits_scale_raw_not_weight);
     RUN_TEST(test_telemetry_replay_flag_is_optional_envelope_key);
     RUN_TEST(test_telemetry_ts_epoch_when_synced_else_uptime);
+    RUN_TEST(test_telemetry_omits_a_non_finite_dew_point);
+    RUN_TEST(test_buffered_uptime_ts_is_rebased_once_the_clock_syncs);
     RUN_TEST(test_alert_keys_and_types);
     RUN_TEST(test_alert_every_firmware_type_is_a_known_alert_type);
     RUN_TEST(test_tls_downgrade_alert_shape);
@@ -576,6 +743,8 @@ int main(int, char**) {
     RUN_TEST(test_heartbeat_ca_fp_is_an_optional_addition);
     RUN_TEST(test_node_health_contract_with_sensors_and_channels);
     RUN_TEST(test_climate_health_omits_channels_object);
+    RUN_TEST(test_channel_fault_is_an_optional_health_key);
+    RUN_TEST(test_camera_health_contract);
     RUN_TEST(test_log_entry_contract);
     return UNITY_END();
 }
