@@ -2,15 +2,10 @@
 
 #include <string.h>
 
+#include "hmac_verify.h"  // to_hex_lower
 #include "wrap_time.h"
 
 namespace sp {
-
-namespace {
-
-const char kHex[] = "0123456789abcdef";
-
-}  // namespace
 
 bool coredump_id_valid(const char* id_hex) {
     if (id_hex == nullptr) return false;
@@ -24,11 +19,7 @@ bool coredump_id_valid(const char* id_hex) {
 }
 
 void coredump_id_hex(const uint8_t digest[32], char out[kCoredumpIdLen + 1]) {
-    for (size_t i = 0; i < 32; ++i) {
-        out[i * 2] = kHex[digest[i] >> 4];
-        out[i * 2 + 1] = kHex[digest[i] & 0x0F];
-    }
-    out[kCoredumpIdLen] = '\0';
+    to_hex_lower(digest, 32, out);
 }
 
 const char* coredump_ack_id(JsonDocument& doc) {

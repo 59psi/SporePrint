@@ -27,6 +27,7 @@ for that workflow.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 from dataclasses import dataclass
@@ -48,6 +49,17 @@ _DISCOVERY_PROBE = b"sporeprint-pulse-discover"
 class DiscoveredPulseDevice:
     device_id: str
     base_url: str
+
+
+def _recent_data_url(base_url: str, http_port: int) -> str:
+    """``<device root>/api/recent-data``. A root that names its own port
+    keeps it (``http://10.0.0.5:8080``); a plain http root gets the
+    configured local HTTP port; https keeps its default."""
+    url = httpx.URL(base_url)
+    port = url.port
+    if port is None and url.scheme == "http":
+        port = http_port
+    return str(url.copy_with(port=port, path="/api/recent-data"))
 
 
 async def _udp_broadcast_scan(
@@ -111,10 +123,11 @@ def _parse_discovery_response(
     if text.startswith("{"):
         # Plain JSON body or CoAP frame whose payload starts with JSON.
         try:
-            import json
             obj = json.loads(text)
             if isinstance(obj, dict):
-                device_id = obj.get("device_id") or obj.get("id") or obj.get("serial")
+                found = obj.get("device_id") or obj.get("id") or obj.get("serial")
+                # A numeric id is read as a string, as the device list reads it.
+                device_id = str(found) if found is not None else None
         except Exception:  # noqa: BLE001
             device_id = None
 
@@ -179,7 +192,10 @@ class PulseLocalTransport:
         )
         if target is None:
             raise PulseError(f"local device {device_id!r} not in discovered set")
-        url = f"{target.base_url}:{self._cfg.local_http_port}/api/recent-data"
+        try:
+            url = _recent_data_url(target.base_url, self._cfg.local_http_port)
+        except httpx.InvalidURL as exc:  # not an HTTPError: map it here
+            raise PulseError(f"bad local device URL {target.base_url!r}: {exc}") from exc
         client = self._http_client or httpx.AsyncClient(
             timeout=self._cfg.request_timeout_seconds, follow_redirects=False
         )
@@ -187,7 +203,7 @@ class PulseLocalTransport:
         try:
             try:
                 resp = await client.get(url)
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, httpx.InvalidURL) as exc:
                 raise PulseError(f"local transport error: {exc}") from exc
         finally:
             if own_client:
@@ -198,9 +214,9 @@ class PulseLocalTransport:
             )
         try:
             raw = resp.json()
-        except ValueError as exc:
-            raise PulseError(f"non-JSON response from local device: {exc}") from exc
-        return PulseRecentDataResponse.from_payload(raw, device_id)
+            return PulseRecentDataResponse.from_payload(raw, device_id)
+        except ValueError as exc:  # also a payload that does not validate
+            raise PulseError(f"unexpected response from local device: {exc}") from exc
 
     async def login(self) -> str:
         # Local transport doesn't have a session — provide a no-op so

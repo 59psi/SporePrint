@@ -13,11 +13,12 @@ surface.
 
 from __future__ import annotations
 
-import hmac
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
+from ...auth import _extract_bearer, token_matches
+from ...cloud.version import server_version
 from .exporter import collect_samples
 
 
@@ -44,23 +45,6 @@ def _import_driver():
     return drv
 
 
-def _extract_bearer(value: str | None) -> str | None:
-    if not value:
-        return None
-    parts = value.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1].strip()
-
-
-def _import_version() -> str:
-    try:
-        from importlib.metadata import version as _pkg_version
-        return _pkg_version("sporeprint-server")
-    except Exception:  # noqa: BLE001
-        return "unknown"
-
-
 @router.get("/metrics")
 async def metrics(authorization: str | None = Header(default=None)) -> Response:
     drv = _import_driver()
@@ -71,17 +55,17 @@ async def metrics(authorization: str | None = Header(default=None)) -> Response:
         raise HTTPException(404, "grafana exporter disabled")
 
     cfg = drv.config
-    if cfg.bearer_token:
-        presented = _extract_bearer(authorization)
-        # Compare bytes: compare_digest raises TypeError on non-ASCII str,
-        # which would turn a wrong/odd token into a 500 instead of a 401.
-        if not presented or not hmac.compare_digest(
-            presented.encode("utf-8"), cfg.bearer_token.encode("utf-8")
-        ):
-            raise HTTPException(401, "invalid bearer token")
+    # The API bearer gate's own parsing and constant-time comparison
+    # (app.auth): a missing, wrong or odd token is a 401, never a 500.
+    if cfg.bearer_token and not token_matches(
+        _extract_bearer(authorization), cfg.bearer_token
+    ):
+        raise HTTPException(401, "invalid bearer token")
 
     try:
-        payload = await collect_samples(cfg, version=_import_version())
+        # The running server's version (cached; the image installs only the
+        # dependencies, so package metadata alone reads "unknown").
+        payload = await collect_samples(cfg, version=server_version())
     except Exception as exc:  # noqa: BLE001
         drv.record_scrape(False, str(exc))
         logger.exception("grafana exporter: scrape failed")

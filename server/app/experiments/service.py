@@ -5,7 +5,7 @@ import time
 import anthropic
 
 from ..config import settings
-from ..db import get_db
+from ..db import check_references, get_db
 from ..sessions.service import get_session, get_session_stats
 from ..vision.service import (
     CLAUDE_MAX_TOKENS,
@@ -29,7 +29,12 @@ def _parse_experiment(row: dict) -> dict:
 
 
 async def create_experiment(data: ExperimentCreate) -> dict:
+    """Raises db.UnknownReferenceError for an unknown control or variant session."""
     async with get_db() as db:
+        await check_references(
+            db, control_session_id=("sessions", data.control_session_id),
+            variant_session_id=("sessions", data.variant_session_id),
+        )
         cursor = await db.execute(
             """INSERT INTO experiments
                (title, hypothesis, control_session_id, variant_session_id,

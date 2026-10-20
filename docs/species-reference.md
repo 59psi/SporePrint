@@ -63,6 +63,7 @@ class SpeciesProfile:
     contamination_risk_notes; pinning_trigger_description
     phases: dict[GrowPhase, PhaseParams]
     flush_count_typical; yield_notes; tags
+    harvest_notice: str                   # CRITICAL notice sent when a harvest is logged ("" = none)
     # plus: tldr, flavor_profile, edible, safety_warning, legal_disclaimer,
     # tek_guide, substrate_recipes, substrate_preference_ranking,
     # contamination_risks, regional_notes, photo_references
@@ -84,7 +85,11 @@ In `server/app/sessions/service.py` unless noted.
 - **Browning** has no fallback: only a profile that defines it (shiitake) can
   enter it.
 - **Cold storage** is species-agnostic: hold the fridge cold, drive nothing
-  else.
+  else. A grow advanced to cold storage leaves the chamber it grew in (the
+  chamber's link to it is dropped): that chamber stops running it, and a grow
+  sharing its nodes keeps its own setpoints. A fridge with its own node is a
+  chamber like any other: link the session to it (`PATCH /api/chambers/{id}`
+  with `active_session_id`) and that chamber runs it.
 - **Next phase** (`GET /api/sessions/{id}/next-phase`,
   `suggested_next_phase()`): after colonization a grow bag, monotub or tray
   goes to primordia induction (to browning first when the profile defines it),
@@ -140,7 +145,10 @@ difficulty from the profile's tags. The rules named here are in
 | Fruiting | 70–85 | 85–95 | ≤ 700 | 12/12 6500K | continuous (heavy) | 5–7 per flush |
 
 - **Dies below 40 °F and cannot be refrigerated.** Recording a pink oyster
-  harvest sends a CRITICAL "process immediately" notification.
+  harvest sends a CRITICAL "process immediately" notification: the profile's
+  `harvest_notice`, which paddy straw (chill-damaged, a day's shelf life) and
+  shaggy mane (turns to ink within hours) carry too. A custom profile sends
+  its own, or the notice of the built-in profile of the same species.
 - No cold shock: tropical. The profile has no primordia phase, so a colonized
   bag goes straight to fruiting.
 
@@ -255,6 +263,15 @@ advanced
 - Built-ins are read-only: `PUT /api/species/{id}` on one returns 409 and
   `DELETE` refuses it. Clone a built-in under a new id with
   `POST /api/species`, then edit the copy with `PUT`.
+- An id answers in either separator spelling (`lions_mane` and
+  `lions-mane` are one profile), so `POST` refuses with 409 an id a stored
+  profile already answers to, the other spelling of a built-in's included.
+  `PUT` keeps the profile's own id: a body naming another profile is a 422.
+- Setpoints are checked when a profile is written: a minimum above its
+  maximum (temperature, humidity, CO₂, days), humidity outside 0–100 or
+  light hours that do not add up to 24 return 422.
+- `DELETE` refuses (409, naming them) a profile active grows still run on;
+  end them first.
 - Import is `POST /api/species` with the profile JSON; export is
   `GET /api/species/{id}`. The dashboard has no profile editor or
   import/export buttons yet.

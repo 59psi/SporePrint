@@ -14,17 +14,27 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from app.auth import token_matches
+from app.cloud.version import server_version
+from app.db import get_db
 from app.integrations import _registry
 from app.integrations.grafana import GrafanaDriver
 from app.integrations.grafana.driver import GrafanaDriver as GrafanaDriverCls
 from app.integrations.grafana.config import GrafanaConfig
 from app.integrations.grafana.router import router as grafana_metrics_router
 from app.integrations._keystore import reset_fernet_cache
+from app.integrations._settings_store import secret_preview
+from app.integrations.trane.driver import TraneConfig
+from app.main import app as server_app
+from app.mqtt import _handle_message
+from app.retention.service import RAW_RETENTION_DAYS, _prune_actuator_events
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -89,11 +99,17 @@ async def telemetry_seed():
             "VALUES (?, ?, ?, ?, ?)",
             (10, "test grow", "lions-mane", 1, "active"),
         )
-        # An actuator event
+        # An actuator event, with the lifetime total the MQTT ingest keeps
+        # beside it (the exporter's counter reads the total).
         await db.execute(
             "INSERT INTO actuator_events (timestamp, node_id, channel, action, trigger) "
             "VALUES (?, ?, ?, ?, ?)",
             (time.time(), "climate-01", "humidifier", "on", "rule"),
+        )
+        await db.execute(
+            "INSERT INTO actuator_event_counts (node_id, channel, action, n) "
+            "VALUES (?, ?, ?, ?)",
+            ("climate-01", "humidifier", "on", 1),
         )
         # A contaminated session in same chamber
         await db.execute(
@@ -281,8 +297,11 @@ def test_bearer_token_is_secret_field_in_listing(app_client):
     )
     listing = client.get("/api/integrations").json()
     grafana_row = next(r for r in listing if r["slug"] == "grafana")
-    # The token must be redacted, never exposed in plaintext.
-    assert grafana_row["config"]["bearer_token"] == "••••ghij"
+    # The token must be redacted, never exposed in plaintext — not even its
+    # last characters.
+    preview = grafana_row["config"]["bearer_token"]
+    assert preview == secret_preview("abcdefghij")
+    assert "ghij" not in preview
 
 
 # ── Driver lifecycle ──────────────────────────────────────────────────
@@ -318,3 +337,186 @@ async def test_health_reports_error_after_failed_scrape(fresh_keystore):
     h = await drv.health()
     assert h.state == "error"
     assert h.last_error == "boom"
+
+
+# ── Freshness, chamber map, counters, token and version ──────────────
+
+
+async def _reading(node_id: str, sensor: str, value: float, *, age_s: float) -> float:
+    taken = time.time() - age_s
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO telemetry_readings (timestamp, node_id, sensor, value) "
+            "VALUES (?, ?, ?, ?)",
+            (taken, node_id, sensor, value),
+        )
+        await db.commit()
+    return taken
+
+
+def _sample(body: str, metric: str, **labels: str) -> float | None:
+    """One sample's value from a Prometheus exposition, or None."""
+    for line in body.splitlines():
+        if line.startswith(metric + "{") and all(
+            f'{k}="{v}"' in line for k, v in labels.items()
+        ):
+            return float(line.rsplit(" ", 1)[1])
+    return None
+
+
+def _enable(client, **config) -> None:
+    resp = client.put(
+        "/api/integrations/grafana/config", json={"enabled": True, "config": config}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_node_gone_quiet_is_not_exported_as_a_live_gauge(app_client):
+    drv, client = app_client
+    await _reading("climate-01", "temp_c", 23.5, age_s=60)
+    await _reading("climate-02", "temp_c", 19.0, age_s=2 * 3600)
+    _enable(client)
+    body = client.get("/metrics").text
+    temp = "sporeprint_node_temperature_celsius"
+    assert _sample(body, temp, node_id="climate-01") == 23.5
+    assert _sample(body, temp, node_id="climate-02") is None
+
+
+async def test_vendor_sample_taken_minutes_ago_is_still_current(app_client):
+    # An Aranet4 radios a sample every 1-10 minutes and the Pi stores it at
+    # the time the sensor took it, so its latest reading is often minutes old.
+    drv, client = app_client
+    await _reading("aranet:s1", "co2_ppm", 900.0, age_s=20 * 60)
+    await _reading("climate-04", "co2_ppm", 950.0, age_s=20 * 60)
+    _enable(client)
+    body = client.get("/metrics").text
+    assert _sample(body, "sporeprint_node_co2_ppm", node_id="aranet:s1") == 900.0
+    assert _sample(body, "sporeprint_node_co2_ppm", node_id="climate-04") is None
+
+
+async def test_slow_vendor_reading_stays_current_for_three_polls(app_client, monkeypatch):
+    drv, client = app_client
+    trane = _registry.registered_drivers()["trane"]
+    monkeypatch.setattr(trane, "_cfg", TraneConfig(poll_seconds=3600))
+    await _reading("trane:t1", "temp_c", 21.0, age_s=2 * 3600)  # within 3 hourly polls
+    await _reading("trane:t2", "temp_c", 22.0, age_s=4 * 3600)  # past them
+    _enable(client)
+    body = client.get("/metrics").text
+    temp = "sporeprint_node_temperature_celsius"
+    assert _sample(body, temp, node_id="trane:t1") == 21.0
+    assert _sample(body, temp, node_id="trane:t2") is None
+
+
+async def test_sensor_history_flag_adds_each_readings_timestamp(app_client):
+    drv, client = app_client
+    taken = await _reading("climate-01", "humidity", 88.0, age_s=120)
+    _enable(client)
+    assert "sporeprint_node_reading_timestamp_seconds" not in client.get("/metrics").text
+    _enable(client, include_sensor_history=True)
+    body = client.get("/metrics").text
+    stamp = _sample(
+        body, "sporeprint_node_reading_timestamp_seconds",
+        node_id="climate-01", sensor="humidity",
+    )
+    assert stamp == pytest.approx(taken, abs=1.0)
+
+
+async def test_chamber_with_non_list_node_ids_does_not_break_the_scrape(app_client):
+    drv, client = app_client
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO chambers (id, name, node_ids) VALUES (?, ?, ?)", (2, "Odd", "5")
+        )
+        await db.execute(
+            "INSERT INTO chambers (id, name, node_ids) VALUES (?, ?, ?)",
+            (3, "Tent B", json.dumps(["climate-03"])),
+        )
+        await db.commit()
+    await _reading("climate-03", "temp_c", 20.0, age_s=30)
+    _enable(client)
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert _sample(
+        resp.text, "sporeprint_node_temperature_celsius",
+        node_id="climate-03", chamber_id="3",
+    ) == 20.0
+
+
+async def test_actuator_counter_counts_reports_and_survives_retention(app_client):
+    """Every switch report the ingest stores is counted, and the nightly
+    prune of old rows never lowers the counter (a reset to Prometheus)."""
+    drv, client = app_client
+    for state in ("on", "on", "off"):
+        await _handle_message(
+            AsyncMock(),
+            "sporeprint/relay-01/telemetry/fan",
+            {"channel": "fan", "state": state, "pwm": 255, "trigger": "report"},
+        )
+    _enable(client)
+    counter = "sporeprint_actuator_event_count_total"
+    body = client.get("/metrics").text
+    assert _sample(body, counter, node_id="relay-01", channel="fan", action="on") == 2.0
+    assert _sample(body, counter, node_id="relay-01", channel="fan", action="off") == 1.0
+
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE actuator_events SET timestamp = timestamp - ?",
+            ((RAW_RETENTION_DAYS + 1) * 86400,),
+        )
+        await db.commit()
+    await _prune_actuator_events()
+    async with get_db() as db:
+        left = (await (await db.execute("SELECT COUNT(*) FROM actuator_events")).fetchone())[0]
+    assert left == 0
+    body = client.get("/metrics").text
+    assert _sample(body, counter, node_id="relay-01", channel="fan", action="on") == 2.0
+    assert _sample(body, counter, node_id="relay-01", channel="fan", action="off") == 1.0
+
+
+async def test_actuator_prune_keeps_recent_reports(app_client):
+    await _handle_message(
+        AsyncMock(),
+        "sporeprint/relay-01/telemetry/aux",
+        {"channel": "aux", "state": "off", "pwm": 0, "trigger": "report"},
+    )
+    await _prune_actuator_events()
+    async with get_db() as db:
+        left = (await (await db.execute("SELECT COUNT(*) FROM actuator_events")).fetchone())[0]
+    assert left == 1
+
+
+def test_bearer_token_that_cannot_be_text_is_refused_by_the_config():
+    with pytest.raises(ValidationError):
+        GrafanaConfig(bearer_token="\ud800abc")
+
+
+def test_scrape_against_an_odd_configured_token_is_a_401_not_a_500(app_client):
+    drv, client = app_client
+    _enable(client)
+    # A token that reached the driver without the config's validation.
+    drv._cfg = GrafanaConfig.model_construct(
+        bearer_token="\ud800abc",
+        include_actuator_state=True,
+        include_contamination_metrics=True,
+        include_sensor_history=False,
+    )
+    assert client.get("/metrics").status_code == 401
+    resp = client.get("/metrics", headers={"Authorization": "Bearer abc"})
+    assert resp.status_code == 401
+
+
+def test_token_comparison_handles_unpaired_surrogates_on_either_side():
+    assert token_matches("\ud800x", "\ud800x") is True
+    assert token_matches("abc", "\ud800x") is False
+    assert token_matches(None, "abc") is False
+    assert token_matches("", "") is False
+
+
+def test_build_info_reports_the_running_server_version(app_client):
+    drv, client = app_client
+    _enable(client)
+    version = server_version()
+    assert version != "unknown"
+    assert version == server_app.version  # bump.sh moves both
+    body = client.get("/metrics").text
+    assert f'sporeprint_build_info{{version="{version}"}} 1.0' in body

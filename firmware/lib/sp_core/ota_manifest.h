@@ -97,4 +97,15 @@ ManifestPolicy manifest_policy(const OtaManifest& m, const char* my_artifact,
                                const char* running_version,
                                const char* floor_version);
 
+// Anti-rollback floor promotion. A manifest-verified push records its
+// version as PENDING when it flashes the image; the floor (manifest_policy's
+// floor_version) rises to it only once that image has been confirmed on
+// this node — an image that fails its probation and rolls back must not
+// leave the node refusing everything below the version that just failed.
+// True when the confirmed image (`running_version`) is the pending one
+// (same X.Y.Z) and that does not lower `floor_version` (empty = none).
+bool ota_floor_promotable(const char* pending_version,
+                          const char* running_version,
+                          const char* floor_version);
+
 }  // namespace sp

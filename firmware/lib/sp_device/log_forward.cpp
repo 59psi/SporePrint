@@ -2,20 +2,16 @@
 
 #include <ArduinoJson.h>
 
-#include "wire_contract.h"
-#include "wrap_time.h"
-
 namespace sp_device {
 namespace logfwd {
 
 namespace {
 MqttLink* g_link = nullptr;
-LogEntry g_ring[kRingCapacity];
-size_t g_head = 0;
-size_t g_tail = 0;
-size_t g_count = 0;
-uint32_t g_dropped = 0;
-uint32_t g_last_flush_ms = 0;
+sp::LogRing g_ring;
+
+bool publish_batch(JsonDocument& doc, void*) {
+    return g_link->publish(g_link->topic("logs").c_str(), doc);
+}
 }  // namespace
 
 void attach(MqttLink* link) { g_link = link; }
@@ -32,57 +28,26 @@ void emit(uint8_t level, const char* fmt, ...) {
     }
 
     Serial.println(buf);
-
-    LogEntry& slot = g_ring[g_head];
-    slot.ts_ms = millis();
-    slot.level = level;
-    strncpy(slot.msg, buf, sizeof(slot.msg) - 1);
-    slot.msg[sizeof(slot.msg) - 1] = '\0';
-
-    g_head = (g_head + 1) % kRingCapacity;
-    if (g_count == kRingCapacity) {
-        g_tail = (g_tail + 1) % kRingCapacity;  // drop OLDEST
-        ++g_dropped;
-    } else {
-        ++g_count;
-    }
+    g_ring.push(millis(), level, buf);  // oldest dropped (and counted) when full
 }
 
 void loop(uint32_t now_ms) {
     if (g_link == nullptr || !g_link->connected()) return;
-    if (g_count < kFlushThreshold) return;
-    if (sp::elapsed_ms(now_ms, g_last_flush_ms) < kFlushIntervalMs) return;
-    g_last_flush_ms = now_ms;
+    g_ring.flush(now_ms, /*force=*/false, publish_batch, nullptr);
+}
 
-    JsonDocument doc;
-    JsonArray entries = doc["entries"].to<JsonArray>();
-    if (g_dropped > 0) doc["dropped"] = g_dropped;
-
-    // Bound the batch so one publish stays comfortably under the broker's
-    // patience; the streamed path means size is no longer a corruption
-    // risk, just a courtesy cap.
-    size_t budget = 900;
-    size_t drained = 0;
-    while (g_count > 0) {
-        LogEntry& e = g_ring[g_tail];
-        size_t cost = strlen(e.msg) + 32;
-        if (cost > budget) break;
-        budget -= cost;
-        JsonObject obj = entries.add<JsonObject>();
-        sp::build_log_entry(obj, e.ts_ms, e.level, e.msg);
-        g_tail = (g_tail + 1) % kRingCapacity;
-        --g_count;
-        ++drained;
-    }
-    if (drained == 0) return;
-
-    if (g_link->publish(g_link->topic("logs").c_str(), doc)) {
-        g_dropped = 0;  // counter reported; reset after a successful send
+void flush_now() {
+    if (g_link == nullptr || !g_link->connected()) return;
+    // The ring holds 32 entries and a batch several, so a few passes empty
+    // it; stop at the first failed publish (its entries stay queued).
+    for (int i = 0; i < 8 && g_ring.size() > 0; ++i) {
+        if (!g_ring.flush(millis(), /*force=*/true, publish_batch, nullptr))
+            break;
     }
 }
 
-size_t queue_depth() { return g_count; }
-uint32_t dropped_count() { return g_dropped; }
+size_t queue_depth() { return g_ring.size(); }
+uint32_t dropped_count() { return g_ring.dropped(); }
 
 }  // namespace logfwd
 }  // namespace sp_device

@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+
 #include "hmac_verify.h"  // kMinValidEpoch — the one "clock is synced" floor
 
 namespace sp {
@@ -61,7 +63,11 @@ struct TelemetryInputs {
     bool have_temp_rh = false;
     float temp_c = 0.0f;   // raw °C — builder derives temp_f + dew_point_f
     float humidity = 0.0f; // %RH
-    float dew_point_f = 0.0f;  // caller-computed °F (Magnus), builder rounds
+    // Caller-computed °F (Magnus), builder rounds. At 0 % RH the Magnus log
+    // is -inf and this is NaN: the builder then omits the key (ArduinoJson
+    // would write `null`, which the Pi's NOT NULL reading column refuses —
+    // losing the whole frame's history).
+    float dew_point_f = 0.0f;
 
     bool have_co2 = false;
     uint16_t co2_ppm = 0;
@@ -89,6 +95,55 @@ inline uint32_t telemetry_ts(uint64_t epoch_s, uint32_t uptime_s) {
     return epoch_s >= kMinValidEpoch ? (uint32_t)epoch_s : uptime_s;
 }
 
+// ── buffered frames captured before the clock synced ───────────
+// A frame buffered while the broker was unreachable AND before SNTP synced
+// carries its uptime seconds as `ts`. Sent like that, the Pi cannot date it:
+// it stamped the whole buffered outage (up to the 16 KB buffer, ~1 h at the
+// default interval) at one instant just before the node's newest reading.
+// Once the clock has synced the node CAN date it — the same boot's uptime
+// is monotonic, so capture time = now - (uptime now - uptime at capture) —
+// and the offline buffer's flush rewrites the ts before sending (the frame
+// stays `replay: true`; ts is plain epoch seconds, so the wire is unchanged).
+//
+// millis() / 1000 restarts from 0 every ~49.7 days (kUptimeWrapS), so the
+// age is taken modulo that span; an age the buffer could never hold, or a
+// result before the epoch floor, leaves the ts as it was.
+constexpr uint32_t kUptimeWrapS = 4294967;  // UINT32_MAX ms / 1000
+constexpr uint32_t kMaxRebaseAgeS = 7UL * 24UL * 3600UL;
+
+inline uint32_t rebase_uptime_ts(uint32_t frame_ts, uint64_t epoch_now_s,
+                                 uint32_t uptime_now_s) {
+    if (frame_ts >= kMinValidEpoch) return frame_ts;   // already wall-clock
+    if (epoch_now_s < kMinValidEpoch) return frame_ts;  // still unsynced
+    if (frame_ts > kUptimeWrapS || uptime_now_s > kUptimeWrapS) return frame_ts;
+    const uint32_t age = uptime_now_s >= frame_ts
+                             ? uptime_now_s - frame_ts
+                             : (kUptimeWrapS - frame_ts) + uptime_now_s;
+    if (age > kMaxRebaseAgeS) return frame_ts;
+    const uint64_t at = epoch_now_s - age;
+    return at >= kMinValidEpoch && at <= 0xFFFFFFFFULL ? (uint32_t)at : frame_ts;
+}
+
+// The flush step: `payload` is a buffered telemetry frame. True with the
+// re-serialized frame in *out when its uptime ts was rewritten; false (send
+// the payload as it is) when there is nothing to rewrite or it is not a
+// telemetry document.
+inline bool rebase_buffered_telemetry(const char* payload, uint64_t epoch_now_s,
+                                      uint32_t uptime_now_s, std::string* out) {
+    if (payload == nullptr || out == nullptr) return false;
+    if (epoch_now_s < kMinValidEpoch) return false;  // nothing can be dated yet
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) return false;
+    if (!doc["ts"].is<uint32_t>()) return false;
+    const uint32_t ts = doc["ts"].as<uint32_t>();
+    const uint32_t rebased = rebase_uptime_ts(ts, epoch_now_s, uptime_now_s);
+    if (rebased == ts) return false;
+    doc["ts"] = rebased;
+    out->clear();
+    serializeJson(doc, *out);
+    return true;
+}
+
 inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
     doc["ts"] = in.ts;
     if (in.replay) doc["replay"] = true;
@@ -97,7 +152,8 @@ inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
         doc["temp_f"] = wire_round1(tf);
         doc["temp_c"] = wire_round1(in.temp_c);
         doc["humidity"] = wire_round1(in.humidity);
-        doc["dew_point_f"] = wire_round1(in.dew_point_f);
+        if (isfinite(in.dew_point_f))
+            doc["dew_point_f"] = wire_round1(in.dew_point_f);
     }
     if (in.have_co2) doc["co2_ppm"] = in.co2_ppm;
     if (in.have_lux) doc["lux"] = wire_round1(in.lux);
@@ -114,14 +170,14 @@ inline void build_telemetry(const TelemetryInputs& in, JsonDocument& doc) {
 // `sensor` is optional (nullptr ⇒ omitted). The Pi's forward_event lets the
 // payload's own `type` win, so `type` is what reaches the cloud event channel.
 //
-// Types: temperature, humidity, co2, door, sensor_failure (design
-// ALERT_TYPES) plus the firmware-only additions below. The Pi pages an
-// unknown node alert type at WARNING and forwards it unchanged, so each
-// addition is backward compatible.
+// Types (== design ALERT_TYPES): temperature, humidity, co2, door,
+// sensor_failure and tls_downgrade below. The Pi pages an unknown node alert
+// type at WARNING and forwards it unchanged, so each addition is backward
+// compatible; a new one joins ALERT_TYPES in the same change.
 //
 // tls_downgrade — Secure MQTT is enabled but no Pi CA could be pinned, so the
 // node is running on plaintext (value = the plaintext port in use). Entry +
-// hourly while it lasts (alert_latch.h). fw-node#2.
+// hourly while it lasts (alert_latch.h).
 constexpr const char* kAlertTlsDowngrade = "tls_downgrade";
 
 inline void build_alert(const char* type, float value, const char* message,
@@ -134,6 +190,19 @@ inline void build_alert(const char* type, float value, const char* message,
 
 // ── switch-channel report (report_switch_channel) ──────────────
 // Published on telemetry/<channel>; feeds the Pi actuator_events table.
+// `trigger` says why the report went out:
+//   command        a cmd/<channel> was applied
+//   report         the 60 s state report
+//   timer          the command's own duration_sec ran out: a timed pulse
+//                  ending on schedule (images before this one reported it
+//                  as safety_cutoff)
+//   safety_cutoff  the firmware switched the channel off on its own: the
+//                  max-on backstop, link-loss safe mode, OTA start
+constexpr const char* kTriggerCommand = "command";
+constexpr const char* kTriggerReport = "report";
+constexpr const char* kTriggerTimer = "timer";
+constexpr const char* kTriggerSafetyCutoff = "safety_cutoff";
+
 inline void build_switch_report(const char* channel, bool on, uint8_t pwm,
                                 const char* trigger, JsonDocument& doc) {
     doc["channel"] = channel;
@@ -143,15 +212,23 @@ inline void build_switch_report(const char* channel, bool on, uint8_t pwm,
 }
 
 // ── dim-level report (report_dim_levels) ───────────────────────
-// Aggregate lighting doc: one key per channel NAME → 10-bit level, published
-// on the bare `telemetry` topic. NB: the Pi's store_bulk_readings persists
-// only SENSOR_FIELDS, so these channel-named levels are forwarded live but
-// NOT written to telemetry history — pinned here so that asymmetry is visible.
+// Aggregate lighting doc on the bare `telemetry` topic: one key per channel
+// NAME → 10-bit level, plus the additive envelope keys `ts` (telemetry_ts:
+// epoch once synced, uptime before) and "report": "dim_levels", which marks
+// it as a state report rather than a sensor frame (channel_runtime.cpp
+// reserves both names). The Pi forwards it live but stores and evaluates
+// nothing from it: its store_bulk_readings persists only SENSOR_FIELDS, and
+// the channel-named levels never reach telemetry history — pinned here so
+// that asymmetry is visible.
+constexpr const char* kDimLevelsReport = "dim_levels";
 struct DimLevel {
     const char* name;
     uint16_t level;
 };
-inline void build_dim_levels(const DimLevel* levels, int n, JsonDocument& doc) {
+inline void build_dim_levels(const DimLevel* levels, int n, uint32_t ts,
+                             JsonDocument& doc) {
+    doc["ts"] = ts;
+    doc["report"] = kDimLevelsReport;
     for (int i = 0; i < n; ++i) doc[levels[i].name] = levels[i].level;
 }
 
@@ -164,7 +241,7 @@ inline void build_dim_levels(const DimLevel* levels, int n, JsonDocument& doc) {
 //
 // Optional, additive keys (the Pi ignores keys it doesn't know):
 //   tls           bool — the MQTT transport in use is TLS with the pinned Pi
-//                 CA (emitted by current node + cam images; fw-node#2)
+//                 CA (emitted by current node + cam images)
 //   tls_fallback  true — only while Secure MQTT is enabled but the node runs
 //                 on plaintext because no CA could be pinned (omitted else)
 //   board         the board profile the image was built for (e.g.
@@ -223,8 +300,23 @@ inline void build_heartbeat(const HeartbeatInputs& in, JsonDocument& doc) {
 // Nested: per-sensor {ok,reads,fails,last_error} keyed by driver name
 // (sht3x/sht4x/aht20/bme280/bmp280/scd4x/scd30/bh1750/mhz19/hx711/reed),
 // per-channel
-// {state,pwm,on_time_sec,cycle_count,safety_cutoffs} keyed by channel name,
-// plus an expected_missing[] array.
+// {state,pwm,on_time_sec,cycle_count,safety_cutoffs,max_on_trips} keyed by
+// channel name, plus an expected_missing[] array.
+//   safety_cutoffs  every firmware-imposed off, timed pulses ending on
+//                   schedule included (a busy relay counts many a day)
+//   max_on_trips    additive: max-on backstop trips only — the stuck-channel
+//                   signal (a lost off, a stuck rule). Absent from older
+//                   images, whose safety_cutoffs cannot be told apart.
+//   fault           additive, OPTIONAL: present only on a channel whose
+//                   output stage failed ("ledc_attach_failed" — its gate is
+//                   held LOW, it reports off and refuses every command that
+//                   would turn it on — or "ledc_write_failed").
+// expected_missing lists the sensors a node should have but does not read:
+// temp_rh, an enabled mhz19 / hx711 that is not delivering, and (additive)
+// an autodetected scd4x / scd30 / bh1750 that answered at an earlier boot
+// but not at this one (sensor_memory.h).
+constexpr const char* kChannelFaultLedcAttach = "ledc_attach_failed";
+constexpr const char* kChannelFaultLedcWrite = "ledc_write_failed";
 struct SensorHealthView {
     const char* name;
     bool ok;
@@ -239,6 +331,8 @@ struct ChannelHealthView {
     uint32_t on_time_sec;
     uint32_t cycle_count;
     uint32_t safety_cutoffs;
+    uint32_t max_on_trips = 0;
+    const char* fault = nullptr;  // output stage failure; nullptr ⇒ omitted
 };
 struct HealthInputs {
     const char* node_id = "";
@@ -280,10 +374,50 @@ inline void build_health(const HealthInputs& in, JsonDocument& doc) {
             o["on_time_sec"] = c.on_time_sec;
             o["cycle_count"] = c.cycle_count;
             o["safety_cutoffs"] = c.safety_cutoffs;
+            o["max_on_trips"] = c.max_on_trips;
+            if (c.fault != nullptr) o["fault"] = c.fault;
         }
     }
     JsonArray missing = doc["expected_missing"].to<JsonArray>();
     for (int i = 0; i < in.n_missing; ++i) missing.add(in.missing[i]);
+}
+
+// ── camera health (cam publish_health) ─────────────────────────
+// The camera image's health document, on the same `health` topic: the node
+// envelope (node_id, type "camera", uptime_sec, free_heap, wifi_rssi) and a
+// `camera` object instead of sensors / channels. The cloud persists
+// camera.capture_success / capture_fail / avg_latency_ms per node; sensor,
+// sensor_pid and jpeg_quality are additive (which sensor the cam detected —
+// "ov2640" | "ov3660" | "ov5640" | "unknown" | "none" — and the live JPEG
+// quality after the dropped-frame backoff).
+struct CameraHealthInputs {
+    const char* node_id = "";
+    uint32_t uptime_sec = 0;
+    uint32_t free_heap = 0;
+    int32_t wifi_rssi = 0;
+    uint32_t capture_success = 0;
+    uint32_t capture_fail = 0;
+    float avg_latency_ms = 0.0f;
+    uint32_t psram_free = 0;
+    const char* sensor = "none";
+    uint16_t sensor_pid = 0;
+    uint8_t jpeg_quality = 0;
+};
+
+inline void build_camera_health(const CameraHealthInputs& in, JsonDocument& doc) {
+    doc["node_id"] = in.node_id;
+    doc["type"] = "camera";
+    doc["uptime_sec"] = in.uptime_sec;
+    doc["free_heap"] = in.free_heap;
+    doc["wifi_rssi"] = in.wifi_rssi;
+    JsonObject cam = doc["camera"].to<JsonObject>();
+    cam["capture_success"] = in.capture_success;
+    cam["capture_fail"] = in.capture_fail;
+    cam["avg_latency_ms"] = in.avg_latency_ms;
+    cam["psram_free"] = in.psram_free;
+    cam["sensor"] = in.sensor;
+    cam["sensor_pid"] = in.sensor_pid;
+    cam["jpeg_quality"] = in.jpeg_quality;
 }
 
 // ── log batch entry (log_forward loop) ─────────────────────────

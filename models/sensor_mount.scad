@@ -110,7 +110,8 @@ scd30 = false;   // true -> wide bay 2 for the SCD-30 (Adafruit 4867)
 part  = "print"; // "print" | "body" | "lid" | "assembly" | "none"
 
 // Footprint knobs — keep equal to SM_*_DEFAULT in lib/sensor_mount_dims.scad
-// (or pass the same -D to sensor_bracket.scad) so the bracket lines up.
+// (or pass the same -D to sensor_bracket.scad, with `wall` as its `enc_wall`:
+// the bracket's own `wall` is its clip ring) so the bracket lines up.
 fit           = 1.0;  // mm — total X/Y clearance added to each board (0.5/side)
 wall          = 2;    // mm — wall, floor, rib and lid-plate thickness
 qt_clear      = 6.0;  // mm — room past each short board edge for a mated

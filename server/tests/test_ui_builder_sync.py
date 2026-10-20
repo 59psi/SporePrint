@@ -16,7 +16,10 @@ of the minified bundle. These tests fail when:
     model header, diagram or platformio.ini change that the dashboard does
     not carry. Fix: rebuild ui/dist in the private repo, or run
     `cd server && uv run python ../scripts/sync_ui_builder_data.py` to
-    refresh just the fallback data.
+    refresh just the fallback data;
+  - the tier SVGs embedded in the bundle's lazy wiring chunk (the tier-card
+    thumbnails, and the diagram shown when the Pi's copy can't be fetched)
+    are not docs/wiring-tier*.svg byte for byte. Fix: rebuild ui/dist.
 """
 import importlib.util
 import math
@@ -249,6 +252,20 @@ def _ui_component(c: dict) -> dict:
     return out
 
 
+def _ui_model(m: dict) -> dict:
+    # pi-ui src/lib/builder-data.ts mapModel(), without sizeKb (a display
+    # label, never compared).
+    out = {"filename": m["filename"], "description": m.get("description") or "",
+           "url": m.get("url") or f"/api/builder/models/{m['filename']}"}
+    if m.get("title"):
+        out["title"] = m["title"]
+    if isinstance(m.get("description_truncated"), bool):
+        out["descriptionTruncated"] = m["description_truncated"]
+    if m.get("source_url"):
+        out["sourceUrl"] = m["source_url"]
+    return out
+
+
 def test_fallback_equals_the_live_api(client, fallback, sync, bundle_js):
     """What the page shows offline is what it shows live (pi-ui's mappers)."""
     summary = client.get("/api/builder/tiers").json()
@@ -259,7 +276,7 @@ def test_fallback_equals_the_live_api(client, fallback, sync, bundle_js):
         live_tiers.append({
             "id": t["id"], "name": t["name"], "tagline": t["tagline"],
             "estimatedCost": t["estimated_cost"],
-            "componentCount": sum(c["quantity"] for c in components),
+            "componentCount": len(components),
             "bestFor": t["best_for"], "speciesSupport": t["species_support"],
             "whatYouGet": t["what_you_get"],
             "capabilityGroups": [{"title": g["title"], "items": g["items"]} for g in t["capability_groups"]],
@@ -274,10 +291,12 @@ def test_fallback_equals_the_live_api(client, fallback, sync, bundle_js):
         assert s["component_count"] == live_tiers[-1]["componentCount"], s["id"]
     assert live_tiers == fallback["tiers"], _first_difference(fallback["tiers"], live_tiers, "id")
 
-    live_models = [{"filename": m["filename"], "title": m["title"], "description": m["description"],
-                    "url": m["url"], "sourceUrl": m["source_url"]}
-                   for m in client.get("/api/builder/models").json()]
-    assert live_models == sync._without_size(fallback["models"])
+    live_models = [_ui_model(m) for m in client.get("/api/builder/models").json()]
+    # The cut-description flag is compared too: the Models tab offers the
+    # rest of a cut description by it, offline as live.
+    assert all("descriptionTruncated" in m for m in live_models)
+    assert live_models == sync._without_size(fallback["models"]), \
+        _first_difference(sync._without_size(fallback["models"]), live_models, "filename")
 
     listed = {d["filename"]: d["url"] for d in client.get("/api/builder/diagrams").json()}
     for d in fallback["diagrams"]:
@@ -369,6 +388,50 @@ def test_refresh_refuses_a_structurally_stale_bundle(sync, bundle_js, dist_copy)
     with pytest.raises(SystemExit, match="Rebuild it in the private monorepo"):
         sync.write()
     assert path.exists()
+
+
+# ── the embedded wiring SVGs are the docs/ files ──────────────────────
+
+
+def test_bundle_embeds_the_current_wiring_svgs(sync, bundle_js):
+    """The tier-card thumbnails (and the offline diagram) draw from the lazy
+    wiring chunk, never from the Pi: it must carry docs/wiring-tier*.svg
+    byte for byte."""
+    assert sync.wiring_problems(bundle_js) == [], \
+        "ui/dist embeds stale wiring SVGs: rebuild ui/dist from the private repo"
+    svgs = sync.read_wiring_svgs(bundle_js)
+    assert sorted(svgs) == sorted(t.id for t in TIERS)
+
+
+@pytest.fixture()
+def docs_with_a_regenerated_tier3_svg(sync, tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for svg in (REPO / "docs").glob("wiring-tier*.svg"):
+        shutil.copy(svg, docs / svg.name)
+    tier3 = next(docs.glob("wiring-tier3-*.svg"))
+    tier3.write_text(tier3.read_text(encoding="utf-8").replace("</svg>", "<!-- moved --></svg>"),
+                     encoding="utf-8")
+    monkeypatch.setattr(sync, "DOCS", docs)
+    return docs
+
+
+def test_checker_flags_a_regenerated_wiring_svg(sync, bundle_js, docs_with_a_regenerated_tier3_svg):
+    """A regenerated SVG passed every check (the diagrams block compares only
+    names and links) while the dashboard kept drawing the old wiring."""
+    problems = sync.structural_problems(bundle_js)
+    assert any("all_the_things" in p and "wiring-tier3" in p for p in problems), problems
+    assert not any("bare_bones" in p or "recommended" in p for p in problems), problems
+
+
+def test_refresh_refuses_a_bundle_with_stale_wiring_svgs(sync, bundle_js, dist_copy,
+                                                         docs_with_a_regenerated_tier3_svg):
+    """The chunk is content-hashed and imported by name: only a rebuild
+    refreshes it, so write() asks for one instead of patching data around it."""
+    path = sync.bundle_path()
+    with pytest.raises(SystemExit, match="Rebuild it in the private monorepo"):
+        sync.write()
+    assert path.exists() and path.read_text(encoding="utf-8") == bundle_js
 
 
 def test_js_literal_reader_handles_esbuild_output(sync):

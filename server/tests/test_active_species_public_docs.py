@@ -97,7 +97,8 @@ def test_readme_species_section_carries_the_notice():
     flat = re.sub(r"\s+", " ", section)
     assert re.search(r"\*\*Active\*\* \(\d+\) -- species that are controlled or restricted in many jurisdictions", flat)
     assert NOTICE in flat
-    assert "not encouragement to cultivate, possess or use any controlled organism" in flat
+    # the Terms §7 EDUCATIONAL_USE text, verbatim
+    assert "not encouragement to cultivate, possess, or use any controlled organism" in flat
 
 
 def test_reference_docs_say_education_and_research_only():

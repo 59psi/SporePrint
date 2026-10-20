@@ -1,6 +1,6 @@
 name: firmware-ci
 
-# v2 firmware CI — every push/PR touching firmware/ runs:
+# v2 firmware CI, run on demand (see the note above `on:`):
 #   1. The native host test suite (`pio test -e native`): canonicalizer
 #      byte-parity against test/fixtures/signing_vectors.json (the same
 #      golden file the server's Python suite asserts on), HMAC verify,
@@ -21,8 +21,10 @@ name: firmware-ci
 
 # RELEASE-GATED CI (2026-07): push/PR triggers removed org-wide — Actions
 # minutes are reserved for releases. Firmware validation happens locally
-# (`pio test -e native` + the four-image build) before merges, and
-# firmware-release.yml still runs on `firmware-v*` tags. On demand:
+# (`pio test -e native` + the image builds) before merges, and
+# firmware-release.yml, on `firmware-v*` tags, runs the same native suite,
+# fixture diffs and Arduino-free check before it builds or signs anything.
+# On demand:
 #   gh workflow run firmware-ci.yml
 on:
   workflow_dispatch: {}

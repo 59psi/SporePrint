@@ -36,41 +36,17 @@ cd "$(dirname "$0")"
 
 header "Checking prerequisites..."
 
-# Python 3.11+
-if command -v python3 &>/dev/null; then
-    PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
-    PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
-    if [[ "$PY_MAJOR" -ge 3 && "$PY_MINOR" -ge 11 ]]; then
-        info "Python $PY_VER"
-    else
-        fail "Python 3.11+ required (found $PY_VER)"
-    fi
-else
-    fail "Python 3 not found. Install Python 3.11+."
-fi
+# uv — REQUIRED: it installs the server's locked dependencies (server/uv.lock,
+# exactly what the image installs) on the image's Python, which it fetches
+# itself when the host has none.
+command -v uv &>/dev/null || fail "uv not found — install it (https://docs.astral.sh/uv/: curl -LsSf https://astral.sh/uv/install.sh | sh, or brew install uv) and re-run."
+info "uv $(uv --version | awk '{print $2}')"
 
 # openssl — REQUIRED: it generates every secret below, and the broker's TLS
 # listener (8883) is always configured, so mosquitto refuses to start at all
 # (taking plaintext 1883 down with it) until the certificates exist.
 command -v openssl &>/dev/null || fail "openssl not found — install it (apt install openssl / brew install openssl) and re-run."
 info "openssl $(openssl version | awk '{print $2}')"
-
-# Node 20+ — optional: only needed for UI tooling in ui/ (the Pi UI ships as
-# a pre-built bundle in ui/dist).
-HAVE_NODE=0
-if command -v node &>/dev/null; then
-    NODE_VER=$(node -v | sed 's/v//')
-    NODE_MAJOR=$(echo "$NODE_VER" | cut -d. -f1)
-    if [[ "$NODE_MAJOR" -ge 20 ]]; then
-        info "Node.js $NODE_VER"
-        HAVE_NODE=1
-    else
-        warn "Node.js 20+ needed for UI tooling (found $NODE_VER) — skipping UI dependencies"
-    fi
-else
-    warn "Node.js not found — skipping UI dependencies (not needed to run the server)"
-fi
 
 # Docker (optional)
 if command -v docker &>/dev/null; then
@@ -83,28 +59,41 @@ fi
 
 header "Setting up environment..."
 
+# _coordinate VALUE LIMIT — VALUE is a decimal number from -LIMIT to LIMIT.
+_coordinate() {
+    [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || return 1
+    awk -v v="$1" -v m="$2" 'BEGIN { exit !(v + 0 >= -m && v + 0 <= m) }'
+}
+
 if [[ ! -f .env ]]; then
     cp .env.example .env
+    # 0600 before anything secret goes in: an abort at a prompt below must not
+    # leave the Claude key in a file every local user can read.
+    chmod 600 .env
     info "Created .env from .env.example"
 
     echo ""
     read -rp "Enter your Claude API key (or press Enter to skip): " CLAUDE_KEY
-    if [[ -n "$CLAUDE_KEY" ]]; then
-        sed -i.bak "s|^SPOREPRINT_CLAUDE_API_KEY=.*|SPOREPRINT_CLAUDE_API_KEY=$CLAUDE_KEY|" .env
-        rm -f .env.bak
+    if [[ -z "$CLAUDE_KEY" ]]; then
+        warn "Skipped Claude API key — vision analysis and builder's assistant won't work without it"
+    elif [[ "$CLAUDE_KEY" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+        sp_env_set .env SPOREPRINT_CLAUDE_API_KEY "$CLAUDE_KEY"
         info "Claude API key saved to .env"
     else
-        warn "Skipped Claude API key — vision analysis and builder's assistant won't work without it"
+        warn "That is not an API key (it has spaces, quotes or other characters a key never has) — not saved; set SPOREPRINT_CLAUDE_API_KEY in .env yourself"
     fi
 
     echo ""
     read -rp "Enter your latitude for weather (or press Enter to skip): " WEATHER_LAT
     if [[ -n "$WEATHER_LAT" ]]; then
         read -rp "Enter your longitude: " WEATHER_LON
-        sed -i.bak "s|^SPOREPRINT_WEATHER_LAT=.*|SPOREPRINT_WEATHER_LAT=$WEATHER_LAT|" .env
-        sed -i.bak "s|^SPOREPRINT_WEATHER_LON=.*|SPOREPRINT_WEATHER_LON=$WEATHER_LON|" .env
-        rm -f .env.bak
-        info "Weather location saved (using Open-Meteo — free, no API key needed)"
+        if _coordinate "$WEATHER_LAT" 90 && _coordinate "$WEATHER_LON" 180; then
+            sp_env_set .env SPOREPRINT_WEATHER_LAT "$WEATHER_LAT"
+            sp_env_set .env SPOREPRINT_WEATHER_LON "$WEATHER_LON"
+            info "Weather location saved (using Open-Meteo — free, no API key needed)"
+        else
+            warn "Not saved: latitude must be -90 to 90 and longitude -180 to 180, in decimal degrees (e.g. 45.52 / -122.68) — set SPOREPRINT_WEATHER_LAT/LON in .env"
+        fi
     else
         warn "Skipped weather — set SPOREPRINT_WEATHER_LAT/LON in .env to enable forecast automation"
     fi
@@ -112,33 +101,28 @@ else
     info ".env already exists"
 fi
 
-# ── Data directories ───────────────────────────────────────────
-
-header "Creating data directories..."
-
-mkdir -p data/db data/vision data/mosquitto data/ntfy
-info "data/db, data/vision, data/mosquitto, data/ntfy"
-
 # ── Secrets: LAN-trust mode, MQTT credentials ──────────────────
 
 header "Generating secrets..."
 
 _gen_secret() { openssl rand -base64 36 | tr -d '=+/' | cut -c1-40; }
-_env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# .env reads and writes go through scripts/lib/host.sh: values as compose
+# reads them, replaced in place or appended on a line of their own, and no
+# secret on a command line.
+_env_get() { sp_env_get .env "$1"; }
 
 # LAN-trust (same as install.sh): leave the API ungated unless an API key was
 # set explicitly. Generating a key here made the dashboard 401 on every call.
 if [ -z "$(_env_get SPOREPRINT_API_KEY)" ] && [ -z "$(_env_get SPOREPRINT_ALLOW_UNAUTHENTICATED)" ]; then
-    sed -i.bak '/^SPOREPRINT_ALLOW_UNAUTHENTICATED=/d' .env && rm -f .env.bak
-    echo "SPOREPRINT_ALLOW_UNAUTHENTICATED=true" >> .env
+    sp_env_set .env SPOREPRINT_ALLOW_UNAUTHENTICATED true
     info "LAN-trust mode (SPOREPRINT_ALLOW_UNAUTHENTICATED=true) — set SPOREPRINT_API_KEY to gate /api instead"
 fi
 
-if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
+# No broker login for the server yet (the key empty, or missing altogether).
+if [ -z "$(_env_get SPOREPRINT_MQTT_USERNAME)" ]; then
     MQTT_SERVER_PASS=$(_gen_secret)
-    sed -i.bak "s|^SPOREPRINT_MQTT_USERNAME=.*|SPOREPRINT_MQTT_USERNAME=server|" .env
-    sed -i.bak "s|^SPOREPRINT_MQTT_PASSWORD=.*|SPOREPRINT_MQTT_PASSWORD=$MQTT_SERVER_PASS|" .env
-    rm -f .env.bak
+    sp_env_set .env SPOREPRINT_MQTT_USERNAME server
+    sp_env_set .env SPOREPRINT_MQTT_PASSWORD "$MQTT_SERVER_PASS"
 
     # sp-3p is the credential you configure INTO Shelly/Tasmota smart plugs
     # (Tasmota: Configuration → MQTT → User/Password; Shelly Gen2+: Settings →
@@ -146,12 +130,7 @@ if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
     # refuses anonymous clients, so a plug configured with only Host+Port
     # never connects — and Mosquitto refuses silently.
     MQTT_3P_PASS=$(_gen_secret)
-    if grep -q '^SPOREPRINT_MQTT_3P_PASSWORD=' .env 2>/dev/null; then
-        sed -i.bak "s|^SPOREPRINT_MQTT_3P_PASSWORD=.*|SPOREPRINT_MQTT_3P_PASSWORD=$MQTT_3P_PASS|" .env
-        rm -f .env.bak
-    else
-        echo "SPOREPRINT_MQTT_3P_PASSWORD=$MQTT_3P_PASS" >> .env
-    fi
+    sp_env_set .env SPOREPRINT_MQTT_3P_PASSWORD "$MQTT_3P_PASS"
 
     # Entries are set in place (existing per-node users are kept). On Linux
     # the dockerized broker needs the file owned by its uid (see
@@ -163,19 +142,18 @@ if grep -q '^SPOREPRINT_MQTT_USERNAME=\s*$' .env 2>/dev/null; then
             | sp_passwd_update "$PWD"
         info "Mosquitto 'server' + 'sp-3p' (smart plug) users provisioned via docker"
     elif command -v mosquitto_passwd &>/dev/null; then
-        [ -f config/mosquitto/passwd ] || : > config/mosquitto/passwd
-        mosquitto_passwd -b config/mosquitto/passwd server "$MQTT_SERVER_PASS"
-        mosquitto_passwd -b config/mosquitto/passwd sp-3p "$MQTT_3P_PASS"
-        chmod 600 config/mosquitto/passwd
+        sp_host_passwd_set config/mosquitto/passwd server "$MQTT_SERVER_PASS"
+        sp_host_passwd_set config/mosquitto/passwd sp-3p "$MQTT_3P_PASS"
         info "Mosquitto 'server' + 'sp-3p' (smart plug) users provisioned"
     elif sp_docker_init; then
         printf '%s\n%s\n%s\n%s\n' server "$MQTT_SERVER_PASS" sp-3p "$MQTT_3P_PASS" \
             | sp_passwd_update "$PWD"
         info "Mosquitto 'server' + 'sp-3p' (smart plug) users provisioned via docker"
     else
-        warn "Neither a reachable docker daemon nor mosquitto_passwd — run ./install.sh (Pi) or add them manually:"
-        warn "  mosquitto_passwd -b config/mosquitto/passwd server <SPOREPRINT_MQTT_PASSWORD from .env>"
-        warn "  mosquitto_passwd -b config/mosquitto/passwd sp-3p <SPOREPRINT_MQTT_3P_PASSWORD from .env>"
+        warn "Neither a reachable docker daemon nor mosquitto_passwd — run ./install.sh (Pi) or add them manually"
+        warn "(each prompts for the password; type the value from .env):"
+        warn "  mosquitto_passwd config/mosquitto/passwd server   # SPOREPRINT_MQTT_PASSWORD"
+        warn "  mosquitto_passwd config/mosquitto/passwd sp-3p    # SPOREPRINT_MQTT_3P_PASSWORD"
     fi
     info "Smart plugs authenticate as sp-3p — password stored in .env (SPOREPRINT_MQTT_3P_PASSWORD)"
     info "ESP32 nodes each need their own broker user: ./scripts/add-node-mqtt-user.sh <node_id>"
@@ -220,29 +198,17 @@ HOST_NAME="$(hostname -s 2>/dev/null || echo sporeprint)"
 HOST_IPS="$(sp_host_ipv4s)"
 PRIMARY_IP="$(printf '%s\n' "$HOST_IPS" | head -1)"
 issue_server_cert() { # (re)issue server.key + server.crt from the existing CA
-    local tmp
-    tmp="$(mktemp -d)"
     # shellcheck disable=SC2086  # HOST_IPS word-splits into one argument per IP
-    if openssl req -newkey rsa:2048 -nodes \
-           -keyout "$tmp/server.key" -out "$tmp/server.csr" \
-           -subj "/CN=sporeprint.local" 2>/dev/null \
-       && openssl x509 -req -in "$tmp/server.csr" \
-           -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
-           -CAcreateserial -CAserial "$tmp/ca.srl" \
-           -days 1825 -out "$tmp/server.crt" \
-           -extfile <(printf 'subjectAltName=%s' "$(sp_server_san "$HOST_NAME" $HOST_IPS)") 2>/dev/null; then
-        chmod 600 "$tmp/server.key"
-        chmod 644 "$tmp/server.crt"
-        mv -f "$tmp/server.key" "$CERT_DIR/server.key"
-        mv -f "$tmp/server.crt" "$CERT_DIR/server.crt"
-        rm -rf "$tmp"
-        return 0
-    fi
-    rm -rf "$tmp"
-    return 1
+    sp_issue_server_cert "$CERT_DIR" "$HOST_NAME" $HOST_IPS
 }
-if [ ! -f "$CERT_DIR/server.crt" ]; then
-    mkdir -p "$CERT_DIR"
+mkdir -p "$CERT_DIR"
+# The dockerized broker opens the certificates after dropping to uid 1883:
+# the directory must be searchable by it, and acl.conf readable, whatever
+# umask made them.
+chmod 755 "$CERT_DIR"
+chmod 644 config/mosquitto/mosquitto.conf config/mosquitto/acl.conf 2>/dev/null \
+    || warn "Could not chmod 644 config/mosquitto/*.conf — the dockerized broker must be able to read them"
+if [ ! -f "$CERT_DIR/ca.crt" ]; then
     # Local CA (10 years — LAN-internal trust root, rotated by deleting the dir).
     openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
         -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
@@ -251,18 +217,29 @@ if [ ! -f "$CERT_DIR/server.crt" ]; then
     chmod 644 "$CERT_DIR/ca.crt"
     issue_server_cert || fail "server certificate generation failed"
     info "CA + server certificate generated in $CERT_DIR"
-elif [ -n "$PRIMARY_IP" ] && ! openssl x509 -in "$CERT_DIR/server.crt" -noout -text 2>/dev/null \
-        | grep -qE "IP Address:$(printf '%s' "$PRIMARY_IP" | sed 's/\./\\./g')(,|\$)"; then
-    # An older DNS-only certificate, or this machine's IP changed: re-issue the
-    # server certificate from the SAME CA — nodes pin the CA, not the cert.
-    if [ -r "$CERT_DIR/ca.key" ] && issue_server_cert; then
-        info "Re-issued the broker certificate to cover $PRIMARY_IP (same CA — pinned nodes unaffected)"
+elif [ ! -f "$CERT_DIR/server.crt" ] || [ ! -f "$CERT_DIR/server.key" ]; then
+    # Never a new CA while ca.crt exists: Secure-MQTT nodes have pinned it and
+    # refuse any other until they are factory-reset. Re-issue from it.
+    [ -r "$CERT_DIR/ca.key" ] || fail "$CERT_DIR has the CA certificate but not its key (ca.key), so the broker certificate cannot be re-issued. Restore ca.key, or delete $CERT_DIR to start a new CA (every Secure-MQTT node must then be factory-reset and provisioned again)."
+    issue_server_cert || fail "server certificate generation failed"
+    info "Re-issued the broker certificate from the existing CA (pinned nodes unaffected)"
+    info "A running broker keeps the old one until: docker compose restart mqtt"
+else
+    # An older DNS-only certificate, this machine's IP changed, or the
+    # certificate is about to expire: re-issue it from the SAME CA — nodes pin
+    # the CA, not the cert.
+    REISSUE_WHY="$(sp_cert_reissue_reason "$CERT_DIR" "$PRIMARY_IP")"
+    if [ -z "$REISSUE_WHY" ]; then
+        info "Certificates already present — skipping (delete $CERT_DIR to start a new CA)"
+    elif [ -r "$CERT_DIR/ca.key" ] && issue_server_cert; then
+        info "Re-issued the broker certificate ($REISSUE_WHY; same CA — pinned nodes unaffected)"
         info "A running broker keeps the old one until: docker compose restart mqtt"
     else
-        warn "The broker certificate does not cover $PRIMARY_IP — Secure MQTT nodes must use sporeprint.local"
+        warn "The broker certificate needs re-issuing ($REISSUE_WHY) but $CERT_DIR/ca.key could not issue one — Secure MQTT nodes must use sporeprint.local"
     fi
-else
-    info "Certificates already present — skipping (delete $CERT_DIR to regenerate)"
+fi
+if ! openssl x509 -in "$CERT_DIR/ca.crt" -noout -checkend $((365 * 86400)) >/dev/null 2>&1; then
+    warn "The broker CA ($CERT_DIR/ca.crt) expires within a year; replacing it means re-provisioning every Secure-MQTT node."
 fi
 
 # The dockerized broker opens the passwd file + TLS key AFTER dropping to its
@@ -280,48 +257,31 @@ fi
 
 header "Setting up Python environment..."
 
-if [[ ! -d .venv ]]; then
-    python3 -m venv .venv
-    info "Created virtual environment (.venv)"
-else
-    info "Virtual environment already exists"
-fi
-
-# shellcheck disable=SC1091
-source .venv/bin/activate
-pip install -q -e "./server[dev]"
-info "Installed server dependencies (including dev tools)"
-
-# ── UI dependencies ────────────────────────────────────────────
-
-header "Installing UI dependencies..."
-
-if [[ "$HAVE_NODE" = "1" && -f ui/package.json ]]; then
-    (cd ui && npm install --silent 2>/dev/null)
-    info "Installed UI dependencies"
-else
-    warn "Skipped (needs Node.js 20+ and ui/package.json — the Pi UI ships pre-built in ui/dist)"
-fi
+# server/.venv with exactly the locked dependencies (server/uv.lock, which the
+# image installs) on the image's Python, dev tools included: the command
+# AGENTS.md gives. A bare `uv sync` would drop the dev extra and may pick a
+# newer Python.
+(cd server && uv sync --python 3.12 --extra dev)
+info "server/.venv synced from server/uv.lock (Python 3.12, dev tools included)"
 
 # ── Done ───────────────────────────────────────────────────────
 
 header "Setup complete!"
 echo ""
 echo "  Development:"
-echo "    source .venv/bin/activate"
-echo "    cd server && uvicorn app.main:socket_app --reload    # API on :8000"
-echo "    (the server reads server/.env when run from server/ — copy the"
-echo "     SPOREPRINT_* settings you need there; it refuses keys it does not"
-echo "     know, such as TZ or SPOREPRINT_MQTT_3P_PASSWORD)"
-echo ""
-echo "  You'll also need the credentialed MQTT broker:"
-echo "    docker compose up -d mqtt"
+echo "    docker compose up -d mqtt                              # the credentialed broker"
+echo "    cd server && uv run uvicorn app.main:socket_app --reload    # API on :8000"
+echo "    (run from server/, the API reads server/.env, not the repo-root .env:"
+echo "     copy the SPOREPRINT_* settings you need there. Keys it does not use,"
+echo "     such as TZ or SPOREPRINT_MQTT_3P_PASSWORD, are ignored; export TZ in"
+echo "     that shell for the schedule time zone.)"
 echo ""
 echo "  Docker Compose (all services, same as a Pi):"
 echo "    docker compose up -d --build"
 echo ""
+echo "  The dashboard ships pre-built in ui/dist (its source is not in this repo)."
 echo "  Installing on a Raspberry Pi? Use ./install.sh instead of this script."
 echo ""
 echo "  Tests:"
-echo "    cd server && pytest                                  # Backend"
+echo "    cd server && uv run ruff check app/ && uv run pytest      # Backend"
 echo ""

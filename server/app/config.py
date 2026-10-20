@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     mqtt_port: int = 1883
     mqtt_username: str = ""
     mqtt_password: str = ""
+    # Broker logins of individual smart plugs (comma-separated), which
+    # scripts/add-plug-mqtt-user.sh creates and lists here. The ACL's per-node
+    # patterns apply to every login, so these are reserved: frames under
+    # sporeprint/<plug login>/… are dropped and never make a node
+    # (mqtt.is_reserved_node_id).
+    mqtt_plug_users: str = ""
     ntfy_url: str = "http://localhost:8080"
     ntfy_topic: str = "sporeprint"
     vision_storage: str = "data/vision"
@@ -38,10 +44,11 @@ class Settings(BaseSettings):
     cloud_token: str = ""
     cloud_device_id: str = ""
     # Strict mode for cloud integrations_request frames
-    # (cloud/integrations_proxy._require_signed_setting): true rejects every
-    # unsigned frame. False keeps the migration posture — unsigned frames are
-    # accepted until this Pi verifies its first signed one after pairing.
-    cloud_require_signed_integrations: bool = False
+    # (cloud/integrations_proxy._require_signed_setting): true (the default)
+    # rejects every unsigned frame — the cloud signs them all. False is the old
+    # migration posture: unsigned frames are accepted until this Pi verifies
+    # its first signed one after pairing.
+    cloud_require_signed_integrations: bool = True
     # Where the operator's browser reaches the Pi dashboard (nginx UI port),
     # e.g. for links printed on QR labels. The default is the mDNS name plus
     # the compose UI port. Its host is also an allowed Host header (below).
@@ -65,7 +72,7 @@ class Settings(BaseSettings):
     # ./install.sh or forgot to set SPOREPRINT_API_KEY.
     allow_unauthenticated: bool = False
     # HMAC-SHA256 key used to sign every cmd/* MQTT frame the Pi publishes
-    # to an ESP32 node. v3.4.9 C-1. Must match the `hmac_key` stored in NVS
+    # to an ESP32 node. Must match the `hmac_key` stored in NVS
     # on each node. Use scripts/provision-node.sh to generate and deploy.
     mqtt_hmac_key: str = ""
     # Command-signing enforcement — how the Pi behaves when it publishes a

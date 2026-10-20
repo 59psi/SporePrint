@@ -366,6 +366,28 @@ void test_policy() {
     TEST_ASSERT_FALSE(sp::parse_fw_version(nullptr, &a));
 }
 
+void test_floor_rises_only_for_the_confirmed_pending_image() {
+    // A signed 5.3.0 push records 5.3.0 as pending. The floor moves only
+    // when 5.3.0 itself is confirmed on the node.
+    TEST_ASSERT_TRUE(sp::ota_floor_promotable("5.3.0", "5.3.0", ""));
+    TEST_ASSERT_TRUE(sp::ota_floor_promotable("5.3.0", "5.3.0", "5.2.2"));
+    TEST_ASSERT_TRUE(sp::ota_floor_promotable("5.3.0", "v5.3.0", "5.3.0"));
+    // 5.3.0 failed its probation and rolled back to 5.2.2: a later confirm
+    // of 5.2.2 must not raise the floor to 5.3.0 — a 5.2.3 fix (or a signed
+    // re-flash of 5.2.2) would then be refused as below the floor.
+    TEST_ASSERT_FALSE(sp::ota_floor_promotable("5.3.0", "5.2.2", "5.2.2"));
+    TEST_ASSERT_EQUAL((int)ManifestPolicy::Ok,
+                      (int)sp::manifest_policy(node_manifest("node_esp32", "5.2.3"),
+                                               "node_esp32", "5.2.2", "5.2.2"));
+    // Never lowers the floor; nothing pending, or a dev build: no change.
+    TEST_ASSERT_FALSE(sp::ota_floor_promotable("5.2.0", "5.2.0", "5.3.0"));
+    TEST_ASSERT_FALSE(sp::ota_floor_promotable("", "5.3.0", ""));
+    TEST_ASSERT_FALSE(sp::ota_floor_promotable(nullptr, "5.3.0", ""));
+    TEST_ASSERT_FALSE(sp::ota_floor_promotable("5.3.0", "dev", ""));
+    // An unreadable stored floor does not block a valid promotion.
+    TEST_ASSERT_TRUE(sp::ota_floor_promotable("5.3.0", "5.3.0", "garbage"));
+}
+
 // ── gate ───────────────────────────────────────────────────────
 
 static std::string image_bytes(size_t n) {
@@ -496,6 +518,7 @@ int main(int, char**) {
     RUN_TEST(test_node_manifest_round_trip);
     RUN_TEST(test_field_grammar);
     RUN_TEST(test_policy);
+    RUN_TEST(test_floor_rises_only_for_the_confirmed_pending_image);
     RUN_TEST(test_gate_unarmed_is_unverified_unless_required);
     RUN_TEST(test_gate_verifies_the_streamed_image);
     RUN_TEST(test_gate_refuses_a_different_image);

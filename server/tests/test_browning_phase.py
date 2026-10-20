@@ -34,6 +34,7 @@ from app.automation.templates import (
     _OPEN_SUBSTRATE_PHASES,
     BUILTIN_RULES,
     PRE_BROWNING_BUILTIN_RULES,
+    PRE_DEADBAND_BUILTIN_RULES,
     SUPERSEDED_BUILTIN_RULES,
 )
 from app.config import settings
@@ -41,7 +42,7 @@ from app.db import get_db
 from app.planner.service import propose_cycle
 from app.sessions.models import PhaseAdvance, SessionCreate
 from app.sessions.service import (
-    _PHASE_ORDER,
+    _GROW_PHASES,
     InvalidPhaseError,
     advance_phase,
     check_phase_reminders,
@@ -56,6 +57,7 @@ from app.species.service import get_profile, seed_builtins
 from app.transcript.service import export_markdown
 from app.vision import service as vision_service
 from app.vision.service import (
+    _load_frame_grow,
     _maybe_browning_alert,
     _maybe_colonization_alert,
     analyze_frame_claude,
@@ -92,7 +94,7 @@ def test_browning_sits_between_colonization_and_the_cold_storage_fork():
     assert order.index("browning") == order.index("substrate_colonization") + 1
     assert order.index("browning") < order.index("primordia_induction")
     # The calendar's order is the enum's order — one lifecycle, not two.
-    assert _PHASE_ORDER == order
+    assert list(_GROW_PHASES) == order
 
 
 def test_shiitake_browning_setpoints_match_the_spec():
@@ -309,13 +311,15 @@ def test_open_substrate_rules_run_in_browning_and_scheduled_fae_does_not():
 
 
 def test_pre_browning_forms_differ_from_current_only_by_the_browning_gate():
-    """Transcription guard: each frozen pre-browning copy must be the current
-    rule minus "browning", or an unedited install would never upgrade."""
-    current = {r.name: r for r in BUILTIN_RULES}
+    """Transcription guard: each frozen pre-browning copy must be the rule that
+    shipped with "browning" minus "browning", or an unedited install would
+    never upgrade. A rule changed again since (Dehumidify Cutoff's deadband)
+    is compared with that next form, recorded in its later table."""
+    shipped_with_browning = {r.name: r for r in BUILTIN_RULES} | PRE_DEADBAND_BUILTIN_RULES
     for name, old in PRE_BROWNING_BUILTIN_RULES.items():
         assert old.applies_to_phases == ["primordia_induction", "fruiting"], name
         rebuilt = old.model_copy(update={"applies_to_phases": list(_OPEN_SUBSTRATE_PHASES)})
-        assert rebuilt.model_dump() == current[name].model_dump(), name
+        assert rebuilt.model_dump() == shipped_with_browning[name].model_dump(), name
 
 
 async def _store(rule) -> None:
@@ -341,13 +345,12 @@ async def test_existing_installs_upgrade_their_pre_browning_copies(caplog):
     for row in rows:
         stored = json.loads(row["rule_data"])
         assert stored == json.loads(serialize_rule_data(current[row["name"]])), row["name"]
-        # Built-ins this install never had are added too (seed_builtin_rules
-        # offers every built-in once); only the upgraded copies gate on phases.
-        if row["name"] in PRE_BROWNING_BUILTIN_RULES:
-            assert "browning" in stored["applies_to_phases"]
-    assert {r["name"] for r in rows} >= set(PRE_BROWNING_BUILTIN_RULES)
-    # Dehumidify Cutoff has two superseded forms; both upgrade.
-    assert len(SUPERSEDED_BUILTIN_RULES["Dehumidify Cutoff"]) == 2
+        assert "browning" in stored["applies_to_phases"]
+    # These names are 5.0.0's, so the table reads as one a 5.0 release seeded
+    # with every built-in: the ones missing were deleted and stay out.
+    assert {r["name"] for r in rows} == set(PRE_BROWNING_BUILTIN_RULES)
+    # Dehumidify Cutoff has three superseded forms; each upgrades.
+    assert len(SUPERSEDED_BUILTIN_RULES["Dehumidify Cutoff"]) == 3
 
 
 async def test_an_edited_pre_browning_copy_is_left_alone():
@@ -508,9 +511,10 @@ async def test_browning_alert_is_deduped(monkeypatch):
     monkeypatch.setattr(vision_service, "notify_info", info)
     monkeypatch.setattr("app.cloud.service.forward_event", AsyncMock())
     s = await _session("shiitake", "browning")
+    grow = await _load_frame_grow(s["id"])
     for frame_id in (1, 2):
         await _maybe_browning_alert({"id": frame_id, "session_id": s["id"], "node_id": "cam-01"},
-                                    {"browning_percent": 100}, "Shiitake")
+                                    {"browning_percent": 100}, grow)
     assert len(await _events(s["id"], "browning_complete")) == 1
     info.assert_awaited_once()
 
@@ -522,7 +526,8 @@ async def test_colonized_shiitake_is_ready_to_brown_not_to_fruit(monkeypatch):
     monkeypatch.setattr("app.cloud.service.forward_event", AsyncMock())
     s = await _session("shiitake", "substrate_colonization")
     await _maybe_colonization_alert({"id": 1, "session_id": s["id"], "node_id": "cam-01"},
-                                    {"colonization_percent": 99, "surface": "bag"}, "Shiitake")
+                                    {"colonization_percent": 99, "surface": "bag"},
+                                    await _load_frame_grow(s["id"]))
     _, message = warn.await_args.args
     assert "ready to brown" in message and "Ready to move to browning." in message
     [ev] = await _events(s["id"], "colonization_complete")

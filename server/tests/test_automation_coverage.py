@@ -1,4 +1,4 @@
-"""Hardware-capability verdict — GET /api/chambers/{id}/automation-coverage (V2-1).
+"""Hardware-capability verdict — GET /api/chambers/{id}/automation-coverage.
 
 The verdict must be HONEST: an actuator reads "available" only when the paired
 smart-plug row or node channel actually says so, and a requirement the chamber
@@ -7,8 +7,15 @@ present fallback (vent-with-fans for a missing dehumidifier, etc.).
 """
 
 import json
+import re
+from pathlib import Path
 
-from app.automation.coverage import _rule_applies, compute_coverage
+from app.automation.coverage import (
+    _PERSONALITY_CHANNELS,
+    _actuator_present,
+    _rule_applies,
+    compute_coverage,
+)
 from app.automation.models import (
     AutomationRule,
     ConditionType,
@@ -16,9 +23,13 @@ from app.automation.models import (
     RuleCondition,
     ThresholdCondition,
 )
-from app.automation.service import seed_builtin_rules
+from app.automation.service import create_rule, seed_builtin_rules
 from app.db import get_db
+from app.integrations import _registry, _settings_store
 from app.species.models import GrowPhase, PhaseParams, SpeciesProfile
+
+_PERSONALITY_H = (Path(__file__).resolve().parents[2]
+                  / "firmware" / "lib" / "sp_core" / "personality.h")
 
 
 # ── builders ──────────────────────────────────────────────────────────────
@@ -189,7 +200,7 @@ async def test_light_node_presence_uses_the_node_registry():
     """A scene-driven light node has no channel and no plug row — presence is a
     lighting node being registered. The rule names the light-01 placeholder, but
     the real node is MAC-derived, so presence resolves by node_type='lighting',
-    NOT by a literal light-01 row (target_is_present can't see it either). (V3-2)"""
+    NOT by a literal light-01 row (target_is_present can't see it either)."""
     await seed_builtin_rules()
     profile = _profile([GrowPhase.FRUITING])
     reqs = _by_key((await compute_coverage(profile))[0]["requirements"])
@@ -259,3 +270,91 @@ def test_endpoint_happy_path_shape(client):
     assert set(req.keys()) == {"target", "channel", "available", "fallback"}
     # A freshly-created chamber has no paired hardware.
     assert req["available"] is False
+
+
+# ── chamber scope, vendor devices, unreported channels ────────────────────
+
+
+async def _chamber(name, ids):
+    async with get_db() as db:
+        await db.execute("INSERT INTO chambers (name, node_ids) VALUES (?, ?)",
+                         (name, json.dumps(ids)))
+        await db.commit()
+
+
+async def test_another_chambers_relay_does_not_cover_this_chamber():
+    """Any node anywhere reporting the channel used to make it read available."""
+    await _register_node("clim-a", None, node_type="climate")
+    await _register_node("relay-b", ["fae", "exhaust", "circulation", "aux"])
+    await _chamber("A", ["clim-a"])
+    await _chamber("B", ["relay-b"])
+    assert not await _actuator_present(RuleAction(target="node-1", channel="fae"), ["clim-a"])
+    assert not await _actuator_present(RuleAction(target="relay-b", channel="fae"), ["clim-a"])
+    assert not await _actuator_present(RuleAction(target="relay-01", channel="fae"), ["clim-a"])
+    assert await _actuator_present(RuleAction(target="relay-b", channel="fae"), ["relay-b"])
+    assert await _actuator_present(RuleAction(target="relay-01", channel="fae"), ["relay-b"])
+
+
+async def test_nodes_in_no_chamber_are_covered_by_the_relay_they_drive():
+    """With no chamber (the verdict the cloud asks for, or a chamber that
+    lists no nodes) a placeholder stands for the node that nodes in no
+    chamber drive: one no chamber lists. The relay seen last anywhere,
+    another chamber's, used to answer for them."""
+    await _register_node("relay-closet", ["fae", "exhaust", "circulation"])
+    await _register_node("relay-a", ["fae", "exhaust", "circulation", "aux"])
+    await _chamber("A", ["relay-a"])
+    async with get_db() as db:  # chamber A's relay reported last
+        await db.execute("UPDATE hardware_nodes SET last_seen = last_seen + 60 "
+                         "WHERE node_id = 'relay-a'")
+        await db.commit()
+    assert await _actuator_present(RuleAction(target="relay-01", channel="fae"))
+    assert not await _actuator_present(RuleAction(target="relay-01", channel="aux"))
+    assert await _actuator_present(RuleAction(target="relay-01", channel="aux"), ["relay-a"])
+
+
+async def test_a_node_that_has_not_reported_channels_offers_its_personalitys():
+    await _register_node("relay-x", None)
+    assert await _actuator_present(RuleAction(target="relay-x", channel="fae"))
+    assert not await _actuator_present(RuleAction(target="relay-x", channel="white"))
+
+
+def test_personality_channels_match_the_firmware():
+    groups = re.findall(r"names\[4\]\s*=\s*\{([^}]+)\}", _PERSONALITY_H.read_text())
+    firmware = [frozenset(re.findall(r'"([^"]+)"', g)) for g in groups]
+    assert sorted(firmware, key=sorted) == sorted(_PERSONALITY_CHANNELS.values(), key=sorted)
+
+
+async def test_a_vendor_requirement_reads_available_once_its_integration_is_enabled():
+    """A vendor action's vendor:* key was looked up as a node and always read
+    unavailable."""
+    await create_rule(AutomationRule(
+        name="kasa humidifier",
+        condition=RuleCondition(type=ConditionType.THRESHOLD,
+                                threshold=ThresholdCondition(sensor="humidity", operator="lt",
+                                                             value=80)),
+        action=RuleAction(target="vendor:kasa:10.0.0.20", vendor_slug="kasa",
+                          vendor_action="set_power", vendor_params={"ip": "10.0.0.20", "on": True}),
+    ))
+    profile = _profile([GrowPhase.FRUITING])
+
+    async def _kasa_available():
+        reqs = _by_key((await compute_coverage(profile))[0]["requirements"])
+        return reqs[("vendor:kasa:10.0.0.20", None)]["available"]
+
+    assert await _kasa_available() is False
+    secrets = _registry.registered_drivers()["kasa"].secret_fields
+    await _settings_store.save("kasa", False, {}, secrets)
+    assert await _kasa_available() is False  # configured, not enabled
+    await _settings_store.set_enabled("kasa", True)
+    assert await _kasa_available() is True
+
+
+async def test_an_invalid_stored_rule_does_not_break_coverage():
+    await seed_builtin_rules()
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO automation_rules (name, description, enabled, priority, rule_data) "
+            "VALUES ('broken', '', 1, 1, '{\"action\": 3}')",
+        )
+        await db.commit()
+    assert await compute_coverage(_profile([GrowPhase.FRUITING]))

@@ -273,4 +273,21 @@ ManifestPolicy manifest_policy(const OtaManifest& m, const char* my_artifact,
     return ManifestPolicy::Ok;
 }
 
+bool ota_floor_promotable(const char* pending_version,
+                          const char* running_version,
+                          const char* floor_version) {
+    FwVersion pending;
+    FwVersion running;
+    if (!parse_fw_version(pending_version, &pending) ||
+        !parse_fw_version(running_version, &running) ||
+        compare_fw_version(pending, running) != 0)
+        return false;
+    FwVersion floor;
+    if (floor_version != nullptr && floor_version[0] != '\0' &&
+        parse_fw_version(floor_version, &floor) &&
+        compare_fw_version(pending, floor) < 0)
+        return false;
+    return true;
+}
+
 }  // namespace sp

@@ -7,6 +7,8 @@ names an outside attacker cannot get a public DNS record for, plus the
 operator's own SPOREPRINT_PUBLIC_UI_URL / SPOREPRINT_ALLOWED_HOSTS.
 """
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
@@ -14,6 +16,7 @@ from starlette.testclient import WebSocketDenialResponse
 
 from app import host_allow, main
 from app.config import settings
+from app.db import get_db
 from app.host_allow import HostAllowMiddleware, host_is_allowed
 
 
@@ -21,6 +24,7 @@ from app.host_allow import HostAllowMiddleware, host_is_allowed
 def _defaults(monkeypatch):
     monkeypatch.setattr(settings, "allowed_hosts", "")
     monkeypatch.setattr(settings, "public_ui_url", "http://sporeprint.local:3001")
+    host_allow._frame_refusals.clear()
 
 
 @pytest.mark.parametrize("host", [
@@ -219,6 +223,92 @@ def test_refusals_are_logged_once_per_host(caplog):
         for _ in range(3):
             client.get("/api/private")
     assert sum("attacker.example" in r.getMessage() for r in caplog.records) == 1
+
+
+# ── a camera that reaches the Pi by a refused name ────────────────────────
+#
+# Its uploads get 421 while MQTT keeps it looking online, so the vision checks
+# stopped with nothing to say why (e.g. a portal "Pi host" of
+# sporeprint.fritz.box after the allow-list arrived).
+
+async def _post_frame(node_id: str | None, host: str = "sporeprint.fritz.box:8000") -> int:
+    headers = [(b"host", host.encode())]
+    if node_id is not None:
+        headers.append((b"x-node-id", node_id.encode()))
+    scope = {"type": "http", "method": "POST", "path": "/api/vision/frame",
+             "headers": headers}
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def inner(scope, receive, send):
+        raise AssertionError("refused request reached the app")
+
+    await HostAllowMiddleware(inner)(scope, receive, send)
+    await asyncio.gather(*host_allow._background_pages)
+    return sent[0]["status"]
+
+
+@pytest.fixture()
+def pages(monkeypatch):
+    sent = []
+
+    async def _notify_warning(title, message, dedup_key=None, dedup_seconds=300):
+        sent.append({"title": title, "message": message, "dedup_key": dedup_key,
+                     "dedup_seconds": dedup_seconds})
+
+    monkeypatch.setattr(host_allow, "notify_warning", _notify_warning)
+    return sent
+
+
+async def _register(node_id: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO hardware_nodes (node_id, node_type, last_seen, status) "
+            "VALUES (?, 'camera', 0, 'online')", (node_id,))
+        await db.commit()
+
+
+async def test_a_registered_camera_with_a_refused_name_is_logged_and_paged(pages, caplog):
+    await _register("cam-01")
+    with caplog.at_level("WARNING", logger="app.host_allow"):
+        for _ in range(3):
+            assert await _post_frame("cam-01") == 421
+    logged = [r.getMessage() for r in caplog.records if "cam-01" in r.getMessage()]
+    assert len(logged) == 1, logged
+    assert "sporeprint.fritz.box:8000" in logged[0]
+    assert len(pages) == 1
+    assert pages[0]["dedup_key"] == "frame-host:cam-01"
+    assert pages[0]["dedup_seconds"] == 86400
+    assert "SPOREPRINT_ALLOWED_HOSTS" in pages[0]["message"]
+    assert "sporeprint.fritz.box:8000" in pages[0]["message"]
+
+
+async def test_an_unregistered_node_id_is_logged_but_never_pages(pages, caplog):
+    with caplog.at_level("WARNING", logger="app.host_allow"):
+        assert await _post_frame("made-up-01") == 421
+    assert any("made-up-01" in r.getMessage() for r in caplog.records)
+    assert pages == []
+
+
+@pytest.mark.parametrize("node_id", [None, "bad id", "x" * 40])
+async def test_a_frame_without_a_valid_node_id_is_only_the_usual_refusal(pages, caplog, node_id):
+    with caplog.at_level("WARNING", logger="app.host_allow"):
+        assert await _post_frame(node_id) == 421
+    assert not any("camera" in r.getMessage() for r in caplog.records)
+    assert pages == []
+    assert host_allow._frame_refusals == {}
+
+
+async def test_camera_refusal_memory_is_bounded(pages, monkeypatch):
+    monkeypatch.setattr(host_allow, "_FRAME_REFUSAL_CAP", 4)
+    for i in range(10):
+        assert await _post_frame(f"cam-{i}") == 421
+    assert len(host_allow._frame_refusals) == 4
 
 
 # ── wired into the real app, HTTP + Socket.IO ─────────────────────────────

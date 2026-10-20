@@ -1,3 +1,4 @@
+import math
 from enum import Enum
 
 from pydantic import BaseModel
@@ -24,6 +25,17 @@ class GrowPhase(str, Enum):
     FRUITING = "fruiting"
     REST = "rest"
     COMPLETE = "complete"
+
+
+# The lifecycle's stage groups, defined once for every module that branches on
+# them (sessions, the automation engine, vision). The colonization stages run
+# in a sealed vessel (plate, LC jar, grain jar, bag); the fruiting stages are
+# the ones mushrooms form in.
+COLONIZATION_PHASES = frozenset({
+    GrowPhase.AGAR.value, GrowPhase.LIQUID_CULTURE.value,
+    GrowPhase.GRAIN_COLONIZATION.value, GrowPhase.SUBSTRATE_COLONIZATION.value,
+})
+FRUITING_PHASES = frozenset({GrowPhase.PRIMORDIA_INDUCTION.value, GrowPhase.FRUITING.value})
 
 
 class PhaseParams(BaseModel):
@@ -135,6 +147,11 @@ class SpeciesProfile(BaseModel):
     contamination_risks: list[str] = []  # species-specific contamination vulnerabilities
     regional_notes: str = ""  # sourcing / availability notes
     photo_references: dict[str, str] = {}  # phase → reference URL, e.g., {"fruiting": "https://..."}
+    # How a harvest must be handled at once, for a species that cannot wait
+    # (pink oyster cannot be refrigerated; shaggy mane dissolves into ink
+    # within hours). Recording a harvest sends it as a CRITICAL notification.
+    # "" = none.
+    harvest_notice: str = ""
 
     def phase_exit_reminder(self, phase: str) -> str | None:
         """The manual step due when a session leaves ``phase``, or None.
@@ -148,3 +165,61 @@ class SpeciesProfile(BaseModel):
         except ValueError:
             return None
         return (params.exit_reminder or None) if params is not None else None
+
+
+def _finite(*values: float | None) -> bool:
+    return all(v is None or math.isfinite(v) for v in values)
+
+
+def phase_params_problems(params: PhaseParams) -> list[str]:
+    """What makes a phase's setpoints unusable for automation, or [].
+
+    The rules drive the heater below temp_min_f and the cooler above
+    temp_max_f (the humidifier and dehumidifier the same way on the humidity
+    band), so a swapped band runs both against each other and its cutoffs can
+    never hold. Checked when a profile is written (species.service); a row
+    already stored is read as it is.
+    """
+    problems: list[str] = []
+    if not _finite(params.temp_min_f, params.temp_max_f, params.humidity_min,
+                   params.humidity_max, params.light_hours_on, params.light_hours_off,
+                   params.temp_swing_delta_f):
+        return ["every number must be finite"]
+    if params.temp_min_f > params.temp_max_f:
+        problems.append(f"temp_min_f {params.temp_min_f:g} is above temp_max_f {params.temp_max_f:g}")
+    if not 0 <= params.humidity_min <= 100 or not 0 <= params.humidity_max <= 100:
+        problems.append("humidity_min and humidity_max must be within 0-100")
+    if params.humidity_min > params.humidity_max:
+        problems.append(
+            f"humidity_min {params.humidity_min:g} is above humidity_max {params.humidity_max:g}")
+    if params.co2_max_ppm <= 0:
+        problems.append("co2_max_ppm must be above 0")
+    if params.co2_min_ppm is not None and not 0 <= params.co2_min_ppm <= params.co2_max_ppm:
+        problems.append(
+            f"co2_min_ppm {params.co2_min_ppm} must be within 0-co2_max_ppm ({params.co2_max_ppm})")
+    if params.co2_emergency_margin_ppm < 0:
+        problems.append("co2_emergency_margin_ppm must not be negative")
+    on, off = params.light_hours_on, params.light_hours_off
+    if not 0 <= on <= 24 or not 0 <= off <= 24 or abs(on + off - 24) > 1e-6:
+        problems.append(
+            f"light_hours_on {on:g} and light_hours_off {off:g} must each be within 0-24 "
+            "and add up to 24")
+    lo, hi = params.expected_duration_days
+    if not 0 <= lo <= hi:
+        problems.append(f"expected_duration_days ({lo}, {hi}) must be 0 <= min <= max")
+    for name in ("fae_interval_min", "fae_duration_sec", "circulation_interval_min"):
+        value = getattr(params, name)
+        if value is not None and value <= 0:
+            problems.append(f"{name} must be above 0")
+    if params.temp_swing_delta_f is not None and params.temp_swing_delta_f < 0:
+        problems.append("temp_swing_delta_f must not be negative")
+    if params.light_lux_target is not None and params.light_lux_target < 0:
+        problems.append("light_lux_target must not be negative")
+    return problems
+
+
+def profile_problems(profile: SpeciesProfile) -> list[str]:
+    """phase_params_problems for every phase of `profile`, each named by its phase."""
+    return [f"{phase.value}: {problem}"
+            for phase, params in profile.phases.items()
+            for problem in phase_params_problems(params)]

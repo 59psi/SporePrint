@@ -1,6 +1,7 @@
 import pytest
 import qrcode
 
+from app.config import settings
 from app.labels.router import DEFAULT_UI_ORIGIN, label_url
 
 
@@ -26,7 +27,7 @@ def test_qr_invalid_type_returns_400(client):
     assert resp.status_code == 400
 
 
-# ── srv-rest#15: labels must encode a reachable UI URL ──────────────────
+# ── labels must encode a reachable UI URL ───────────────────────────────
 
 
 @pytest.fixture()
@@ -66,6 +67,38 @@ def test_explicit_base_url_wins(client, encoded):
     assert encoded == ["https://pi.lan:8443/sessions?id=3"]
 
 
-@pytest.mark.parametrize("bad", ["javascript:alert(1)", "not a url", "ftp://x/y", ""])
+@pytest.mark.parametrize("bad", ["javascript:alert(1)", "not a url", "ftp://x/y", "",
+                                 "http://[unbalanced"])
 def test_invalid_origins_fall_back_to_default(bad):
     assert label_url("session", 1, bad) == f"{DEFAULT_UI_ORIGIN}/sessions?id=1"
+
+
+# ── SPOREPRINT_PUBLIC_UI_URL is the label URL when the request names none ──
+# The setting existed for exactly this (sporeprint.local does not resolve on
+# every network or phone) but labels ignored it. A label URL typed into the
+# browser, or fetched by a script, carries no Origin or Referer.
+
+def test_a_request_with_no_origin_uses_the_public_ui_url(client, encoded, monkeypatch):
+    monkeypatch.setattr(settings, "public_ui_url", "http://192.168.1.20:3001/")
+    client.get("/api/labels/qr", params={"type": "session", "id": 5})
+    assert encoded == ["http://192.168.1.20:3001/sessions?id=5"]
+
+
+def test_the_page_that_asked_still_wins_over_the_setting(client, encoded, monkeypatch):
+    monkeypatch.setattr(settings, "public_ui_url", "http://192.168.1.20:3001")
+    client.get("/api/labels/qr", params={"type": "culture", "id": 2},
+               headers={"Referer": "http://pi.lan:3001/cultures"})
+    assert encoded == ["http://pi.lan:3001/cultures?id=2"]
+
+
+@pytest.mark.parametrize("setting", ["", "not a url", "http://["])
+def test_an_unusable_public_ui_url_falls_back_to_the_default(setting, monkeypatch):
+    monkeypatch.setattr(settings, "public_ui_url", setting)
+    assert label_url("session", 9) == f"{DEFAULT_UI_ORIGIN}/sessions?id=9"
+
+
+def test_a_malformed_referer_is_ignored_not_a_500(client, encoded):
+    r = client.get("/api/labels/qr", params={"type": "session", "id": 4},
+                   headers={"Referer": "http://[oops"})
+    assert r.status_code == 200
+    assert encoded == [f"{DEFAULT_UI_ORIGIN}/sessions?id=4"]

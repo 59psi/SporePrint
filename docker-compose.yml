@@ -10,6 +10,10 @@
 #
 # LAN-scoped by design — keep the Pi behind your home router/NAT and never
 # port-forward it (see app/main.py CORS + app/auth.py LAN-trust model).
+# Every port is published on IPv4 only (host address 0.0.0.0). Without a host
+# address Docker also listens on [::], and IPv6 has no NAT: on a Pi with a
+# global IPv6 address only the router's IPv6 firewall would stand between
+# these unauthenticated services and the internet.
 # Published ports:
 #   3001  Pi dashboard   — nginx serving ui/dist, proxies /api + /socket.io → server
 #   8000  FastAPI server — uvicorn app.main:socket_app
@@ -57,11 +61,11 @@ services:
   server:
     build: ./server
     ports:
-      - "8000:8000"
+      - "0.0.0.0:8000:8000"
       # espota connect-back. The server advertises this fixed port in the UDP
       # invitation; behind the bridge network an ephemeral port would never
       # be reachable from the node. Must equal ota_push.CALLBACK_PORT.
-      - "3233:3233"
+      - "0.0.0.0:3233:3233"
     volumes:
       # Runtime data → named volumes so it survives `docker compose down`
       # and container rebuilds. sporeprint_db holds the SQLite DB, the Fernet
@@ -73,7 +77,7 @@ services:
       - sporeprint_vision:/data/vision
       # Read-only content the hardware builder serves. These live OUTSIDE the
       # ./server build context, so the container can only reach them via bind
-      # mounts — app/builder/models_router.py reads /models, /firmware, /docs.
+      # mounts — app/builder/service.py reads /models, /firmware, /docs.
       - ./models:/models:ro
       - ./firmware:/firmware:ro
       - ./docs:/docs:ro
@@ -115,14 +119,17 @@ services:
       - SPOREPRINT_MQTT_PORT=1883
       - SPOREPRINT_MQTT_USERNAME=${SPOREPRINT_MQTT_USERNAME:-server}
       - SPOREPRINT_MQTT_PASSWORD=${SPOREPRINT_MQTT_PASSWORD:-}
+      # Per-plug broker logins (scripts/add-plug-mqtt-user.sh writes them):
+      # the server never takes node frames from these names.
+      - SPOREPRINT_MQTT_PLUG_USERS=${SPOREPRINT_MQTT_PLUG_USERS:-}
       - SPOREPRINT_NTFY_URL=http://ntfy:80
       - SPOREPRINT_NTFY_TOPIC=${SPOREPRINT_NTFY_TOPIC:-sporeprint}
       - SPOREPRINT_WEATHER_PROVIDER=${SPOREPRINT_WEATHER_PROVIDER:-openmeteo}
       - SPOREPRINT_CLAUDE_API_KEY=${SPOREPRINT_CLAUDE_API_KEY:-}
       # Model for every Claude feature; blank = the server's default.
       - SPOREPRINT_CLAUDE_MODEL=${SPOREPRINT_CLAUDE_MODEL:-}
-      # Claude vision auto-analysis cadence per session, minutes. Keep the
-      # default equal to the server's (6 h, spec §6 — tests check).
+      # Claude vision auto-analysis cadence per camera of a session, minutes.
+      # Keep the default equal to the server's (6 h, spec §6 — tests check).
       - SPOREPRINT_VISION_AUTO_INTERVAL_MIN=${SPOREPRINT_VISION_AUTO_INTERVAL_MIN:-360}
       - SPOREPRINT_WEATHER_API_KEY=${SPOREPRINT_WEATHER_API_KEY:-}
       - SPOREPRINT_WEATHER_LAT=${SPOREPRINT_WEATHER_LAT:-}
@@ -147,9 +154,10 @@ services:
       - SPOREPRINT_CLOUD_URL=${SPOREPRINT_CLOUD_URL:-}
       - SPOREPRINT_CLOUD_TOKEN=${SPOREPRINT_CLOUD_TOKEN:-}
       - SPOREPRINT_CLOUD_DEVICE_ID=${SPOREPRINT_CLOUD_DEVICE_ID:-}
-      # Strict mode for cloud integrations_request frames: reject unsigned
-      # ones even before the first signed frame arrives.
-      - SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=${SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS:-false}
+      # Strict mode for cloud integrations_request frames (default on):
+      # reject every unsigned one. false accepts them until the first signed
+      # frame arrives.
+      - SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS=${SPOREPRINT_CLOUD_REQUIRE_SIGNED_INTEGRATIONS:-true}
       # cmd/* command signing. install.sh provisions the key in the
       # repo-root .env (scripts/provision-node.sh prints and rotates it), so
       # the Pi signs every command: nodes without a key accept signed
@@ -181,8 +189,8 @@ services:
       # uvicorn trusts X-Forwarded-For only from the ui container's fixed
       # address on the `edge` network below (nginx sets it to the browser's
       # address). Never a range: a bridge gateway is where docker-proxy relays
-      # IPv6/loopback clients of the published :8000 from, and they could
-      # forge the header. Keep equal to SPOREPRINT_EDGE_UI_IP and to
+      # loopback clients of the published :8000 from, and they could forge
+      # the header. Keep equal to SPOREPRINT_EDGE_UI_IP and to
       # server/Dockerfile's ENV (tests check).
       - FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-172.31.253.2}
     networks:
@@ -191,8 +199,21 @@ services:
       edge:
         ipv4_address: ${SPOREPRINT_EDGE_SERVER_IP:-172.31.253.3}
     healthcheck:
-      # The health route is /api/health (public — bypasses the api-key gate).
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]
+      # GET /api/health (public — bypasses the api-key gate) on a bare socket.
+      # It runs every 10 s for the life of the Pi, so it is kept to an
+      # interpreter start: no shell, no site (-I -S), and none of the
+      # http.client / email / ssl modules urllib.request imports.
+      test:
+        - CMD
+        - python
+        - -I
+        - -S
+        - -c
+        - >-
+          import socket,sys;
+          s=socket.create_connection(("127.0.0.1",8000),2);
+          s.sendall(b"GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n");
+          sys.exit(0 if s.makefile("rb").readline().split()[1:2]==[b"200"] else 1)
       interval: 10s
       timeout: 3s
       retries: 5
@@ -214,12 +235,12 @@ services:
   mqtt:
     image: eclipse-mosquitto:2.1.2-alpine
     # LAN-scoped, credentialed broker (allow_anonymous false + per-user ACL).
-    # 1883 is published on the LAN so firmware nodes can reach it; 8883 adds
-    # TLS for nodes that opt in. Never expose either port to the public
+    # 1883 is published on the LAN (IPv4) so firmware nodes can reach it; 8883
+    # adds TLS for nodes that opt in. Never expose either port to the public
     # internet — that is the router/firewall's job (the Pi sits on RFC1918).
     ports:
-      - "1883:1883"
-      - "8883:8883"
+      - "0.0.0.0:1883:1883"
+      - "0.0.0.0:8883:8883"
     volumes:
       - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./config/mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
@@ -249,8 +270,17 @@ services:
       - SPOREPRINT_MQTT_PASSWORD=${SPOREPRINT_MQTT_PASSWORD:-}
     healthcheck:
       # allow_anonymous is false, so a meaningful check must authenticate.
-      # Connect as `server` (ACL: read sporeprint/#) and exit on SUBACK.
-      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t 'sporeprint/#' -u server -P \"$$SPOREPRINT_MQTT_PASSWORD\" -E >/dev/null 2>&1 || exit 1"]
+      # Connect as `server` (ACL: read sporeprint/#) and exit on SUBACK. The
+      # login goes in a mosquitto_sub options file on tmpfs, written by the
+      # shell's printf builtin, never on a command line: every container
+      # process shows in the Pi's process table, which any local user reads.
+      test:
+        - CMD-SHELL
+        - >-
+          umask 077; d=$$(mktemp -d -p /dev/shm) || exit 1;
+          printf '%s\n%s\n' '-u server' "-P $$SPOREPRINT_MQTT_PASSWORD" > "$$d/mosquitto_sub";
+          XDG_CONFIG_HOME="$$d" mosquitto_sub -h localhost -t 'sporeprint/#' -E >/dev/null 2>&1;
+          r=$$?; rm -rf "$$d"; exit $$r
       interval: 10s
       timeout: 5s
       retries: 5
@@ -259,10 +289,14 @@ services:
     restart: unless-stopped
 
   ntfy:
-    image: binwiederhier/ntfy:v2.28.0
+    image: binwiederhier/ntfy:v2.30.0
+    # No logins: whoever can reach 8080 and knows the topic reads and posts
+    # alerts. install.sh gives a new install an unguessable
+    # SPOREPRINT_NTFY_TOPIC (the server's `sporeprint` default is only for a
+    # bare `docker compose up`).
     command: serve
     ports:
-      - "8080:80"
+      - "0.0.0.0:8080:80"
     volumes:
       - ntfy_data:/var/cache/ntfy
     healthcheck:
@@ -277,7 +311,7 @@ services:
   ui:
     build: ./ui
     ports:
-      - "3001:80"
+      - "0.0.0.0:3001:80"
     networks:
       # Only the server: nginx's connections to it come from this fixed
       # address, the one FORWARDED_ALLOW_IPS trusts.

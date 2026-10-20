@@ -49,7 +49,7 @@ async def test_shopping_list_scales_with_grows():
     assert spawn_1["quantity"] != spawn_3["quantity"]
 
 
-# ── srv-rest#22: shopping list agrees with the substrate calculator ──────
+# ── shopping list agrees with the substrate calculator ───────────────────
 
 
 def test_blue_oyster_straw_matches_substrate_calculator():
@@ -62,13 +62,54 @@ def test_blue_oyster_straw_matches_substrate_calculator():
 
 
 def test_every_builtin_shopping_list_matches_calculator():
+    """The list's substrate is the calculator's batch for every grow combined;
+    a per-grow count or dimension the calculator leaves as written carries
+    the number of grows."""
     for profile in BUILTIN_PROFILES:
         if not profile.substrate_recipes:
             continue
         result = generate_shopping_list(profile, grows=3, container_liters=4.0)
         expected = calculate_recipe(profile.substrate_recipes[0], 12.0)["ingredients"]
         got = {i["name"]: i["quantity"] for i in result["items"] if i["category"] == "substrate"}
-        assert got == expected, profile.id
+        assert got.keys() == expected.keys(), profile.id
+        for name, quantity in got.items():
+            assert quantity in (expected[name], f"{expected[name]} per grow × 3"), (profile.id, name)
+
+
+# ── per-grow counts and the inoculant line ──────────────────────────────
+
+
+def _substrate_and_spawn(pid, grows=1, liters=5.0):
+    result = generate_shopping_list(_profile(pid), grows=grows, container_liters=liters)
+    return {i["name"]: i["quantity"] for i in result["items"] if i["category"] in ("substrate", "spawn")}
+
+
+def test_per_grow_counts_carry_the_number_of_grows():
+    """5 cubic feet of chips and a cardboard sheet are one bed's worth: three
+    beds used to list the same 5 cubic feet as one."""
+    three = _substrate_and_spawn("wine_cap", grows=3)
+    assert three["hardwood wood chips"] == "5 cubic feet per grow × 3"
+    assert three["cardboard"] == "4x4 foot sheet per grow × 3"
+    assert _substrate_and_spawn("wine_cap")["hardwood wood chips"] == "5 cubic feet"
+    log = _substrate_and_spawn("chicken_of_the_woods", grows=3)
+    assert log["fresh oak log"] == "6-12 inch diameter x 3-4 feet per grow × 3"
+    # A rate, a ratio or a depth reads the same for any number of grows.
+    assert log["plug spawn"] == "30-50 plugs per log"
+    ratios = generate_shopping_list(_profile("lyophyllum_decastes"), grows=3)["items"]
+    assert {i["name"]: i["quantity"] for i in ratios}["rice bran"] == "3 parts"
+
+
+def test_no_grain_spawn_line_where_the_recipe_takes_none():
+    """giant_puffball (0 %: a spore slurry) used to list 'Grain spawn: g'; a
+    100 % grain jar listed 1.5 kg of grain spawn for 5 L of grain; a log grown
+    from plugs listed grain spawn beside them."""
+    for pid in ("giant_puffball", "pestalotiopsis_microspora", "chicken_of_the_woods"):
+        items = generate_shopping_list(_profile(pid), grows=1, container_liters=5.0)["items"]
+        assert not [i for i in items if i["name"] == "Grain spawn"], pid
+        assert all(i["quantity"].strip() != "g" for i in items), pid
+    # A jar culture takes a culture, at the recipe's rate.
+    assert _substrate_and_spawn("cordyceps_militaris")["Spawn or liquid culture"] == "150 g"
+    assert _substrate_and_spawn("blue_oyster", grows=2)["Grain spawn"] == "300 g"
 
 
 # ── 2026-10 audit: the container comes from the recipe ──────────────────
@@ -119,3 +160,15 @@ def test_grain_rice_and_outdoor_recipes():
             continue
         got = _containers(profile.id)
         assert bool(got) == (container_kind(profile.substrate_recipes[0]) != "none"), profile.id
+
+
+def test_absurd_sizes_are_422_not_500(client):
+    """inf passed gt=0 and overflowed the arithmetic into a 500."""
+    for query in ("container_liters=inf", "container_liters=1e308", "container_liters=1001", "grows=101"):
+        r = client.get(f"/api/species/blue_oyster/shopping-list?{query}")
+        assert r.status_code == 422, (query, r.text)
+    for query in ("volume_liters=inf", "volume_liters=1e308"):
+        r = client.get(f"/api/species/blue_oyster/substrate?{query}")
+        assert r.status_code == 422, (query, r.text)
+    assert client.get("/api/species/blue_oyster/shopping-list?grows=100&container_liters=1000").status_code == 200
+    assert client.get("/api/species/blue_oyster/substrate?volume_liters=1000").status_code == 200

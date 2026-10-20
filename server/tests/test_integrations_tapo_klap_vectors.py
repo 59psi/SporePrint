@@ -88,6 +88,27 @@ def test_encrypted_frame_matches_reference():
     assert frame == _sha256(sig + seq.to_bytes(4, "big", signed=True) + ct) + ct
 
 
+def test_reply_decrypts_under_the_seq_of_the_request_it_answers():
+    """Two requests in flight: each reply is encrypted under its own
+    request's IV, so it must decrypt with that request's seq, not the
+    session's latest (which the second request already moved on)."""
+    key, _sig, iv_prefix, _seq = _ref_session()
+
+    def reply(seq: int, body: bytes) -> bytes:
+        iv = iv_prefix + seq.to_bytes(4, "big", signed=True)
+        padder = padding.PKCS7(128).padder()
+        enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+        return b"\x00" * 32 + enc.update(padder.update(body) + padder.finalize()) + enc.finalize()
+
+    s = klap.derive_session(LOCAL, REMOTE, EMAIL, PASSWORD)
+    _, first = s.encrypt(b'{"method":"set_device_info"}')
+    _, second = s.encrypt(b'{"method":"get_device_info"}')
+    answer_1 = b'{"error_code":0,"result":{"switched":"off"}}'
+    answer_2 = b'{"error_code":0,"result":{"device_on":false}}'
+    assert s.decrypt(reply(second, answer_2), second) == answer_2
+    assert s.decrypt(reply(first, answer_1), first) == answer_1
+
+
 def test_negative_sequence_increments_without_masking():
     s = klap.derive_session(LOCAL, REMOTE, EMAIL, PASSWORD)
     s.seq = -5

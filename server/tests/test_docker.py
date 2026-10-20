@@ -3,9 +3,12 @@
 import ipaddress
 import os
 import re
+import subprocess
+import sys
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import yaml
 
@@ -308,10 +311,34 @@ def test_server_publishes_the_ota_push_callback_port():
 
     port = ota_push.CALLBACK_PORT
     assert port and port != 8000
-    ports = [str(p) for p in _load_compose()["services"]["server"]["ports"]]
-    assert any(p.startswith(f"{port}:{port}") for p in ports), (
-        f"server does not publish the OTA callback port {port}: {ports}"
+    published = _published_ports(_load_compose()["services"]["server"])
+    assert ("0.0.0.0", str(port), str(port)) in published, (
+        f"server does not publish the OTA callback port {port}: {published}"
     )
+
+
+def _published_ports(service: dict) -> list[tuple[str, str, str]]:
+    """(host address, host port, container port) of each short-syntax port.
+    A mapping without a host address yields '' for it."""
+    out = []
+    for raw in service.get("ports", []):
+        assert isinstance(raw, str), f"use the short HOST:PORT:PORT syntax: {raw!r}"
+        parts = raw.split(":")
+        assert len(parts) in (2, 3), raw
+        out.append(tuple(parts) if len(parts) == 3 else ("", *parts))
+    return out
+
+
+def test_every_port_is_published_on_ipv4_only():
+    """Without a host address Docker publishes on [::] too. IPv6 has no NAT,
+    so on a Pi with a global IPv6 address the unauthenticated (LAN-trust)
+    API, ntfy, MQTT and the OTA callback port would be guarded only by the
+    router's IPv6 firewall."""
+    every = {name: _published_ports(svc) for name, svc in _load_compose()["services"].items()}
+    assert sum(len(p) for p in every.values()) >= 6
+    for name, published in every.items():
+        for host, host_port, _container in published:
+            assert host == "0.0.0.0", f"{name} publishes {host_port} on {host or 'every address'}"
 
 
 def test_ui_port_mapping():
@@ -389,11 +416,104 @@ def test_allowed_hosts_setting_reaches_the_server():
     assert _server_env().get("SPOREPRINT_ALLOWED_HOSTS") == "${SPOREPRINT_ALLOWED_HOSTS:-}"
 
 
+def _server_probe() -> list[str]:
+    return _load_compose()["services"]["server"]["healthcheck"]["test"]
+
+
 def test_server_healthcheck_host_passes_the_host_allow_list():
-    test = " ".join(_load_compose()["services"]["server"]["healthcheck"]["test"])
-    url = re.search(r"https?://[^'\"\s]+", test).group(0)
-    assert urlsplit(url).path == "/api/health"
-    assert host_is_allowed(urlsplit(url).netloc)
+    probe = _server_probe()[-1]
+    m = re.search(r"GET (\S+) HTTP/1\.[01]\\r\\nHost: ([^\\]+)\\r\\n", probe)
+    assert m, probe
+    path, host = m.groups()
+    assert path == "/api/health"
+    assert host_is_allowed(host)
+
+
+def test_server_healthcheck_is_a_bare_interpreter_start():
+    """It runs every 10 s for the life of the Pi. `python -c "import
+    urllib.request"` loaded site plus ~120 modules (http.client, email, ssl)
+    per probe through a shell; a socket probe without site costs a fraction."""
+    test = _server_probe()
+    assert test[:5] == ["CMD", "python", "-I", "-S", "-c"], test[:5]
+    assert "urllib" not in test[-1] and "import socket,sys;" in test[-1]
+
+
+class _Health(BaseHTTPRequestHandler):
+    status = 200
+
+    def do_GET(self):  # noqa: N802 (http.server's handler name)
+        self.send_response(self.status if self.path == "/api/health" else 404)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+def _probe_against(status: int) -> int:
+    handler = type("Handler", (_Health,), {"status": status})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        probe = _server_probe()[-1]
+        assert '("127.0.0.1",8000)' in probe, probe
+        probe = probe.replace('("127.0.0.1",8000)', f'("127.0.0.1",{server.server_address[1]})')
+        return subprocess.run([sys.executable, *_server_probe()[2:-1], probe],
+                              capture_output=True, timeout=30).returncode
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_server_healthcheck_passes_only_on_a_200():
+    assert _probe_against(200) == 0
+    assert _probe_against(503) == 1
+
+
+# ── Broker healthcheck: the `server` password never on a command line ────
+
+def _broker_probe() -> str:
+    test = _load_compose()["services"]["mqtt"]["healthcheck"]["test"]
+    assert test[0] == "CMD-SHELL" and len(test) == 2, test
+    return test[1].replace("$$", "$")  # compose's escape for a literal $
+
+
+def test_broker_healthcheck_keeps_the_password_off_every_command_line():
+    """Container processes are host processes: `mosquitto_sub -P <password>`
+    every 10 s put the `server` login in the Pi's process table, where any
+    local user reads it. The password may appear only in the shell's own
+    printf (a builtin, no new process) writing the options file."""
+    script = _broker_probe()
+    runs = [c for c in script.split(";") if re.search(r"(^|\s)mosquitto_sub\s", c)]
+    assert len(runs) == 1, script
+    assert "-P" not in runs[0] and "-u " not in runs[0], runs[0]
+    for command in script.split(";"):
+        if "SPOREPRINT_MQTT_PASSWORD" in command:
+            assert command.strip().startswith("printf "), command
+
+
+def test_broker_healthcheck_logs_in_from_a_removed_options_file(tmp_path):
+    """Run the healthcheck under sh with mosquitto_sub and mktemp faked: the
+    login reaches mosquitto_sub through $XDG_CONFIG_HOME/mosquitto_sub only,
+    the file is gone afterwards, and mosquitto_sub's exit code is the check's."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "mktemp").write_text('#!/bin/sh\nd="$FAKE_TMP/probe.$$"; mkdir -m 700 "$d" && echo "$d"\n')
+    (bindir / "mosquitto_sub").write_text(
+        '#!/bin/sh\necho "$*" > "$FAKE_ARGV"\ncp "$XDG_CONFIG_HOME/mosquitto_sub" "$FAKE_CONF"\n'
+        'exit "$FAKE_RC"\n')
+    for f in bindir.iterdir():
+        f.chmod(0o755)
+    (tmp_path / "shm").mkdir()
+    for rc in (0, 5):
+        env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_TMP": str(tmp_path / "shm"),
+               "FAKE_ARGV": str(tmp_path / "argv"), "FAKE_CONF": str(tmp_path / "conf"),
+               "FAKE_RC": str(rc), "SPOREPRINT_MQTT_PASSWORD": "pw with spaces-123"}
+        result = subprocess.run(["sh", "-c", _broker_probe()], env=env, capture_output=True,
+                                text=True, timeout=30)
+        assert result.returncode == rc, result.stderr
+        assert "pw with" not in (tmp_path / "argv").read_text()
+        assert (tmp_path / "conf").read_text() == "-u server\n-P pw with spaces-123\n"
+        assert list((tmp_path / "shm").iterdir()) == []
 
 
 def test_uv_lock_records_the_project_version():

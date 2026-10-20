@@ -2,15 +2,10 @@
 
 #include <string.h>
 
+#include "hmac_verify.h"  // to_hex_lower
 #include "wrap_time.h"
 
 namespace sp {
-
-namespace {
-
-const char kHex[] = "0123456789abcdef";
-
-}  // namespace
 
 void OtaGate::arm(const OtaManifest& m, uint32_t now_ms) {
     m_ = m;
@@ -51,11 +46,7 @@ OtaGate::End OtaGate::finish() {
     uint8_t digest[32];
     sha_.finish(digest);
     char hex[65];
-    for (size_t i = 0; i < 32; ++i) {
-        hex[i * 2] = kHex[digest[i] >> 4];
-        hex[i * 2 + 1] = kHex[digest[i] & 0x0F];
-    }
-    hex[64] = '\0';
+    to_hex_lower(digest, sizeof(digest), hex);
     if (fed_ != m_.size || strcmp(hex, m_.sha256) != 0) return End::Mismatch;
     return End::Match;
 }

@@ -4,7 +4,7 @@
 // when the setup portal may open, what the BOOT button does, and when a
 // freshly-OTA'd image is confirmed. Host-tested in test_core_boot.
 //
-// Setup portal (fw-node#9). The portal is an OPEN access point whose form
+// Setup portal. The portal is an OPEN access point whose form
 // rewrites the broker host, HMAC key and OTA password, so it must never
 // open on its own for a node that is already working:
 //   * unprovisioned node            → portal (first boot)
@@ -24,12 +24,18 @@
 // released after 3-10 s → setup portal; shorter presses do nothing. Only
 // densely-sampled stretches count toward a hold (see kMaxSampleGapMs).
 //
-// OTA confirmation (fw-node#12). The Arduino core marks a new image valid
+// OTA confirmation. The Arduino core marks a new image valid
 // before setup() unless verifyRollbackLater() returns true, which defeats
 // the bootloader's rollback. The node now confirms only after MQTT has been
 // up continuously for kStableMs; a crash / WDT / power loss before that
 // boots the previous image, and so does an operator restart before the image
-// ever reached the broker (reached_broker).
+// ever reached the broker (reached_broker). A confirm that itself fails (the
+// OTA data write is refused) is retried after more MQTT time, backing off,
+// so a working image is not silently rolled back at the next reset.
+//
+// A network OTA while the image is still on probation would overwrite the
+// other slot — the last confirmed image, the one any reset boots
+// (ota_probation_gate).
 //
 // Wrap-safe (elapsed-ms math). Native-safe: no Arduino headers.
 
@@ -117,9 +123,13 @@ private:
 class ImageConfirm {
 public:
     static constexpr uint32_t kStableMs = 60UL * 1000UL;
+    // Ceiling of the retry backoff after failed confirms (each attempt
+    // rewrites the OTA data sector, so a stuck failure must not hammer it).
+    static constexpr uint32_t kMaxRetryMs = 60UL * 60UL * 1000UL;
 
-    // True exactly once: the first pass on which MQTT has been connected
-    // continuously for kStableMs. A disconnect restarts the clock.
+    // True once MQTT has been connected continuously for kStableMs (after a
+    // failed confirm: for the backed-off retry_after_ms()). A disconnect
+    // restarts the clock. Fires once per attempt; confirm_failed() re-arms.
     bool update(uint32_t now_ms, bool mqtt_up) {
         if (mqtt_up) reached_broker_ = true;
         if (done_) return false;
@@ -132,16 +142,28 @@ public:
             up_since_ = now_ms;
             return false;
         }
-        if (elapsed_ms(now_ms, up_since_) >= kStableMs) {
+        if (elapsed_ms(now_ms, up_since_) >= need_ms_) {
             done_ = true;
             return true;
         }
         return false;
     }
 
-    // The image was confirmed out of band (or there is nothing to confirm).
+    // The image was confirmed (or there is nothing to confirm).
     void mark_done() { done_ = true; }
     bool done() const { return done_; }
+
+    // The confirm itself failed (the OTA data write was refused): the image
+    // is still on probation and the next reset would boot the previous one.
+    // Try again once MQTT has been up for twice as long as last time (up to
+    // kMaxRetryMs) — never give up while the image keeps running.
+    void confirm_failed() {
+        done_ = false;
+        up_ = false;
+        need_ms_ = need_ms_ >= kMaxRetryMs / 2 ? kMaxRetryMs : need_ms_ * 2;
+    }
+    // Continuous MQTT time the next confirm attempt waits for.
+    uint32_t retry_after_ms() const { return need_ms_; }
 
     // MQTT was up on at least one pass this boot. Gates confirmation before a
     // deliberate restart (operator command, BOOT gesture): an image that
@@ -155,6 +177,25 @@ private:
     bool reached_broker_ = false;
     bool up_ = false;
     uint32_t up_since_ = 0;
+    uint32_t need_ms_ = kStableMs;
 };
+
+// A network OTA push is about to be accepted. The core's Update writes the
+// other app slot without asking ESP-IDF's esp_ota_begin(), which refuses
+// exactly this case: while the running image is on probation, that slot
+// holds the last confirmed image — the one any reset boots. Overwriting it
+// leaves no confirmed image, and a power cycle no longer recovers the node.
+enum class OtaProbation : uint8_t {
+    Proceed,       // nothing on probation
+    ConfirmFirst,  // the image reached MQTT this boot: confirm it, then flash
+                   // (the policy a deliberate restart applies)
+    Refuse,        // it never did: refuse the push; a power cycle boots the
+                   // confirmed image, which then takes the push
+};
+
+inline OtaProbation ota_probation_gate(bool image_pending, bool reached_broker) {
+    if (!image_pending) return OtaProbation::Proceed;
+    return reached_broker ? OtaProbation::ConfirmFirst : OtaProbation::Refuse;
+}
 
 }  // namespace sp

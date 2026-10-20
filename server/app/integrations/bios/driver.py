@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from .._base import IntegrationHealth
 from .._http_skeleton import HttpVendorDriver
 from .._net import path_segment
-from ...telemetry.service import store_reading
+from ...telemetry.service import store_readings
 
 
 class BiosConfig(BaseModel):
@@ -20,7 +20,13 @@ class BiosConfig(BaseModel):
     api_key: str = Field(default="", description="Optional API key (newer firmware)")
     poll_seconds: int = Field(default=60, ge=30, le=3600)
     request_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
-    fixture_mappings: dict[str, str] = Field(default_factory=dict)
+    fixture_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Fixture id → SporePrint chamber id. Accepted but not used yet: "
+            "readings are stored as bios:<fixture id> in no chamber."
+        ),
+    )
 
     @field_validator("base_url")
     @classmethod
@@ -57,9 +63,10 @@ class BiosDriver(HttpVendorDriver):
     async def poll_once(self) -> tuple[int, dict[str, Any]]:
         cfg: BiosConfig = self._cfg  # type: ignore[assignment]
         if not cfg.base_url:
-            return 0, {"reason": "missing base_url"}
+            # Enabled without it: an error in health, not an empty "ok".
+            raise RuntimeError("BIOS: base_url is required")
         fixtures = await self._fetch_fixtures(cfg)
-        rows = 0
+        readings: list[tuple[float, str, str, float]] = []
         now = time.time()
         for fixture in fixtures:
             fid = str(fixture.get("id", ""))
@@ -72,8 +79,9 @@ class BiosDriver(HttpVendorDriver):
                 ("light_temp_c", fixture.get("temp_c")),
             ]:
                 if isinstance(v, (int, float)):
-                    await store_reading(node_id, k, float(v), now)
-                    rows += 1
+                    readings.append((now, node_id, k, float(v)))
+        # One transaction for the whole poll, not a commit per reading.
+        rows = await store_readings(readings)
         return rows, {"fixtures": len(fixtures), "rows": rows}
 
     async def set_dim(self, fixture_id: str, percent: int) -> dict[str, Any]:

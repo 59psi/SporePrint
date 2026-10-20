@@ -2,15 +2,15 @@
 // peripheral switch (sp_core/provisioning.h). The portal itself is
 // Arduino-only (WebServer); every decision it makes lives here.
 //
-// Regressions pinned here (hardware audit):
-//   docs#0 / fw-node#0 — the MH-Z19C / HX711 / reed enable flags had no
-//     writer at all (no portal field, no command), so those drivers never ran
-//   fw-node#10 — any node_id was accepted and never tied to the MQTT
-//     username the broker ACL scopes by (%u): silent deny-all
-//   fw-node#14 — Secure MQTT + an IP-literal broker host needs the IP on the
-//     Pi's certificate; the portal must be able to recognise the case
-//   fw-node#18 — stored values were injected into the form unescaped, and a
-//     blank WiFi password wiped the stored one
+// Regressions pinned here:
+//   the MH-Z19C / HX711 / reed enable flags had no writer at all (no portal
+//     field, no command), so those drivers never ran
+//   any node_id was accepted and never tied to the MQTT username the broker
+//     ACL scopes by (%u): silent deny-all
+//   Secure MQTT + an IP-literal broker host needs the IP on the Pi's
+//     certificate; the portal must be able to recognise the case
+//   stored values were injected into the form unescaped, and a blank WiFi
+//     password wiped the stored one
 
 #include <unity.h>
 
@@ -23,7 +23,7 @@
 void setUp() {}
 void tearDown() {}
 
-// ── HTML escaping (fw-node#18) ─────────────────────────────────
+// ── HTML escaping ──────────────────────────────────────────────
 
 void test_html_escape_neutralises_attribute_breakers() {
     TEST_ASSERT_EQUAL_STRING("Bob&#39;s Lab", sp::html_escape("Bob's Lab").c_str());
@@ -35,7 +35,7 @@ void test_html_escape_neutralises_attribute_breakers() {
     TEST_ASSERT_EQUAL_STRING("&amp;amp;", sp::html_escape("&amp;").c_str());
 }
 
-// ── WiFi password (fw-node#18) ─────────────────────────────────
+// ── WiFi password ──────────────────────────────────────────────
 
 void test_blank_wifi_password_keeps_the_stored_one_on_the_same_network() {
     // Re-opening the portal to change the Pi address must not erase the
@@ -67,7 +67,7 @@ void test_open_network_checkbox_clears_the_password() {
         "", sp::resolve_wifi_pass("Home", "old", "Home", "typed", true).c_str());
 }
 
-// ── node id (fw-node#10) ───────────────────────────────────────
+// ── node id ────────────────────────────────────────────────────
 
 void test_node_id_charset_matches_the_server_regex() {
     // server/app/hardware/service.py NODE_ID_RE = ^[a-zA-Z0-9_-]{1,32}$
@@ -127,7 +127,46 @@ void test_invalid_node_id_is_refused_even_without_username() {
     TEST_ASSERT_NOT_NULL(sp::resolve_node_id("", "bad user", "node-ab12", &out));
 }
 
-// ── IPv4 literal detection (fw-node#14) ────────────────────────
+// ── v1 → v2 migration keeps the node's identity ────────────────
+// No v1 image ever wrote node_id: each ran as its role's hard-coded
+// default. Migrating only a stored id turned every v1 node into a new
+// MAC-derived node-XXXX.
+
+void test_migration_keeps_the_v1_default_identity() {
+    TEST_ASSERT_EQUAL_STRING("relay-01", sp::migrated_node_id("", "", "relay").c_str());
+    TEST_ASSERT_EQUAL_STRING("light-01",
+                             sp::migrated_node_id("", "", "lighting").c_str());
+    TEST_ASSERT_EQUAL_STRING("climate-01",
+                             sp::migrated_node_id("", "", "climate").c_str());
+    TEST_ASSERT_EQUAL_STRING("cam-01", sp::migrated_node_id("", "", "camera").c_str());
+    // Unknown namespace: nothing to keep (the MAC-derived default applies).
+    TEST_ASSERT_EQUAL_STRING("", sp::migrated_node_id("", "", "wifi").c_str());
+    TEST_ASSERT_EQUAL_STRING("", sp::migrated_node_id("", "", nullptr).c_str());
+    TEST_ASSERT_NULL(sp::legacy_default_node_id("spnode"));
+}
+
+void test_migration_prefers_a_stored_id_then_the_mqtt_username() {
+    // A hand-written v1 node_id is what that node ran as.
+    TEST_ASSERT_EQUAL_STRING("relay-07",
+                             sp::migrated_node_id("relay-07", "", "relay").c_str());
+    TEST_ASSERT_EQUAL_STRING("relay-07",
+                             sp::migrated_node_id("relay-07", "tent-a", "relay").c_str());
+    // No stored id but an MQTT username: the broker's ACL scopes the node to
+    // its username, the identity the v2 portal enforces.
+    TEST_ASSERT_EQUAL_STRING("tent-a",
+                             sp::migrated_node_id("", "tent-a", "relay").c_str());
+    // Ids that could never be a topic segment fall through.
+    TEST_ASSERT_EQUAL_STRING("tent-a",
+                             sp::migrated_node_id("bad/id", "tent-a", "relay").c_str());
+    TEST_ASSERT_EQUAL_STRING("light-01",
+                             sp::migrated_node_id("", "bad user", "lighting").c_str());
+    // Every kept id passes the server's NODE_ID_RE.
+    const char* namespaces[] = {"climate", "relay", "lighting", "camera"};
+    for (const char* ns : namespaces)
+        TEST_ASSERT_TRUE(sp::node_id_valid(sp::migrated_node_id("", "", ns)));
+}
+
+// ── IPv4 literal detection ─────────────────────────────────────
 
 void test_ipv4_literal_detection() {
     TEST_ASSERT_TRUE(sp::is_ipv4_literal("192.168.1.50"));
@@ -143,7 +182,24 @@ void test_ipv4_literal_detection() {
     TEST_ASSERT_FALSE(sp::is_ipv4_literal(""));
 }
 
-// ── peripheral enable command (docs#0 / fw-node#0) ─────────────
+// A camera's stored server_url (an MQTT command, a v1 migration) used to
+// survive re-provisioning: after the operator typed the Pi's NEW address in
+// the portal the camera kept uploading to the old one. A changed Pi address
+// now clears the stored URL; an unchanged one (any case) keeps it.
+void test_portal_pi_address_change_resets_the_camera_upload_url() {
+    TEST_ASSERT_TRUE(sp::portal_save_resets_server_url("192.168.1.50",
+                                                       "192.168.1.60"));
+    TEST_ASSERT_TRUE(sp::portal_save_resets_server_url("sporeprint.local",
+                                                       "192.168.1.60"));
+    TEST_ASSERT_TRUE(sp::portal_save_resets_server_url("192.168.1.5",
+                                                       "192.168.1.50"));
+    TEST_ASSERT_FALSE(sp::portal_save_resets_server_url("192.168.1.50",
+                                                        "192.168.1.50"));
+    TEST_ASSERT_FALSE(sp::portal_save_resets_server_url("SporePrint.local",
+                                                        "sporeprint.local"));
+}
+
+// ── peripheral enable command ──────────────────────────────────
 
 static sp::PeripheralCmdResult apply(const char* json, sp::PeripheralFlags* f) {
     JsonDocument doc;
@@ -266,7 +322,10 @@ int main(int, char**) {
     RUN_TEST(test_node_id_that_differs_from_the_username_is_refused);
     RUN_TEST(test_matching_node_id_and_username_accepted);
     RUN_TEST(test_invalid_node_id_is_refused_even_without_username);
+    RUN_TEST(test_migration_keeps_the_v1_default_identity);
+    RUN_TEST(test_migration_prefers_a_stored_id_then_the_mqtt_username);
     RUN_TEST(test_ipv4_literal_detection);
+    RUN_TEST(test_portal_pi_address_change_resets_the_camera_upload_url);
     RUN_TEST(test_peripherals_enable_each_flag);
     RUN_TEST(test_peripherals_partial_update_leaves_other_flags);
     RUN_TEST(test_peripherals_same_values_report_unchanged);

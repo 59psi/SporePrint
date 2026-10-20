@@ -33,7 +33,7 @@ async def _pragma(name):
         return (await (await db.execute(f"PRAGMA {name}")).fetchone())[0]
 
 
-# ── auto_vacuum conversion at boot (ingest-telemetry cross-need 4a) ────────
+# ── auto_vacuum conversion at boot ─────────────────────────────────────────
 
 @pytest.fixture()
 async def legacy_db():
@@ -163,7 +163,7 @@ def client_factory(monkeypatch):
     return lambda: TestClient(main.app, raise_server_exceptions=False)
 
 
-# ── daily phase reminders (sessions-species cross-need 1, srv-rest#13) ─────
+# ── daily phase reminders ──────────────────────────────────────────────────
 
 def test_next_phase_reminder_is_the_next_local_reminder_hour():
     hour = main._PHASE_REMINDER_LOCAL_HOUR
@@ -201,7 +201,7 @@ async def test_phase_reminder_task_is_started_and_registered(client):
     assert "phase_reminders" in resp.json()
 
 
-# ── coredump directory (deps-platform cross-need 6) ────────────────────────
+# ── coredump directory ─────────────────────────────────────────────────────
 
 async def test_boot_creates_the_coredump_directory(client):
     from app.hardware.coredumps import coredump_dir

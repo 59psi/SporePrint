@@ -1085,6 +1085,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             "fruiting": "https://commons.wikimedia.org/wiki/File:Pleurotus_djamor_var._roseus.jpg",
             "colonization": "Search: Pleurotus djamor pink oyster mycelium colonization",
         },
+        harvest_notice="Pink oyster CANNOT be refrigerated: it dies below 40°F. Cook, dry or eat the harvest within hours.",
     ),
 
     SpeciesProfile(
@@ -1768,6 +1769,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             "fruiting": "https://commons.wikimedia.org/wiki/File:Coprinus_comatus_2009_G1.jpg",
             "harvest": "Search: Coprinus comatus shaggy mane fresh harvest before deliquescence",
         },
+        harvest_notice="Shaggy mane dissolves into black ink within hours of picking: cook the harvest now. It cannot be stored.",
     ),
 
     SpeciesProfile(
@@ -2021,6 +2023,7 @@ BUILTIN_PROFILES: list[SpeciesProfile] = [
             "colonization": "Search: Volvariella volvacea mycelium colonization rice straw",
             "fruiting": "https://commons.wikimedia.org/wiki/File:Volvariella_volvacea.jpg",
         },
+        harvest_notice="Paddy straw cannot be refrigerated for long (it is chill-damaged) and keeps only a day or so: cook or process the harvest now.",
     ),
 
     SpeciesProfile(

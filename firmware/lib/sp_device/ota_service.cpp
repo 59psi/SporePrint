@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "base64_codec.h"
+#include "log_forward.h"
 #include "ota_manifest.h"
 #include "task_wdt.h"
 
@@ -28,8 +29,11 @@ constexpr uint32_t kChunkWaitMs = 1000;
 constexpr int kChunkRetries = 3;
 constexpr size_t kChunkBytes = 1460;
 
-// NVS: the version of the newest manifest-verified update (anti-rollback).
+// NVS: the version of the newest manifest-verified update that was confirmed
+// on this node (anti-rollback floor), and the version a manifest-verified
+// flash left pending until its image is confirmed ("" = none).
 constexpr const char* kNvsOtaFloor = "ota_floor";
+constexpr const char* kNvsOtaFloorNext = "ota_floor_next";
 // A cmd frame is < 1024 bytes, so its base64 manifest is < 768 raw bytes.
 constexpr size_t kManifestBufBytes = 768;
 
@@ -205,42 +209,65 @@ void OtaService::on_datagram(const char* data, size_t len) {
         fail("auth_failed");
         return;
     }
+    // Every refusal is decided now, so it is the answer the pusher reads:
+    // after "OK" it only waits for a connect-back that would never come.
+    const char* refusal = prepare_update();
+    if (refusal != nullptr) {
+        reply("ERR ", refusal);
+        fail(refusal);
+        return;
+    }
     reply("OK");
     peer_ip_ = udp_.remoteIP();
     run_update();
 }
 
 void OtaService::fail(const char* reason) {
-    Serial.printf("[OTA] Error: %s\n", reason);
+    // SP_LOG, not just Serial: the reason reaches the Pi's node log too.
+    SP_LOG(LOG_WARN, "[OTA] Error: %s", reason);
     publish_event("error", "reason", reason);
+}
+
+const char* OtaService::prepare_update() {
+    const int cmd = invitation_.cmd;
+    const uint32_t size = invitation_.size;
+    // Signed-manifest gate, before anything is erased or switched off.
+    gate_result_ = gate_.begin(millis(), cmd, size, manifest_cfg_.require);
+    switch (gate_result_) {
+        case sp::OtaGate::Begin::Unverified:
+        case sp::OtaGate::Begin::Verified:
+            break;
+        default:
+            return sp::ota_gate_begin_str(gate_result_);
+    }
+    // Copied now: the arming is consumed, and the events outlive it.
+    manifest_version_[0] = '\0';
+    if (gate_result_ == sp::OtaGate::Begin::Verified)
+        strncpy(manifest_version_, gate_.manifest().version,
+                sizeof(manifest_version_) - 1);
+    // An image on probation must not overwrite the confirmed one in the
+    // other slot (image_rollback.h). A filesystem image leaves both alone.
+    if (cmd == U_FLASH && ready_fn_ != nullptr) {
+        const char* why = ready_fn_(ready_ctx_);
+        if (why != nullptr) {
+            gate_.disarm();
+            return why;
+        }
+    }
+    if (!Update.begin(size, cmd)) {
+        Serial.printf("[OTA] Begin ERROR: %s\n", Update.errorString());
+        gate_.disarm();
+        return "begin_failed";
+    }
+    Update.setMD5(invitation_.md5);
+    return nullptr;
 }
 
 void OtaService::run_update() {
     const int cmd = invitation_.cmd;
     const uint32_t size = invitation_.size;
-    // Signed-manifest gate, before anything is erased or switched off.
-    const sp::OtaGate::Begin gate =
-        gate_.begin(millis(), cmd, size, manifest_cfg_.require);
-    switch (gate) {
-        case sp::OtaGate::Begin::Unverified:
-        case sp::OtaGate::Begin::Verified:
-            break;
-        default:
-            fail(sp::ota_gate_begin_str(gate));
-            return;
-    }
+    const sp::OtaGate::Begin gate = gate_result_;  // prepare_update() accepted
     const bool verified = gate == sp::OtaGate::Begin::Verified;
-    // Copied now: the arming is consumed, and the event outlives it.
-    char manifest_version[sp::kOtaVersionMaxLen + 1] = {0};
-    if (verified)
-        strncpy(manifest_version, gate_.manifest().version,
-                sizeof(manifest_version) - 1);
-    if (!Update.begin(size, cmd)) {
-        Serial.printf("[OTA] Begin ERROR: %s\n", Update.errorString());
-        fail("begin_failed");
-        return;
-    }
-    Update.setMD5(invitation_.md5);
 
     const char* type = (cmd == U_FLASH) ? "firmware" : "filesystem";
     Serial.printf("[OTA] Start updating %s (%u bytes, %s)\n", type,
@@ -331,16 +358,35 @@ void OtaService::run_update() {
     client.stop();
     delay(10);
     Serial.println("\n[OTA] Update complete.");
+    // Anti-rollback: the floor rises to a verified version only once that
+    // image is confirmed here (image_confirmed). Until then it is pending;
+    // an unverified flash clears any pending one, so a later unrelated
+    // confirm can't promote a version that never ran.
+    if (manifest_cfg_.kv != nullptr)
+        manifest_cfg_.kv->set_string(kNvsOtaFloorNext,
+                                     verified ? manifest_version_ : "");
     if (verified) {
-        // Anti-rollback: no later manifest may go below this version.
-        if (manifest_cfg_.kv != nullptr)
-            manifest_cfg_.kv->set_string(kNvsOtaFloor, manifest_version);
-        publish_event("success", "manifest", manifest_version);
+        publish_event("success", "manifest", manifest_version_);
     } else {
         publish_event("success");
     }
     delay(100);  // let Serial / MQTT flush before the reboot
     ESP.restart();
+}
+
+void OtaService::image_confirmed() {
+    sp::KvStore* kv = manifest_cfg_.kv;
+    if (kv == nullptr) return;
+    const std::string pending = kv->get_string(kNvsOtaFloorNext, "");
+    if (pending.empty()) return;
+    const std::string floor = kv->get_string(kNvsOtaFloor, "");
+    if (sp::ota_floor_promotable(pending.c_str(), manifest_cfg_.fw_version,
+                                 floor.c_str())) {
+        kv->set_string(kNvsOtaFloor, pending);
+        SP_LOG(LOG_INFO, "[OTA] anti-rollback floor raised to %s",
+               pending.c_str());
+    }
+    kv->set_string(kNvsOtaFloorNext, "");  // consumed either way
 }
 
 }  // namespace sp_device

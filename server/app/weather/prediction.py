@@ -12,8 +12,12 @@ import logging
 import time
 
 from ..db import get_db
+from .providers import as_finite
 
 log = logging.getLogger(__name__)
+
+# Outdoor humidity a prediction assumes for a forecast hour that has none.
+_DEFAULT_OUTDOOR_HUMIDITY = 50.0
 
 MIN_TRAINING_DAYS = 7
 TRAINING_WINDOW_DAYS = 30
@@ -53,7 +57,12 @@ async def retrain_models():
 
 
 async def predict_indoor_conditions(forecast: list[dict]) -> list[dict]:
-    """Given hourly forecast entries, predict indoor temp/humidity for each hour."""
+    """Given hourly forecast entries, predict indoor temp/humidity for each hour.
+
+    An hour with no outdoor temperature is skipped and a missing humidity is
+    taken as 50 %: providers send gaps as null, and one None used to raise
+    TypeError and drop every forecast alert of the poll.
+    """
     temp_model = await _load_latest_model("temp")
     humidity_model = await _load_latest_model("humidity")
 
@@ -62,10 +71,13 @@ async def predict_indoor_conditions(forecast: list[dict]) -> list[dict]:
 
     predictions = []
     for entry in forecast:
-        ts = entry.get("timestamp", 0)
+        outdoor_temp = as_finite(entry.get("temp_f"))
+        if outdoor_temp is None:
+            continue
+        humidity = as_finite(entry.get("humidity"))
+        outdoor_hum = _DEFAULT_OUTDOOR_HUMIDITY if humidity is None else humidity
+        ts = entry.get("timestamp") or 0
         hour = int((ts % 86400) / 3600)
-        outdoor_temp = entry.get("temp_f", 72)
-        outdoor_hum = entry.get("humidity", 50)
 
         predicted_temp = _predict(temp_model, outdoor_temp, outdoor_hum, hour)
         predicted_hum = _predict(humidity_model, outdoor_temp, outdoor_hum, hour) if humidity_model else None
@@ -75,7 +87,7 @@ async def predict_indoor_conditions(forecast: list[dict]) -> list[dict]:
             "predicted_indoor_temp_f": round(predicted_temp, 1),
             "predicted_indoor_humidity": round(predicted_hum, 1) if predicted_hum is not None else None,
             "outdoor_temp_f": outdoor_temp,
-            "outdoor_humidity": outdoor_hum,
+            "outdoor_humidity": humidity,
         })
 
     return predictions
@@ -128,6 +140,12 @@ async def _build_training_data() -> list[dict]:
     sample count so an hour mixing both sources averages correctly. A reading
     lives in exactly one of the two tables (retention moves it atomically), so
     nothing is double counted.
+
+    The indoor temperature is the hour's temp_f mean, else its temp_c mean in
+    °F: the ESP32 climate nodes publish both for every reading (averaging the
+    two would count each reading twice), while integration sensors (Aranet,
+    Pulse, Trane, ...) write only temp_c, so a closet watched by integrations
+    alone used to train no model and never get a forecast alert.
     """
     cutoff = time.time() - TRAINING_WINDOW_DAYS * 86400
     async with get_db() as db:
@@ -136,18 +154,23 @@ async def _build_training_data() -> list[dict]:
                    SELECT CAST(timestamp / 3600 AS INT) * 3600 AS hour_ts,
                           sensor, value AS v, 1 AS n
                      FROM telemetry_readings
-                    WHERE sensor IN ('temp_f', 'humidity') AND timestamp > ?
+                    WHERE sensor IN ('temp_f', 'temp_c', 'humidity') AND timestamp > ?
                    UNION ALL
                    SELECT CAST(timestamp / 3600 AS INT) * 3600 AS hour_ts,
                           sensor, avg_value AS v, COALESCE(count, 1) AS n
                      FROM telemetry_rollups
-                    WHERE resolution = '5min' AND sensor IN ('temp_f', 'humidity')
+                    WHERE resolution = '5min' AND sensor IN ('temp_f', 'temp_c', 'humidity')
                       AND timestamp > ? AND avg_value IS NOT NULL
                ),
                indoor_hourly AS (
                    SELECT hour_ts,
-                          SUM(CASE WHEN sensor = 'temp_f' THEN v * n END)
-                            / NULLIF(SUM(CASE WHEN sensor = 'temp_f' THEN n END), 0) AS indoor_temp,
+                          COALESCE(
+                            SUM(CASE WHEN sensor = 'temp_f' THEN v * n END)
+                              / NULLIF(SUM(CASE WHEN sensor = 'temp_f' THEN n END), 0),
+                            SUM(CASE WHEN sensor = 'temp_c' THEN v * n END)
+                              / NULLIF(SUM(CASE WHEN sensor = 'temp_c' THEN n END), 0)
+                              * 9.0 / 5.0 + 32
+                          ) AS indoor_temp,
                           SUM(CASE WHEN sensor = 'humidity' THEN v * n END)
                             / NULLIF(SUM(CASE WHEN sensor = 'humidity' THEN n END), 0) AS indoor_humidity
                      FROM indoor

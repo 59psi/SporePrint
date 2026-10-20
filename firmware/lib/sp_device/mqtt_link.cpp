@@ -2,8 +2,10 @@
 
 #include <WiFi.h>
 
-#include "cmd_router.h"   // sp::cmd_suffix
-#include "link_budget.h"  // connect-attempt time budget vs the loop WDT
+#include "chunked_writer.h"  // chunked publish
+#include "cmd_router.h"      // sp::cmd_suffix
+#include "link_budget.h"     // connect-attempt time budget vs the loop WDT
+#include "log_forward.h"     // SP_LOG
 
 namespace sp_device {
 
@@ -36,6 +38,7 @@ void MqttLink::switch_transport(Client& transport, uint16_t port) {
         mqtt_.disconnect();
     }
     mqtt_.setClient(transport);
+    transport_ = &transport;
     port_ = port;
     mqtt_.setServer(host_.c_str(), port_);
     // Eligible for a connect attempt on the next allowed pass.
@@ -94,14 +97,26 @@ void MqttLink::connect_attempt() {
 
 bool MqttLink::publish(const char* topic_name, JsonDocument& doc, bool retain) {
     if (!mqtt_.connected()) return false;
-    size_t len = measureJson(doc);
+    const size_t len = measureJson(doc);
     if (!mqtt_.beginPublish(topic_name, len, retain)) return false;
-    // PubSubClient is a Print — the document streams straight into the
-    // packet. No intermediate buffer exists to truncate.
-    size_t written = serializeJson(doc, mqtt_);
-    bool ok = mqtt_.endPublish() && written == len;
-    if (!ok) Serial.printf("[MQTT] publish to %s failed\n", topic_name);
-    return ok;
+    // The document streams into the packet in 256-byte transport writes —
+    // ArduinoJson's per-character writes went out one TLS record, one TCP
+    // segment (or, on a stalled socket, one 10 s write retry loop) each.
+    sp::ChunkedWriter<PubSubClient> out(mqtt_);
+    serializeJson(doc, out);
+    if (!out.flush() || out.written() != len) {
+        // The packet on the wire is incomplete: the stream is desynced, and
+        // a stalled socket would block every further write. Drop the
+        // connection at once (no DISCONNECT packet — that is one more write
+        // into the same socket); the next allowed pass reconnects. Serial
+        // only: a forwarded log line would be published in turn.
+        Serial.printf("[MQTT] publish to %s failed (%u of %u bytes) - "
+                      "dropping the connection\n",
+                      topic_name, (unsigned)out.written(), (unsigned)len);
+        transport_->stop();
+        return false;
+    }
+    return mqtt_.endPublish();
 }
 
 bool MqttLink::publish_raw(const char* topic_name, const char* payload,
@@ -119,9 +134,12 @@ void MqttLink::handle_message(char* topic, uint8_t* payload,
                               unsigned int length) {
     if (length >= kInboundCap) {
         // Drop oversize frames explicitly — truncating produced garbled
-        // JSON in v1 and the parse failure hid the real problem.
-        Serial.printf("[MQTT] Dropping oversize frame on %s (%u bytes)\n", topic,
-                      length);
+        // JSON in v1 and the parse failure hid the real problem. Logged
+        // through SP_LOG so the drop reaches the Pi's node log, not just the
+        // serial console.
+        SP_LOG(LOG_WARN, "[MQTT] Dropping oversize frame on %s (%u bytes, "
+                         "cap %u)",
+               topic, length, (unsigned)kInboundCap);
         return;
     }
     // sporeprint/<id>/cmd/<suffix> → suffix (host-tested in test_core_channel).
@@ -138,7 +156,7 @@ void MqttLink::handle_message(char* topic, uint8_t* payload,
     // HMAC verifier needs. The const view forces copy mode.
     DeserializationError err = deserializeJson(doc, (const char*)json);
     if (err) {
-        Serial.printf("[MQTT] JSON parse error on %s: %s\n", topic, err.c_str());
+        SP_LOG(LOG_WARN, "[MQTT] JSON parse error on %s: %s", topic, err.c_str());
         return;
     }
     if (cmd_fn_) cmd_fn_(suffix, json, (size_t)length, doc, cmd_ctx_);

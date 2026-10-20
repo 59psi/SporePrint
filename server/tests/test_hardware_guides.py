@@ -2,7 +2,7 @@
 
 server/app/builder/hardware_guides.py is what the Builder page renders as the
 shopping list, wiring table and setup steps. Every assertion here pins a
-defect the 2026-09 hardware audit found in that file:
+defect that file once had:
 
 - quantities that did not match the circuits the wiring table draws (4
   MOSFETs for 6 gates, no 100 ohm gate resistors, no pull-up for the reed);
@@ -10,12 +10,11 @@ defect the 2026-09 hardware audit found in that file:
 - wiring rows naming GPIOs outside the firmware pin map, and firmware_targets
   naming envs platformio.ini does not define;
 - setup steps that could not produce a working install: setup.sh instead of
-  install.sh (srv-hw#7), no per-node MQTT credential (srv-hw#8), Tasmota
-  plugs without the sp-3p credential and FullTopic (srv-hw#9, docs#2,
-  deps-infra#11), an S3 env with no S3 pin map (srv-hw#15);
-- missing USB power for every node and camera (docs#25), M-F jumpers where the
+  install.sh, no per-node MQTT credential, Tasmota plugs without the sp-3p
+  credential and FullTopic, an S3 env with no S3 pin map;
+- missing USB power for every node and camera, M-F jumpers where the
   sensors chain over STEMMA QT, and capability bullets with no code behind
-  them (docs#26).
+  them.
 
 The setup steps also mark commands, paths, payloads, topics, env names and
 config keys as `code` for the Builder to render copyable; every marked span
@@ -372,6 +371,14 @@ def test_api_exposes_pack_size(client):
         assert [c["quantity"] for c in body["components"]] == [c.quantity for c in tier.components]
 
 
+def test_tier_summary_counts_bom_lines(client):
+    """component_count summed every line's quantity, adding feet of wire,
+    grams of solder and kit pieces into one figure that counted nothing."""
+    summary = {s["id"]: s for s in client.get("/api/builder/tiers").json()}
+    for tier in TIERS:
+        assert summary[tier.id]["component_count"] == len(tier.components), tier.id
+
+
 # ── switch-stage quantities ─────────────────────────────────────────────────
 
 
@@ -548,7 +555,7 @@ def test_s3_mentions_point_at_the_s3_pin_map(tier_id):
 
 # ── capability claims ───────────────────────────────────────────────────────
 
-# Phrases for features the Pi server does not implement (docs#26). Re-adding
+# Phrases for features the Pi server does not implement. Re-adding
 # one needs the code first.
 _UNIMPLEMENTED = [
     r"kWh", r"PID", r"[Tt]imelapse generation", r"[Qq]uiet hours", r"EXIF",
@@ -711,6 +718,18 @@ def test_surge_strip_has_an_outlet_per_brick():
         bricks = 1 + (1 if _has(tier, r"12V Power Supply") else 0)
         plugs = _qty(tier, r"Tasmota")
         assert bricks + cubes + plugs <= outlets[tier.id], tier.id
+
+
+def test_signal_cables_and_jumpers_are_wiring_lines():
+    """Cabling is a `wiring` line: the STEMMA QT cables and Dupont jumpers
+    were `misc`, so the build guide's cabling-table check never saw them."""
+    seen = set()
+    for tier in TIERS:
+        for c in tier.components:
+            if c.name.startswith(("STEMMA QT", "Dupont")):
+                seen.add(c.name.split()[0])
+                assert c.category == "wiring", (tier.id, c.name, c.category)
+    assert seen == {"STEMMA", "Dupont"}, seen
 
 
 def test_shared_lines_are_kits_or_pi_side_only():
@@ -880,7 +899,7 @@ def test_pack_notes_state_how_many_chambers_one_pack_covers(tier_id):
             continue
         covers = (c.pack_size - c.shared_units) // c.quantity
         stated = [int(n) for n in _COVERS_RE.findall(c.notes)]
-        if c.category in ("wiring", "hardware") or c.name.startswith("Dupont"):
+        if c.category in ("wiring", "hardware"):
             if covers >= 2:
                 assert stated, f"{tier_id}: {c.name} never says how many chambers one pack covers"
         assert all(s == covers for s in stated), (c.name, stated, covers)
@@ -1147,7 +1166,8 @@ def _acl_grants(text: str) -> dict[str, list[tuple[str, str]]]:
 def _facts() -> SimpleNamespace:
     compose = yaml.safe_load(_read(COMPOSE))
     services = compose["services"]
-    published = {str(p).split(":")[0] for s in services.values() for p in s.get("ports", [])}
+    # The host port of each `[HOST_IP:]HOST_PORT:CONTAINER_PORT` mapping.
+    published = {str(p).rsplit(":", 2)[-2] for s in services.values() for p in s.get("ports", [])}
     install = _read(INSTALL_SH)
     repo_url = re.search(r'REPO_URL="\$\{SPOREPRINT_REPO_URL:-([^}]+)\}"', install)
     assert repo_url, "install.sh no longer names its default repo URL"

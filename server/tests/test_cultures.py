@@ -1,5 +1,7 @@
 import pytest
 
+from app.db import get_db
+from app.species.service import seed_builtins
 from app.cultures.models import CultureCreate, CultureUpdate
 from app.cultures.service import (
     CultureHasDescendants,
@@ -66,7 +68,25 @@ async def test_list_cultures_filter_species():
     await create_culture(_make_culture(species_profile_id="lion_s_mane"))
     result = await list_cultures(species_id="lion_s_mane")
     assert len(result) == 1
-    assert result[0]["species_profile_id"] == "lion_s_mane"
+    # Stored the way sessions store a species (hyphenated)...
+    assert result[0]["species_profile_id"] == "lion-s-mane"
+    # ... and found under either spelling.
+    assert len(await list_cultures(species_id="lion-s-mane")) == 1
+
+
+async def test_species_filter_finds_every_spelling():
+    """A culture posted as 'lions_mane' was stored verbatim and the dashboard's
+    'lions-mane' filter missed it; an older 'lions-mane' row the reverse."""
+    await seed_builtins()
+    posted = await create_culture(_make_culture(species_profile_id="lions_mane"))
+    assert posted["species_profile_id"] == "lions-mane"
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO cultures (type, species_profile_id, source) VALUES ('agar', 'lions_mane', 'vendor')")
+        await db.commit()
+    for spelling in ("lions_mane", "lions-mane"):
+        assert len(await list_cultures(species_id=spelling)) == 2, spelling
+    assert len(await list_cultures(species_id="blue_oyster")) == 0
 
 
 async def test_list_cultures_filter_status():
@@ -238,7 +258,7 @@ async def test_contamination_rate_no_children():
     assert tree["total_children"] == 0
 
 
-# ── FK violations surface as client errors, not 500s (srv-rest#29) ──
+# ── FK violations surface as client errors, not 500s ────────────────
 
 
 async def test_delete_culture_with_children_is_refused():

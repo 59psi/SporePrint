@@ -1,18 +1,22 @@
 """Vision-pipeline contamination handling + Claude request/persistence contract.
 
-srv-rest#4  — any object in `contamination_detected` (even {type: "none",
-              confidence: 0}) paged a CRITICAL; no confidence threshold.
-srv-rest#11 — detections were never written to contamination_events, so the
-              Contamination page, RCA flow and chamber contamination rates
-              only ever saw manual/identify rows.
-srv-rest#8  — every frame was declared to Claude as image/jpeg, so PNG/WebP
-              frames were rejected by the API.
-srv-rest#33 — a failed manual re-analyze overwrote the frame's good stored
-              analysis with an {"error": ...} blob.
+- any object in `contamination_detected` (even {type: "none",
+  confidence: 0}) paged a CRITICAL; no confidence threshold.
+- detections were never written to contamination_events, so the
+  Contamination page, RCA flow and chamber contamination rates
+  only ever saw manual/identify rows.
+- every frame was declared to Claude as image/jpeg, so PNG/WebP
+  frames were rejected by the API.
+- a failed manual re-analyze overwrote the frame's good stored
+  analysis with an {"error": ...} blob.
 """
 
+import asyncio
+import base64
 import json
+import sqlite3
 import time
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,7 +25,12 @@ import app.vision.router as vrouter
 from app.config import settings
 from app.db import get_db
 from app.vision import service
-from app.vision.service import analyze_frame_claude, contamination_signal, insert_frame
+from app.vision.service import (
+    analyze_frame_claude,
+    contamination_signal,
+    get_frame_by_id,
+    insert_frame,
+)
 
 
 class _FakeBlock:
@@ -120,7 +129,126 @@ def test_signal_tiers():
         {"contamination_detected": {"type": "cobweb", "confidence": 85}})[2] == 0.85
 
 
+@pytest.mark.parametrize("negated", [
+    "None detected", "No contamination", "not present", "Nothing visible",
+    "none_detected", "No-contamination", "Healthy - no contamination",
+])
+def test_signal_negated_types_are_no_detection(negated):
+    """Only exact tokens ("none", "no") meant nothing found: "None detected"
+    at 0.95 paged CRITICAL and logged an event for a healthy block."""
+    result = {"health_assessment": "healthy",
+              "contamination_detected": {"type": negated, "confidence": 0.95}}
+    assert contamination_signal(result)[0] is None
+
+
+def test_signal_matches_whole_words_not_prefixes():
+    """A real type that merely begins with a negating word's letters counts."""
+    tier, ctype, _ = contamination_signal({
+        "health_assessment": "contaminated",
+        "contamination_detected": {"type": "nocardia", "confidence": 0.9}})
+    assert (tier, ctype) == ("critical", "nocardia")
+
+
+def test_signal_list_of_detections_uses_the_strongest():
+    """A list-valued detection was ignored, so a real one never paged."""
+    tier, ctype, conf = contamination_signal({
+        "health_assessment": "contaminated",
+        "contamination_detected": [{"type": "trichoderma", "confidence": 0.9}]})
+    assert (tier, ctype, conf) == ("critical", "trichoderma", 0.9)
+    tier, ctype, _ = contamination_signal({"contamination_detected": [
+        {"type": "none", "confidence": 0.99}, "junk", {"type": "cobweb", "confidence": 0.45}]})
+    assert (tier, ctype) == ("warning", "cobweb")
+    assert contamination_signal({"contamination_detected": []})[0] is None
+
+
+def test_signal_confident_detection_in_a_healthy_read_is_a_warning():
+    """An early spot inside an overall-healthy read is worth a look, not a page."""
+    tier, ctype, _ = contamination_signal({
+        "health_assessment": "healthy",
+        "contamination_detected": {"type": "trichoderma", "confidence": 0.9}})
+    assert (tier, ctype) == ("warning", "trichoderma")
+
+
+def test_signal_contaminated_read_without_a_detection_object_still_pages():
+    tier, ctype, conf = contamination_signal({
+        "health_assessment": "contaminated", "confidence": 0.85,
+        "contamination_detected": None})
+    assert (tier, ctype, conf) == ("critical", "unknown", 0.85)
+    tier, ctype, _ = contamination_signal({
+        "health_assessment": "contaminated", "confidence": 0.9,
+        "contamination_detected": "trichoderma"})
+    assert (tier, ctype) == ("critical", "trichoderma")
+    assert contamination_signal({"health_assessment": "concern",
+                                 "contamination_detected": None})[0] is None
+
+
 # ── analyze_frame_claude wiring ─────────────────────────────────────────────
+
+
+async def test_negated_detection_in_a_healthy_read_does_not_page(tmp_path, monkeypatch, spies):
+    sid, _ = await _session_with_chamber()
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic(
+        [{"health_assessment": "healthy",
+          "contamination_detected": {"type": "None detected", "confidence": 0.95}}], []))
+    await analyze_frame_claude(await _frame(tmp_path, sid))
+    spies["alert"].assert_not_awaited()
+    spies["warning"].assert_not_awaited()
+    spies["forward"].assert_not_awaited()
+    assert await _vision_events(sid) == []
+
+
+async def test_listed_detection_pages_and_records_the_event(tmp_path, monkeypatch, spies):
+    sid, _ = await _session_with_chamber()
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic(
+        [{"health_assessment": "contaminated",
+          "contamination_detected": [{"type": "trichoderma", "confidence": 0.9}]}], []))
+    await analyze_frame_claude(await _frame(tmp_path, sid))
+    spies["alert"].assert_awaited_once()
+    [event] = await _vision_events(sid)
+    assert event["contamination_type"] == "trichoderma"
+
+
+async def test_a_failing_alert_keeps_the_paid_analysis(tmp_path, monkeypatch, spies):
+    """A side effect raising (a database lock held past busy_timeout) turned
+    the parsed result into {"error": ...}: callers never stored it, the other
+    alerts were skipped, and the auto path could not retry for 6 h."""
+    async with get_db() as db:
+        cur = await db.execute(
+            "INSERT INTO sessions (name, species_profile_id, status, current_phase) "
+            "VALUES ('locked', 'blue-oyster', 'active', 'substrate_colonization')")
+        await db.commit()
+        sid = cur.lastrowid
+    analysis = {"health_assessment": "healthy", "colonization_percent": 99, "surface": "bag"}
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic([analysis], []))
+    monkeypatch.setattr(service, "_maybe_harvest_alert",
+                        AsyncMock(side_effect=sqlite3.OperationalError("database is locked")))
+    frame = await _frame(tmp_path, sid)
+
+    assert await analyze_frame_claude(frame) == analysis
+    # The alerts after the failing one still ran.
+    spies["warning"].assert_awaited_once()  # colonization complete
+    # And the auto path persists the analysis.
+    await service._run_auto_analysis(frame)
+    assert (await get_frame_by_id(frame["id"]))["analysis_claude"] == analysis
+
+
+async def test_failed_dedup_lookup_still_records_and_pages(tmp_path, monkeypatch, spies):
+    """The dedup SELECT was unguarded: a database error there dropped a
+    confident contamination read unrecorded and unpaged."""
+    sid, chamber_id = await _session_with_chamber()
+    frame = await _frame(tmp_path, sid)
+
+    @asynccontextmanager
+    async def locked_db():
+        raise sqlite3.OperationalError("database is locked")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(service, "get_db", locked_db)
+    await service._handle_contamination(frame, "critical", "trichoderma", 0.9,
+                                        "Blue Oyster", chamber_id)
+    spies["alert"].assert_awaited_once()
+    spies["forward"].assert_awaited_once()
+    assert len(await _vision_events(sid)) == 1
 
 
 async def test_none_type_detection_does_not_page(tmp_path, monkeypatch, spies):
@@ -191,7 +319,83 @@ async def test_png_frame_is_declared_as_png(tmp_path, monkeypatch, spies):
     assert image["source"]["media_type"] == "image/png"
 
 
+async def test_frame_image_is_read_and_encoded_off_the_event_loop(tmp_path, monkeypatch, spies):
+    """Reading and base64-encoding up to 20 MB runs in a worker thread, not on
+    the loop that serves MQTT and the rules."""
+    sid, _ = await _session_with_chamber()
+    capture: list[dict] = []
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic(
+        [{"health_assessment": "healthy"}], capture))
+    offloaded = []
+    real_to_thread = asyncio.to_thread
+
+    async def recording_to_thread(fn, *args, **kwargs):
+        offloaded.append(fn)
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recording_to_thread)
+    await analyze_frame_claude(await _frame(tmp_path, sid))
+    assert service._load_image_for_claude in offloaded
+    image = capture[0]["messages"][0]["content"][0]["source"]
+    assert image["media_type"] == "image/jpeg"
+    assert base64.standard_b64decode(image["data"]) == b"\xff\xd8\xff\xe0jpeg"
+
+
+def _prose_anthropic(text: str):
+    """AsyncAnthropic stand-in whose reply is prose with no JSON object."""
+
+    class _Messages:
+        async def create(self, **kwargs):
+            return _FakeMessage(text)
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.messages = _Messages()
+
+    return _Client
+
+
+async def test_prose_reply_is_an_error_not_an_analysis(tmp_path, monkeypatch, spies):
+    """A complete reply with no JSON object parsed to {"raw_response": ...},
+    which callers persisted as the frame's analysis (no health_assessment)."""
+    sid, _ = await _session_with_chamber()
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic",
+                        _prose_anthropic("I can't make out any mushrooms in this dark frame."))
+    result = await analyze_frame_claude(await _frame(tmp_path, sid))
+    assert result["error"] == "Claude returned no JSON analysis"
+    assert "dark frame" in result["raw_response"]
+    spies["alert"].assert_not_awaited()
+    spies["warning"].assert_not_awaited()
+    spies["forward"].assert_not_awaited()
+
+
 # ── manual re-analyze must not clobber a good analysis ──────────────────────
+
+
+def test_prose_reanalyze_keeps_the_flagged_analysis(client, monkeypatch, tmp_path):
+    """A prose re-analysis used to overwrite a 'concern' read, after which
+    retention no longer counted the frame as notable."""
+    monkeypatch.setattr(settings, "vision_storage", str(tmp_path / "frames"))
+    monkeypatch.setattr(settings, "claude_api_key", "test-key")
+    r = client.post(
+        "/api/vision/frame",
+        content=b"\xff\xd8\xff\xe0jpeg",
+        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01"},
+    )
+    frame_id = r.json()["frame_id"]
+
+    flagged = {"health_assessment": "concern", "summary": "check the corner"}
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic([flagged], []))
+    assert client.post(f"/api/vision/frames/{frame_id}/analyze").json() == flagged
+
+    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _prose_anthropic("Too dark to tell."))
+    r = client.post(f"/api/vision/frames/{frame_id}/analyze")
+    assert r.json()["error"] == "Claude returned no JSON analysis"
+
+    frame = client.get(f"/api/vision/frames/{frame_id}").json()
+    assert frame["analysis_claude"] == flagged
+    assert service._frame_is_notable({"analysis_local": None,
+                                      "analysis_claude": json.dumps(frame["analysis_claude"])})
 
 
 def test_failed_reanalyze_keeps_previous_analysis(client, monkeypatch, tmp_path):
@@ -213,4 +417,4 @@ def test_failed_reanalyze_keeps_previous_analysis(client, monkeypatch, tmp_path)
     assert r.json()["error"] == "rate limited"  # the UI still sees the failure
 
     stored = client.get(f"/api/vision/frames/{frame_id}").json()["analysis_claude"]
-    assert json.loads(stored) == good
+    assert stored == good

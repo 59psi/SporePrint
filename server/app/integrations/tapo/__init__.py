@@ -1,17 +1,18 @@
 """TP-Link Tapo integration (dual transport — local + cloud).
 
-Tapo is TP-Link's newer smart-plug line (post-2020). Two transports:
+Tapo is TP-Link's newer smart-plug line (post-2020). Two transports,
+both free on the Pi (it has no paygate):
 
-- **Local mode** (free): KLAP handshake + AES-128-CBC encrypted commands
+- **Local mode**: KLAP handshake + AES-128-CBC encrypted commands
   on TCP/80. Newer firmware (≥1.1.x on most models) exposes the
   `/app/handshake1` and `/app/handshake2` endpoints; older firmware
   uses the legacy "secure_passthrough" RSA path which is currently
   out of scope (use cloud transport instead).
 
-- **Cloud mode** (premium): tplinkcloud.com OAuth flow with
-  `passthrough` device commands. Works regardless of firmware version
-  but routes through TP-Link's cloud — credentials live on the Pi
-  (encrypted at rest). Premium per ``feedback_tier_model``.
+- **Cloud mode**: tplinkcloud.com OAuth flow with `passthrough` device
+  commands. Works regardless of firmware version but routes through
+  TP-Link's cloud — the operator's own account, whose credentials live
+  on the Pi (encrypted at rest).
 
 ⚠ **Live-device verification needed** for the local KLAP path. The
 on-wire shape is documented but cipher-key-derivation specifics

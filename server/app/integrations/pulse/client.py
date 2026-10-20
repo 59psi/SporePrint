@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from .models import (
     PulseDeviceListResponse,
@@ -34,6 +35,22 @@ class PulseError(RuntimeError):
     """Raised when Pulse returns a non-2xx or unparseable response."""
 
 
+class PulseLoginRefused(PulseError):
+    """Pulse refused the account's email + password (401 on login)."""
+
+
+_LOGIN_PATH = "/v2/auth/login"
+
+
+def _parse(from_payload, raw, *args):
+    """Run a model's from_payload on a response body; a body that still does
+    not validate is a PulseError like any other bad response, not a crash."""
+    try:
+        return from_payload(raw, *args)
+    except ValidationError as exc:
+        raise PulseError(f"unexpected response shape: {exc}") from exc
+
+
 class PulseCloudClient:
     def __init__(
         self,
@@ -52,6 +69,11 @@ class PulseCloudClient:
         self._api_base = api_base.rstrip("/")
         self._timeout_s = timeout_s
         self._token: str | None = None
+        # Pulse's answer to a login it refused. These credentials are not
+        # sent again (repeated failed logins can lock the account) until
+        # clear_login_refusal(): the driver calls it on every save, and a
+        # credential change builds a new client.
+        self._login_refused: str | None = None
 
     def _headers(self) -> dict[str, str]:
         h = {
@@ -88,7 +110,7 @@ class PulseCloudClient:
             if own_client:
                 await client.aclose()
 
-        if resp.status_code == 401 and retry_on_401 and path != "/v2/auth/login":
+        if resp.status_code == 401 and retry_on_401 and path != _LOGIN_PATH:
             # Token expired — discard and try again with a fresh login.
             self._token = None
             await self.login()
@@ -96,9 +118,8 @@ class PulseCloudClient:
                 method, path, json=json, retry_on_401=False
             )
         if resp.status_code == 401:
-            raise PulseError(
-                "401 unauthorized — check email + password"
-            )
+            error = PulseLoginRefused if path == _LOGIN_PATH else PulseError
+            raise error("401 unauthorized — check email + password")
         if resp.status_code == 429:
             raise PulseError("429 rate-limited — back off and retry")
         if resp.status_code >= 400:
@@ -112,24 +133,45 @@ class PulseCloudClient:
             raise PulseError(f"non-JSON response: {exc}") from exc
 
     async def login(self) -> str:
-        """Exchange email + password for a session token."""
-        raw = await self._request(
-            "POST",
-            "/v2/auth/login",
-            json={"email": self._email, "password": self._password},
-            retry_on_401=False,
-        )
-        parsed = PulseLoginResponse.from_payload(raw)
+        """Exchange email + password for a session token.
+
+        A login Pulse refuses (401, or a reply without a token) is
+        remembered: this client then fails at once instead of sending the
+        same credentials every poll. Network errors are not remembered.
+        """
+        if self._login_refused is not None:
+            raise PulseError(self._login_refused)
+        try:
+            raw = await self._request(
+                "POST",
+                _LOGIN_PATH,
+                json={"email": self._email, "password": self._password},
+                retry_on_401=False,
+            )
+        except PulseLoginRefused as exc:
+            self._login_refused = (
+                f"{exc} (not retried until the credentials are saved again)"
+            )
+            raise PulseError(self._login_refused) from exc
+        parsed = _parse(PulseLoginResponse.from_payload, raw)
         if not parsed.token:
-            raise PulseError("login succeeded but no token in response")
+            self._login_refused = (
+                "login succeeded but no token in response "
+                "(not retried until the credentials are saved again)"
+            )
+            raise PulseError(self._login_refused)
         self._token = parsed.token
         return parsed.token
+
+    def clear_login_refusal(self) -> None:
+        """Allow one more login with these credentials (an operator save)."""
+        self._login_refused = None
 
     async def list_devices(self) -> PulseDeviceListResponse:
         if not self._token:
             await self.login()
         raw = await self._request("GET", "/v2/devices")
-        return PulseDeviceListResponse.from_payload(raw)
+        return _parse(PulseDeviceListResponse.from_payload, raw)
 
     async def recent_data(self, device_id: str) -> PulseRecentDataResponse:
         if not self._token:
@@ -137,7 +179,7 @@ class PulseCloudClient:
         raw = await self._request(
             "GET", f"/v2/devices/{device_id}/recent-data?limit=1"
         )
-        return PulseRecentDataResponse.from_payload(raw, device_id)
+        return _parse(PulseRecentDataResponse.from_payload, raw, device_id)
 
     @property
     def has_token(self) -> bool:

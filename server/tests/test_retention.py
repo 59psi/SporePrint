@@ -91,7 +91,7 @@ async def test_full_retention_run():
     await run_retention()
 
 
-# ── automation_firings pruning (srv-auto#18) ───────────────────────────────
+# ── automation_firings pruning ─────────────────────────────────────────────
 
 async def _firing(ts: float, session_id: int | None = None, *, fk: bool = True) -> None:
     async with get_db() as db:

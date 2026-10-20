@@ -5,10 +5,12 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from ..db import get_db
-from ..sessions.service import get_session
+from ..db import check_references, get_db
+from ..sessions.service import get_session, phase_params_for
 from ..species.models import GrowPhase, SpeciesProfile
 from ..species.service import get_all_profiles, get_profile
+from ..weather.providers import as_finite
+from ..weather.service import get_current_weather, get_forecast_cached, local_date
 
 log = logging.getLogger(__name__)
 
@@ -277,9 +279,10 @@ async def get_session_warnings(session_id: int) -> dict:
     """Check current + forecast weather against session's species requirements.
 
     Returns warning level (ok/info/warning/critical), message, and forecast warnings.
+    The setpoints are the ones in force (phase_params_for): a rest phase the
+    profile does not define is checked against the fruiting envelope the
+    engine runs, not reported as having no parameters.
     """
-    from ..weather.service import get_cached_weather, get_cached_forecast
-
     session = await get_session(session_id)
     if not session:
         return {"level": "info", "message": "Session not found.", "forecast_warnings": []}
@@ -289,15 +292,14 @@ async def get_session_warnings(session_id: int) -> dict:
         return {"level": "info", "message": "Species profile not found.", "forecast_warnings": []}
 
     current_phase = session["current_phase"]
-    try:
-        phase_params = profile.phases.get(GrowPhase(current_phase))
-    except (ValueError, KeyError):
-        phase_params = None
+    phase_params = phase_params_for(profile, current_phase, session.get("growth_form"))
     if not phase_params:
         return {"level": "info", "message": f"No parameters for phase '{current_phase}'.", "forecast_warnings": []}
 
-    # Check current weather
-    weather = get_cached_weather()
+    # Current weather, None once it is stale (the providers stopped
+    # answering): an hours-old reading is not a "current outdoor temp" to
+    # call for immediate action on.
+    weather = get_current_weather()
     level = "ok"
     message = f"Conditions look good for {profile.common_name} ({current_phase.replace('_', ' ')})."
     forecast_warnings = []
@@ -337,37 +339,36 @@ async def get_session_warnings(session_id: int) -> dict:
                     f"({phase_params.temp_min_f:.0f} deg F)."
                 )
 
-    # Check 7-day forecast for sustained unfavorable conditions
-    forecast = get_cached_forecast()
+    # Check 7-day forecast for sustained unfavorable conditions (the same
+    # freshness rule as the forecast alerts and GET /api/weather/forecast)
+    forecast = get_forecast_cached()
     if forecast:
         unfavorable_days = 0
         now = time.time()
 
-        # Group forecast into daily buckets
-        daily: dict[int, list[dict]] = defaultdict(list)
+        # Group the coming hours into the operator's local days (the weather
+        # service's local_date boundary); hours with no temperature are gaps
+        # in the provider's data, not 72 °F.
+        daily: dict = defaultdict(list)
         for entry in forecast:
-            ts = entry.get("timestamp", 0)
-            if ts < now:
+            ts = entry.get("timestamp") or 0
+            temp = as_finite(entry.get("temp_f"))
+            if ts < now or temp is None:
                 continue
-            day_key = int(ts / 86400)
-            daily[day_key].append(entry)
+            daily[local_date(ts)].append(temp)
 
-        for day_key in sorted(daily):
-            entries = daily[day_key]
-            temps = [e.get("temp_f", 72) for e in entries]
+        for day in sorted(daily):
+            temps = daily[day]
             avg_temp = sum(temps) / len(temps)
             est_chamber = avg_temp + INSULATION_BUFFER_F
-
-            day_ts = day_key * 86400
-            t = time.gmtime(day_ts)
-            day_name = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][t.tm_wday]
+            day_name = day.strftime("%a")
 
             if est_chamber > phase_params.temp_max_f + 5 or est_chamber < phase_params.temp_min_f - 5:
                 unfavorable_days += 1
                 direction = "hot" if est_chamber > phase_params.temp_max_f else "cold"
                 forecast_warnings.append({
                     "day": day_name,
-                    "date": time.strftime("%Y-%m-%d", t),
+                    "date": day.isoformat(),
                     "avg_outdoor_temp_f": round(avg_temp, 1),
                     "est_chamber_temp_f": round(est_chamber, 1),
                     "issue": direction,
@@ -439,7 +440,11 @@ async def list_planned_events(
 
 
 async def create_planned_event(data: PlannedEventCreate) -> dict:
+    """Raises db.UnknownReferenceError for an unknown chamber or session."""
     async with get_db() as db:
+        await check_references(
+            db, chamber_id=("chambers", data.chamber_id), session_id=("sessions", data.session_id),
+        )
         cursor = await db.execute(
             """INSERT INTO planned_events (title, kind, date, chamber_id, session_id, notes)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -454,7 +459,8 @@ async def update_planned_event(
     event_id: int, data: PlannedEventUpdate
 ) -> dict | None:
     """Partial update. None fields are left unchanged (matches the repo's
-    partial-update convention); `date` change is the drag-reschedule."""
+    partial-update convention); `date` change is the drag-reschedule.
+    Raises db.UnknownReferenceError for an unknown chamber or session."""
     existing = await get_planned_event(event_id)
     if not existing:
         return None
@@ -466,6 +472,10 @@ async def update_planned_event(
         set_sql = ", ".join(f"{c} = ?" for c in changed)
         params = list(changed.values()) + [time.time(), event_id]
         async with get_db() as db:
+            await check_references(
+                db, chamber_id=("chambers", changed.get("chamber_id")),
+                session_id=("sessions", changed.get("session_id")),
+            )
             # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only "?" placeholders or whitelisted column names are interpolated; every value is a bound parameter
             await db.execute(
                 f"UPDATE planned_events SET {set_sql}, updated_at = ? WHERE id = ?",
@@ -484,7 +494,7 @@ async def delete_planned_event(event_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-# ── Species-derived dated cycle proposer (V1-2) ─────────────────
+# ── Species-derived dated cycle proposer ────────────────────────
 #
 # The recommender above scores species against *current* weather. This proposer
 # answers a different question: given a species and an inoculation date, when

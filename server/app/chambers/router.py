@@ -1,9 +1,21 @@
 from fastapi import APIRouter, HTTPException, Query as Q
 
+from ..sessions.service import get_active_session_for_chambers
 from .models import ChamberCreate, ChamberUpdate, MaintenanceCreate, MaintenanceComplete
 from . import service
 
 router = APIRouter()
+
+
+async def _with_resolved_session(chamber: dict) -> dict:
+    """The chamber row plus `resolved_session_id`: the grow the Pi runs in the
+    chamber, by the rule the automation drives its nodes with
+    (sessions.service.get_active_session_for_chambers: the grow bound to it,
+    else the one active_session_id links, else the newest grow bound to no
+    chamber), or None. `active_session_id` is only the link, so a dashboard
+    reading it alone showed a chamber as idle while its nodes ran a grow."""
+    session = await get_active_session_for_chambers([chamber["id"]])
+    return {**chamber, "resolved_session_id": session["id"] if session else None}
 
 
 @router.post("")
@@ -13,12 +25,17 @@ async def create_chamber(data: ChamberCreate):
 
 @router.get("")
 async def list_chambers():
-    return await service.list_chambers()
+    return [await _with_resolved_session(c) for c in await service.list_chambers()]
 
 
 @router.get("/compare")
 async def compare(ids: str = Q(..., description="Comma-separated chamber IDs")):
-    chamber_ids = [int(x) for x in ids.split(",")]
+    try:
+        chamber_ids = [int(x) for x in ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(422, "ids must be comma-separated chamber ids")
+    if not chamber_ids:
+        raise HTTPException(422, "ids must name at least one chamber")
     return await service.compare_chambers(chamber_ids)
 
 
@@ -27,12 +44,17 @@ async def get_chamber(chamber_id: int):
     chamber = await service.get_chamber(chamber_id)
     if not chamber:
         raise HTTPException(404, "Chamber not found")
-    return chamber
+    return await _with_resolved_session(chamber)
 
 
 @router.patch("/{chamber_id}")
 async def update_chamber(chamber_id: int, data: ChamberUpdate):
-    chamber = await service.update_chamber(chamber_id, data)
+    try:
+        chamber = await service.update_chamber(chamber_id, data)
+    except (service.SessionBoundElsewhereError, service.ChamberBusyError) as e:
+        raise HTTPException(409, str(e))
+    except service.SessionLinkError as e:
+        raise HTTPException(422, str(e))
     if not chamber:
         raise HTTPException(404, "Chamber not found")
     return chamber
@@ -40,7 +62,10 @@ async def update_chamber(chamber_id: int, data: ChamberUpdate):
 
 @router.delete("/{chamber_id}")
 async def delete_chamber(chamber_id: int):
-    deleted = await service.delete_chamber(chamber_id)
+    try:
+        deleted = await service.delete_chamber(chamber_id)
+    except service.ChamberInUseError as e:
+        raise HTTPException(409, str(e))
     if not deleted:
         raise HTTPException(404, "Chamber not found")
     return {"deleted": True}

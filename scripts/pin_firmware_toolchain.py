@@ -106,10 +106,14 @@ def ini_platform_urls(ini_text: str) -> set[str]:
 
 def fetch(url: str, sha256: str, dest: Path) -> Path:
     """Download url into dest (reusing a file already there with the right
-    hash) and return its path; refuse it unless its SHA-256 is sha256."""
-    dest.mkdir(parents=True, exist_ok=True)
+    hash) and return its path; refuse it unless its SHA-256 is sha256.
+
+    Each download keeps its own file name in a folder named after its hash:
+    two lock entries whose URLs end in the same name (say, two releases'
+    `tools.zip`) then never overwrite each other's checked file."""
     name = url.rstrip("/").rsplit("/", 1)[-1]
-    target = dest / name
+    target = dest / sha256 / name
+    target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and sha256_of(target) == sha256:
         return target
     partial = target.with_name(target.name + ".part")

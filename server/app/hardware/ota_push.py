@@ -22,13 +22,32 @@ sender:
        "200 <cnonce> <sha256(pbkdf2(sha256(password), nonce:cnonce):nonce:cnonce)>\\n"
 
    Answering both lets a later firmware move to the stock library without
-   locking itself out of Pi pushes (firmware/lib/sp_core/espota.h).
+   locking itself out of Pi pushes (firmware/lib/sp_core/espota.h). A bare
+   ``OK`` with no challenge is refused: every SporePrint node with OTA
+   enabled has a password and asks for it, so whatever skips the challenge
+   is not the node.
 
 3. Node replies ``OK``, then connects BACK to us over TCP on <host_port>
    and pulls the image. Each chunk is acked with the decimal byte count the
    node flashed; the final ack is ``OK`` once Update.end() succeeds and the
    node reboots into the new image. Only a connection from the node's own
-   address is served; any other peer is logged and closed.
+   address is served; any other peer is logged and closed. A node that
+   turns the push down (its signed-manifest gate, an image still on
+   probation, an image too large) answers ``ERR <reason>`` instead of
+   ``OK``; older firmware answered ``OK`` and then published the reason as
+   an ``error`` OTA event, which the push also watches for while it waits
+   for the connect-back.
+
+4. The node publishes its ``success`` OTA event over MQTT right after that
+   final ``OK``. The push counts as done only once that event arrives
+   (``SUCCESS_EVENT_TIMEOUT_S``): the espota exchange cannot tell the node
+   from another host at its address, while the event comes over the node's
+   own broker login.
+
+The target is the IP the node reported in its last heartbeat, so a push is
+only started for a node that is online and was heard from recently
+(``target_refusal``): once a node has gone quiet, another host may hold its
+old address.
 
 <host_port> is the fixed ``CALLBACK_PORT`` (3233), not an ephemeral port:
 under docker-compose the server sits on a bridge network, the node's
@@ -50,8 +69,13 @@ sends it to the node on ``cmd/ota_manifest`` and waits up to
 ``manifest_rejected`` OTA event (fed in by app/mqtt.py through
 ``note_node_event``). Armed → the node will flash only that exact image;
 rejected → the push is not attempted; no answer (firmware without manifest
-support) → the push goes ahead, verified by the Pi only. The status's
-``manifest`` field says which: ``node_verified`` | ``pi_verified`` | None.
+support) → the push goes ahead, verified by the Pi only. The manifest is sent
+once the push holds the callback port, right before the invitation: the node
+keeps an arming for 5 minutes (firmware ota_gate.h ``kArmMs``), and a push
+queued behind others for longer would otherwise reach a node whose arming had
+lapsed. The status's ``manifest`` field says which: ``node_verified`` |
+``pi_verified`` | None; a push the node reports as flashed without its own
+manifest check ends as ``pi_verified``.
 """
 
 from __future__ import annotations
@@ -96,6 +120,15 @@ MANIFEST_CONFIRM_TIMEOUT_S = 10.0
 # then proceeds as Pi-verified, like a node that never answers.
 _NODE_CANNOT_VERIFY = frozenset({"manifest_no_key"})
 
+# How long after the node's final OK the push waits for its MQTT "success"
+# event (firmware ota_service.cpp publishes it before rebooting).
+SUCCESS_EVENT_TIMEOUT_S = 10.0
+
+# A push goes only to a node heard from within this window. Heartbeats come
+# at least every 5 minutes (firmware publish_cadence.h), so this is two of
+# them; telemetry refreshes last_seen more often.
+TARGET_MAX_AGE_S = 600.0
+
 # (topic, payload) → published? — app.mqtt.mqtt_publish, injected by the
 # caller (this module must not import app.mqtt, which imports it).
 CommandSender = Callable[[str, dict], Awaitable[bool]]
@@ -115,6 +148,28 @@ def _refusal(data: bytes) -> OtaPushError | None:
         return None
     detail = data[at:].decode(errors="replace").strip()[:80]
     return OtaPushError(f"node refused the image: {detail}")
+
+
+# Why a node turns a push down before taking the image (firmware
+# ota_service.cpp: its manifest gate, an image on probation, Update.begin).
+_PUSH_REFUSAL_HINTS = {
+    "manifest_required": "this node only takes images with a signed manifest",
+    "manifest_size_mismatch": "the node is armed for a different image",
+    "manifest_not_firmware": "the node is armed for a firmware image",
+    "image_on_probation": (
+        "its current image is still on probation and never reached MQTT, so "
+        "flashing now would overwrite the only confirmed image; power-cycle "
+        "the node to boot the previous image, then push again"),
+    "image_confirm_failed": "the node could not confirm its current image first",
+    "begin_failed": "the node could not start the update (image too large for its OTA slot?)",
+}
+
+
+def _node_refused(reason: str) -> OtaPushError:
+    reason = (reason or "").strip()[:64] or "no reason given"
+    hint = _PUSH_REFUSAL_HINTS.get(reason)
+    return OtaPushError(f"node refused the push: {reason}"
+                        + (f" — {hint}" if hint else ""))
 
 
 def auth_response(password: str, nonce: str, cnonce: str) -> str:
@@ -174,6 +229,12 @@ _status: dict[str, dict] = {}
 _tasks: dict[str, asyncio.Task] = {}
 # node_id → (expected sha256, future the node's manifest answer resolves)
 _manifest_waiters: dict[str, tuple[str, asyncio.Future]] = {}
+# node_id → future the node's "success" OTA event resolves, while a push runs
+_success_waiters: dict[str, asyncio.Future] = {}
+# node_id → future the node's "error" OTA event resolves, while a push waits
+# for its connect-back: firmware before the "ERR" invitation answer refused
+# a push only after its "OK", over MQTT.
+_error_waiters: dict[str, asyncio.Future] = {}
 
 
 def get_status(node_id: str) -> dict:
@@ -186,12 +247,25 @@ def get_status(node_id: str) -> dict:
 
 def note_node_event(node_id: str, payload: dict) -> None:
     """A node's ``sporeprint/<id>/ota`` event (app/mqtt.py). Resolves a push
-    waiting for the node's answer to its signed manifest."""
+    waiting for the node's answer to its signed manifest, for the node's
+    report that it flashed the image, or for its refusal of the push."""
+    if not isinstance(payload, dict):
+        return
+    event = payload.get("event")
+    if event == "success":
+        flashed = _success_waiters.get(node_id)
+        if flashed is not None and not flashed.done():
+            flashed.set_result(payload)
+        return
+    if event == "error":
+        refused = _error_waiters.get(node_id)
+        if refused is not None and not refused.done():
+            refused.set_result(payload)
+        return
     waiter = _manifest_waiters.get(node_id)
-    if waiter is None or not isinstance(payload, dict):
+    if waiter is None:
         return
     expected_sha256, fut = waiter
-    event = payload.get("event")
     if fut.done() or event not in ("manifest_armed", "manifest_rejected"):
         return
     if event == "manifest_armed" and payload.get("sha256") != expected_sha256:
@@ -203,6 +277,26 @@ def is_running(node_id: str) -> bool:
     return _status.get(node_id, {}).get("state") == "running"
 
 
+def target_refusal(node: dict, now: float | None = None) -> str | None:
+    """Why a push to ``node`` (its hardware_nodes row) must not start now, or
+    None. The push goes to the IP from the node's last heartbeat; a node that
+    is offline or quiet may have lost that address to another host, which
+    would then get the OTA password challenge and could fake the transfer."""
+    if node.get("status") != "online":
+        return (f"Node is {node.get('status') or 'not online'}: a push goes to the "
+                "IP address from its last heartbeat, which another host may hold "
+                "by now. Push once the node is back online.")
+    last_seen = node.get("last_seen")
+    if not isinstance(last_seen, (int, float)) or isinstance(last_seen, bool):
+        return "Node has never been heard from: no address to push to."
+    age = (time.time() if now is None else now) - last_seen
+    if age > TARGET_MAX_AGE_S:
+        return (f"Node was last heard from {int(age // 60)} min ago: a push goes "
+                "to the IP address from its last heartbeat, which another host "
+                "may hold by now. Push once the node is back online.")
+    return None
+
+
 def start_push(node_id: str, ip: str, port: int, password: str,
                image: bytes, *, manifest=None,
                send_command: CommandSender | None = None) -> None:
@@ -210,7 +304,8 @@ def start_push(node_id: str, ip: str, port: int, password: str,
     — there must be no await between that check and this call.
 
     ``manifest`` (a ``node_manifest.NodeManifest`` the caller verified
-    against ``image``) is sent with ``send_command`` before the push."""
+    against ``image``) is sent with ``send_command`` once the push holds the
+    callback port, right before the invitation."""
     if manifest is not None and send_command is None:
         raise ValueError("a manifest push needs send_command")
     _status[node_id] = {
@@ -262,12 +357,30 @@ async def _run_push(node_id: str, ip: str, port: int, password: str,
     def _progress(sent: int) -> None:
         st["bytes_sent"] = sent
 
+    async def _arm() -> None:
+        await _arm_node(node_id, manifest, send_command, st)
+        st["message"] = f"pushing {len(image)} bytes to {ip}:{port}"
+
+    # Listening before the transfer starts: the node publishes "success"
+    # right after its final OK, which can arrive before push_firmware returns.
+    flashed = asyncio.get_running_loop().create_future()
+    _success_waiters[node_id] = flashed
     try:
-        if manifest is not None:
-            await _arm_node(node_id, manifest, send_command, st)
-            st["message"] = f"pushing {len(image)} bytes to {ip}:{port}"
         await push_firmware(node_id, ip, port, password, image,
-                            progress_cb=_progress)
+                            progress_cb=_progress,
+                            before_invite=_arm if manifest is not None else None)
+        st["message"] = "image sent; waiting for the node to report the flash"
+        try:
+            report = await asyncio.wait_for(flashed, SUCCESS_EVENT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise OtaPushError(
+                "the node took the image but never reported a successful flash "
+                "over MQTT — check its firmware version once it is back online"
+            ) from None
+        if st["manifest"] == "node_verified" and not report.get("manifest"):
+            # Flashed without the node's own manifest check (its arming was
+            # gone by the time the image came): only this Pi checked it.
+            st["manifest"] = "pi_verified"
     except OtaPushError as e:
         st.update(state="error", message=str(e), finished_at=time.time())
         log.warning("OTA push to %s failed: %s", node_id, e)
@@ -281,6 +394,8 @@ async def _run_push(node_id: str, ip: str, port: int, password: str,
         log.info("OTA push to %s complete (%d bytes)", node_id, len(image))
     finally:
         _tasks.pop(node_id, None)
+        if _success_waiters.get(node_id) is flashed:
+            del _success_waiters[node_id]
 
 
 # ─── Protocol implementation ─────────────────────────────────────────────
@@ -363,21 +478,28 @@ async def push_firmware(node_id: str, ip: str, port: int, password: str,
                         bind_host: str = "0.0.0.0",
                         invite_retry: float = INVITE_RETRY_S,
                         callback_port: int | None = None,
+                        before_invite: Callable[[], Awaitable[None]] | None = None,
                         ) -> None:
     """Run one espota push. Raises OtaPushError on any failure.
 
     ``callback_port`` defaults to the module's CALLBACK_PORT; pushes that
-    share a fixed port are serialized (only one listener can own it)."""
+    share a fixed port are serialized (only one listener can own it).
+    ``before_invite`` runs once this push holds the port, right before the
+    invitation (the signed-manifest arming, which lapses on the node)."""
     cb_port = CALLBACK_PORT if callback_port is None else callback_port
     args = (node_id, ip, port, password, image, invite_timeout,
             invite_retry, stall_timeout, progress_cb, bind_host, cb_port)
     if cb_port == 0:
+        if before_invite is not None:
+            await before_invite()
         await _push_once(*args)
         return
     if _callback_port_lock.locked():
         log.info("OTA push to %s waiting for another push to release "
                  "callback port %d", node_id, cb_port)
     async with _callback_port_lock:
+        if before_invite is not None:
+            await before_invite()
         await _push_once(*args)
 
 
@@ -465,6 +587,10 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
     except OSError as e:
         raise OtaPushError(
             f"cannot listen on OTA callback port {cb_port}: {e.strerror or e}")
+    # Listening before the invitation: older firmware refuses a push only
+    # after its "OK" (an MQTT "error" event), which can arrive at once.
+    node_refusal: asyncio.Future = loop.create_future()
+    _error_waiters[node_id] = node_refusal
     try:
         host_port = server.sockets[0].getsockname()[1]
 
@@ -481,20 +607,39 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
                 answer = await asyncio.to_thread(auth_answer, password, parts[1])
                 transport.sendto(answer.encode())
                 reply = await _await_auth_result(proto, invite_timeout)
+                if reply.startswith("ERR"):
+                    # Authenticated, but the node turns the push down (its
+                    # manifest gate, an image on probation, no room) and
+                    # says why instead of "OK".
+                    raise _node_refused(reply[3:])
                 if reply != "OK":
                     # Node says "Authentication Failed" — wrong password.
                     raise OtaPushError(
                         f"authentication rejected: {reply or 'no detail'}")
-            elif reply != "OK":
+            elif reply == "OK":
+                # No challenge: a SporePrint node with OTA enabled always has
+                # a password (ota_service.cpp will not listen without one),
+                # so this is some other host at the node's address. It would
+                # take the image and "confirm" a flash that never happened.
+                raise OtaPushError(
+                    "the host at the node's address accepted the push without "
+                    "asking for the OTA password; a SporePrint node always "
+                    "asks, so this is not the node")
+            else:
                 raise OtaPushError(
                     f"unexpected invitation reply: {reply[:64]!r}")
         finally:
             transport.close()
 
-        # Node connects back over TCP and pulls the image.
-        try:
-            reader, writer = await asyncio.wait_for(conn_fut, invite_timeout)
-        except asyncio.TimeoutError:
+        # Node connects back over TCP and pulls the image — or, on firmware
+        # that refuses only after its "OK", reports why over MQTT instead.
+        await asyncio.wait({conn_fut, node_refusal}, timeout=invite_timeout,
+                           return_when=asyncio.FIRST_COMPLETED)
+        if conn_fut.done():
+            reader, writer = conn_fut.result()
+        elif node_refusal.done():
+            raise _node_refused(str(node_refusal.result().get("reason") or ""))
+        else:
             raise OtaPushError(
                 "node accepted the invitation but never connected back")
 
@@ -516,9 +661,10 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
                 if not ack:
                     raise OtaPushError(
                         f"node closed the connection at {sent}/{size} bytes")
-                refused = _refusal(ack)
-                if refused is not None:
-                    raise refused
+                # Not `refused`: that name is the set _on_connect shares.
+                refusal = _refusal(ack)
+                if refusal is not None:
+                    raise refusal
                 sent += len(chunk)
                 if progress_cb is not None:
                     progress_cb(sent)
@@ -541,13 +687,22 @@ async def _push_once(node_id: str, ip: str, port: int, password: str,
                 if not data:
                     raise OtaPushError(
                         "node closed the connection before confirming flash")
-                refused = _refusal(data)
-                if refused is not None:
-                    raise refused
+                refusal = _refusal(data)
+                if refusal is not None:
+                    raise refusal
                 if b"OK" in data:
                     saw_ok = True
         finally:
             writer.close()
     finally:
+        if _error_waiters.get(node_id) is node_refusal:
+            del _error_waiters[node_id]
+        # A connect-back the transfer never used (the push failed before it,
+        # e.g. a host refused above that connects anyway) would hold
+        # wait_closed() open for as long as that peer keeps it.
+        if not conn_fut.done():
+            conn_fut.cancel()
+        elif not conn_fut.cancelled():
+            conn_fut.result()[1].close()
         server.close()
         await server.wait_closed()

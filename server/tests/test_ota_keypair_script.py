@@ -16,6 +16,7 @@ import pytest
 
 from app.cloud import ota
 from app.config import settings
+from app.hardware.node_manifest import NodeManifestError, check_node_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "generate-ota-keypair.py"
@@ -70,8 +71,10 @@ def test_existing_world_readable_out_dir_is_locked_down(
 def test_operator_instructions_match_the_shipped_install(keypair_mod, capsys, monkeypatch):
     """The key goes into Settings → OTA verify key (or the documented .env
     key). The old text sent operators to /opt/sporeprint/.env — a layout no
-    installer creates — and never said that the Docker install refuses cloud
-    self-update, so the key does nothing there."""
+    installer creates. Every install, Docker included, checks signed
+    node-firmware manifests against the key (only Pi self-update is
+    bare-metal only), so the text must not tell a Docker operator the key
+    does nothing: a push with a manifest is refused on a Pi without it."""
     monkeypatch.setattr(keypair_mod.sys, "argv", ["generate-ota-keypair.py"])
     assert keypair_mod.main() == 0
     out = capsys.readouterr().out
@@ -80,6 +83,20 @@ def test_operator_instructions_match_the_shipped_install(keypair_mod, capsys, mo
     assert "Settings → OTA verify key" in out
     assert "SPOREPRINT_OTA_PUBKEY_B64" in out  # the key .env.example documents
     assert "Docker" in out and "install.sh" in out
+    for said in (out, keypair_mod.__doc__ or ""):
+        flat = " ".join(said.split())
+        assert "node-firmware manifests" in flat and "Docker" in flat
+        assert "no effect" not in flat
+
+
+def test_a_docker_pi_needs_the_key_for_signed_node_manifests(monkeypatch):
+    """What the instructions above promise: with no key pinned, the node
+    manifest check refuses, on any install."""
+    monkeypatch.setattr(settings, "ota_pubkey_b64", "")
+    monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
+    with pytest.raises(NodeManifestError, match="no OTA verify key pinned"):
+        check_node_manifest(b"{}", bytes(64), b"\x00", node_firmware_version=None,
+                            node_type="relay")
 
 
 def test_signed_bundle_verifies_with_the_pi_verifier(keypair_mod, tmp_path, monkeypatch):
@@ -172,7 +189,7 @@ def test_sign_script_names_the_real_verifier_and_its_limits():
     assert "server/app/cloud/ota_manifest.py" in doc
     assert (REPO_ROOT / "server" / "app" / "cloud" / "ota.py").exists()
     assert (REPO_ROOT / "server" / "app" / "cloud" / "ota_manifest.py").exists()
-    # The legacy .sig covers the bundle bytes only (srv-cloud-int#21); the
+    # The legacy .sig covers the bundle bytes only; the
     # manifest binds version + channel. Say both, and that Docker Pis never
     # self-update.
     assert "downgrade" in doc and "Docker" in doc

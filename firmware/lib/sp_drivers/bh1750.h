@@ -2,8 +2,15 @@
 //
 // bh1750 — ROHM BH1750 ambient light driver (Adafruit 4681).
 // Single-byte opcodes, 2-byte big-endian result, lux = raw / 1.2.
-// Continuous high-res mode: start once, read any time after first
-// conversion (~180 ms); reads are 2-byte transactions, no waiting.
+// Continuous high-res mode; reads are 2-byte transactions, no waiting.
+//
+// Re-armed on every read: the BH1750 has no status register, and one that
+// lost power (a loose connector) wakes in power-down and answers 0x0000 — a
+// "healthy" 0 lx — for as long as nobody restarts it. read() therefore
+// re-sends power-on + continuous high-res after each read (two 1-byte
+// writes). While it runs that is harmless: the result register keeps the
+// last conversion until the next one completes (~120-180 ms, well inside
+// any read interval). It also finishes a begin() that failed at boot.
 //
 // Native-safe; host-tested against scripted bus transactions.
 
@@ -28,6 +35,9 @@ public:
     // Power on + continuous high-res mode (1 lx resolution).
     bool begin();
 
+    // Read the last conversion, then re-arm continuous mode (see above).
+    // A failed re-arm is not a read failure: the next read shows whether
+    // the part is still on the bus.
     bool read(float* lux);
 
     const DriverHealth& health() const { return health_; }

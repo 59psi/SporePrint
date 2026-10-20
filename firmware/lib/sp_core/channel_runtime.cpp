@@ -11,6 +11,9 @@ const char* const kReservedNames[] = {
     "logs",   "ota",    "alert",  "coredump", "heartbeat",
     "coredump_ack",  // cmd/coredump_ack (coredump_drain.h)
     "ota_manifest",  // cmd/ota_manifest (ota_gate.h)
+    // Envelope keys of the lighting-level doc, which is keyed by channel
+    // name (wire_contract.h build_dim_levels).
+    "ts", "report",
 };
 
 }  // namespace
@@ -41,10 +44,17 @@ void Channel::configure(const ChannelConfig& cfg) {
     pwm8_ = 0;
     level10_ = 0;
     on_since_ms_ = 0;
+    run_mark_ms_ = 0;
     off_timer_armed_ = false;
     ramping_ = false;
     reason_ = "";
-    last_was_cutoff_ = false;
+    last_cutoff_ = ChannelCutoff::None;
+    fault_ = nullptr;
+}
+
+ChannelEvent Channel::set_output_fault(uint32_t now_ms, const char* reason) {
+    fault_ = reason != nullptr ? reason : "output unavailable";
+    return force_off(now_ms, fault_);
 }
 
 void Channel::set_max_on_ms(uint32_t max_on_ms) {
@@ -81,23 +91,32 @@ void Channel::set_output(bool on, uint8_t pwm8, uint16_t level10, uint32_t now_m
 
     if (on && !was_on) {
         on_since_ms_ = now_ms;
+        run_mark_ms_ = now_ms;
         ++health_.cycle_count;
     }
     if (!on && was_on) {
-        health_.on_time_sec += elapsed_ms(now_ms, on_since_ms_) / 1000;
+        health_.on_time_sec += elapsed_since(now_ms, run_mark_ms_) / 1000;
         off_timer_armed_ = false;
         ramping_ = false;
     }
 }
 
+void Channel::cut_off(ChannelCutoff why, const char* reason, uint32_t now_ms) {
+    set_output(false, 0, 0, now_ms);
+    ++health_.safety_cutoffs;
+    if (why == ChannelCutoff::MaxOn) ++health_.max_on_trips;
+    reason_ = reason;
+    last_cutoff_ = why;
+}
+
 uint32_t Channel::on_time_sec_live(uint32_t now_ms) const {
     uint32_t total = health_.on_time_sec;
-    if (on_) total += elapsed_ms(now_ms, on_since_ms_) / 1000;
+    if (on_) total += elapsed_since(now_ms, run_mark_ms_) / 1000;
     return total;
 }
 
 ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
-    last_was_cutoff_ = false;
+    last_cutoff_ = ChannelCutoff::None;
 
     // Dim channels take `pwm` as a 10-bit level alias when `level` is absent:
     // the Pi automation's RuleAction only carries pwm (documented 0-1023 for
@@ -123,6 +142,24 @@ ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
     // {"state":"off","pwm":255} turning the output ON left a pump running
     // with nothing watching it.
     const bool explicit_off = cmd.has_state && !cmd.state_on;
+
+    // A channel whose output stage failed cannot be driven: anything that
+    // could turn it on is refused with the fault as the reason (accepting it
+    // would report a state its gate — held LOW — does not have). An explicit
+    // off states the truth and is accepted.
+    if (fault_ != nullptr && !explicit_off) {
+        reason_ = fault_;
+        return ChannelEvent::Rejected;
+    }
+
+    // An explicit "state":"on" without a positive duration_sec is an
+    // indefinite ON (the Pi holds a native ON without a duration until it
+    // sends an off), so it ends a pulse that is still timing out instead of
+    // being cut at that pulse's deadline. pwm / level tweaks and scenes keep
+    // the running deadline; a command with its own duration re-arms it below.
+    if (cmd.has_state && cmd.state_on &&
+        !(cmd.has_duration && cmd.duration_sec > 0))
+        off_timer_armed_ = false;
 
     bool on = on_;
     uint8_t pwm = pwm8_;
@@ -199,40 +236,47 @@ ChannelEvent Channel::apply(const ChannelCommand& cmd, uint32_t now_ms) {
 }
 
 ChannelEvent Channel::force_off(uint32_t now_ms, const char* reason) {
-    last_was_cutoff_ = false;
+    last_cutoff_ = ChannelCutoff::None;
     // Disarm unconditionally — an idle channel must not carry a timer or
     // ramp across the forced-off state.
     off_timer_armed_ = false;
     ramping_ = false;
     if (!on_) return ChannelEvent::None;
-    set_output(false, 0, 0, now_ms);
-    ++health_.safety_cutoffs;
-    reason_ = reason != nullptr ? reason : "forced off";
-    last_was_cutoff_ = true;
+    cut_off(ChannelCutoff::Forced, reason != nullptr ? reason : "forced off",
+            now_ms);
     return ChannelEvent::Changed;
 }
 
 ChannelEvent Channel::tick(uint32_t now_ms) {
-    last_was_cutoff_ = false;
+    last_cutoff_ = ChannelCutoff::None;
+
+    // Count the running run's whole seconds as they pass, so the on-time
+    // never rests on a span longer than the wrap-safe window (a lighting
+    // channel can stay lit for weeks).
+    if (on_) {
+        const uint32_t secs = elapsed_since(now_ms, run_mark_ms_) / 1000;
+        if (secs > 0) {
+            health_.on_time_sec += secs;
+            run_mark_ms_ += secs * 1000UL;
+        }
+    }
 
     // Timed off — wrap-safe. An explicit duration is the user/rule saying
-    // "don't stay on past T"; honouring it counts as a safety cutoff.
+    // "don't stay on past T": the normal end of a timed pulse. It still
+    // counts in safety_cutoffs (that counter's wire meaning), but it is not
+    // a max-on trip and is reported as a timer expiry.
     if (off_timer_armed_ && deadline_reached(now_ms, off_at_ms_)) {
-        set_output(false, 0, 0, now_ms);
-        ++health_.safety_cutoffs;
-        reason_ = "auto-off (timer expired)";
-        last_was_cutoff_ = true;
+        cut_off(ChannelCutoff::Timer, "auto-off (timer expired)", now_ms);
         return ChannelEvent::Changed;
     }
 
     // Max-on backstop (switch mode always has one; dim mode only if
-    // configured). Re-ON while running does not restart this clock.
+    // configured). Re-ON while running does not restart this clock. A `now`
+    // a few ms older than the ON stamp (taken earlier in the same loop pass)
+    // is no time on, not a ~49.7-day run.
     if (on_ && cfg_.max_on_ms > 0 &&
-        elapsed_ms(now_ms, on_since_ms_) > cfg_.max_on_ms) {
-        set_output(false, 0, 0, now_ms);
-        ++health_.safety_cutoffs;
-        reason_ = "auto-off (max-on exceeded)";
-        last_was_cutoff_ = true;
+        elapsed_since(now_ms, on_since_ms_) > cfg_.max_on_ms) {
+        cut_off(ChannelCutoff::MaxOn, "auto-off (max-on exceeded)", now_ms);
         return ChannelEvent::Changed;
     }
 
@@ -246,11 +290,16 @@ ChannelEvent Channel::tick(uint32_t now_ms) {
             reason_ = "";
             return ChannelEvent::Changed;
         }
-        uint32_t span = elapsed_ms(ramp_end_ms_, ramp_start_ms_);
-        uint32_t pos = elapsed_ms(now_ms, ramp_start_ms_);
-        int32_t delta = (int32_t)ramp_to_ - (int32_t)ramp_from_;
-        uint16_t lvl = (uint16_t)((int32_t)ramp_from_ +
-                                  (int64_t)delta * (int64_t)pos / (int64_t)span);
+        // Position clamped to [0, span]: a `now` older than the ramp's start
+        // is its start, so the level never leaves the from..to range (it
+        // used to wrap past 10 bits and flash a channel to full on).
+        const uint32_t span = elapsed_ms(ramp_end_ms_, ramp_start_ms_);
+        uint32_t pos = elapsed_since(now_ms, ramp_start_ms_);
+        if (pos > span) pos = span;
+        const int32_t delta = (int32_t)ramp_to_ - (int32_t)ramp_from_;
+        const uint16_t lvl = clamp_level10(
+            (int32_t)ramp_from_ +
+            (int32_t)((int64_t)delta * (int64_t)pos / (int64_t)span));
         if (lvl != level10_) {
             level10_ = lvl;
             reason_ = "";

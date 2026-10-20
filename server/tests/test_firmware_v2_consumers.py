@@ -66,27 +66,27 @@ async def test_heartbeat_without_type_does_not_clobber():
 # ── roles-aware command routing ─────────────────────────────────
 
 async def test_resolve_node_by_role_matches_combined_node():
-    from app.cloud.service import _resolve_node_id_by_type
+    from app.cloud.service import _resolve_command_node
 
     sio = AsyncMock()
     await _handle_message(
         sio, "sporeprint/combo-1/status/heartbeat",
         {"type": "relay", "roles": ["climate", "relay"]})
 
-    assert await _resolve_node_id_by_type("relay") == "combo-1"
+    assert await _resolve_command_node("relay", "fae") == ("combo-1", None)
     # The combined node also answers climate-targeted commands via roles.
-    assert await _resolve_node_id_by_type("climate") == "combo-1"
-    assert await _resolve_node_id_by_type("camera") is None
+    assert await _resolve_command_node("climate", None) == ("combo-1", None)
+    assert await _resolve_command_node("camera", None) == (None, "No registered camera node")
 
 
 async def test_resolve_node_null_roles_does_not_crash():
-    from app.cloud.service import _resolve_node_id_by_type
+    from app.cloud.service import _resolve_command_node
 
     sio = AsyncMock()
     await _handle_message(
         sio, "sporeprint/old-1/status/heartbeat",
         {"type": "climate", "firmware_version": "4.1.5"})  # roles NULL
-    assert await _resolve_node_id_by_type("climate") == "old-1"
+    assert await _resolve_command_node("climate", None) == ("old-1", None)
 
 
 # ── logs consumer ───────────────────────────────────────────────

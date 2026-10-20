@@ -5,7 +5,7 @@
 // MqttLink::connect_attempt() runs inside loop(), right after the single
 // task-WDT pet, and blocks for DNS + TCP connect + (TLS handshake) + the
 // CONNACK wait. With the arduino-esp32 core defaults that was up to
-// 15 + 30 + 120 + 15 s against a 30 s panic WDT (fw-node#8): with Secure
+// 15 + 30 + 120 + 15 s against a 30 s panic WDT: with Secure
 // MQTT on and the Pi powered off, the node panic-rebooted about once a
 // minute, rewriting the coredump sector every time.
 //
@@ -39,13 +39,15 @@ constexpr uint32_t kConnectAttemptWorstCaseS =
 static_assert(kConnectAttemptWorstCaseS + kLoopWdtMarginS <= kLoopWdtTimeoutS,
               "one MQTT connect attempt must fit inside the loop task WDT");
 
-// Runtime Pi-CA fetch (tls_policy.h, fw-node#2): Secure MQTT is on but no CA
+// Runtime Pi-CA fetch (tls_policy.h): Secure MQTT is on but no CA
 // is pinned, so the node retries GET http://<pi>:8000/api/provision/ca from
 // loop() on a backoff. One fetch blocks its pass for DNS + TCP connect + the
-// HTTP read. (The boot-time fetch runs pre-WDT and keeps longer timeouts.)
-// A fetch and an MQTT connect attempt together would NOT fit, so the
-// composition roots never start a connect attempt in a pass that fetched
-// (sp::mqtt_may_connect).
+// HTTP response, which is read under ONE overall deadline
+// (kCaFetchReadTimeoutS for status line, headers and body together —
+// tls_policy.h scan_ca_response). (The boot-time fetch runs pre-WDT and
+// keeps longer timeouts.) A fetch and an MQTT connect attempt together would
+// NOT fit, so the composition roots never start a connect attempt in a pass
+// that fetched (sp::mqtt_may_connect).
 constexpr uint32_t kCaFetchConnectTimeoutS = 3;
 constexpr uint32_t kCaFetchReadTimeoutS = 5;
 constexpr uint32_t kCaFetchWorstCaseS =
@@ -53,5 +55,15 @@ constexpr uint32_t kCaFetchWorstCaseS =
 
 static_assert(kCaFetchWorstCaseS + kLoopWdtMarginS <= kLoopWdtTimeoutS,
               "one runtime CA fetch must fit inside the loop task WDT");
+
+// The probe of a fetched CA on the plaintext fallback (tls_policy.h
+// TlsPinMachine Step::Probe): one bare TLS handshake to 8883 — DNS + TCP
+// connect + handshake, no CONNACK wait. Like a fetch it runs in a pass of its
+// own: no MQTT connect attempt beside it.
+constexpr uint32_t kTlsProbeWorstCaseS =
+    kDnsWorstCaseS + kTcpConnectTimeoutS + kTlsHandshakeTimeoutS;
+
+static_assert(kTlsProbeWorstCaseS + kLoopWdtMarginS <= kLoopWdtTimeoutS,
+              "one TLS probe must fit inside the loop task WDT");
 
 }  // namespace sp

@@ -1,12 +1,20 @@
 """Tests for harvest drying tracker (Task 8)."""
 
+import csv
+import io
+
 import app.notifications.service as notif
+import app.sessions.service as sessions_service
 from app.sessions.models import SessionCreate, HarvestCreate
 from app.sessions.service import (
     create_session,
     add_harvest,
     add_drying_log,
+    generate_session_report_csv,
+    generate_session_report_md,
     get_drying_progress,
+    get_session,
+    get_session_stats,
 )
 
 
@@ -161,3 +169,62 @@ async def test_drying_complete_notifies_once_per_harvest(monkeypatch):
     await add_drying_log(s["id"], h2["id"], 18.0)
     keys = [k for _t, k in sent]
     assert keys == [f"drying:{h1['id']}", f"drying:{h1['id']}", f"drying:{h2['id']}"]
+
+
+async def test_the_drying_complete_notice_goes_through_the_modules_notifier(monkeypatch):
+    """add_drying_log re-imported notify_info inside the function, so the
+    notifier the module holds (the one a test or a caller patches) was
+    bypassed."""
+    sent = []
+
+    async def fake_notify_info(title, message, dedup_key=None):
+        sent.append(title)
+
+    monkeypatch.setattr(sessions_service, "notify_info", fake_notify_info)
+    s = await create_session(_make_session())
+    h = await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
+    await add_drying_log(s["id"], h["id"], 18.0)
+    assert sent == ["Drying Complete — Drying Test"]
+
+
+# ── the dried weight is the harvest's dry yield ──────────────────
+
+
+async def test_reaching_cracker_dry_records_the_dry_yield():
+    """A 400 g harvest dried to 38 g read 'Drying Complete' while the dry
+    yield stayed 0 g in the stats, the report, the CSV and the cloud."""
+    changed = []
+
+    async def _listener(session_id):
+        changed.append(session_id)
+
+    sessions_service.add_session_change_listener(_listener)
+    try:
+        s = await create_session(_make_session())
+        h = await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=400.0))
+        for grams in (250.0, 120.0):  # not dry yet: nothing recorded
+            await add_drying_log(s["id"], h["id"], grams)
+        assert (await get_session(s["id"]))["total_dry_yield_g"] == 0
+        changed.clear()
+        await add_drying_log(s["id"], h["id"], 38.0)
+        assert changed == [s["id"]]  # the cloud sync hears of it
+        assert (await get_session(s["id"]))["total_dry_yield_g"] == 38.0
+        # A later weighing past the target replaces it, never adds to it.
+        await add_drying_log(s["id"], h["id"], 36.0)
+        assert (await get_session(s["id"]))["total_dry_yield_g"] == 36.0
+        assert (await get_session_stats(s["id"]))["total_dry_yield_g"] == 36.0
+        rows = list(csv.DictReader(io.StringIO(await generate_session_report_csv(s["id"]))))
+        assert rows[0]["dry_weight_g"] == "36.0"
+        assert "| Total Dry Yield | 36.0g |" in await generate_session_report_md(s["id"])
+    finally:
+        sessions_service._session_change_listeners.remove(_listener)
+
+
+async def test_a_dry_weight_given_at_harvest_is_not_counted_twice():
+    s = await create_session(_make_session())
+    h1 = await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=400.0, dry_weight_g=40.0))
+    h2 = await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=200.0))
+    await add_drying_log(s["id"], h2["id"], 19.0)
+    assert (await get_session(s["id"]))["total_dry_yield_g"] == 59.0
+    await add_drying_log(s["id"], h1["id"], 38.0)  # re-weighed: replaces 40
+    assert (await get_session(s["id"]))["total_dry_yield_g"] == 57.0
