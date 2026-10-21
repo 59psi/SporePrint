@@ -152,6 +152,8 @@ def test_canonical_bytes_refuses_invalid_fields(changes, message):
 
 
 def test_extra_or_missing_keys_refused():
+    with pytest.raises(om.ManifestError, match="must be a JSON object"):
+        om.canonical_bytes(["not", "a", "mapping"])
     with pytest.raises(om.ManifestError, match="unexpected"):
         om.canonical_bytes(_fields(extra="x"))
     fields = _fields()
@@ -184,6 +186,17 @@ def test_a_bundle_signature_is_never_a_manifest_signature():
         om.verify(gzip_body, KEY.sign(gzip_body), PUBKEY)
     with pytest.raises(InvalidSignature):
         PUBKEY.verify(_sig(case), case["bundle"].encode("ascii"))
+
+
+@pytest.mark.parametrize("data, message", [
+    (b"not json at all", "not valid JSON"),
+    (b'["a", "list"]', "must be a JSON object"),
+])
+def test_signed_bytes_that_are_not_a_manifest_object_are_refused(data, message):
+    """A genuine signature over the wrong bytes (a key also used for other
+    files) proves nothing about a release."""
+    with pytest.raises(om.ManifestError, match=message):
+        om.verify(data, KEY.sign(data), PUBKEY)
 
 
 # ─── Loadable by path (the signer and the release workflow do this) ───

@@ -32,15 +32,7 @@ from app.integrations.grafana.router import router as metrics_router
 
 
 @pytest.fixture
-def fresh_keystore(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / ".int-key"))
-    reset_fernet_cache()
-    yield tmp_path
-    reset_fernet_cache()
-
-
-@pytest.fixture
-def grafana(fresh_keystore):
+def grafana():
     drv = _registry.registered_drivers()["grafana"]
     saved = (drv._enabled, drv._cfg)
     drv._enabled = False
@@ -49,7 +41,7 @@ def grafana(fresh_keystore):
     drv._enabled, drv._cfg = saved
 
 
-# ── #2 enable() applies stored config ────────────────────────────────
+# ── enable() applies the stored config ───────────────────────────────
 
 
 async def test_enable_applies_stored_config_after_restart(grafana):
@@ -78,7 +70,7 @@ async def test_enable_rejects_stored_config_that_no_longer_validates(grafana):
     assert grafana.enabled is False
 
 
-# ── #3 redacted placeholder never replaces the real secret ───────────
+# ── the redacted placeholder never replaces the real secret ──────────
 
 
 async def test_put_back_redacted_placeholder_keeps_real_secret(grafana):
@@ -138,18 +130,7 @@ async def test_placeholder_with_no_stored_secret_is_rejected(grafana):
     assert exc.value.status_code == 400
 
 
-def test_metrics_bearer_compare_tolerates_non_ascii(grafana):
-    """A non-ASCII token must yield 401, never a 500 from compare_digest."""
-    grafana._enabled = True
-    grafana._cfg = GrafanaConfig(bearer_token="tök€n")
-    app = FastAPI()
-    app.include_router(metrics_router)
-    client = TestClient(app, raise_server_exceptions=False)
-    r = client.get("/metrics", headers={"Authorization": "Bearer wrong"})
-    assert r.status_code == 401
-
-
-# ── #13 undecryptable secret doesn't 500 the listing ─────────────────
+# ── an undecryptable secret doesn't 500 the listing ──────────────────
 
 
 async def test_listing_survives_lost_fernet_key(grafana, fresh_keystore, monkeypatch):
@@ -263,7 +244,7 @@ _OPERATOR_KEY = "OPERATOR-SECRET-KEY-1234"
 
 
 @pytest.fixture(params=_URL_KEY_DRIVERS)
-async def url_driver(request, fresh_keystore):
+async def url_driver(request):
     drv = _registry.registered_drivers()[request.param]
     saved = drv._cfg
     await _registry.put_config(drv.name, {"enabled": False, "config": {

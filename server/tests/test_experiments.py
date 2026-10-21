@@ -1,9 +1,10 @@
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import anthropic
 import httpx
+import pytest
 
+from app.config import settings
 from app.db import get_db
+from app.experiments import service as experiments_service
 from app.experiments.models import ExperimentCreate, ExperimentUpdate
 from app.experiments.service import (
     create_experiment,
@@ -16,6 +17,7 @@ from app.experiments.service import (
 from app.sessions.models import SessionCreate, HarvestCreate
 from app.sessions.service import create_session, add_harvest, advance_phase
 from app.sessions.models import PhaseAdvance
+from tests._fakes import fake_anthropic
 
 
 async def _make_session(name, species="blue_oyster"):
@@ -41,56 +43,24 @@ async def _make_experiment(control_id, variant_id, **overrides):
     return await create_experiment(ExperimentCreate(**defaults))
 
 
+async def _pair():
+    return await _make_session("Control"), await _make_session("Variant")
+
+
 # ── CRUD ───────────────────────────────────────────────────────
 
 
-async def test_create_experiment():
-    s1 = await _make_session("Control")
-    s2 = await _make_session("Variant")
-    exp = await _make_experiment(s1["id"], s2["id"])
-
-    assert exp["id"] is not None
-    assert exp["title"] == "CVG vs Manure Substrate Test"
-    assert exp["status"] == "active"
-    assert exp["control_session_id"] == s1["id"]
-    assert exp["variant_session_id"] == s2["id"]
+async def test_create_stores_the_design_with_default_or_chosen_metrics():
+    control, variant = await _pair()
+    exp = await _make_experiment(control["id"], variant["id"])
+    assert (exp["status"], exp["completed_at"]) == ("active", None)
+    assert (exp["control_session_id"], exp["variant_session_id"]) == (control["id"], variant["id"])
     assert "total_wet_yield_g" in exp["dependent_variables"]
-    assert exp["completed_at"] is None
+    assert await get_experiment(exp["id"]) == exp
 
-
-async def test_create_experiment_custom_dependent_vars():
-    s1 = await _make_session("Control")
-    s2 = await _make_session("Variant")
-    exp = await _make_experiment(
-        s1["id"], s2["id"],
-        dependent_variables=["total_wet_yield_g", "flush_count"],
-    )
-    assert exp["dependent_variables"] == ["total_wet_yield_g", "flush_count"]
-
-
-async def test_get_experiment():
-    s1 = await _make_session("Control")
-    s2 = await _make_session("Variant")
-    exp = await _make_experiment(s1["id"], s2["id"])
-    fetched = await get_experiment(exp["id"])
-    assert fetched["id"] == exp["id"]
-    assert fetched["hypothesis"] == exp["hypothesis"]
-
-
-async def test_get_experiment_not_found():
-    result = await get_experiment(9999)
-    assert result is None
-
-
-async def test_list_experiments():
-    s1 = await _make_session("Control 1")
-    s2 = await _make_session("Variant 1")
-    s3 = await _make_session("Control 2")
-    s4 = await _make_session("Variant 2")
-    await _make_experiment(s1["id"], s2["id"], title="Exp 1")
-    await _make_experiment(s3["id"], s4["id"], title="Exp 2")
-    exps = await list_experiments()
-    assert len(exps) == 2
+    chosen = await _make_experiment(control["id"], variant["id"],
+                                    dependent_variables=["total_wet_yield_g", "flush_count"])
+    assert chosen["dependent_variables"] == ["total_wet_yield_g", "flush_count"]
 
 
 async def test_list_experiments_filter_status():
@@ -98,189 +68,60 @@ async def test_list_experiments_filter_status():
     s2 = await _make_session("Variant")
     s3 = await _make_session("Control 2")
     s4 = await _make_session("Variant 2")
-    exp1 = await _make_experiment(s1["id"], s2["id"], title="Active Exp")
+    await _make_experiment(s1["id"], s2["id"], title="Active Exp")
     exp2 = await _make_experiment(s3["id"], s4["id"], title="Completed Exp")
     await update_experiment(exp2["id"], ExperimentUpdate(status="completed"))
 
-    active = await list_experiments(status="active")
-    assert len(active) == 1
-    assert active[0]["title"] == "Active Exp"
-
-    completed = await list_experiments(status="completed")
-    assert len(completed) == 1
-    assert completed[0]["title"] == "Completed Exp"
+    assert len(await list_experiments()) == 2
+    assert [e["title"] for e in await list_experiments(status="active")] == ["Active Exp"]
+    assert [e["title"] for e in await list_experiments(status="completed")] == ["Completed Exp"]
 
 
-async def test_update_experiment_status():
-    s1 = await _make_session("Control")
-    s2 = await _make_session("Variant")
-    exp = await _make_experiment(s1["id"], s2["id"])
+async def test_completing_stamps_completed_at_once():
+    control, variant = await _pair()
+    exp = await _make_experiment(control["id"], variant["id"])
 
-    updated = await update_experiment(exp["id"], ExperimentUpdate(
+    completed = await update_experiment(exp["id"], ExperimentUpdate(
         status="completed",
         conclusion="Manure substrate produced 30% higher yields",
     ))
-    assert updated["status"] == "completed"
-    assert updated["conclusion"] == "Manure substrate produced 30% higher yields"
-    assert updated["completed_at"] is not None
-
-
-async def test_update_experiment_not_found():
-    result = await update_experiment(9999, ExperimentUpdate(status="cancelled"))
-    assert result is None
-
-
-async def test_completed_at_only_set_once():
-    s1 = await _make_session("Control")
-    s2 = await _make_session("Variant")
-    exp = await _make_experiment(s1["id"], s2["id"])
-
-    completed = await update_experiment(exp["id"], ExperimentUpdate(status="completed"))
-    first_ts = completed["completed_at"]
-
-    # Updating conclusion should not change completed_at
-    updated = await update_experiment(exp["id"], ExperimentUpdate(conclusion="Updated conclusion"))
-    assert updated["completed_at"] == first_ts
-
-
-# ── Full lifecycle with comparison ─────────────────────────────
-
-
-async def test_full_lifecycle_with_comparison():
-    """Create 2 sessions, create experiment, add harvests, get comparison, complete."""
-    # Create sessions
-    control = await _make_session("Control Grow")
-    variant = await _make_session("Variant Grow")
-
-    # Add harvests to control
-    await add_harvest(control["id"], HarvestCreate(
-        flush_number=1, wet_weight_g=200.0,
-    ))
-    await add_harvest(control["id"], HarvestCreate(
-        flush_number=2, wet_weight_g=150.0,
-    ))
-
-    # Add harvests to variant (higher yield)
-    await add_harvest(variant["id"], HarvestCreate(
-        flush_number=1, wet_weight_g=300.0,
-    ))
-    await add_harvest(variant["id"], HarvestCreate(
-        flush_number=2, wet_weight_g=200.0,
-    ))
-
-    # Create experiment
-    exp = await _make_experiment(control["id"], variant["id"])
-
-    # Get comparison
-    comparison = await get_comparison(exp["id"])
-    assert comparison is not None
-    assert comparison["experiment"]["id"] == exp["id"]
-    assert comparison["control_session"] is not None
-    assert comparison["variant_session"] is not None
-
-    # Check metrics
-    metrics = comparison["metrics"]
-    assert len(metrics) > 0
-
-    # Find the total_wet_yield_g metric
-    yield_metric = next(m for m in metrics if m["metric"] == "total_wet_yield_g")
-    assert yield_metric["control_value"] == 350.0
-    assert yield_metric["variant_value"] == 500.0
-    assert yield_metric["winner"] == "variant"
-    assert yield_metric["pct_difference"] is not None
-
-    # Complete the experiment
-    completed = await update_experiment(exp["id"], ExperimentUpdate(
-        status="completed",
-        conclusion="Variant substrate produced significantly higher yields",
-    ))
     assert completed["status"] == "completed"
+    assert completed["conclusion"] == "Manure substrate produced 30% higher yields"
     assert completed["completed_at"] is not None
 
+    # Editing the conclusion later does not move completed_at
+    updated = await update_experiment(exp["id"], ExperimentUpdate(conclusion="Updated conclusion"))
+    assert updated["completed_at"] == completed["completed_at"]
 
-async def test_comparison_not_found():
-    result = await get_comparison(9999)
-    assert result is None
+
+def test_experiment_routes_answer_404_for_an_unknown_experiment(client):
+    assert client.get("/api/experiments/9999").status_code == 404
+    assert client.patch("/api/experiments/9999", json={"status": "cancelled"}).status_code == 404
+    assert client.get("/api/experiments/9999/comparison").status_code == 404
+    assert client.post("/api/experiments/9999/analyze").status_code == 404
 
 
-async def test_comparison_with_colonization_days():
-    """Verify colonization_days metric is extracted from phase_history."""
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
+# ── Comparison ─────────────────────────────────────────────────
 
-    # Advance phases to create phase_history entries with exited_at
-    await advance_phase(control["id"], PhaseAdvance(phase="primordia_induction", trigger="manual"))
-    await advance_phase(variant["id"], PhaseAdvance(phase="primordia_induction", trigger="manual"))
 
-    exp = await _make_experiment(
-        control["id"], variant["id"],
-        dependent_variables=["colonization_days"],
-    )
+@pytest.mark.parametrize(("control_g", "variant_g", "winner"), [
+    ((200.0, 150.0), (300.0, 200.0), "variant"),
+    ((100.0,), (50.0,), "control"),
+], ids=["variant-yields-more", "control-yields-more"])
+async def test_the_higher_yield_wins(control_g, variant_g, winner):
+    control, variant = await _pair()
+    for session, flushes in ((control, control_g), (variant, variant_g)):
+        for flush, grams in enumerate(flushes, 1):
+            await add_harvest(session["id"], HarvestCreate(flush_number=flush, wet_weight_g=grams))
+    exp = await _make_experiment(control["id"], variant["id"])
 
     comparison = await get_comparison(exp["id"])
-    assert comparison is not None
-    metrics = comparison["metrics"]
-    col_metric = next(m for m in metrics if m["metric"] == "colonization_days")
-    # Both should have a value since phase was advanced (exited_at set)
-    assert col_metric["control_value"] is not None
-    assert col_metric["variant_value"] is not None
-
-
-# ── AI Analysis ───────────────────────────────────────────────
-
-
-async def test_analyze_experiment_no_api_key(monkeypatch):
-    """Without Claude API key, returns error with comparison data."""
-    from app.config import settings
-    monkeypatch.setattr(settings, "claude_api_key", "")
-
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
-    await add_harvest(control["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
-    await add_harvest(variant["id"], HarvestCreate(flush_number=1, wet_weight_g=300.0))
-
-    exp = await _make_experiment(control["id"], variant["id"])
-    result = await analyze_experiment(exp["id"])
-    assert result is not None
-    assert result["error"] == "Claude API not configured"
-    assert "comparison" in result
-
-
-async def test_analyze_experiment_not_found():
-    result = await analyze_experiment(9999)
-    assert result is None
-
-
-async def test_analyze_experiment_with_mock_claude(monkeypatch):
-    """With API key set, calls Claude and returns parsed analysis."""
-    from app.config import settings
-    monkeypatch.setattr(settings, "claude_api_key", "test-key")
-
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
-    await add_harvest(control["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
-    await add_harvest(variant["id"], HarvestCreate(flush_number=1, wet_weight_g=300.0))
-
-    exp = await _make_experiment(control["id"], variant["id"])
-
-    fake_json = '{"summary": "Variant outperformed control.", "hypothesis_supported": true, "confidence": "high", "recommendations": ["Use variant substrate"]}'
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=fake_json)]
-
-    mock_client = MagicMock()
-    mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-    with patch("app.experiments.service.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await analyze_experiment(exp["id"])
-
-    assert result is not None
-    assert "analysis" in result
-    assert result["analysis"]["hypothesis_supported"] is True
-    assert result["analysis"]["confidence"] == "high"
-    assert "comparison" in result
-
-
-# ── lower-is-better metrics + contamination_count ──────────────────────
+    assert comparison["experiment"]["id"] == exp["id"]
+    assert (comparison["control_session"]["id"], comparison["variant_session"]["id"]) == (
+        control["id"], variant["id"])
+    y = next(m for m in comparison["metrics"] if m["metric"] == "total_wet_yield_g")
+    assert (y["control_value"], y["variant_value"], y["winner"]) == (sum(control_g), sum(variant_g), winner)
+    assert y["pct_difference"] == round((sum(variant_g) - sum(control_g)) / sum(control_g) * 100, 1)
 
 
 async def _set_colonization(session_id, days):
@@ -306,8 +147,7 @@ async def _add_contamination(session_id, n=1):
 
 
 async def test_slower_colonization_does_not_win():
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
+    control, variant = await _pair()
     await advance_phase(control["id"], PhaseAdvance(phase="primordia_induction"))
     await advance_phase(variant["id"], PhaseAdvance(phase="primordia_induction"))
     await _set_colonization(control["id"], 14)
@@ -325,8 +165,7 @@ async def test_slower_colonization_does_not_win():
 
 
 async def test_contamination_count_is_computed_and_lower_wins():
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
+    control, variant = await _pair()
     await _add_contamination(variant["id"], 2)
 
     exp = await _make_experiment(control["id"], variant["id"])
@@ -338,50 +177,45 @@ async def test_contamination_count_is_computed_and_lower_wins():
     assert cc["winner"] == "control"
 
 
-async def test_higher_yield_still_wins():
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
-    await add_harvest(control["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
-    await add_harvest(variant["id"], HarvestCreate(flush_number=1, wet_weight_g=50.0))
-    exp = await _make_experiment(control["id"], variant["id"])
-    comparison = await get_comparison(exp["id"])
-    y = next(m for m in comparison["metrics"] if m["metric"] == "total_wet_yield_g")
-    assert y["winner"] == "control"
-
-
 async def test_non_numeric_metric_does_not_crash_comparison():
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
+    control, variant = await _pair()
     exp = await _make_experiment(control["id"], variant["id"],
                                  dependent_variables=["flush_decline_pct", "name"])
     comparison = await get_comparison(exp["id"])
     assert all(m["winner"] is None for m in comparison["metrics"])
 
 
-# ── /analyze error handling + POST ─────────────────────────────────────
+# ── AI analysis ────────────────────────────────────────────────
+
+_ANALYSIS = {"summary": "Variant outperformed control.", "hypothesis_supported": True,
+             "confidence": "high", "recommendations": ["Use variant substrate"]}
 
 
-async def test_analyze_api_error_returns_error_payload(monkeypatch):
-    from app.config import settings
+@pytest.mark.parametrize(("reply", "stop_reason", "error"), [
+    (_ANALYSIS, "end_turn", None),
+    (anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")),
+     "end_turn", "Claude analysis failed: APIConnectionError"),
+    ("I can't help with that.", "refusal", "Claude declined to analyze this experiment (refusal)"),
+    ('{"summary": "Variant outperf', "max_tokens", "Claude analysis was cut off at max_tokens"),
+], ids=["parsed", "api-error", "refusal", "cut-off"])
+async def test_analysis_answers_the_parsed_reply_or_says_why_not(reply, stop_reason, error, monkeypatch):
+    """Whatever Claude answers (or fails to), the comparison comes back; an
+    unusable answer is an error the dashboard shows, never a 500."""
     monkeypatch.setattr(settings, "claude_api_key", "test-key")
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
+    monkeypatch.setattr(experiments_service.anthropic, "AsyncAnthropic",
+                        fake_anthropic(reply, stop_reason=stop_reason))
+    control, variant = await _pair()
     exp = await _make_experiment(control["id"], variant["id"])
 
-    mock_client = MagicMock()
-    mock_client.messages.create = AsyncMock(side_effect=anthropic.APIConnectionError(
-        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
-    ))
-    with patch("app.experiments.service.anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await analyze_experiment(exp["id"])
-
-    assert "error" in result
-    assert "comparison" in result
-    assert "analysis" not in result
+    result = await analyze_experiment(exp["id"])
+    assert result["comparison"]["experiment"]["id"] == exp["id"]
+    if error is None:
+        assert result["analysis"] == _ANALYSIS
+    else:
+        assert (result["error"], "analysis" in result) == (error, False)
 
 
 def test_analyze_endpoint_accepts_post(client, monkeypatch):
-    from app.config import settings
     monkeypatch.setattr(settings, "claude_api_key", "")
     c = client.post("/api/sessions", json={"name": "C", "species_profile_id": "blue_oyster"}).json()
     v = client.post("/api/sessions", json={"name": "V", "species_profile_id": "blue_oyster"}).json()
@@ -392,11 +226,12 @@ def test_analyze_endpoint_accepts_post(client, monkeypatch):
     }).json()
     r = client.post(f"/api/experiments/{exp['id']}/analyze")
     assert r.status_code == 200
+    # No API key: the comparison still comes back, with the reason.
     assert r.json()["error"] == "Claude API not configured"
+    assert r.json()["comparison"]["experiment"]["id"] == exp["id"]
     # Dashboard bundles from before the move to POST still call GET (a
     # server-only update keeps the bundle a Pi serves); keep it working.
     assert client.get(f"/api/experiments/{exp['id']}/analyze").status_code == 200
-    assert client.post("/api/experiments/9999/analyze").status_code == 404
     # Only the POST is current: the API schema says so of the GET.
     paths = client.app.openapi()["paths"]
     analyze = paths["/api/experiments/{experiment_id}/analyze"]
@@ -430,8 +265,7 @@ def test_unknown_sessions_are_422_not_500(client):
 
 
 async def test_status_is_one_of_the_three_states(client):
-    control = await _make_session("Control")
-    variant = await _make_session("Variant")
+    control, variant = await _pair()
     exp = await _make_experiment(control["id"], variant["id"])
     for bad in ("Completed", "done", ""):
         r = client.patch(f"/api/experiments/{exp['id']}", json={"status": bad})

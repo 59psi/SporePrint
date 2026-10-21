@@ -14,90 +14,28 @@ it, so a string ON arms the ceiling and gets an OFF of the matching type.
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 import app.automation.engine as engine
 from app.automation.engine import _fire_rule
-from app.automation.models import (
-    AutomationRule,
-    ConditionType,
-    RuleAction,
-    RuleCondition,
-    ThresholdCondition,
-)
+from app.automation.models import RuleAction
 from app.cloud import integrations_proxy
 from app.db import get_db
-from app.integrations import _actions, _registry
+from app.integrations import _actions
+from tests._builders import make_rule
 
-kasa_mod = importlib.import_module("app.integrations.kasa.driver")
-agrowtek_mod = importlib.import_module("app.integrations.agrowtek.driver")
+kasa_driver = importlib.import_module("app.integrations.kasa.driver")
 
 HEATER = "vendor:kasa:10.0.0.20"
 HEATER_KEY = f"{HEATER}:*"
 
 
-@pytest.fixture(autouse=True)
-def _fresh_actuator_state():
-    """Per-actuator locks bind to the loop they were first contended on, and
-    each test gets its own loop — start every test with none."""
-    engine._actuator_locks.clear()
-    engine._safety_deadlines.clear()
-    yield
-    engine._actuator_locks.clear()
-
-
-@pytest.fixture
-def frozen_sleep(monkeypatch):
-    """Engine sleeps never return — a ceiling stays armed for the whole test."""
-    async def _never(_delay):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr("app.automation.engine.asyncio.sleep", _never)
-
-
-@pytest.fixture
-def kasa_wire(monkeypatch):
-    sent: list[tuple[str, dict]] = []
-
-    async def fake_query(ip, payload, timeout):
-        sent.append((ip, payload))
-        return {}
-
-    monkeypatch.setattr(kasa_mod, "_kasa_query", fake_query)
-    return sent
-
-
-@pytest.fixture
-def agrowtek_wire(monkeypatch):
-    drv = _registry.registered_drivers()["agrowtek"]
-    monkeypatch.setattr(drv, "_cfg", agrowtek_mod.AgrowtekConfig(base_url="http://10.0.0.30", api_key="k"))
-    sent: list[tuple[str, dict]] = []
-
-    async def fake_put(self, url, headers=None, json=None, **kwargs):
-        sent.append((str(url), json))
-        return httpx.Response(200, json={})
-
-    monkeypatch.setattr(httpx.AsyncClient, "put", fake_put)
-    return sent
-
-
-def _rule(action: RuleAction, rule_id: int = 7, name: str = "Heater (kasa)") -> AutomationRule:
-    return AutomationRule(
-        id=rule_id,
-        name=name,
-        condition=RuleCondition(
-            type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="temp_f", operator="lt", value=60),
-        ),
-        action=action,
-        safety_max_on_seconds=3600,
-        log_to_session=False,
-    )
+def _rule(action: RuleAction, rule_id: int = 7, name: str = "Heater (kasa)"):
+    return make_rule(action, ceiling=3600, name=name, rule_id=rule_id, log_to_session=False)
 
 
 def _heater(on: object = True) -> RuleAction:
@@ -166,11 +104,12 @@ async def test_a_failed_manual_write_changes_nothing(frozen_sleep, kasa_wire, mo
     await _fire_rule(_rule(_heater()), {}, session=None)
 
     async def unreachable(ip, payload, timeout):
-        raise kasa_mod.KasaError("connect refused")
+        raise kasa_driver.KasaError("connect refused")
 
-    monkeypatch.setattr(kasa_mod, "_kasa_query", unreachable)
-    with pytest.raises(Exception):
+    monkeypatch.setattr(kasa_driver, "_kasa_query", unreachable)
+    with pytest.raises(HTTPException) as exc:
         await _actions.dispatch_manual("kasa", "set_power", {"ip": "10.0.0.20", "on": False})
+    assert exc.value.status_code == 502
     assert HEATER_KEY in engine._safety_tasks, "the plug may still be ON"
 
 
@@ -204,16 +143,24 @@ async def test_a_string_on_arms_the_ceiling_and_its_off_matches(frozen_sleep, ag
         "set_output", {"output_id": "3", "value": 0})
 
 
-@pytest.mark.parametrize("params,expected", [
-    ({"ip": "10.0.0.20", "on": "off"}, False),
-    ({"ip": "10.0.0.20", "on": "1"}, True),
-    ({"ip": "10.0.0.20", "on": "maybe"}, None),
+async def test_a_failing_listener_never_fails_a_write_that_went_out(kasa_wire, monkeypatch):
+    async def _broken(*args, **kwargs):
+        raise RuntimeError("listener bug")
+
+    monkeypatch.setattr(_actions, "_write_listeners", [_broken])
+    await _actions.dispatch_manual("kasa", "set_power", {"ip": "10.0.0.20", "on": False})
+    assert kasa_wire == [("10.0.0.20", {"system": {"set_relay_state": {"state": 0}}})]
+
+
+@pytest.mark.parametrize("action,params,expected", [
+    ("set_power", {"ip": "10.0.0.20", "on": "off"}, False),
+    ("set_power", {"ip": "10.0.0.20", "on": "1"}, True),
+    ("set_power", {"ip": "10.0.0.20", "on": "on"}, True),
+    ("set_power", {"ip": "10.0.0.20", "on": "maybe"}, None),
+    ("set_power", {"on": True}, None),            # no device: nothing the ceiling can bound
+    ("set_dim", {"ip": "10.0.0.20", "percent": "0"}, False),
+    ("set_dim", {"ip": "10.0.0.20", "percent": "40"}, True),
+    ("set_dim", {"ip": "10.0.0.20", "percent": "half"}, None),
 ])
-def test_vendor_on_off_is_read_like_the_dispatcher(params, expected):
-    assert engine._vendor_params_on("kasa", "set_power", params) is expected
-
-
-@pytest.mark.parametrize("percent,expected", [("0", False), ("40", True), ("half", None)])
-def test_dim_percent_text_is_read_like_the_dispatcher(percent, expected):
-    params = {"ip": "10.0.0.20", "percent": percent}
-    assert engine._vendor_params_on("kasa", "set_dim", params) is expected
+def test_a_vendor_write_is_read_on_or_off_like_the_dispatcher_reads_it(action, params, expected):
+    assert engine._vendor_params_on("kasa", action, params) is expected

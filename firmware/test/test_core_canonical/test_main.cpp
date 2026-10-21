@@ -204,82 +204,108 @@ void test_golden_vectors_canonicalize() {
     }
 }
 
-void test_unsorted_pretty_input_sorts() {
-    const char* wire =
-        "{\n  \"ts\": 1700000000.5,\n  \"channel\": \"fae\",\n"
-        "  \"target\": \"relay-01\",\n  \"tier\": \"premium\",\n"
-        "  \"id\": \"cmd-2\"\n}";
-    std::string out;
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::Ok,
-                          (int)sp::canonicalize(wire, strlen(wire), out, nullptr));
-    TEST_ASSERT_EQUAL_STRING(
-        "{\"channel\":\"fae\",\"id\":\"cmd-2\",\"target\":\"relay-01\","
-        "\"tier\":\"premium\",\"ts\":1700000000.5}",
-        out.c_str());
+// Canonical form: members sorted by raw key bytes at every depth, all
+// insignificant whitespace gone, the top-level drop key (only) removed, and
+// every scalar lexeme copied verbatim (a parse→reserialize canonicalizer
+// would turn 1700000000.0 into 1700000000 and break parity with Python).
+void test_canonical_form() {
+    struct {
+        const char* label;
+        const char* in;
+        const char* drop;
+        const char* want;
+    } cases[] = {
+        {"pretty, unsorted",
+         "{\n  \"ts\": 1700000000.5,\n  \"channel\": \"fae\",\n"
+         "  \"target\": \"relay-01\",\n  \"tier\": \"premium\",\n"
+         "  \"id\": \"cmd-2\"\n}",
+         nullptr,
+         "{\"channel\":\"fae\",\"id\":\"cmd-2\",\"target\":\"relay-01\","
+         "\"tier\":\"premium\",\"ts\":1700000000.5}"},
+        {"float lexeme verbatim", "{\"ts\":1700000000.0}", nullptr,
+         "{\"ts\":1700000000.0}"},
+        {"every scalar verbatim",
+         "{\"z\":-0.5e-3,\"y\":1E+2,\"x\":0,\"w\":true,\"v\":false,\"u\":null,"
+         "\"t\":\"a\\\"b\\\\c\\u00e9\\n\"}",
+         nullptr,
+         "{\"t\":\"a\\\"b\\\\c\\u00e9\\n\",\"u\":null,\"v\":false,\"w\":true,"
+         "\"x\":0,\"y\":1E+2,\"z\":-0.5e-3}"},
+        {"raw byte order: upper case first, prefix first",
+         "{\"ab\":1,\"a\":2,\"B\":3}", nullptr, "{\"B\":3,\"a\":2,\"ab\":1}"},
+        {"nested objects sort, arrays keep order",
+         "{\"b\":{\"z\":1,\"a\":2},\"a\":[ {\"y\":1,\"x\":2} , [ ] , 3 ]}", nullptr,
+         "{\"a\":[{\"x\":2,\"y\":1},[],3],\"b\":{\"a\":2,\"z\":1}}"},
+        {"signature dropped at the top level only",
+         "{\"a\":{\"signature\":\"keep\"},\"signature\":\"drop\"}", "signature",
+         "{\"a\":{\"signature\":\"keep\"}}"},
+        {"empty object", "  { }  ", nullptr, "{}"},
+        // Dropping the only member yields {}, as Python's dict-comp does.
+        {"only the dropped member", "{\"signature\":\"x\"}", "signature", "{}"},
+    };
+    for (auto& c : cases) {
+        std::string out;
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            (int)sp::CanonStatus::Ok,
+            (int)sp::canonicalize(c.in, strlen(c.in), out, c.drop), c.label);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(c.want, out.c_str(), c.label);
+    }
 }
 
-void test_float_lexeme_preserved_verbatim() {
-    const char* wire = "{\"ts\":1700000000.0}";
-    std::string out;
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::Ok,
-                          (int)sp::canonicalize(wire, strlen(wire), out, nullptr));
-    // A parse→reserialize canonicalizer would emit 1700000000 here.
-    TEST_ASSERT_EQUAL_STRING("{\"ts\":1700000000.0}", out.c_str());
-}
-
-void test_nested_objects_sort_recursively() {
-    const char* wire = "{\"b\":{\"z\":1,\"a\":2},\"a\":[{\"y\":1,\"x\":2}]}";
-    std::string out;
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::Ok,
-                          (int)sp::canonicalize(wire, strlen(wire), out, nullptr));
-    TEST_ASSERT_EQUAL_STRING("{\"a\":[{\"x\":2,\"y\":1}],\"b\":{\"a\":2,\"z\":1}}",
-                             out.c_str());
-}
-
-void test_signature_dropped_top_level_only() {
-    const char* wire = "{\"a\":{\"signature\":\"keep\"},\"signature\":\"drop\"}";
-    std::string out;
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::Ok,
-                          (int)sp::canonicalize(wire, strlen(wire), out, "signature"));
-    TEST_ASSERT_EQUAL_STRING("{\"a\":{\"signature\":\"keep\"}}", out.c_str());
-}
-
+// Anything the Python signer could not have produced is refused, never
+// guessed at: the MAC must cover exactly the document the node acts on.
 void test_fail_closed_edges() {
-    std::string out;
-    // Raw non-ASCII (compliant peers always escape) — reject.
-    const char raw_utf8[] = "{\"scene\":\"daylight \xE2\x98\x80\"}";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::NonAscii,
-                          (int)sp::canonicalize(raw_utf8, sizeof(raw_utf8) - 1,
-                                                out, nullptr));
-    // Duplicate keys — reject.
-    const char* dup = "{\"a\":1,\"a\":2}";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::DupKey,
-                          (int)sp::canonicalize(dup, strlen(dup), out, nullptr));
-    // Escaped key — raw-byte sort would diverge from Python — reject.
-    const char* esc = "{\"a\\u0041\":1}";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::EscapedKey,
-                          (int)sp::canonicalize(esc, strlen(esc), out, nullptr));
-    // Trailing garbage — reject.
-    const char* trail = "{\"a\":1} x";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::BadJson,
-                          (int)sp::canonicalize(trail, strlen(trail), out, nullptr));
-    // Top level must be an object.
-    const char* arr = "[1,2]";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::NotObject,
-                          (int)sp::canonicalize(arr, strlen(arr), out, nullptr));
-    // Depth bomb.
     std::string deep;
     for (int i = 0; i < 12; ++i) deep += "{\"a\":";
     deep += "1";
     for (int i = 0; i < 12; ++i) deep += "}";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::TooDeep,
-                          (int)sp::canonicalize(deep.data(), deep.size(), out,
-                                                nullptr));
-    // Unterminated string.
-    const char* unterm = "{\"a\":\"x";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::BadJson,
-                          (int)sp::canonicalize(unterm, strlen(unterm), out,
-                                                nullptr));
+    std::string deep_array = "{\"a\":";
+    for (int i = 0; i < 12; ++i) deep_array += "[";
+    for (int i = 0; i < 12; ++i) deep_array += "]";
+    deep_array += "}";
+    std::string huge = "{\"a\":\"" + std::string(sp::kMaxInput, 'x') + "\"}";
+    // Raw non-ASCII: compliant peers always escape.
+    const std::string raw_utf8 = "{\"scene\":\"daylight \xE2\x98\x80\"}";
+    struct {
+        const char* label;
+        std::string in;
+        sp::CanonStatus want;
+    } cases[] = {
+        {"raw non-ASCII", raw_utf8, sp::CanonStatus::NonAscii},
+        {"duplicate key", "{\"a\":1,\"a\":2}", sp::CanonStatus::DupKey},
+        // Escaped key: a raw-byte sort would diverge from Python's.
+        {"escaped key", "{\"a\\u0041\":1}", sp::CanonStatus::EscapedKey},
+        {"trailing garbage", "{\"a\":1} x", sp::CanonStatus::BadJson},
+        {"array at the top", "[1,2]", sp::CanonStatus::NotObject},
+        {"empty input", "   ", sp::CanonStatus::NotObject},
+        {"objects nested past 8", deep, sp::CanonStatus::TooDeep},
+        {"arrays nested past 8", deep_array, sp::CanonStatus::TooDeep},
+        {"over 4 KB", huge, sp::CanonStatus::TooLarge},
+        {"unterminated string", "{\"a\":\"x", sp::CanonStatus::BadJson},
+        {"unknown escape", "{\"a\":\"\\x41\"}", sp::CanonStatus::BadJson},
+        {"short \\u escape", "{\"a\":\"\\u12g4\"}", sp::CanonStatus::BadJson},
+        {"raw control char", "{\"a\":\"x\ty\"}", sp::CanonStatus::BadJson},
+        {"leading zero", "{\"a\":01}", sp::CanonStatus::BadJson},
+        {"bare minus", "{\"a\":-}", sp::CanonStatus::BadJson},
+        {"no fraction digits", "{\"a\":1.}", sp::CanonStatus::BadJson},
+        {"no exponent digits", "{\"a\":1e+}", sp::CanonStatus::BadJson},
+        {"plus sign", "{\"a\":+1}", sp::CanonStatus::BadJson},
+        {"truncated literal", "{\"a\":tru}", sp::CanonStatus::BadJson},
+        {"single-quoted string", "{\"a\":'x'}", sp::CanonStatus::BadJson},
+        {"missing colon", "{\"a\" 1}", sp::CanonStatus::BadJson},
+        {"missing comma", "{\"a\":1 \"b\":2}", sp::CanonStatus::BadJson},
+        {"unquoted key", "{a:1}", sp::CanonStatus::BadJson},
+        {"trailing comma", "{\"a\":1,}", sp::CanonStatus::BadJson},
+        {"unterminated object", "{\"a\":1", sp::CanonStatus::BadJson},
+        {"array missing comma", "{\"a\":[1 2]}", sp::CanonStatus::BadJson},
+        {"unterminated array", "{\"a\":[1,}", sp::CanonStatus::BadJson},
+    };
+    for (auto& c : cases) {
+        std::string out;
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            (int)c.want,
+            (int)sp::canonicalize(c.in.data(), c.in.size(), out, nullptr),
+            c.label);
+    }
 }
 
 void test_find_member_span() {
@@ -294,31 +320,23 @@ void test_find_member_span() {
     TEST_ASSERT_EQUAL_MEMORY("\"abc\"", span, 5);
     TEST_ASSERT_FALSE(
         sp::find_member_span(json, strlen(json), "missing", &span, &len));
-}
-
-void test_empty_and_minimal_objects() {
-    std::string out;
-    const char* empty = "  { }  ";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::Ok,
-                          (int)sp::canonicalize(empty, strlen(empty), out, nullptr));
-    TEST_ASSERT_EQUAL_STRING("{}", out.c_str());
-    // Dropping the only member yields {} — matches Python's dict-comp.
-    const char* only_sig = "{\"signature\":\"x\"}";
-    TEST_ASSERT_EQUAL_INT((int)sp::CanonStatus::Ok,
-                          (int)sp::canonicalize(only_sig, strlen(only_sig), out,
-                                                "signature"));
-    TEST_ASSERT_EQUAL_STRING("{}", out.c_str());
+    // A nested member is not a top-level one, and a frame that is not one
+    // well-formed object has no members at all.
+    const char* nested = "{\"a\":{\"ts\":1}}";
+    TEST_ASSERT_FALSE(sp::find_member_span(nested, strlen(nested), "ts", &span, &len));
+    const char* not_obj = "[{\"ts\":1}]";
+    TEST_ASSERT_FALSE(sp::find_member_span(not_obj, strlen(not_obj), "ts", &span, &len));
+    const char* broken = "{\"ts\":1,";
+    TEST_ASSERT_FALSE(sp::find_member_span(broken, strlen(broken), "ts", &span, &len));
+    std::string huge = "{\"ts\":1,\"a\":\"" + std::string(sp::kMaxInput, 'x') + "\"}";
+    TEST_ASSERT_FALSE(sp::find_member_span(huge.data(), huge.size(), "ts", &span, &len));
 }
 
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_golden_vectors_canonicalize);
-    RUN_TEST(test_unsorted_pretty_input_sorts);
-    RUN_TEST(test_float_lexeme_preserved_verbatim);
-    RUN_TEST(test_nested_objects_sort_recursively);
-    RUN_TEST(test_signature_dropped_top_level_only);
+    RUN_TEST(test_canonical_form);
     RUN_TEST(test_fail_closed_edges);
     RUN_TEST(test_find_member_span);
-    RUN_TEST(test_empty_and_minimal_objects);
     return UNITY_END();
 }

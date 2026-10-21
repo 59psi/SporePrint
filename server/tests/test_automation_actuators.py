@@ -6,23 +6,13 @@ commands are kept per physical actuator; a frame that carries no reading for
 a rule's sensor does not take the actuator away from it.
 """
 
-import asyncio
-import json
 import logging
 import time
-from unittest.mock import patch
 
 import pytest
 
 import app.automation.engine as engine
-import app.cloud.service as cloud_service
-from app.automation.engine import (
-    _fire_rule,
-    clear_override,
-    evaluate_rules,
-    rehydrate_safety_watchdogs,
-    set_override,
-)
+from app.automation.engine import clear_override, evaluate_rules, set_override
 from app.automation.models import (
     AutomationRule,
     CompoundCondition,
@@ -31,93 +21,34 @@ from app.automation.models import (
     ManualOverride,
     RuleAction,
     RuleCondition,
-    ThresholdCondition,
 )
 from app.automation.service import create_rule, seed_builtin_rules
 from app.automation.smart_plugs import register_plug
 from app.db import get_db
-from app.sessions.models import SessionCreate
-from app.sessions.service import create_session
 from app.species.service import seed_builtins
-
-_real_localtime = time.localtime
-_real_sleep = asyncio.sleep
-_RELAY_CHANNELS = ["fae", "exhaust", "circulation", "aux"]
-_LIGHT_CHANNELS = ["white", "blue", "red", "far_red"]
-
-
-def _local(hour, minute=0):
-    """Epoch seconds for a fixed Monday at a LOCAL clock time."""
-    return time.mktime((2026, 7, 13, hour, minute, 0, 0, 0, -1))
-
-
-def _clock(ts):
-    return patch.multiple(
-        time, time=lambda: ts, localtime=lambda t=None: _real_localtime(ts if t is None else t),
-    )
+from tests._builders import (
+    LIGHT_CHANNELS as _LIGHT_CHANNELS,
+    RELAY_CHANNELS as _RELAY_CHANNELS,
+    chamber as _chamber,
+    register_node,
+    start_grow as _session,
+    threshold as _threshold,
+)
+from tests._timing import clock as _clock, local as _local
 
 
 @pytest.fixture(autouse=True)
-def _quiet(monkeypatch):
-    """No ntfy, no cloud forward; the engine starts unpaused."""
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(engine, "notify_critical", _noop)
-    monkeypatch.setattr(engine, "notify_warning", _noop)
-    monkeypatch.setattr(engine, "co2_alert", _noop)
-    monkeypatch.setattr(cloud_service, "forward_event", _noop)
-    engine._paused = False
-    engine._pause_loaded = False
-    engine._actuator_locks.clear()
-    engine._safety_deadlines.clear()
-
-
-@pytest.fixture
-def frozen_sleep(monkeypatch):
-    """Engine sleeps never return: a watchdog stays armed for the whole test."""
-    async def _never(_delay):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr("app.automation.engine.asyncio.sleep", _never)
-
-
-async def _session(species, phase, **kw):
-    return await create_session(SessionCreate(
-        name=f"{species}-{phase}", species_profile_id=species,
-        substrate="test", current_phase=phase, **kw,
-    ))
+def _quiet(quiet_alerts):
+    """No ntfy, no cloud forward."""
 
 
 async def _node(node_id, node_type, channels=None, last_seen=None):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, roles, channels, last_seen) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (node_id, node_type, json.dumps([node_type]),
-             json.dumps(channels) if channels is not None else None,
-             last_seen if last_seen is not None else time.time()),
-        )
-        await db.commit()
-
-
-async def _chamber(name, ids):
-    async with get_db() as db:
-        cursor = await db.execute(
-            "INSERT INTO chambers (name, node_ids) VALUES (?, ?)", (name, json.dumps(ids)),
-        )
-        await db.commit()
-        return cursor.lastrowid
+    await register_node(node_id, node_type, channels, last_seen=last_seen)
 
 
 async def _plug(plug_id, role):
     await register_plug(plug_id=plug_id, name=role, plug_type="tasmota",
                         mqtt_topic_prefix=f"tasmota/{plug_id}", device_role=role)
-
-
-def _threshold(sensor, operator, value):
-    return RuleCondition(type=ConditionType.THRESHOLD,
-                         threshold=ThresholdCondition(sensor=sensor, operator=operator, value=value))
 
 
 def _rule(name, action, condition=None, *, priority=5, safety_max=None, rule_id=None):
@@ -137,12 +68,6 @@ def _cmds(mqtt, suffix):
     return [p for t, p in mqtt if t.endswith(suffix)]
 
 
-async def _watchdog_rows():
-    async with get_db() as db:
-        cursor = await db.execute("SELECT target, channel FROM safety_watchdogs")
-        return {(r["target"], r["channel"]) for r in await cursor.fetchall()}
-
-
 # ── a plug is one actuator, whichever name a rule uses ─────────────────────
 
 
@@ -159,38 +84,6 @@ async def test_a_plug_named_by_role_and_by_id_has_one_owner(frozen_sleep, mock_m
     await evaluate_rules("climate-1", {"temp_f": 50})
     assert _powers(mock_mqtt_raw, "plug-a1b2c3") == ["ON"]
     assert "plug-a1b2c3:*" in engine._safety_tasks
-
-
-async def test_an_off_by_the_plugs_id_ends_a_ceiling_armed_by_its_role(
-        frozen_sleep, mock_mqtt, mock_mqtt_raw):
-    await _plug("plug-a1b2c3", "heater")
-    await _fire_rule(_rule("on", RuleAction(target="plug-heater", state="on"), safety_max=3600,
-                           rule_id=1), {}, None)
-    armed = engine._safety_tasks["plug-a1b2c3:*"]
-    await _fire_rule(_rule("off", RuleAction(target="plug-a1b2c3", state="off"), rule_id=2), {}, None)
-    await _real_sleep(0)
-    assert armed.cancelled() or armed.done()
-    assert await _watchdog_rows() == set()
-
-
-async def test_an_off_ends_a_ceiling_kept_under_the_plugs_other_name(
-        frozen_sleep, mock_mqtt, mock_mqtt_raw):
-    """A ceiling rehydrated under the role it was armed by ends with an OFF
-    that names the plug by id."""
-    await _plug("plug-a1b2c3", "heater")
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO safety_watchdogs (target, channel, rule_name, armed_at, expires_at) "
-            "VALUES ('plug-heater', NULL, 'Heating Trigger', ?, ?)",
-            (time.time() - 60, time.time() + 3000),
-        )
-        await db.commit()
-    await rehydrate_safety_watchdogs()
-    armed = engine._safety_tasks["plug-heater:*"]
-    await _fire_rule(_rule("off", RuleAction(target="plug-a1b2c3", state="off")), {}, None)
-    await _real_sleep(0)
-    assert armed.cancelled() or armed.done()
-    assert await _watchdog_rows() == set()
 
 
 # ── a sealed vessel gates a plug by its role ───────────────────────────────

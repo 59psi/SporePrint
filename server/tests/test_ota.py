@@ -1,55 +1,146 @@
-"""OTA pipeline tests — input validation, Ed25519 verify, tar safety."""
+"""Pi self-update (app/cloud/ota.py), unit by unit: input validation, the
+release download (SSRF allowlist, size caps, no redirects), the legacy
+Ed25519 bundle signature, tar safety and staging.
+
+The pipeline end to end, against signed release manifests, is
+test_ota_signed_manifest.py; the cloud command's pre-ack guards are
+test_ota_dispatch_guards.py.
+"""
 
 from __future__ import annotations
 
 import base64
 import io
 import tarfile
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from app.cloud import ota, ota_manifest
-from app.cloud.ota import (
-    OTAError,
-    _bundle_url,
-    _safe_extract_tar,
-    _signature_url,
-    _validate_inputs,
-    _verify_signature,
-)
+from app.cloud import ota
+from app.cloud.ota import OTAError, _safe_extract_tar, _validate_inputs, _verify_signature
+from app.config import settings
 
 
 # ─── Input validation ─────────────────────────────────────────────────
 
 
-def test_validate_inputs_rejects_bad_channel():
-    with pytest.raises(OTAError, match="channel must be"):
-        _validate_inputs("v1.2.3", "garbage")
+def test_canonical_versions_and_channels_are_accepted():
+    for version, channel in (("3.4.10", "stable"), ("v3.4.10", "stable"),
+                             ("3.4.10-rc1", "beta"), ("3.4.10.dev42", "dev")):
+        _validate_inputs(version, channel)
 
 
-def test_validate_inputs_rejects_path_traversal_in_version():
-    with pytest.raises(OTAError, match="version must match"):
-        _validate_inputs("../../etc/passwd", "stable")
+@pytest.mark.parametrize("version, channel, message", [
+    ("v1.2.3", "garbage", "channel must be"),
+    ("../../etc/passwd", "stable", "version must match"),       # path traversal
+    ("v1.2.3/../evil", "stable", "version must match"),         # URL smuggling
+])
+def test_a_version_or_channel_that_could_leave_its_path_is_refused(version, channel, message):
+    with pytest.raises(OTAError, match=message):
+        _validate_inputs(version, channel)
 
 
-def test_validate_inputs_rejects_url_smuggling():
-    with pytest.raises(OTAError, match="version must match"):
-        _validate_inputs("v1.2.3/../evil", "stable")
+@pytest.mark.parametrize("version, channel, message", [
+    ("3.4.10", "wat", "channel must be"),
+    ("../../passwd", "stable", "version must match"),
+])
+async def test_the_pipeline_validates_before_anything_else(monkeypatch, tmp_path, version, channel,
+                                                           message):
+    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", tmp_path / "state")
+    result = await ota.run_ota_update(version, channel)
+    assert (result["ok"], result["step"]) == (False, "validate")
+    assert message in result["error"]
 
 
-def test_validate_inputs_accepts_canonical_versions():
-    _validate_inputs("3.4.10", "stable")
-    _validate_inputs("v3.4.10", "stable")
-    _validate_inputs("3.4.10-rc1", "beta")
-    _validate_inputs("3.4.10.dev42", "dev")
+# ─── The release download ─────────────────────────────────────────────
 
 
-def test_url_builders_pin_to_allowlisted_hostname():
-    assert _bundle_url("stable", "3.4.10").startswith(
-        "https://updates.sporeprint.ai/firmware/"
-    )
-    assert _signature_url("stable", "3.4.10").endswith(".tar.gz.sig")
+@pytest.fixture
+def release_host(monkeypatch):
+    """updates.sporeprint.ai behind httpx.MockTransport: `routes` maps a URL
+    path to the response; `seen` lists every URL requested."""
+    host = SimpleNamespace(routes={}, seen=[])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host.seen.append(str(request.url))
+        return host.routes.get(request.url.path, httpx.Response(404))
+
+    def client(**kwargs):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(ota, "httpx", SimpleNamespace(
+        URL=httpx.URL, Timeout=httpx.Timeout, AsyncClient=client))
+    return host
+
+
+_BUNDLE_URL = "https://updates.sporeprint.ai/firmware/stable/5.1.0.tar.gz"
+_BUNDLE_PATH = "/firmware/stable/5.1.0.tar.gz"
+
+
+async def test_a_release_file_is_downloaded_byte_for_byte(release_host, tmp_path):
+    release_host.routes[_BUNDLE_PATH] = httpx.Response(200, content=b"bundle bytes")
+    dest = tmp_path / "5.1.0.tar.gz"
+    await ota._download_to(_BUNDLE_URL, dest, max_bytes=12)
+    assert dest.read_bytes() == b"bundle bytes"
+
+
+async def test_a_host_off_the_allowlist_is_never_contacted(release_host, tmp_path):
+    with pytest.raises(OTAError, match="not on the OTA allowlist"):
+        await ota._download_to("https://evil.example/firmware/stable/5.1.0.tar.gz",
+                               tmp_path / "x")
+    assert release_host.seen == []
+
+
+async def test_a_file_the_host_does_not_publish_is_not_found(release_host, tmp_path):
+    """Only these mean "no such file" (the legacy-signature fallback hinges
+    on it); every other failure is an error."""
+    for status in (403, 404, 410):
+        release_host.routes[_BUNDLE_PATH] = httpx.Response(status)
+        with pytest.raises(ota.OTANotFound):
+            await ota._download_to(_BUNDLE_URL, tmp_path / "x")
+
+
+async def test_a_redirect_is_not_followed(release_host, tmp_path):
+    """The allowlist is the only gate: a redirect would take the download to
+    a host nobody checked."""
+    release_host.routes[_BUNDLE_PATH] = httpx.Response(
+        302, headers={"location": "https://evil.example/bundle.tar.gz"})
+    with pytest.raises(OTAError, match="returned HTTP 302") as exc:
+        await ota._download_to(_BUNDLE_URL, tmp_path / "x")
+    assert not isinstance(exc.value, ota.OTANotFound)
+    assert release_host.seen == [_BUNDLE_URL]
+
+
+def _streamed(body: bytes):
+    """A body sent without a Content-Length (chunked)."""
+    async def chunks():
+        for i in range(0, len(body), 4):
+            yield body[i:i + 4]
+    return chunks()
+
+
+@pytest.mark.parametrize("response, message", [
+    (lambda: httpx.Response(500), "returned HTTP 500"),
+    (lambda: httpx.Response(200, headers={"content-length": "1000"}, content=b"x" * 1000),
+     "declares 1000 bytes, max is 16"),
+    (lambda: httpx.Response(200, headers={"content-length": "lots"}, content=b"x"),
+     "bad Content-Length"),
+    (lambda: httpx.Response(200, content=_streamed(b"x" * 40)), "exceeded max size 16 mid-stream"),
+], ids=["server-error", "declared-too-big", "bad-length", "streamed-too-big"])
+async def test_a_download_that_is_not_a_bounded_200_is_refused(release_host, tmp_path, response,
+                                                               message):
+    """A release is a few MB on an SD card: the size cap is enforced from
+    the declared length before anything is written, and while streaming."""
+    release_host.routes[_BUNDLE_PATH] = response()
+    dest = tmp_path / "x"
+    with pytest.raises(OTAError, match=message):
+        await ota._download_to(_BUNDLE_URL, dest, max_bytes=16)
+    if message.startswith("declares"):
+        assert not dest.exists()
 
 
 # ─── Tar extraction safety ────────────────────────────────────────────
@@ -65,45 +156,31 @@ def _build_tar(members: list[tuple[str, bytes]], dest: Path) -> Path:
     return bundle
 
 
-def _build_tar_with_member(info: tarfile.TarInfo, dest: Path) -> Path:
-    bundle = dest / "test.tar.gz"
+def _special(name: str, kind: bytes, linkname: str = "") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name=name)
+    info.type = kind
+    info.linkname = linkname
+    return info
+
+
+@pytest.mark.parametrize("member, message", [
+    ("/etc/passwd", "path-traversal"),
+    ("../../escape.txt", "path-traversal"),
+    (_special("link.txt", tarfile.SYMTYPE, "/etc/passwd"), "is a symlink"),
+    (_special("link.txt", tarfile.LNKTYPE, "/etc/passwd"), "is a hardlink"),
+    (_special("pipe", tarfile.FIFOTYPE), "is a special-file"),
+], ids=["absolute", "parent-traversal", "symlink", "hardlink", "fifo"])
+def test_a_bundle_member_that_could_escape_staging_is_refused(tmp_path, member, message):
+    bundle = tmp_path / "test.tar.gz"
     with tarfile.open(bundle, "w:gz") as tf:
-        tf.addfile(info, io.BytesIO(b""))
-    return bundle
-
-
-def test_safe_extract_rejects_absolute_path(tmp_path):
-    bundle = _build_tar([("/etc/passwd", b"oops")], tmp_path)
-    staging = tmp_path / "staging"
-    with pytest.raises(OTAError, match="path-traversal"):
-        _safe_extract_tar(bundle, staging)
-
-
-def test_safe_extract_rejects_parent_traversal(tmp_path):
-    bundle = _build_tar([("../../escape.txt", b"oops")], tmp_path)
-    staging = tmp_path / "staging"
-    with pytest.raises(OTAError, match="path-traversal"):
-        _safe_extract_tar(bundle, staging)
-
-
-def test_safe_extract_rejects_symlink(tmp_path):
-    info = tarfile.TarInfo(name="link.txt")
-    info.type = tarfile.SYMTYPE
-    info.linkname = "/etc/passwd"
-    bundle = _build_tar_with_member(info, tmp_path)
-    staging = tmp_path / "staging"
-    with pytest.raises(OTAError, match="symlink"):
-        _safe_extract_tar(bundle, staging)
-
-
-def test_safe_extract_rejects_hardlink(tmp_path):
-    info = tarfile.TarInfo(name="link.txt")
-    info.type = tarfile.LNKTYPE
-    info.linkname = "/etc/passwd"
-    bundle = _build_tar_with_member(info, tmp_path)
-    staging = tmp_path / "staging"
-    with pytest.raises(OTAError, match="hardlink"):
-        _safe_extract_tar(bundle, staging)
+        if isinstance(member, str):
+            info = tarfile.TarInfo(name=member)
+            info.size = 4
+            tf.addfile(info, io.BytesIO(b"oops"))
+        else:
+            tf.addfile(member)
+    with pytest.raises(OTAError, match=message):
+        _safe_extract_tar(bundle, tmp_path / "staging")
 
 
 def test_safe_extract_strips_setuid_bits(tmp_path):
@@ -115,300 +192,77 @@ def test_safe_extract_strips_setuid_bits(tmp_path):
         tf.addfile(info, io.BytesIO(b"echo"))
     staging = tmp_path / "staging"
     _safe_extract_tar(bundle, staging)
-    extracted = staging / "run.sh"
-    assert extracted.exists()
     # 0o4755 → 0o755 (setuid bit dropped, exec bits preserved)
-    assert (extracted.stat().st_mode & 0o7777) == 0o755
+    assert ((staging / "run.sh").stat().st_mode & 0o7777) == 0o755
 
 
-def test_safe_extract_accepts_normal_files(tmp_path):
-    bundle = _build_tar(
-        [
-            ("server/app.py", b"print('hello')"),
-            ("server/main.py", b"main"),
-            ("README.md", b"docs"),
-        ],
-        tmp_path,
-    )
-    staging = tmp_path / "staging"
-    _safe_extract_tar(bundle, staging)
-    assert (staging / "server" / "app.py").read_bytes() == b"print('hello')"
-    assert (staging / "server" / "main.py").exists()
-    assert (staging / "README.md").exists()
-
-
-def test_safe_extract_uses_an_explicit_tar_filter(tmp_path):
+def test_normal_files_extract_through_an_explicit_tar_filter(tmp_path):
     """Unfiltered extract() is deprecated (Python 3.12+ warns; 3.14 changes
     the default). The manual member walk stays, and the stdlib 'data' filter
     is applied on top of it wherever the running Python has one."""
-    import warnings
-
-    bundle = _build_tar([("server/app.py", b"x"), ("docs/a.md", b"y")], tmp_path)
+    bundle = _build_tar(
+        [("server/app.py", b"print('hello')"), ("server/main.py", b"main"), ("README.md", b"docs")],
+        tmp_path,
+    )
     staging = tmp_path / "staging"
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         _safe_extract_tar(bundle, staging)
-    assert (staging / "server" / "app.py").read_bytes() == b"x"
+    assert (staging / "server" / "app.py").read_bytes() == b"print('hello')"
+    assert (staging / "server" / "main.py").read_bytes() == b"main"
+    assert (staging / "README.md").read_bytes() == b"docs"
 
 
-# ─── Ed25519 signature verification ──────────────────────────────────
+# ─── The pinned key and the legacy bundle signature ──────────────────
 
 
-def _generate_keypair():
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-        Ed25519PrivateKey,
-    )
-    sk = Ed25519PrivateKey.generate()
-    pk_raw = sk.public_key().public_bytes_raw()
-    return sk, base64.b64encode(pk_raw).decode("ascii")
+@pytest.fixture
+def pinned_key(monkeypatch) -> Ed25519PrivateKey:
+    key = Ed25519PrivateKey.generate()
+    monkeypatch.setattr(settings, "ota_pubkey_b64",
+                        base64.b64encode(key.public_key().public_bytes_raw()).decode())
+    return key
 
 
-def test_verify_signature_accepts_valid_signature(tmp_path, monkeypatch):
-    sk, pk_b64 = _generate_keypair()
-    monkeypatch.setenv("SPOREPRINT_OTA_PUBKEY", pk_b64)
-    monkeypatch.setattr(ota, "_load_pinned_pubkey", ota._load_pinned_pubkey)
-
+def test_verify_signature_accepts_the_pinned_keys_signature(tmp_path, pinned_key):
     bundle = tmp_path / "bundle.tar.gz"
     bundle.write_bytes(b"any payload - what matters is the sig")
-    sig = sk.sign(bundle.read_bytes())
     sig_path = tmp_path / "bundle.tar.gz.sig"
-    sig_path.write_bytes(sig)
-
-    # Settings cache lookup uses module attr; clear it for the test.
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", pk_b64)
-
+    sig_path.write_bytes(pinned_key.sign(bundle.read_bytes()))
     _verify_signature(bundle, sig_path)  # should not raise
 
 
-def test_verify_signature_rejects_tampered_bundle(tmp_path, monkeypatch):
-    sk, pk_b64 = _generate_keypair()
-    monkeypatch.setenv("SPOREPRINT_OTA_PUBKEY", pk_b64)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", pk_b64)
-
+@pytest.mark.parametrize("damage, message", [
+    ("tamper", "signature verification FAILED"),
+    ("short-sig", "signature wrong length"),
+])
+def test_verify_signature_refuses_a_bundle_the_key_did_not_sign(tmp_path, pinned_key, damage,
+                                                                message):
     bundle = tmp_path / "bundle.tar.gz"
     bundle.write_bytes(b"original payload")
-    sig = sk.sign(bundle.read_bytes())
     sig_path = tmp_path / "bundle.tar.gz.sig"
-    sig_path.write_bytes(sig)
-
-    # Tamper AFTER signing.
-    bundle.write_bytes(b"tampered payload")
-
-    with pytest.raises(OTAError, match="signature verification FAILED"):
+    sig_path.write_bytes(pinned_key.sign(bundle.read_bytes()))
+    if damage == "tamper":
+        bundle.write_bytes(b"tampered payload")       # AFTER signing
+    else:
+        sig_path.write_bytes(b"not 64 bytes")
+    with pytest.raises(OTAError, match=message):
         _verify_signature(bundle, sig_path)
 
 
-def test_verify_signature_rejects_wrong_size_signature(tmp_path, monkeypatch):
-    _, pk_b64 = _generate_keypair()
-    monkeypatch.setenv("SPOREPRINT_OTA_PUBKEY", pk_b64)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", pk_b64)
-
-    bundle = tmp_path / "bundle.tar.gz"
-    bundle.write_bytes(b"any payload")
-    sig_path = tmp_path / "bundle.tar.gz.sig"
-    sig_path.write_bytes(b"not 64 bytes")
-
-    with pytest.raises(OTAError, match="signature wrong length"):
-        _verify_signature(bundle, sig_path)
-
-
-def test_load_pubkey_fails_closed_when_unset(monkeypatch):
+@pytest.mark.parametrize("raw, message", [
+    ("", "not configured"),
+    (base64.b64encode(b"too short").decode("ascii"), "wrong length"),
+    ("not base64!", "not valid base64"),
+], ids=["unset", "wrong-length", "not-base64"])
+def test_the_pinned_key_fails_closed(monkeypatch, raw, message):
+    monkeypatch.setattr(settings, "ota_pubkey_b64", raw)
     monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", "")
-    with pytest.raises(OTAError, match="not configured"):
+    with pytest.raises(OTAError, match=message):
         ota._load_pinned_pubkey()
 
 
-def test_load_pubkey_rejects_wrong_length(monkeypatch):
-    bad = base64.b64encode(b"too short").decode("ascii")
-    monkeypatch.setenv("SPOREPRINT_OTA_PUBKEY", bad)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", bad)
-    with pytest.raises(OTAError, match="wrong length"):
-        ota._load_pinned_pubkey()
-
-
-# ─── End-to-end ──────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_run_ota_update_rejects_unknown_channel(monkeypatch, tmp_path):
-    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", tmp_path / "state")
-    result = await ota.run_ota_update("3.4.10", "wat")
-    assert result["ok"] is False
-    assert "channel must be" in result["error"]
-    assert result["step"] == "validate"
-
-
-@pytest.mark.asyncio
-async def test_run_ota_update_rejects_bad_version(monkeypatch, tmp_path):
-    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", tmp_path / "state")
-    result = await ota.run_ota_update("../../passwd", "stable")
-    assert result["ok"] is False
-    assert "version must match" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_run_ota_update_fails_closed_without_pubkey(monkeypatch, tmp_path):
-    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", tmp_path / "state")
-    monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", "")
-    result = await ota.run_ota_update("3.4.10", "stable")
-    assert result["ok"] is False
-    assert "not configured" in result["error"]
-    # Critical: never made it to the download step.
-    assert result["step"] in ("validate", "download")
-
-
-# ─── Progress events forwarded to the cloud ─────────────────────────
-
-
-def _seed_pubkey(monkeypatch):
-    sk, pk_b64 = _generate_keypair()
-    monkeypatch.setenv("SPOREPRINT_OTA_PUBKEY", pk_b64)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", pk_b64)
-    return sk
-
-
-@pytest.mark.asyncio
-async def test_run_ota_update_emits_failed_step_when_pubkey_missing(
-    monkeypatch, tmp_path
-):
-    """Pubkey unset => OTA fails closed and a `failed` event ships with
-    `failed_at` set so the cloud admin can see WHERE it broke."""
-    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", tmp_path / "state")
-    monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
-    from app import config as _cfg
-    monkeypatch.setattr(_cfg.settings, "ota_pubkey_b64", "")
-
-    seen: list[tuple[str, dict]] = []
-
-    async def _capture(event_type, data):
-        seen.append((event_type, dict(data)))
-
-    # Patch the late-imported forward_event so _emit_step's import sees it.
-    from app.cloud import service as _svc
-    monkeypatch.setattr(_svc, "forward_event", _capture)
-
-    result = await ota.run_ota_update("3.4.10", "stable")
-    assert result["ok"] is False
-    assert seen, "expected at least one ota_step event"
-    last_type, last_data = seen[-1]
-    assert last_type == "ota_step"
-    assert last_data["step"] == "failed"
-    assert last_data["failed_at"] in ("validate", "download")
-    assert "not configured" in last_data["error"]
-    assert last_data["version"] == "3.4.10"
-    assert last_data["channel"] == "stable"
-
-
-@pytest.mark.asyncio
-async def test_run_ota_update_emits_every_step_on_success(
-    monkeypatch, tmp_path
-):
-    """Mocked-network happy path — assert every progress event fires in
-    order with the contract-defined payload keys."""
-    sk = _seed_pubkey(monkeypatch)
-
-    install_root = tmp_path / "opt"
-    state_dir = tmp_path / "state"
-    install_root.mkdir()
-    state_dir.mkdir()
-    monkeypatch.setattr(ota, "_DEFAULT_INSTALL_ROOT", install_root)
-    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", state_dir)
-
-    bundle_bytes_holder: dict[str, bytes] = {}
-    members_dir = tmp_path / "members"
-    members_dir.mkdir()
-    bundle_src = _build_tar(
-        [
-            ("server/app.py", b"print('hi')"),
-            ("server/__init__.py", b""),
-            ("README.md", b"docs"),
-        ],
-        members_dir,
-    )
-    bundle_bytes_holder["bundle"] = bundle_src.read_bytes()
-    bundle_bytes_holder["sig"] = sk.sign(bundle_bytes_holder["bundle"])
-    sha256, size = ota_manifest.file_digest(bundle_src)
-    manifest, manifest_sig = ota_manifest.sign(
-        ota_manifest.build(
-            artifact=ota_manifest.ARTIFACT_PI_SERVER, version="3.4.10",
-            channel="stable", sha256=sha256, size=size,
-            published_at="2026-10-05T12:00:00Z",
-        ),
-        sk,
-    )
-    served = {
-        ".manifest.json": manifest,
-        ".manifest.json.sig": manifest_sig,
-        ".tar.gz.sig": bundle_bytes_holder["sig"],
-        ".tar.gz": bundle_bytes_holder["bundle"],
-    }
-
-    async def _fake_download(url, dest, *, max_bytes=ota._MAX_BUNDLE_BYTES):
-        suffix = next(sfx for sfx in served if url.endswith(sfx))
-        dest.write_bytes(served[suffix])
-
-    monkeypatch.setattr(ota, "_download_to", _fake_download)
-    monkeypatch.setattr(ota, "_restart_unit", lambda: None)
-    # Same version as installed: a re-install, which anti-rollback allows.
-    monkeypatch.setattr(ota, "server_version", lambda: "3.4.10")
-
-    seen: list[tuple[str, dict]] = []
-
-    async def _capture(event_type, data):
-        seen.append((event_type, dict(data)))
-
-    from app.cloud import service as _svc
-    monkeypatch.setattr(_svc, "forward_event", _capture)
-
-    result = await ota.run_ota_update("3.4.10", "stable")
-    assert result["ok"] is True, result
-
-    assert all(t == "ota_step" for t, _ in seen)
-    steps = [data["step"] for _, data in seen]
-    assert steps == [
-        "download_started",
-        "download_complete",
-        "verify_complete",
-        "extract_complete",
-        "promote_complete",
-        "restart_initiated",
-    ]
-
-    by_step = {data["step"]: data for _, data in seen}
-    assert by_step["download_started"]["url"].startswith(
-        "https://updates.sporeprint.ai/firmware/"
-    )
-    assert by_step["download_started"]["version"] == "3.4.10"
-    assert by_step["download_started"]["channel"] == "stable"
-    assert by_step["download_complete"]["size_bytes"] == len(
-        bundle_bytes_holder["bundle"]
-    )
-    assert by_step["extract_complete"]["files_extracted"] == 3
-
-
-@pytest.mark.asyncio
-async def test_emit_step_swallows_cloud_failures(monkeypatch):
-    """If the cloud connector raises, _emit_step must log + return —
-    the OTA pipeline is not allowed to fail because the relay is down."""
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("cloud is having a bad day")
-
-    from app.cloud import service as _svc
-    monkeypatch.setattr(_svc, "forward_event", _boom)
-
-    await ota._emit_step("download_started", version="3.4.10", channel="stable")
-
-
-# ─── Staging never touches the live tree; old trees are pruned ───────
+# ─── Staging never touches the live tree ─────────────────────────────
 
 
 def _installed_tree(install_root: Path, name: str) -> Path:
@@ -442,6 +296,23 @@ def test_a_failed_same_version_stage_leaves_the_running_tree(monkeypatch, tmp_pa
         "the failed extraction's own directory is removed"
 
 
+def test_the_first_promote_keeps_only_the_live_tree(monkeypatch, tmp_path):
+    """No tree was live before (a hand-installed Pi): every other staging
+    tree and the spent downloads go."""
+    install_root, state_dir = tmp_path / "opt", tmp_path / "state"
+    old = _installed_tree(install_root, "5.2.2")
+    live = _installed_tree(install_root, "5.2.3")
+    (state_dir / "incoming").mkdir(parents=True)
+    (state_dir / "incoming" / "5.2.3.tar.gz").write_bytes(b"spent")
+    monkeypatch.setattr(ota, "_DEFAULT_INSTALL_ROOT", install_root)
+    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", state_dir)
+
+    ota._prune_after_promote(live, None)
+
+    assert not old.exists() and live.is_dir()
+    assert list((state_dir / "incoming").iterdir()) == []
+
+
 def test_each_stage_extracts_into_a_new_directory(monkeypatch, tmp_path):
     install_root = tmp_path / "opt"
     live = _installed_tree(install_root, "5.2.3")
@@ -455,60 +326,3 @@ def test_each_stage_extracts_into_a_new_directory(monkeypatch, tmp_path):
     assert staged.name.startswith("5.2.3.")
     assert (staged / "server" / "main.py").read_bytes() == b"# new"
     assert (live / "server" / "main.py").read_text() == "# 5.2.3"
-
-
-@pytest.mark.asyncio
-async def test_promote_keeps_two_trees_and_no_downloads(monkeypatch, tmp_path):
-    """Each OTA left a full extracted tree and its bundle on the SD card."""
-    sk = _seed_pubkey(monkeypatch)
-    install_root = tmp_path / "opt"
-    state_dir = tmp_path / "state"
-    _installed_tree(install_root, "3.4.8")                 # an older leftover
-    running = _installed_tree(install_root, "3.4.9")
-    (install_root / "current").symlink_to(running, target_is_directory=True)
-    monkeypatch.setattr(ota, "_DEFAULT_INSTALL_ROOT", install_root)
-    monkeypatch.setattr(ota, "_DEFAULT_STATE_DIR", state_dir)
-    monkeypatch.setattr(ota, "_restart_unit", lambda: None)
-    monkeypatch.setattr(ota, "server_version", lambda: "3.4.9")
-
-    async def _quiet(*args, **kwargs):
-        return True
-
-    from app.cloud import service as _svc
-    monkeypatch.setattr(_svc, "forward_event", _quiet)
-
-    served: dict[str, bytes] = {}
-
-    async def _fake_download(url, dest, *, max_bytes=ota._MAX_BUNDLE_BYTES):
-        dest.write_bytes(served[url.rsplit("/", 1)[1]])
-
-    monkeypatch.setattr(ota, "_download_to", _fake_download)
-
-    for version in ("3.4.10", "3.4.11"):
-        members = tmp_path / f"src-{version}"
-        members.mkdir()
-        bundle = _build_tar([("server/main.py", f"# {version}".encode())], members)
-        sha256, size = ota_manifest.file_digest(bundle)
-        manifest, manifest_sig = ota_manifest.sign(
-            ota_manifest.build(
-                artifact=ota_manifest.ARTIFACT_PI_SERVER, version=version,
-                channel="stable", sha256=sha256, size=size,
-                published_at="2026-10-05T12:00:00Z",
-            ),
-            sk,
-        )
-        served.update({
-            f"{version}.manifest.json": manifest,
-            f"{version}.manifest.json.sig": manifest_sig,
-            f"{version}.tar.gz": bundle.read_bytes(),
-        })
-        previous = (install_root / "current").resolve()
-
-        result = await ota.run_ota_update(version, "stable")
-        assert result["ok"] is True, result
-
-        live = (install_root / "current").resolve()
-        assert (live / "server" / "main.py").read_text() == f"# {version}"
-        trees = sorted(p.resolve() for p in (install_root / "staging").iterdir())
-        assert trees == sorted([live, previous])
-        assert [p for p in (state_dir / "incoming").iterdir() if p.is_file()] == []

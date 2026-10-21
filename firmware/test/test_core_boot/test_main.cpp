@@ -28,23 +28,18 @@ void tearDown() {}
 
 // ── boot WiFi fallback ─────────────────────────────────────────
 
-void test_unprovisioned_node_opens_the_portal() {
+void test_portal_at_boot_only_when_unprovisioned_or_requested() {
     TEST_ASSERT_TRUE(sp::portal_at_boot(/*provisioned=*/false, false));
-}
-
-void test_provisioned_node_skips_the_portal_unless_requested() {
+    TEST_ASSERT_TRUE(sp::portal_at_boot(false, true));
     TEST_ASSERT_FALSE(sp::portal_at_boot(true, /*portal_requested=*/false));
     TEST_ASSERT_TRUE(sp::portal_at_boot(true, /*portal_requested=*/true));
 }
 
-void test_connect_failure_with_verified_creds_continues_offline() {
+void test_connect_failure_reopens_the_portal_only_for_unverified_creds() {
     // Router rebooting after a power blip: the credentials have worked
     // before, so the node must NOT sit in an open AP — it boots offline and
     // the link watchdog keeps re-trying the STA connection.
     TEST_ASSERT_FALSE(sp::portal_after_connect_failure(/*creds_verified=*/true));
-}
-
-void test_connect_failure_with_fresh_creds_reopens_the_portal() {
     // Just typed in the portal and never connected: most likely a typo, and
     // the operator is standing there — give the form back.
     TEST_ASSERT_TRUE(sp::portal_after_connect_failure(/*creds_verified=*/false));
@@ -343,10 +338,8 @@ void test_connect_attempt_fits_inside_the_loop_wdt() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_unprovisioned_node_opens_the_portal);
-    RUN_TEST(test_provisioned_node_skips_the_portal_unless_requested);
-    RUN_TEST(test_connect_failure_with_verified_creds_continues_offline);
-    RUN_TEST(test_connect_failure_with_fresh_creds_reopens_the_portal);
+    RUN_TEST(test_portal_at_boot_only_when_unprovisioned_or_requested);
+    RUN_TEST(test_connect_failure_reopens_the_portal_only_for_unverified_creds);
     RUN_TEST(test_portal_save_requires_a_first_connect_for_new_settings);
     RUN_TEST(test_short_press_does_nothing);
     RUN_TEST(test_three_to_ten_second_hold_opens_the_portal_on_release);

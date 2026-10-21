@@ -1,53 +1,52 @@
 """Alerts come in two tiers: a WARNING range, then an EMERGENCY range.
 
-The product spec: "We want alerts for parameters that go out of range: first a
-WARNING range, then an EMERGENCY range." Before this, there was a single margin
-— a reading either was fine or it paged you critical, with nothing in between.
-Now temp, humidity, and CO2 each classify into nominal / warning / emergency.
+The product spec: "first a WARNING range, then an EMERGENCY range." Before
+this there was one margin: a reading was fine or it paged critical. Temp,
+humidity and CO2 each classify into nominal / warning / emergency.
 """
 
+import pytest
+
 from app.automation.engine import (
-    _band_severity,
-    _TEMP_WARN_MARGIN_F,
-    _TEMP_EMERG_MARGIN_F,
-    _CO2_WARN_MARGIN_PPM,
     _CO2_EMERG_MARGIN_PPM,
+    _CO2_WARN_MARGIN_PPM,
+    _HUMIDITY_EMERG_MARGIN,
+    _HUMIDITY_WARN_MARGIN,
+    _TEMP_EMERG_MARGIN_F,
+    _TEMP_WARN_MARGIN_F,
+    _band_severity,
 )
 
 
-# ── the band classifier ────────────────────────────────────────────────────
+@pytest.mark.parametrize("value,expected", [
+    # band 68-76, warning past 2, emergency past 5
+    (72, (None, None)),
+    (79, ("warning", "high")),
+    (65, ("warning", "low")),
+    (82, ("emergency", "high")),
+    (62, ("emergency", "low")),
+    # An edge belongs to the lower tier: strictly past it, so the tiers never
+    # both fire.
+    (78, (None, None)),
+    (81, ("warning", "high")),
+    (66, (None, None)),
+    (63, ("warning", "low")),
+])
+def test_a_reading_is_nominal_warning_or_emergency(value, expected):
+    assert _band_severity(value, 68, 76, 2, 5) == expected
 
 
-def test_inside_the_band_is_nominal():
-    assert _band_severity(72, 68, 76, 2, 5) == (None, None)
+@pytest.mark.parametrize("value,expected", [
+    (200, (None, None)),
+    (1600, ("warning", "high")),
+    (2100, ("emergency", "high")),
+])
+def test_a_ceiling_only_band_never_alerts_low(value, expected):
+    """CO2 has a ceiling and no meaningful floor."""
+    assert _band_severity(value, None, 1000, 500, 1000) == expected
 
 
-def test_just_outside_is_a_warning_not_an_emergency():
-    # band 68-76; warn at +2, emergency at +5
-    assert _band_severity(79, 68, 76, 2, 5) == ("warning", "high")   # 78 < 79 <= 81
-    assert _band_severity(65, 68, 76, 2, 5) == ("warning", "low")    # 63 <= 65 < 66
-
-
-def test_far_outside_is_an_emergency():
-    assert _band_severity(82, 68, 76, 2, 5) == ("emergency", "high")  # > 81
-    assert _band_severity(62, 68, 76, 2, 5) == ("emergency", "low")   # < 63
-
-
-def test_the_boundary_belongs_to_the_lower_tier():
-    """Exactly at the warning edge is still nominal; exactly at the emergency
-    edge is still warning. Strictly-greater keeps the tiers from double-firing."""
-    assert _band_severity(78, 68, 76, 2, 5) == (None, None)          # == max+warn
-    assert _band_severity(81, 68, 76, 2, 5) == ("warning", "high")   # == max+emerg
-
-
-def test_ceiling_only_band_ignores_the_low_side():
-    """CO2 has a max but no meaningful min — a low reading is never an alert."""
-    assert _band_severity(200, None, 1000, 500, 1000) == (None, None)
-    assert _band_severity(1600, None, 1000, 500, 1000) == ("warning", "high")
-    assert _band_severity(2100, None, 1000, 500, 1000) == ("emergency", "high")
-
-
-def test_margins_are_ordered_warning_then_emergency():
-    """A warning must always trip before an emergency, or the tiers are useless."""
+def test_every_warning_margin_trips_before_its_emergency():
     assert _TEMP_WARN_MARGIN_F < _TEMP_EMERG_MARGIN_F
+    assert _HUMIDITY_WARN_MARGIN < _HUMIDITY_EMERG_MARGIN
     assert _CO2_WARN_MARGIN_PPM < _CO2_EMERG_MARGIN_PPM

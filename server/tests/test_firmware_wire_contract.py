@@ -31,6 +31,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.automation.templates import BUILTIN_RULES
+from app.integrations.grafana.exporter import _SENSOR_MAP
+from app.telemetry.service import SENSOR_FIELDS
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = REPO_ROOT / "firmware"
 NODE_MAIN = FIRMWARE / "src" / "node" / "main.cpp"
@@ -114,8 +118,6 @@ def weather_virtual_keys() -> set[str]:
 def test_sensor_fields_are_all_emitted():
     """SENSOR_FIELDS is the persistence allowlist. A name in it the firmware
     never emits is a dead read: the column simply never appears."""
-    from app.telemetry.service import SENSOR_FIELDS
-
     emitted = emitted_telemetry_keys()
     dead = set(SENSOR_FIELDS) - emitted
     assert not dead, (
@@ -127,9 +129,6 @@ def test_sensor_fields_are_all_emitted():
 def test_grafana_sensor_map_is_all_persisted():
     """The exporter reads telemetry_readings, so its map must be a subset of
     the persistence allowlist (which the test above pins to the firmware)."""
-    from app.integrations.grafana.exporter import _SENSOR_MAP
-    from app.telemetry.service import SENSOR_FIELDS
-
     dead = set(_SENSOR_MAP) - set(SENSOR_FIELDS)
     assert not dead, f"grafana exports sensors that are never persisted: {sorted(dead)}"
 
@@ -137,8 +136,6 @@ def test_grafana_sensor_map_is_all_persisted():
 def test_grafana_sql_literal_matches_sensor_map():
     """The exporter repeats its sensor list as a SQL string literal, which can
     drift from _SENSOR_MAP without any import breaking."""
-    from app.integrations.grafana.exporter import _SENSOR_MAP
-
     m = re.search(r"sensor IN \(([^)]+)\)", _read(SERVER_APP / "integrations" / "grafana" / "exporter.py"))
     assert m, "sensor IN (...) literal not found in the grafana exporter"
     sql_set = set(re.findall(r"'([^']+)'", m.group(1)))
@@ -171,8 +168,6 @@ def test_builtin_rule_templates_match_firmware():
     """Seeded rules must reference sensors, channels, and scenes the firmware
     answers to. A seeded rule naming a channel the node drops is a no-op that
     still logs 'fired' — the exact failure the `mister`/`aux` split caused."""
-    from app.automation.templates import BUILTIN_RULES
-
     valid_sensors = emitted_telemetry_keys() | weather_virtual_keys()
     valid_channels = firmware_channel_names()
     valid_scenes = firmware_scene_names()
@@ -252,8 +247,6 @@ def test_no_emitted_telemetry_field_is_dropped():
     someone either persists it or consciously ignores it — which is exactly the
     decision that got skipped when weight_g and door_open shipped unpersisted.
     """
-    from app.telemetry.service import SENSOR_FIELDS
-
     IGNORED = {
         # Envelope timestamp: Unix-epoch seconds once the node's NTP clock has
         # synced, uptime seconds before that (the server treats anything below

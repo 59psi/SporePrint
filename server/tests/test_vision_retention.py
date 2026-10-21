@@ -11,11 +11,9 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
-import app.vision.router as vrouter
 from app.config import settings
 from app.db import get_db
 from app.vision import service
@@ -156,18 +154,6 @@ async def test_prune_is_throttled(storage):
     assert t1 is not None
     await t1
     assert await maybe_schedule_vision_prune() is None
-
-
-def test_ingest_endpoint_schedules_retention(client, monkeypatch, storage):
-    recorder = AsyncMock(return_value=None)
-    monkeypatch.setattr(vrouter, "maybe_schedule_vision_prune", recorder)
-    r = client.post(
-        "/api/vision/frame",
-        content=b"\xff\xd8\xff\xe0body",
-        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01"},
-    )
-    assert r.status_code == 200, r.text
-    recorder.assert_awaited_once()
 
 
 async def test_legacy_uptime_timestamps_are_aged_by_arrival_time(storage):

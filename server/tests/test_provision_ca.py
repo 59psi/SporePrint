@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 from app import provision
+from app.config import settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = REPO_ROOT / "docker-compose.yml"
@@ -87,8 +88,6 @@ async def test_provision_ca_is_public_when_the_api_key_gate_is_on(
     """The firmware's TOFU fetch (tls_transport.h) sends no bearer, so with
     SPOREPRINT_API_KEY set the CA must still be served — a 401 here makes
     every Secure-MQTT node fall back to plaintext 1883."""
-    from app.config import settings
-
     ca = tmp_path / "ca.crt"
     ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n")
     monkeypatch.setattr(provision, "_CA_PATHS", (ca,))

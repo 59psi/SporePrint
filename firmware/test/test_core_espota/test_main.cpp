@@ -96,32 +96,29 @@ static const char* kCnonce = "fedcba9876543210fedcba9876543210";
 // server/app/hardware/ota_push.py.
 static const char* kPiResponse = "0e519f38e27e3c52eee1199f07c3c13e";
 
-void test_password_digest_is_md5_hex() {
-    char digest[sp::espota::kHexLen + 1];
-    sp::espota::password_digest(kPassword, digest);
-    TEST_ASSERT_EQUAL_STRING("09f31f46f81f8fab873fbc0420173519", digest);
-}
-
-void test_expected_response_matches_the_pi_push() {
-    char digest[sp::espota::kHexLen + 1];
-    char want[sp::espota::kHexLen + 1];
-    sp::espota::password_digest(kPassword, digest);
-    sp::espota::expected_response(digest, kNonce, kCnonce, want);
-    TEST_ASSERT_EQUAL_STRING(kPiResponse, want);
-}
-
-void test_utf8_password_matches_the_pi_push() {
-    // The portal stores the password's UTF-8 bytes and the Pi hashes
-    // password.encode(): "grüne-pilze-ö-2026" (20 bytes), vectors from
-    // ota_push.py auth_response().
-    const char* pw = "gr\xc3\xbcne-pilze-\xc3\xb6-2026";
-    TEST_ASSERT_EQUAL(20, (int)strlen(pw));
-    char digest[sp::espota::kHexLen + 1];
-    char want[sp::espota::kHexLen + 1];
-    sp::espota::password_digest(pw, digest);
-    TEST_ASSERT_EQUAL_STRING("eb0ebb09ddf47a3443d0cafb61181b54", digest);
-    sp::espota::expected_response(digest, kNonce, kCnonce, want);
-    TEST_ASSERT_EQUAL_STRING("a9bc5999366ff53c3c286545a50649ad", want);
+// password digest (MD5 hex of the password bytes) and the answer to a
+// challenge, against vectors from the Pi's own auth_response(): a node that
+// computes anything else rejects every Pi push. The portal stores the
+// password's UTF-8 bytes and the Pi hashes password.encode().
+void test_auth_answer_matches_the_pi_push() {
+    struct {
+        const char* password;
+        const char* digest;
+        const char* response;
+    } cases[] = {
+        {kPassword, "09f31f46f81f8fab873fbc0420173519", kPiResponse},
+        // "grüne-pilze-ö-2026": 20 UTF-8 bytes.
+        {"gr\xc3\xbcne-pilze-\xc3\xb6-2026", "eb0ebb09ddf47a3443d0cafb61181b54",
+         "a9bc5999366ff53c3c286545a50649ad"},
+    };
+    for (auto& c : cases) {
+        char digest[sp::espota::kHexLen + 1];
+        char want[sp::espota::kHexLen + 1];
+        sp::espota::password_digest(c.password, digest);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(c.digest, digest, c.password);
+        sp::espota::expected_response(digest, kNonce, kCnonce, want);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(c.response, want, c.password);
+    }
 }
 
 void test_response_matches_accepts_only_the_right_answer() {
@@ -259,9 +256,7 @@ int main(int, char**) {
     RUN_TEST(test_md5_rfc1321_suite);
     RUN_TEST(test_md5_padding_edges);
     RUN_TEST(test_md5_binary_and_multiblock);
-    RUN_TEST(test_password_digest_is_md5_hex);
-    RUN_TEST(test_expected_response_matches_the_pi_push);
-    RUN_TEST(test_utf8_password_matches_the_pi_push);
+    RUN_TEST(test_auth_answer_matches_the_pi_push);
     RUN_TEST(test_response_matches_accepts_only_the_right_answer);
     RUN_TEST(test_nonce_is_32_lowercase_hex);
     RUN_TEST(test_parses_the_pi_push_invitation);

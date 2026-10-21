@@ -8,180 +8,97 @@ smart_plugs row was ever created, and every plug rule failed with
 "no plug paired". These tests drive the real start_mqtt loop with raw bytes.
 """
 
-import asyncio
-
 import pytest
 
 import app.mqtt
 from app.automation.smart_plugs import send_plug_command
-from app.db import get_db
-from app.mqtt import _decode_payload, start_mqtt
+from app.mqtt import _decode_payload
+from tests._builders import plug_row, rows
+from tests._fakes import FakeBroker, Message, RecordingSio, run_mqtt_loop
 
 
-class _FakeMessage:
-    def __init__(self, topic: str, payload: bytes):
-        self.topic = topic
-        self.payload = payload
-
-
-def _fake_client_factory(messages: list[_FakeMessage]):
-    """An aiomqtt.Client stand-in that yields `messages`, then cancels the loop."""
-
-    class _FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def subscribe(self, topic):
-            return None
-
-        async def publish(self, topic, payload):
-            return None
-
-        @property
-        def messages(self):
-            async def _gen():
-                for m in messages:
-                    yield m
-                # start_mqtt returns cleanly on CancelledError.
-                raise asyncio.CancelledError
-
-            return _gen()
-
-    return _FakeClient
-
-
-async def _run_loop(monkeypatch, messages):
-    monkeypatch.setattr(app.mqtt.aiomqtt, "Client", _fake_client_factory(messages))
-    sio = _RecordingSio()
-    await asyncio.wait_for(start_mqtt(sio), timeout=5)
+async def _run_loop(monkeypatch, messages) -> RecordingSio:
+    sio = RecordingSio()
+    await run_mqtt_loop(monkeypatch, FakeBroker(messages), sio)
     return sio
 
 
-class _RecordingSio:
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.events.append((event, data))
-
-
-def _raw_client(calls):
-    class _C:
-        async def publish(self, topic, payload):
-            calls.append((topic, payload))
-
-    return _C()
-
-
-async def _plug_row(plug_id: str):
-    async with get_db() as db:
-        cursor = await db.execute("SELECT * FROM smart_plugs WHERE plug_id = ?", (plug_id,))
-        row = await cursor.fetchone()
-        return dict(row) if row else None
-
-
-# ── pure decode helper ────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "topic,raw,expected",
-    [
-        ("tasmota/hum/stat/POWER", b"ON", "ON"),
-        ("tasmota/hum/stat/POWER", b"OFF\n", "OFF"),
-        ("shellies/hum/relay/0", b"on", "on"),
-        ("shellies/hum/relay/0", b"off", "off"),
-        ("shellies/hum/relay/0/power", b"12.5", 12.5),
-        ("tasmota/hum/tele/SENSOR", b'{"ENERGY":{"Power":7}}', {"ENERGY": {"Power": 7}}),
-        ("tasmota/hum/tele/LWT", b"Online", "Online"),
-    ],
-)
-def test_decode_vendor_payload_falls_back_to_text(topic, raw, expected):
-    assert _decode_payload(topic, raw) == expected
-
-
-def test_decode_sporeprint_payload_is_json_only():
+@pytest.mark.parametrize("topic,raw,expected", [
+    # Vendor topics fall back to text.
+    ("tasmota/hum/stat/POWER", b"ON", "ON"),
+    ("tasmota/hum/stat/POWER", b"OFF\n", "OFF"),
+    ("shellies/hum/relay/0", b"on", "on"),
+    ("shellies/hum/relay/0", b"off", "off"),
+    ("shellies/hum/relay/0/power", b"12.5", 12.5),
+    ("tasmota/hum/tele/SENSOR", b'{"ENERGY":{"Power":7}}', {"ENERGY": {"Power": 7}}),
+    ("tasmota/hum/tele/LWT", b"Online", "Online"),
+    # Shelly Gen2+: JSON true/false and JSON-RPC objects.
+    ("shellies/humidifier/online", b"true", True),
+    ("shellies/humidifier/online", b"false", False),
+    ("shellies/humidifier/events/rpc", b'{"method":"NotifyStatus","params":{}}',
+     {"method": "NotifyStatus", "params": {}}),
+    ("shellies/humidifier/status/switch:0", b'{"id":0,"output":true}', {"id": 0, "output": True}),
+    # Bytes that are not text, and an empty payload (a retained message being
+    # cleared), are no plug state.
+    ("tasmota/hum/stat/POWER", b"\xff\xfe", None),
+    ("tasmota/hum/stat/POWER", b"", None),
+    ("tasmota/hum/stat/POWER", b"   ", None),
+    ("shellies/hum/relay/0", b" \r\n", None),
     # sporeprint/* frames stay JSON-object-only: bare text is dropped.
-    assert _decode_payload("sporeprint/climate-01/telemetry", b"ON") is None
-    assert _decode_payload("sporeprint/climate-01/telemetry", b"\xff\xfe") is None
-    assert _decode_payload("sporeprint/climate-01/telemetry", b"42") is None
-    assert _decode_payload("sporeprint/climate-01/status", b'{"status":"online"}') == {
-        "status": "online"
-    }
-
-
-def test_decode_undecodable_bytes_dropped_for_vendor_topics():
-    assert _decode_payload("tasmota/hum/stat/POWER", b"\xff\xfe") is None
-
-
-@pytest.mark.parametrize("raw", [b"", b"   ", b" \r\n"])
-def test_decode_empty_vendor_payload_dropped(raw):
-    # A retained message being cleared is an empty payload: not a plug state.
-    assert _decode_payload("tasmota/hum/stat/POWER", raw) is None
-    assert _decode_payload("shellies/hum/relay/0", raw) is None
+    ("sporeprint/climate-01/telemetry", b"ON", None),
+    ("sporeprint/climate-01/telemetry", b"\xff\xfe", None),
+    ("sporeprint/climate-01/telemetry", b"42", None),
+    ("sporeprint/climate-01/status", b'{"status":"online"}', {"status": "online"}),
+])
+def test_a_payload_is_decoded_the_way_its_topic_speaks(topic, raw, expected):
+    assert _decode_payload(topic, raw) == expected
 
 
 # ── end to end through the real message loop ─────────────────────
 
 
 async def test_tasmota_plain_text_power_report_registers_plug(monkeypatch, mock_mqtt_raw):
-    await _run_loop(monkeypatch, [_FakeMessage("tasmota/hum/stat/POWER", b"ON")])
+    await _run_loop(monkeypatch, [Message("tasmota/hum/stat/POWER", b"ON")])
 
-    row = await _plug_row("plug-hum")
+    row = await plug_row("plug-hum")
     assert row is not None, "plain-text Tasmota state report was dropped"
-    assert row["plug_type"] == "tasmota"
-    assert row["mqtt_topic_prefix"] == "tasmota/hum"
-    assert row["last_state"] == "on"
+    assert (row["plug_type"], row["mqtt_topic_prefix"], row["last_state"]) == (
+        "tasmota", "tasmota/hum", "on")
 
     # The now-registered plug is commandable. (start_mqtt clears _client on
     # exit, so re-install the raw-capturing fake.)
-    monkeypatch.setattr(app.mqtt, "_client", _raw_client(mock_mqtt_raw))
+    class _Raw:
+        async def publish(self, topic, payload):
+            mock_mqtt_raw.append((topic, payload))
+
+    monkeypatch.setattr(app.mqtt, "_client", _Raw())
     assert await send_plug_command("plug-hum", "off") is True
-    assert ("tasmota/hum/cmnd/POWER", "OFF") in mock_mqtt_raw
+    assert mock_mqtt_raw == [("tasmota/hum/cmnd/POWER", "OFF")]
 
 
 async def test_shelly_plain_text_relay_report_registers_plug(monkeypatch):
-    sio = await _run_loop(monkeypatch, [_FakeMessage("shellies/dehum/relay/0", b"off")])
+    sio = await _run_loop(monkeypatch, [Message("shellies/dehum/relay/0", b"off")])
 
-    row = await _plug_row("plug-dehum")
+    row = await plug_row("plug-dehum")
     assert row is not None, "plain-text Shelly state report was dropped"
-    assert row["plug_type"] == "shelly"
-    assert row["last_state"] == "off"
+    assert (row["plug_type"], row["last_state"]) == ("shelly", "off")
     assert ("plug_state", {"plug_id": "plug-dehum", "state": "off"}) in sio.events
 
 
 async def test_cleared_retained_message_registers_nothing(monkeypatch):
     await _run_loop(monkeypatch, [
-        _FakeMessage("tasmota/hum/stat/POWER", b""),
-        _FakeMessage("shellies/dehum/relay/0", b""),
+        Message("tasmota/hum/stat/POWER", b""),
+        Message("shellies/dehum/relay/0", b""),
     ])
-    assert await _plug_row("plug-hum") is None
-    assert await _plug_row("plug-dehum") is None
+    assert await rows("SELECT plug_id FROM smart_plugs") == []
 
 
 async def test_vendor_topics_never_enter_sporeprint_branches(monkeypatch):
-    # A Shelly Gen2 status topic under the shellies/ prefix must not be
-    # misread as a SporePrint node status report.
-    await _run_loop(
-        monkeypatch,
-        [_FakeMessage("shellies/plus1/status/switch:0", b'{"output":true}')],
-    )
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) AS n FROM hardware_nodes WHERE node_id = 'plus1'")
-        assert (await cursor.fetchone())["n"] == 0
-
-
-async def test_sporeprint_json_still_routed(monkeypatch):
-    await _run_loop(
-        monkeypatch,
-        [_FakeMessage("sporeprint/node-z/status", b'{"status":"online"}')],
-    )
-    async with get_db() as db:
-        cursor = await db.execute("SELECT status FROM hardware_nodes WHERE node_id = 'node-z'")
-        row = await cursor.fetchone()
-    assert row is not None and row["status"] == "online"
+    """A Shelly Gen2 status topic under shellies/ is not a SporePrint node's
+    status report, while a sporeprint/* JSON status still is."""
+    await _run_loop(monkeypatch, [
+        Message("shellies/plus1/status/switch:0", b'{"output":true}'),
+        Message("sporeprint/node-z/status", b'{"status":"online"}'),
+    ])
+    assert await rows("SELECT node_id, status FROM hardware_nodes") == [
+        {"node_id": "node-z", "status": "online"}]

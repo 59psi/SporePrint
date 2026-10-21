@@ -9,11 +9,15 @@ error→disabled must resolve the open escalation.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 import app.cloud.service as cloud_service
 from app.integrations import _health_sweeper as sweeper
 from app.integrations._base import IntegrationHealth
+from tests._fakes import RecordingSio
 
 
 class _Drv:
@@ -25,15 +29,17 @@ class _Drv:
         return IntegrationHealth(state=self.state, last_error=self.error)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_sweeper_state(monkeypatch):
+    monkeypatch.setattr(sweeper, "_last_state", {})
+    monkeypatch.setattr(sweeper, "_ok_streak", {})
+
+
 @pytest.fixture
 def one_driver(monkeypatch):
     drv = _Drv("ok")
     monkeypatch.setattr(sweeper._registry, "registered_drivers", lambda: {"aranet": drv})
-    sweeper._last_state.clear()
-    sweeper._ok_streak.clear()
-    yield drv
-    sweeper._last_state.clear()
-    sweeper._ok_streak.clear()
+    return drv
 
 
 @pytest.fixture
@@ -65,19 +71,12 @@ async def test_forward_event_reports_undelivered_when_disconnected(monkeypatch):
 
 
 async def test_forward_event_reports_delivered(monkeypatch):
-    class _Sio:
-        def __init__(self):
-            self.emits = []
-
-        async def emit(self, ev, data):
-            self.emits.append((ev, data))
-
-    sio = _Sio()
+    sio = RecordingSio()
     monkeypatch.setattr(cloud_service.settings, "cloud_url", "https://relay.example")
     monkeypatch.setattr(cloud_service, "_connected", True)
     monkeypatch.setattr(cloud_service, "_sio", sio)
     assert await cloud_service.forward_event("vendor_health_degraded", {"a": 1}) is True
-    assert sio.emits and sio.emits[0][0] == "event"
+    assert sio.events and sio.events[0][0] == "event"
 
 
 async def test_transition_while_offline_is_delivered_after_reconnect(one_driver, cloud):
@@ -159,3 +158,43 @@ async def test_a_flapping_driver_is_one_incident(one_driver, cloud):
     await sweeper._sweep_once()
     assert [d["resolved"] for _e, d in cloud.sent] == [False, True]
     assert sweeper._last_state["aranet"] == "ok"
+
+
+async def test_a_driver_whose_health_raises_does_not_hide_the_others(monkeypatch, cloud):
+    class _Broken:
+        async def health(self):
+            raise RuntimeError("bug in one driver")
+
+    quest = _Drv("ok")
+    monkeypatch.setattr(sweeper._registry, "registered_drivers",
+                        lambda: {"broken": _Broken(), "quest": quest})
+    cloud.up = True
+    await sweeper._sweep_once()
+    quest.state = "error"
+    await sweeper._sweep_once()
+    assert [(d["vendor"], d["state"]) for _e, d in cloud.sent] == [("quest", "error")]
+    assert "broken" not in sweeper._last_state
+
+
+async def test_the_loop_sweeps_every_interval_and_outlives_a_crashing_sweep(monkeypatch):
+    """A sweep that raises is logged and the next one runs an interval later;
+    a cancellation (the app shutting down) ends the loop cleanly."""
+    sweeps: list[int] = []
+    pauses: list[float] = []
+
+    async def _sweep():
+        sweeps.append(len(sweeps))
+        if len(sweeps) == 1:
+            raise RuntimeError("a driver's health() blew up")
+        if len(sweeps) == 3:
+            raise asyncio.CancelledError
+
+    async def _pause(seconds):
+        pauses.append(seconds)
+
+    monkeypatch.setattr(sweeper, "_sweep_once", _sweep)
+    monkeypatch.setattr(sweeper, "asyncio",
+                        SimpleNamespace(sleep=_pause, CancelledError=asyncio.CancelledError))
+    await asyncio.wait_for(sweeper.run_health_sweeper(), timeout=2)
+    assert len(sweeps) == 3
+    assert pauses == [sweeper._SWEEP_INTERVAL_SECONDS] * 2

@@ -16,7 +16,6 @@ import pytest
 
 from app.cloud import ota
 from app.config import settings
-from app.hardware.node_manifest import NodeManifestError, check_node_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "generate-ota-keypair.py"
@@ -38,6 +37,13 @@ def umask_022():
         yield
     finally:
         os.umask(old)
+
+
+def _load_signer():
+    spec = importlib.util.spec_from_file_location("sign_ota_bundle", SIGN_SCRIPT)
+    signer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signer)
+    return signer
 
 
 def _mode(p: Path) -> int:
@@ -74,7 +80,8 @@ def test_operator_instructions_match_the_shipped_install(keypair_mod, capsys, mo
     installer creates. Every install, Docker included, checks signed
     node-firmware manifests against the key (only Pi self-update is
     bare-metal only), so the text must not tell a Docker operator the key
-    does nothing: a push with a manifest is refused on a Pi without it."""
+    does nothing: a push with a manifest is refused on a Pi without it
+    (test_node_ota_manifest.py::test_no_pinned_key_refuses)."""
     monkeypatch.setattr(keypair_mod.sys, "argv", ["generate-ota-keypair.py"])
     assert keypair_mod.main() == 0
     out = capsys.readouterr().out
@@ -89,16 +96,6 @@ def test_operator_instructions_match_the_shipped_install(keypair_mod, capsys, mo
         assert "no effect" not in flat
 
 
-def test_a_docker_pi_needs_the_key_for_signed_node_manifests(monkeypatch):
-    """What the instructions above promise: with no key pinned, the node
-    manifest check refuses, on any install."""
-    monkeypatch.setattr(settings, "ota_pubkey_b64", "")
-    monkeypatch.delenv("SPOREPRINT_OTA_PUBKEY", raising=False)
-    with pytest.raises(NodeManifestError, match="no OTA verify key pinned"):
-        check_node_manifest(b"{}", bytes(64), b"\x00", node_firmware_version=None,
-                            node_type="relay")
-
-
 def test_signed_bundle_verifies_with_the_pi_verifier(keypair_mod, tmp_path, monkeypatch):
     """sign-ota-bundle.py and cloud/ota.py must agree on the signature
     format (raw 64-byte Ed25519 over the bundle bytes)."""
@@ -108,9 +105,7 @@ def test_signed_bundle_verifies_with_the_pi_verifier(keypair_mod, tmp_path, monk
     bundle = tmp_path / "5.0.1.tar.gz"
     bundle.write_bytes(b"bundle bytes")
 
-    spec = importlib.util.spec_from_file_location("sign_ota_bundle", SIGN_SCRIPT)
-    signer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(signer)
+    signer = _load_signer()
     monkeypatch.setattr(signer.sys, "argv",
                         ["sign-ota-bundle.py", "--bundle", str(bundle), "--private-key", str(key_file)])
     assert signer.main() == 0
@@ -122,13 +117,6 @@ def test_signed_bundle_verifies_with_the_pi_verifier(keypair_mod, tmp_path, monk
     bundle.write_bytes(b"tampered")
     with pytest.raises(ota.OTAError):
         ota._verify_signature(bundle, sig)
-
-
-def _load_signer():
-    spec = importlib.util.spec_from_file_location("sign_ota_bundle", SIGN_SCRIPT)
-    signer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(signer)
-    return signer
 
 
 def test_signed_manifest_passes_the_pi_pipeline_checks(keypair_mod, tmp_path, monkeypatch):

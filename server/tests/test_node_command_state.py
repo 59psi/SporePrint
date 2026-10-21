@@ -9,25 +9,16 @@ kept a safety ceiling armed that the next automation ON then tripped early.
 Every node command is now sent as "on" or "off" (normalize_node_command).
 """
 
-import asyncio
 import json
 
 import pytest
 
-import app.automation.engine as engine
 from app.automation.engine import _fire_rule, _safety_tasks
-from app.automation.models import (
-    AutomationRule,
-    ConditionType,
-    RuleAction,
-    RuleCondition,
-    ThresholdCondition,
-)
+from app.automation.models import AutomationRule, RuleAction
 from app.automation.service import is_off_command, node_command_state, normalize_node_command
-from app.db import get_db
 from app.hardware.service import send_command
-
-_real_sleep = asyncio.sleep
+from tests._builders import make_rule, rows, threshold, watchdog_rows
+from tests._timing import REAL_SLEEP, ended
 
 
 @pytest.mark.parametrize("state,sent", [
@@ -60,37 +51,10 @@ def test_the_callers_command_is_not_modified():
     assert normalize_node_command(on) is on
 
 
-@pytest.fixture
-def frozen_sleep(monkeypatch):
-    """Engine sleeps never return — a watchdog stays armed for the test."""
-    async def _never(_delay):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr("app.automation.engine.asyncio.sleep", _never)
-
-
-@pytest.fixture(autouse=True)
-def _fresh_actuator_state():
-    getattr(engine, "_actuator_locks", {}).clear()
-    engine._safety_deadlines.clear()
-    yield
-    getattr(engine, "_actuator_locks", {}).clear()
-
-
-async def _watchdog_rows() -> list[dict]:
-    async with get_db() as db:
-        cursor = await db.execute("SELECT target, channel FROM safety_watchdogs")
-        return [dict(r) for r in await cursor.fetchall()]
-
-
 def _ceiling_rule(state: str = "on") -> AutomationRule:
-    return AutomationRule(
-        id=1, name="fan guard",
-        condition=RuleCondition(type=ConditionType.THRESHOLD,
-                                threshold=ThresholdCondition(sensor="temp_f", operator="gt", value=0)),
-        action=RuleAction(target="relay-01", channel="fae", state=state, pwm=200),
-        safety_max_on_seconds=3600, log_to_session=False,
-    )
+    return make_rule(RuleAction(target="relay-01", channel="fae", state=state, pwm=200),
+                     condition=threshold("temp_f", "gt", 0), ceiling=3600, name="fan guard",
+                     log_to_session=False)
 
 
 async def test_a_manual_false_goes_out_as_off_and_clears_the_ceiling(frozen_sleep, mock_mqtt):
@@ -102,10 +66,10 @@ async def test_a_manual_false_goes_out_as_off_and_clears_the_ceiling(frozen_slee
 
     assert published and topic == "sporeprint/relay-01/cmd/fae"
     assert mock_mqtt[-1] == (topic, {"state": "off"})
-    await _real_sleep(0)
-    assert armed.cancelled() or armed.done()
+    await REAL_SLEEP(0)
+    assert ended(armed)
     assert "relay-01:fae" not in _safety_tasks
-    assert await _watchdog_rows() == []
+    assert await watchdog_rows() == []
 
 
 async def test_a_manual_uppercase_on_keeps_its_duty(mock_mqtt):
@@ -125,10 +89,8 @@ async def test_a_stored_rule_with_an_off_spelling_publishes_off_and_clears_the_c
 
     sent = [p for t, p in mock_mqtt if t == "sporeprint/relay-01/cmd/fae"]
     assert sent[-1] == {"state": "off"}
-    await _real_sleep(0)
-    assert armed.cancelled() or armed.done()
-    assert await _watchdog_rows() == []
-    async with get_db() as db:
-        row = await (await db.execute(
-            "SELECT action_taken FROM automation_firings ORDER BY id DESC LIMIT 1")).fetchone()
+    await REAL_SLEEP(0)
+    assert ended(armed)
+    assert await watchdog_rows() == []
+    (row,) = await rows("SELECT action_taken FROM automation_firings ORDER BY id DESC LIMIT 1")
     assert json.loads(row["action_taken"]) == {"state": "off"}

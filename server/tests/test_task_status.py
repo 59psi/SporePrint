@@ -147,7 +147,8 @@ async def test_a_crashing_poll_is_an_error(monkeypatch, weather_configured):
 
 def test_boot_registers_the_nightly_and_periodic_jobs_as_idle(client):
     tasks = client.get("/api/health/detail/tasks").json()
-    for name in ("retention", "weather_polling", "node_liveness_sweeper"):
+    for name in ("retention", "weather_polling", "node_liveness_sweeper", "phase_reminders",
+                 "daily_retrain", "nightly_weather_aggregate"):
         assert tasks[name]["status"] == "idle", (name, tasks[name])
     # Still reported, by the connector itself.
     assert "cloud_connector" in tasks

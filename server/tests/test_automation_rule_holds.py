@@ -9,13 +9,11 @@ names; each rule's ``held_by`` lists exactly the holds it honours, so the
 dashboard no longer shows a held rule as active.
 """
 
-import json
 import time
 
 import pytest
 
 import app.automation.engine as engine
-import app.cloud.service as cloud_service
 from app.automation.engine import set_override
 from app.automation.models import (
     AutomationRule,
@@ -32,16 +30,12 @@ from app.chambers.models import ChamberCreate
 from app.chambers.service import create_chamber
 from app.cloud import integrations_proxy
 from app.config import settings
-from app.db import get_db
+from tests._builders import register_node
+from tests._fakes import RecordingSio
 
 
 async def _node(node_id: str, node_type: str, seen_ago: float) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO hardware_nodes (node_id, node_type, roles, last_seen) VALUES (?, ?, ?, ?)",
-            (node_id, node_type, json.dumps([node_type]), time.time() - seen_ago),
-        )
-        await db.commit()
+    await register_node(node_id, node_type, last_seen=time.time() - seen_ago)
 
 
 async def _rule(name: str, action: RuleAction) -> int:
@@ -178,24 +172,14 @@ def test_every_rule_in_the_list_carries_its_holds(client):
     assert vent["held_by"][0]["expires_at"] == pytest.approx(time.time() + 300, abs=30)
 
 
-class _FakeSio:
-    def __init__(self) -> None:
-        self.emits: list[tuple[str, dict]] = []
-
-    async def emit(self, event: str, data: dict) -> None:
-        self.emits.append((event, data))
-
-
 async def test_the_cloud_rule_list_carries_the_same_holds(monkeypatch):
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    cloud_service._seen_command_ids.clear()
     await _node("node-a1", "relay", seen_ago=5)
     fae = await _rule("FAE", FAE)
     await _hold("node-a1", "fae", "pinned")
-    sio = _FakeSio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {"id": "list-1", "action": "automation_list"})
-    (_, payload), = sio.emits
+    (_, payload), = sio.events
     assert payload["success"] is True
     (row,) = [r for r in payload["body"] if r["id"] == fae]
     assert [(h["target"], h["channel"]) for h in row["held_by"]] == [("node-a1", "fae")]
-    cloud_service._seen_command_ids.clear()

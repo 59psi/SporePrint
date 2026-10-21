@@ -48,33 +48,31 @@ async def test_context_names_only_the_supported_camera():
         assert f"`{env}`" in ctx, env
 
 
-async def test_context_lists_every_reserved_gpio():
-    ctx = await builder_service._build_system_context()
-    for pins in ("SDA 21", "SCL 22", "25, 26, 27, 14", "DOUT 32", "SCK 33",
-                 "reed switch 35", "RX 16", "TX 17", "BOOT / factory reset 0"):
-        assert pins in ctx, pins
-    # The S3 node's own map, and the camera board's lack of spare pins.
-    for pins in ("SDA 8", "SCL 9", "4, 5, 6, 7", "HX711 10/11", "reed 12"):
-        assert pins in ctx, pins
-    assert "factory reset 13" in ctx
-
-
 def _board_pins(name: str) -> dict[str, str]:
     text = (_REPO_FIRMWARE / "boards" / name).read_text()
     return dict(re.findall(r"#define (SP_\w+) (\S.*?)\s*(?://.*)?$", text, re.M))
 
 
 async def test_context_matches_the_board_profiles():
-    """Guard against the context drifting from the real pin maps."""
+    """Every GPIO a board profile reserves is in the context, as the pin
+    maps define it: a guide must never wire onto one."""
     ctx = await builder_service._build_system_context()
     dev = _board_pins("board_profile_esp32dev.h")
-    assert f"SDA {dev['SP_PIN_I2C_SDA']}" in ctx
-    assert f"DOUT {dev['SP_PIN_HX711_DOUT']}" in ctx
-    assert f"reed switch {dev['SP_PIN_REED']}" in ctx
-    assert dev["SP_CHANNEL_PINS"].strip("{}") in ctx
+    for pins in (f"SDA {dev['SP_PIN_I2C_SDA']}", f"SCL {dev['SP_PIN_I2C_SCL']}",
+                 dev["SP_CHANNEL_PINS"].strip("{}"),
+                 f"DOUT {dev['SP_PIN_HX711_DOUT']}", f"SCK {dev['SP_PIN_HX711_SCK']}",
+                 f"reed switch {dev['SP_PIN_REED']}",
+                 f"RX {dev['SP_UART_CO2_RX']}", f"TX {dev['SP_UART_CO2_TX']}",
+                 f"BOOT / factory reset {dev['SP_PIN_FACTORY_RESET']}"):
+        assert pins in ctx, pins
+    # The S3 node's own map.
     s3 = _board_pins("board_profile_esp32s3.h")
-    assert f"SDA {s3['SP_PIN_I2C_SDA']}" in ctx
-    assert s3["SP_CHANNEL_PINS"].strip("{}") in ctx
+    for pins in (f"SDA {s3['SP_PIN_I2C_SDA']}", f"SCL {s3['SP_PIN_I2C_SCL']}",
+                 s3["SP_CHANNEL_PINS"].strip("{}"),
+                 f"HX711 {s3['SP_PIN_HX711_DOUT']}/{s3['SP_PIN_HX711_SCK']}",
+                 f"reed {s3['SP_PIN_REED']}"):
+        assert pins in ctx, pins
+    # The camera board's pins, none spare.
     cam = _board_pins("board_profile_esp32cam.h")
     assert f"factory reset {cam['SP_PIN_FACTORY_RESET']}" in ctx
     assert f"flash LED {cam['SP_PIN_FLASH']}" in ctx
@@ -234,13 +232,19 @@ def test_refused_or_failed_guide_is_502(client, monkeypatch):
     assert r.status_code == 502 and r.json()["code"] == "upstream_error"
 
 
-def test_good_guide_is_200(client, monkeypatch):
+def test_a_good_guide_is_200_and_saved_for_reading_back(client, monkeypatch):
     monkeypatch.setattr(settings, "claude_api_key", "k")
     _install(monkeypatch, SimpleNamespace(content=[TextBlock(type="text", text="## 1. Parts\nok")],
                                           stop_reason="end_turn"))
-    r = client.post("/api/builder/guide", json={"request": "add a pump"})
+    r = client.post("/api/builder/guide", json={"request": "add a pump", "constraints": "12V"})
     assert r.status_code == 200, r.text
-    assert isinstance(r.json()["guide_id"], int)
+    guide_id = r.json()["guide_id"]
+    assert isinstance(guide_id, int)
+    listed = client.get("/api/builder/guides").json()
+    assert [(g["id"], g["request"], g["constraints"]) for g in listed] == [(guide_id, "add a pump", "12V")]
+    saved = client.get(f"/api/builder/guides/{guide_id}").json()
+    assert saved["request"] == "add a pump" and "## 1. Parts" in saved["guide"]
+    assert client.get(f"/api/builder/guides/{guide_id + 1}").status_code == 404
 
 
 # ── firmware ZIP bundles ───────────────────────────────────────────────────
@@ -303,8 +307,11 @@ def _pio_references(ini: Path) -> tuple[set[str], set[str]]:
 
 
 @pytest.mark.parametrize("node, image_dir", [("node", "src/node"), ("cam", "src/cam"), ("full", None)])
-def test_image_bundle_contains_everything_platformio_ini_references(repo_firmware, api, node, image_dir):
+def test_image_bundle_holds_every_file_its_build_needs(repo_firmware, api, node, image_dir):
+    """Every file platformio.ini references, and every library's manifest."""
     names = set(_bundle(api, node).namelist())
+    for lib in ("sp_core", "sp_drivers", "sp_device"):
+        assert f"firmware/lib/{lib}/library.json" in names, lib
     files, dirs = _pio_references(repo_firmware / "platformio.ini")
     for f in files:
         assert f"firmware/{f}" in names, f
@@ -314,13 +321,6 @@ def test_image_bundle_contains_everything_platformio_ini_references(repo_firmwar
         assert any(n.startswith(f"firmware/{d}/") for n in names), d
     for must in ("platformio.ini", "VERSION.txt", "partitions.csv", "partitions_8mb.csv"):
         assert f"firmware/{must}" in names, must
-
-
-@pytest.mark.parametrize("node", ["node", "cam", "full"])
-def test_image_bundle_carries_every_library_manifest(repo_firmware, api, node):
-    names = set(_bundle(api, node).namelist())
-    for lib in ("sp_core", "sp_drivers", "sp_device"):
-        assert f"firmware/lib/{lib}/library.json" in names, lib
 
 
 @pytest.mark.parametrize("node", ["sp_core", "sp_drivers"])

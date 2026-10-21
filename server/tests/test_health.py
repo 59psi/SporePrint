@@ -1,4 +1,8 @@
-"""Tests for system health endpoints."""
+"""System health: the /api/health/detail/* reports and what feeds them.
+
+The background-task statuses themselves are test_task_status.py; MQTT
+command signing in the mqtt report is test_mqtt_signing_enforcement.py.
+"""
 
 import asyncio
 import subprocess
@@ -10,71 +14,47 @@ import app.health.router as health_router
 import app.health.service as health_service
 from app.db import get_db
 from app.health.service import (
+    get_system_metrics,
+    get_task_statuses,
+    register_task,
     track_client_connect,
     track_client_disconnect,
-    get_client_list,
-    get_system_metrics,
-    register_task,
     update_task,
-    get_task_statuses,
-    _sio_clients,
-    _task_registry,
 )
 
 
-def _reset():
-    _sio_clients.clear()
-    _task_registry.clear()
+@pytest.fixture
+def registries():
+    """The client and task registries are module state: start and end empty."""
+    health_service._sio_clients.clear()
+    health_service._task_registry.clear()
+    yield
+    health_service._sio_clients.clear()
+    health_service._task_registry.clear()
 
 
-def test_client_tracking():
-    _reset()
-    track_client_connect("abc123", {"REMOTE_ADDR": "192.168.1.10"})
-    clients = get_client_list()
-    assert len(clients) == 1
-    assert clients[0]["sid"] == "abc123"
-    assert clients[0]["ip"] == "192.168.1.10"
-
-    track_client_disconnect("abc123")
-    assert len(get_client_list()) == 0
-
-
-def test_task_registry():
-    _reset()
+def test_a_task_reports_its_last_status_and_run(registries):
     register_task("test_task", "running")
-    update_task("test_task", "completed")
+    update_task("test_task", "error", error="disk full")
     statuses = get_task_statuses()
-    assert "test_task" in statuses
-    assert statuses["test_task"]["status"] == "completed"
+    assert statuses["test_task"]["status"] == "error"
+    assert statuses["test_task"]["error"] == "disk full"
     assert statuses["test_task"]["last_run"] is not None
+    # Only registered tasks are reported; an update alone registers nothing.
+    update_task("never_registered", "idle")
+    assert "never_registered" not in get_task_statuses()
 
 
-async def test_system_health_api(client):
-    r = client.get("/api/health/detail/system")
-    assert r.status_code == 200
-    data = r.json()
-    assert "cpu_percent" in data
-    assert "memory_percent" in data
-    assert "disk_percent" in data
-    assert "db_size_mb" in data
+async def test_each_health_detail_route_serves_its_report(client, registries):
+    track_client_connect("abc123", {"REMOTE_ADDR": "192.168.1.10"})
+    [listed] = client.get("/api/health/detail/clients").json()
+    assert (listed["sid"], listed["ip"]) == ("abc123", "192.168.1.10")
+    track_client_disconnect("abc123")
+    assert client.get("/api/health/detail/clients").json() == []
 
-
-async def test_mqtt_health_api(client):
-    r = client.get("/api/health/detail/mqtt")
-    assert r.status_code == 200
-    assert isinstance(r.json(), dict)
-
-
-async def test_clients_api(client):
-    r = client.get("/api/health/detail/clients")
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
-
-
-async def test_tasks_api(client):
-    r = client.get("/api/health/detail/tasks")
-    assert r.status_code == 200
-    assert isinstance(r.json(), dict)
+    assert "command_signing" in client.get("/api/health/detail/mqtt").json()
+    # The cloud connector reports itself even when nothing registered it.
+    assert "cloud_connector" in client.get("/api/health/detail/tasks").json()
 
 
 def _on_event_loop() -> bool:
@@ -83,6 +63,22 @@ def _on_event_loop() -> bool:
         return True
     except RuntimeError:
         return False
+
+
+def test_system_metrics_sample_cpu_off_the_event_loop(client, monkeypatch):
+    calls: list[bool] = []
+
+    def fake_cpu_percent(*args, **kwargs):
+        calls.append(_on_event_loop())
+        return 12.5
+
+    monkeypatch.setattr(health_service.psutil, "cpu_percent", fake_cpu_percent)
+    r = client.get("/api/health/detail/system")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["cpu_percent"] == 12.5
+    assert {"memory_percent", "disk_percent", "db_size_mb"} <= set(data)
+    assert calls == [False], "the 100 ms cpu sample must not block the loop"
 
 
 def test_clock_runs_chronyc_off_the_event_loop(client, monkeypatch):
@@ -102,20 +98,6 @@ def test_clock_runs_chronyc_off_the_event_loop(client, monkeypatch):
     assert calls == [False], "chronyc must run in a worker thread, not on the loop"
     assert r.json()["chrony"]["available"] is True
     assert r.json()["chrony"]["stratum"] == "3"
-
-
-def test_system_metrics_sample_cpu_off_the_event_loop(client, monkeypatch):
-    calls: list[bool] = []
-
-    def fake_cpu_percent(*args, **kwargs):
-        calls.append(_on_event_loop())
-        return 12.5
-
-    monkeypatch.setattr(health_service.psutil, "cpu_percent", fake_cpu_percent)
-    r = client.get("/api/health/detail/system")
-    assert r.status_code == 200, r.text
-    assert r.json()["cpu_percent"] == 12.5
-    assert calls == [False], "the 100 ms cpu sample must not block the loop"
 
 
 def test_the_clock_route_is_a_thin_wrapper():

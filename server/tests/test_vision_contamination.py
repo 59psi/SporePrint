@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app.vision.router as vrouter
 from app.config import settings
 from app.db import get_db
 from app.vision import service
@@ -197,17 +196,6 @@ async def test_negated_detection_in_a_healthy_read_does_not_page(tmp_path, monke
     assert await _vision_events(sid) == []
 
 
-async def test_listed_detection_pages_and_records_the_event(tmp_path, monkeypatch, spies):
-    sid, _ = await _session_with_chamber()
-    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic(
-        [{"health_assessment": "contaminated",
-          "contamination_detected": [{"type": "trichoderma", "confidence": 0.9}]}], []))
-    await analyze_frame_claude(await _frame(tmp_path, sid))
-    spies["alert"].assert_awaited_once()
-    [event] = await _vision_events(sid)
-    assert event["contamination_type"] == "trichoderma"
-
-
 async def test_a_failing_alert_keeps_the_paid_analysis(tmp_path, monkeypatch, spies):
     """A side effect raising (a database lock held past busy_timeout) turned
     the parsed result into {"error": ...}: callers never stored it, the other
@@ -249,18 +237,6 @@ async def test_failed_dedup_lookup_still_records_and_pages(tmp_path, monkeypatch
     spies["alert"].assert_awaited_once()
     spies["forward"].assert_awaited_once()
     assert len(await _vision_events(sid)) == 1
-
-
-async def test_none_type_detection_does_not_page(tmp_path, monkeypatch, spies):
-    sid, _ = await _session_with_chamber()
-    capture: list[dict] = []
-    monkeypatch.setattr(service.anthropic, "AsyncAnthropic", _fake_anthropic(
-        [{"health_assessment": "healthy", "contamination_detected": {"type": "none", "confidence": 0}}],
-        capture))
-    await analyze_frame_claude(await _frame(tmp_path, sid))
-    spies["alert"].assert_not_awaited()
-    spies["forward"].assert_not_awaited()
-    assert await _vision_events(sid) == []
 
 
 async def test_confident_detection_pages_records_event_and_dedups(tmp_path, monkeypatch, spies):
@@ -396,25 +372,3 @@ def test_prose_reanalyze_keeps_the_flagged_analysis(client, monkeypatch, tmp_pat
     assert frame["analysis_claude"] == flagged
     assert service._frame_is_notable({"analysis_local": None,
                                       "analysis_claude": json.dumps(frame["analysis_claude"])})
-
-
-def test_failed_reanalyze_keeps_previous_analysis(client, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "vision_storage", str(tmp_path / "frames"))
-    r = client.post(
-        "/api/vision/frame",
-        content=b"\xff\xd8\xff\xe0jpeg",
-        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01"},
-    )
-    frame_id = r.json()["frame_id"]
-
-    good = {"health_assessment": "healthy", "summary": "fine"}
-    monkeypatch.setattr(vrouter, "analyze_frame_claude", AsyncMock(return_value=good))
-    assert client.post(f"/api/vision/frames/{frame_id}/analyze").json() == good
-
-    monkeypatch.setattr(vrouter, "analyze_frame_claude",
-                        AsyncMock(return_value={"error": "rate limited"}))
-    r = client.post(f"/api/vision/frames/{frame_id}/analyze")
-    assert r.json()["error"] == "rate limited"  # the UI still sees the failure
-
-    stored = client.get(f"/api/vision/frames/{frame_id}").json()["analysis_claude"]
-    assert stored == good

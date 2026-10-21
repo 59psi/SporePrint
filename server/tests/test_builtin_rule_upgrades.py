@@ -12,14 +12,10 @@ of a release whose built-ins change.
 """
 
 import json
-import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-import app.automation.engine as engine
-import app.cloud.service as cloud_service
 from app.automation.engine import _is_life_safety_rule, evaluate_rules
 from app.automation.models import AutomationRule
 from app.automation.service import (
@@ -30,14 +26,15 @@ from app.automation.service import (
 )
 from app.automation.templates import (
     BUILTIN_RULES,
+    LEGACY_BUILTIN_RULES,
     RETIRED_BUILTIN_RULES,
     SEEDED_BEFORE_V5,
     SEEDED_V5_0_TO_V5_1,
 )
 from app.db import get_db
-from app.sessions.models import SessionCreate
-from app.sessions.service import create_session
 from app.species.service import seed_builtins
+from tests._builders import start_grow
+from tests._timing import clock, local
 
 _RELEASED: dict[str, list[dict]] = json.loads(
     (Path(__file__).parent / "fixtures" / "released_builtin_rules.json").read_text(encoding="utf-8"))
@@ -147,6 +144,37 @@ async def test_a_second_boot_changes_nothing(caplog):
     assert _warnings(caplog, "") == []
 
 
+
+async def test_an_edited_copy_of_a_changed_built_in_is_left_alone_and_named(caplog):
+    """An edited copy keeps its old logic, which priority arbitration can make
+    matter (a forecast-only Pre-cool now holds the cooler on against the
+    Cooling Cutoff), so it is not upgraded and the operator is told, at every
+    boot. The unedited copies beside it are upgraded."""
+    await _seed_as_release(_V5_0)
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT rule_data FROM automation_rules WHERE name = 'Pre-cool for Hot Forecast'"
+        )).fetchone()
+        data = json.loads(row["rule_data"])
+        data["cooldown_seconds"] = 900
+        await db.execute("UPDATE automation_rules SET rule_data = ? "
+                         "WHERE name = 'Pre-cool for Hot Forecast'", (json.dumps(data),))
+        await db.commit()
+    for _ in range(2):  # two boots
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="app.automation.service"):
+            await seed_builtin_rules()
+        edited = _warnings(caplog, "was edited")
+        assert len(edited) == 1 and "Pre-cool for Hot Forecast" in edited[0]
+
+    stored = {r["name"]: _rule(r) for r in await _stored()}
+    kept = LEGACY_BUILTIN_RULES["Pre-cool for Hot Forecast"].model_copy(
+        update={"cooldown_seconds": 900})
+    assert _same_rule(stored["Pre-cool for Hot Forecast"], kept)
+    assert stored["Pre-cool for Hot Forecast"].cooldown_seconds == 900
+    for name in set(LEGACY_BUILTIN_RULES) - {"Pre-cool for Hot Forecast"}:
+        assert _same_rule(stored[name], CURRENT[name]), name
+
 # ── A Pi seeded before 5.2.0 recorded nothing about what it was given ──────
 
 
@@ -206,9 +234,21 @@ async def test_a_pi_with_no_built_in_left_gets_none_added(caplog):
     assert len(_warnings(caplog, "No built-in automation rule is left")) == 1
 
 
-async def test_a_fresh_pi_still_gets_every_built_in():
+async def test_a_fresh_pi_gets_every_built_in_once():
     await seed_builtin_rules()
     assert await _names() == set(CURRENT)
+    first = await _stored()
+    assert len(first) == len(CURRENT)
+    await seed_builtin_rules()
+    assert await _stored() == first
+
+
+async def test_a_fresh_pi_does_not_bring_back_a_built_in_the_operator_deleted():
+    """What each Pi was offered is recorded at the first seed."""
+    await seed_builtin_rules()
+    await _delete("CO2 Floor — Restrict FAE")
+    await seed_builtin_rules()
+    assert "CO2 Floor — Restrict FAE" not in await _names()
 
 
 # ── Built-ins no release ships any more ─────────────────────────────────────
@@ -258,35 +298,6 @@ async def test_an_edited_retired_built_in_is_left_running_and_named(caplog):
 
 # ── What the upgrade changes on the wire ────────────────────────────────────
 
-_real_localtime = time.localtime
-
-
-def _clock(hour: int):
-    ts = time.mktime((2026, 7, 13, hour, 0, 0, 0, 0, -1))
-    return patch.multiple(
-        time, time=lambda: ts,
-        localtime=lambda t=None: _real_localtime(ts if t is None else t),
-    )
-
-
-@pytest.fixture()
-def quiet_alerts(monkeypatch):
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(engine, "notify_critical", _noop)
-    monkeypatch.setattr(engine, "notify_warning", _noop)
-    monkeypatch.setattr(engine, "co2_alert", _noop)
-    monkeypatch.setattr(cloud_service, "forward_event", _noop)
-
-
-async def _session(species: str, phase: str, **kw):
-    return await create_session(SessionCreate(
-        name=f"{species}-{phase}", species_profile_id=species,
-        substrate="test", current_phase=phase, **kw,
-    ))
-
-
 async def test_an_upgraded_v4_pi_no_longer_vents_colonization(mock_mqtt, quiet_alerts):
     """The 0.2-4.x Emergency CO2 Exhaust (> 3000 ppm in every phase, and a
     life-safety rule to the current engine) and CO2 FAE Trigger (no phase
@@ -294,8 +305,8 @@ async def test_an_upgraded_v4_pi_no_longer_vents_colonization(mock_mqtt, quiet_a
     await seed_builtins()
     await _seed_as_release(_V4)
     await seed_builtin_rules()
-    await _session("blue_oyster", "substrate_colonization", container_type="grow_bag")
-    with _clock(12):
+    await start_grow("blue_oyster", "substrate_colonization", container_type="grow_bag")
+    with clock(local(12)):
         await evaluate_rules("climate-1", {"co2_ppm": 8000, "temp_f": 70, "humidity": 95})
     assert [t for t, _ in mock_mqtt if t.endswith(("/cmd/exhaust", "/cmd/fae"))] == []
 
@@ -306,8 +317,8 @@ async def test_an_upgraded_v4_pi_keeps_the_dark_period_dark(mock_mqtt, quiet_ale
     await seed_builtins()
     await _seed_as_release(_V4)
     await seed_builtin_rules()
-    await _session("blue_oyster", "fruiting")
-    with _clock(23):
+    await start_grow("blue_oyster", "fruiting")
+    with clock(local(23)):
         await evaluate_rules("climate-1", {"temp_f": 60, "humidity": 88})
     scenes = [p for t, p in mock_mqtt if t.endswith("/cmd/scene")]
     assert scenes and all(p.get("state") == "off" for p in scenes), scenes

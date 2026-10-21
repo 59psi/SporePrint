@@ -3,7 +3,9 @@
 Weighting: the hourly and daily rollups used AVG(avg_value), an unweighted
 mean of means, while the 5-minute step and the conflict-merge path are
 count-weighted. Buckets with unequal counts (partial buckets, offline-buffer
-flushes, a changed publish interval) biased long-term history.
+flushes, a changed publish interval) biased long-term history. The weighted
+merge is tested per tier in test_retention.py; legacy rows without a count
+are tested here.
 
 Vacuum: `PRAGMA incremental_vacuum` is a no-op unless the database is in
 auto_vacuum=INCREMENTAL mode, which init_db never sets, and even then a single
@@ -16,7 +18,6 @@ import time
 
 from app.db import get_db
 from app.retention.service import (
-    _cleanup_old_rollups,
     _rollup_telemetry_hourly,
     _vacuum,
     ensure_incremental_auto_vacuum,
@@ -43,33 +44,6 @@ async def _only_row(resolution):
         rows = [dict(r) for r in await cursor.fetchall()]
     assert len(rows) == 1, rows
     return rows[0]
-
-
-async def test_hourly_rollup_is_count_weighted():
-    hour = int((time.time() - 40 * DAY) // 3600) * 3600
-    # One partial bucket (1 reading at 90) + eleven full buckets (5 at 70).
-    await _rollup("5min", hour, 90.0, 1)
-    for i in range(1, 12):
-        await _rollup("5min", hour + i * 300, 70.0, 5)
-
-    await _rollup_telemetry_hourly()
-
-    row = await _only_row("hourly")
-    assert row["count"] == 56
-    assert abs(row["avg_value"] - (90.0 + 70.0 * 55) / 56) < 1e-9  # 70.357, not 71.67
-    assert row["min_value"] == 70.0 and row["max_value"] == 90.0
-
-
-async def test_daily_rollup_is_count_weighted():
-    day = int((time.time() - 400 * DAY) // DAY) * DAY
-    await _rollup("hourly", day, 90.0, 1)
-    await _rollup("hourly", day + 3600, 70.0, 59)
-
-    await _cleanup_old_rollups()
-
-    row = await _only_row("daily")
-    assert row["count"] == 60
-    assert abs(row["avg_value"] - (90.0 + 70.0 * 59) / 60) < 1e-9
 
 
 async def test_rollup_with_null_counts_falls_back_to_plain_mean():

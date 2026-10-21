@@ -1,6 +1,9 @@
-"""Vendor drivers: per-device poll outcome, refused commands, transport
-errors, KLAP request pairing, power units and vendor logins.
+"""Vendor drivers: missing settings, per-device poll outcome, refused
+commands, transport errors, KLAP request pairing, power units and vendor
+logins.
 
+* A driver enabled without the settings it needs says what it needs, from a
+  Test and from every poll (an error in health, never an empty "ok").
 * A multi-device poll keeps going past a device that fails and reports it:
   health is "degraded" when some devices fail and "error" when all do, so an
   unplugged plug reaches the health alerts instead of the poll reading "ok".
@@ -12,7 +15,7 @@ errors, KLAP request pairing, power units and vendor logins.
   to one plug are serialized.
 * Bearer-token clouds (Trane, Fluence, Fohse) renew an expired token and
   retry once; a refused login is not resent every poll (Tapo cloud and Pulse
-  too) until the settings are saved again.
+  too) until the settings are saved again, while a vendor outage is retried.
 """
 
 from __future__ import annotations
@@ -23,23 +26,17 @@ import json
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import app.cloud.service as cloud_service
-from app.config import settings
-from app.db import get_db
 from app.integrations import _actions, _health_sweeper, _registry
-from app.integrations._keystore import reset_fernet_cache
-from app.integrations.agrowtek.driver import AgrowtekDriver
-from app.integrations.anden.driver import AndenDriver
-from app.integrations.aranet.client import AranetClient
-from app.integrations.aranet.models import AranetMeasurementsResponse
-from app.integrations.aranet.router import router as aranet_router
-from app.integrations.bios.driver import BiosDriver
+from app.integrations.agrowtek.driver import AgrowtekConfig, AgrowtekDriver
+from app.integrations.anden.driver import AndenConfig, AndenDriver
+from app.integrations.aranet.config import AranetConfig
+from app.integrations.aranet.driver import AranetDriver
+from app.integrations.bios.driver import BiosConfig, BiosDriver
 from app.integrations.fluence.driver import FluenceConfig, FluenceDriver
 from app.integrations.fohse.driver import FohseConfig, FohseDriver
 from app.integrations.kasa.driver import KasaConfig, KasaDriver, KasaError
@@ -47,55 +44,57 @@ from app.integrations.pulse.client import PulseError
 from app.integrations.pulse.config import PulseConfig
 from app.integrations.pulse.driver import PulseDriver
 from app.integrations.pulse.local_transport import PulseLocalTransport
-from app.integrations.pulse.router import router as pulse_router
 from app.integrations.quest.driver import QuestConfig, QuestDriver
-from app.integrations.tapo import klap
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import TapoDriver, TapoError
 from app.integrations.trane.driver import TraneConfig, TraneDriver
 from app.integrations.wemo.driver import WemoConfig, WemoDriver
+from tests._builders import stored_readings
+from tests._fakes import (
+    EMAIL,
+    PASSWORD,
+    FakeKlapPlugs,
+    health_after_one_poll,
+    route_httpx,
+    tapo_cfg,
+    tapo_ok,
+    use_drivers,
+)
 
 # The vendor packages bind a driver INSTANCE to the name `driver`, shadowing
 # the submodule attribute — resolve the module itself.
 kasa_mod = importlib.import_module("app.integrations.kasa.driver")
 
 
-@pytest.fixture
-def fresh_keystore(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / ".int-key"))
-    reset_fernet_cache()
-    yield
-    reset_fernet_cache()
+# ── Missing settings ─────────────────────────────────────────────────
 
 
-def _route_httpx(monkeypatch, handler) -> None:
-    """Send every httpx.AsyncClient the drivers build to ``handler``."""
-    transport = httpx.MockTransport(handler)
-    real = httpx.AsyncClient
-    monkeypatch.setattr(
-        httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": transport})
-    )
-
-
-async def _readings(node_id: str) -> set[tuple[str, float]]:
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT sensor, value FROM telemetry_readings WHERE node_id = ?", (node_id,)
-        )
-        return {(r["sensor"], r["value"]) for r in await cursor.fetchall()}
-
-
-async def _health_after_one_poll(drv):
-    """Run the driver's real poll loop for one cycle and read its health."""
-    await drv.start()
-    try:
-        for _ in range(300):
-            if drv._last_poll_at is not None:
-                break
-            await asyncio.sleep(0.01)
-        return await drv.health()
-    finally:
-        await drv.stop()
+@pytest.mark.parametrize("drv_cls,cfg,needs", [
+    (AgrowtekDriver, AgrowtekConfig(), "base_url and api_key"),
+    (QuestDriver, QuestConfig(), "base_url"),
+    (AndenDriver, AndenConfig(), "base_url"),
+    (BiosDriver, BiosConfig(), "base_url"),
+    (FluenceDriver, FluenceConfig(), "email and password"),
+    (FohseDriver, FohseConfig(), "email and password"),
+    (TraneDriver, TraneConfig(), "email and password"),
+    (AranetDriver, AranetConfig(), "base_url and api_key"),
+    (PulseDriver, PulseConfig(), "email and password"),
+    (TapoDriver, TapoConfig(), "email and password"),
+    (TapoDriver, TapoConfig(email=EMAIL, password=PASSWORD), "at least one device"),
+    (KasaDriver, KasaConfig(), "no devices"),
+    (WemoDriver, WemoConfig(), "no devices"),
+], ids=["agrowtek", "quest", "anden", "bios", "fluence", "fohse", "trane", "aranet",
+        "pulse", "tapo", "tapo-local-no-plugs", "kasa", "wemo"])
+async def test_a_driver_without_its_settings_says_what_it_needs(drv_cls, cfg, needs):
+    drv = drv_cls()
+    await drv.configure(cfg)
+    tested = await drv.test_connection()
+    assert tested.state == "error"
+    assert needs in tested.last_error
+    # Enabled anyway, every poll is an error naming the same thing.
+    polled = await health_after_one_poll(drv)
+    assert polled.state == "error"
+    assert needs in polled.last_error
 
 
 # ── Per-device poll outcome ──────────────────────────────────────────
@@ -110,11 +109,15 @@ async def test_kasa_one_unreachable_plug_is_degraded_and_the_rest_are_polled(mon
     monkeypatch.setattr(kasa_mod, "_kasa_query", fake_query)
     drv = KasaDriver()
     await drv.configure(KasaConfig(devices=[{"ip": "10.0.0.31"}, {"ip": "10.0.0.32"}]))
-    health = await _health_after_one_poll(drv)
+    health = await health_after_one_poll(drv)
     assert health.state == "degraded"
     assert set(health.details["failed"]) == {"10.0.0.31"}
     assert health.last_error.startswith("1 of 2 devices failed")
-    assert await _readings("kasa:10.0.0.32") == {("actuator_state", 1.0)}
+    assert await stored_readings("kasa:10.0.0.32") == {("actuator_state", 1.0)}
+    # A Test reports the plugs that answered, and names the one that did not.
+    tested = await drv.test_connection()
+    assert (tested.state, tested.details["reachable"], tested.details["total"]) == ("ok", 1, 2)
+    assert tested.details["errors"][0].startswith("10.0.0.31: ")
 
 
 async def test_kasa_every_plug_down_is_an_error_and_alerts_once(monkeypatch):
@@ -129,10 +132,11 @@ async def test_kasa_every_plug_down_is_an_error_and_alerts_once(monkeypatch):
 
     monkeypatch.setattr(kasa_mod, "_kasa_query", fake_query)
     monkeypatch.setattr(cloud_service, "forward_event", fake_forward)
+    monkeypatch.setattr(_health_sweeper, "_last_state", {})
+    monkeypatch.setattr(_health_sweeper, "_ok_streak", {})
     drv = KasaDriver()
     await drv.configure(KasaConfig(devices=[{"ip": "10.0.0.31"}, {"ip": "10.0.0.32"}]))
-    monkeypatch.setattr(_health_sweeper._registry, "registered_drivers", lambda: {"kasa": drv})
-    _health_sweeper._last_state.clear()
+    use_drivers(monkeypatch, drv)
     # Enabled (health reads a running task) but polled by hand, so the
     # sweeps see exactly: not yet polled, then the failed poll.
     drv._task = asyncio.get_running_loop().create_future()
@@ -148,36 +152,11 @@ async def test_kasa_every_plug_down_is_an_error_and_alerts_once(monkeypatch):
     finally:
         drv._task.cancel()
         drv._task = None
-        _health_sweeper._last_state.clear()
     degraded = [data for event, data in sent if event == "vendor_health_degraded"]
     assert len(degraded) == 1
     assert degraded[0]["state"] == "error" and degraded[0]["resolved"] is False
-
-
-@pytest.mark.parametrize("cfg", [KasaConfig(), WemoConfig()])
-async def test_enabled_plug_driver_without_devices_is_an_error(cfg):
-    drv = KasaDriver() if isinstance(cfg, KasaConfig) else WemoDriver()
-    await drv.configure(cfg)
-    health = await _health_after_one_poll(drv)
-    assert health.state == "error"
-    assert "no devices" in health.last_error
-
-
-@pytest.mark.parametrize("drv_cls,needs", [
-    (FluenceDriver, "email and password"),
-    (FohseDriver, "email and password"),
-    (TraneDriver, "email and password"),
-    (AgrowtekDriver, "base_url and api_key"),
-    (QuestDriver, "base_url"),
-    (AndenDriver, "base_url"),
-    (BiosDriver, "base_url"),
-])
-async def test_enabled_driver_missing_its_settings_is_an_error(drv_cls, needs):
-    drv = drv_cls()
-    await drv.configure(drv.config_schema())
-    health = await _health_after_one_poll(drv)
-    assert health.state == "error"
-    assert needs in health.last_error
+    tested = await drv.test_connection()
+    assert tested.state == "error" and "10.0.0.31: " in tested.last_error
 
 
 async def test_kasa_blank_ip_row_fails_alone(monkeypatch):
@@ -194,6 +173,38 @@ async def test_kasa_blank_ip_row_fails_alone(monkeypatch):
     rows, diag = await drv.poll_once()
     assert rows == 1
     assert "ip is required" in diag["failed"]["device 1"]
+
+
+async def test_kasa_dimmer_and_energy_meter_readings_are_stored_in_watts(monkeypatch):
+    replies = {
+        ("10.0.0.31", "system"): {"system": {"get_sysinfo": {"relay_state": 1, "brightness": 40}}},
+        # Newer firmware reports milliwatts, the first HS110 hardware watts.
+        ("10.0.0.31", "emeter"): {"emeter": {"get_realtime": {"power_mw": 1500, "err_code": 0}}},
+        ("10.0.0.32", "system"): {"system": {"get_sysinfo": {"relay_state": 1}}},
+        ("10.0.0.32", "emeter"): {"emeter": {"get_realtime": {"power": 12.5}}},
+        ("10.0.0.33", "system"): {"system": {"get_sysinfo": {"relay_state": 0}}},
+        ("10.0.0.33", "emeter"): {"emeter": {"err_code": -1, "err_msg": "module not support"}},
+    }
+
+    async def fake_query(ip, payload, timeout):
+        return replies[(ip, next(iter(payload)))]
+
+    monkeypatch.setattr(kasa_mod, "_kasa_query", fake_query)
+    drv = KasaDriver()
+    await drv.configure(KasaConfig(devices=[
+        {"ip": "10.0.0.31", "is_dimmer": True, "has_emeter": True},
+        {"ip": "10.0.0.32", "has_emeter": True},
+        {"ip": "10.0.0.33", "has_emeter": True},
+    ]))
+    _rows, diag = await drv.poll_once()
+    assert diag["failed"] == {}
+    assert await stored_readings() == {
+        ("kasa:10.0.0.31", "actuator_state", 1.0), ("kasa:10.0.0.31", "dimming_percent", 40.0),
+        ("kasa:10.0.0.31", "power_w", 1.5),
+        ("kasa:10.0.0.32", "actuator_state", 1.0), ("kasa:10.0.0.32", "power_w", 12.5),
+        # A meter that refuses costs only the power reading: the plug answered.
+        ("kasa:10.0.0.33", "actuator_state", 0.0),
+    }
 
 
 # ── Kasa transport errors and in-band refusals ───────────────────────
@@ -242,7 +253,7 @@ async def test_kasa_connection_reset_is_a_kasa_error_and_spares_the_other_plugs(
     rows, diag = await drv.poll_once()
     assert rows == 1
     assert set(diag["failed"]) == {"10.0.0.31"}
-    assert await _readings("kasa:10.0.0.32") == {("actuator_state", 1.0)}
+    assert await stored_readings("kasa:10.0.0.32") == {("actuator_state", 1.0)}
 
 
 @pytest.mark.parametrize("action,params,reply", [
@@ -259,7 +270,7 @@ async def test_kasa_refused_write_is_a_502(monkeypatch, action, params, reply):
     monkeypatch.setattr(kasa_mod, "_kasa_query", fake_query)
     drv = KasaDriver()
     await drv.configure(KasaConfig(devices=[{"ip": "10.0.0.20"}]))
-    monkeypatch.setattr(_actions._registry, "registered_drivers", lambda: {"kasa": drv})
+    use_drivers(monkeypatch, drv)
     with pytest.raises(HTTPException) as exc:
         await _actions.dispatch("kasa", action, params)
     assert exc.value.status_code == 502
@@ -304,7 +315,7 @@ async def test_wemo_insight_in_standby_is_polled_with_its_power(monkeypatch):
     await drv.configure(WemoConfig(devices=[{"ip": "10.0.0.5:49153", "is_insight": True}]))
     rows, diag = await drv.poll_once()
     assert rows == 2 and diag["failed"] == {}
-    assert await _readings("wemo:10.0.0.5:49153") == {
+    assert await stored_readings("wemo:10.0.0.5:49153") == {
         ("actuator_state", 1.0), ("power_w", 1500.0),
     }
 
@@ -312,84 +323,20 @@ async def test_wemo_insight_in_standby_is_polled_with_its_power(monkeypatch):
 # ── Tapo: a fake KLAP v2 plug ────────────────────────────────────────
 
 
-EMAIL, PASSWORD = "user@example.com", "hunter2"
-REMOTE = bytes(range(16, 32))
-
-
-def _encrypt_reply(local: bytes, seq: int, body: dict) -> bytes:
-    session = klap.derive_session(local, REMOTE, EMAIL, PASSWORD)
-    iv = session.iv_prefix + seq.to_bytes(4, "big", signed=True)
-    padder = padding.PKCS7(128).padder()
-    enc = Cipher(algorithms.AES(session.encrypt_key), modes.CBC(iv)).encryptor()
-    plain = json.dumps(body).encode()
-    return b"\x00" * 32 + enc.update(padder.update(plain) + padder.finalize()) + enc.finalize()
-
-
-class FakePlugs:
-    """KLAP v2 plugs behind an httpx MockTransport, keyed by host.
-
-    ``answer(host, request_json)`` returns the reply body; hosts in ``down``
-    refuse connections; ``slow`` delays one method's reply.
-    """
-
-    def __init__(self, answer, *, down=(), slow=None):
-        self.answer = answer
-        self.down = set(down)
-        self.slow = slow or {}
-        self.local: dict[str, bytes] = {}
-        self.calls: list[tuple[str, str]] = []
-
-    async def __call__(self, request: httpx.Request) -> httpx.Response:
-        host = request.url.host
-        if host in self.down:
-            raise httpx.ConnectError("connection refused", request=request)
-        path = request.url.path
-        if path == "/app/handshake1":
-            local = request.content
-            self.local[host] = local
-            proof = klap.auth_hash(local, REMOTE, EMAIL, PASSWORD)
-            return httpx.Response(
-                200, content=REMOTE + proof,
-                headers={"Set-Cookie": "TP_SESSIONID=s1;TIMEOUT=86400"},
-            )
-        if path == "/app/handshake2":
-            return httpx.Response(200)
-        if path == "/app/request":
-            seq = int(request.url.params["seq"])
-            session = klap.derive_session(self.local[host], REMOTE, EMAIL, PASSWORD)
-            body = json.loads(session.decrypt(request.content, seq))
-            self.calls.append((host, body["method"]))
-            delay = self.slow.get(body["method"])
-            if delay:
-                await asyncio.sleep(delay)
-            reply = self.answer(host, body)
-            return httpx.Response(200, content=_encrypt_reply(self.local[host], seq, reply))
-        return httpx.Response(404)
-
-
-def _ok(result: dict | None = None) -> dict:
-    return {"error_code": 0, "result": result or {}}
-
-
-def _tapo_cfg(*ips: str, **device) -> TapoConfig:
-    return TapoConfig(email=EMAIL, password=PASSWORD,
-                      devices=[{"ip": ip, **device} for ip in ips])
-
-
 async def test_tapo_unreachable_plug_does_not_stop_the_poll(monkeypatch):
-    plugs = FakePlugs(lambda host, body: _ok({"device_on": True}), down={"10.0.0.31"})
-    _route_httpx(monkeypatch, plugs)
+    plugs = FakeKlapPlugs(lambda host, body: tapo_ok({"device_on": True}), down={"10.0.0.31"})
+    route_httpx(monkeypatch, plugs)
     drv = TapoDriver()
-    await drv.configure(_tapo_cfg("10.0.0.31", "10.0.0.32"))
+    await drv.configure(tapo_cfg("10.0.0.31", "10.0.0.32"))
     rows, diag = await drv.poll_once()
     assert rows == 1
     assert set(diag["failed"]) == {"10.0.0.31"}
     assert "10.0.0.31" not in drv._sessions
-    assert await _readings("tapo:10.0.0.32") == {("actuator_state", 1.0)}
+    assert await stored_readings("tapo:10.0.0.32") == {("actuator_state", 1.0)}
 
 
 async def test_tapo_plug_row_without_ip_fails_alone(monkeypatch):
-    _route_httpx(monkeypatch, FakePlugs(lambda host, body: _ok({"device_on": False})))
+    route_httpx(monkeypatch, FakeKlapPlugs(lambda host, body: tapo_ok({"device_on": False})))
     drv = TapoDriver()
     await drv.configure(TapoConfig(email=EMAIL, password=PASSWORD,
                                    devices=[{"ip": ""}, {"ip": "10.0.0.32"}]))
@@ -401,21 +348,21 @@ async def test_tapo_plug_row_without_ip_fails_alone(monkeypatch):
 async def test_tapo_power_is_stored_in_watts(monkeypatch):
     def answer(host, body):
         if body["method"] == "get_current_power":
-            return _ok({"current_power": 1500})  # already watts
-        return _ok({"device_on": True})
+            return tapo_ok({"current_power": 1500})  # already watts
+        return tapo_ok({"device_on": True})
 
-    _route_httpx(monkeypatch, FakePlugs(answer))
+    route_httpx(monkeypatch, FakeKlapPlugs(answer))
     drv = TapoDriver()
-    await drv.configure(_tapo_cfg("10.0.0.30", has_emeter=True))
+    await drv.configure(tapo_cfg("10.0.0.30", has_emeter=True))
     await drv.poll_once()
-    assert ("power_w", 1500.0) in await _readings("tapo:10.0.0.30")
+    assert ("power_w", 1500.0) in await stored_readings("tapo:10.0.0.30")
 
 
 async def test_tapo_cloud_test_with_a_dead_network_is_an_error_not_a_500(monkeypatch):
     def handler(request):
         raise httpx.ConnectError("network unreachable", request=request)
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = TapoDriver()
     await drv.configure(TapoConfig(transport="cloud", email=EMAIL, password=PASSWORD))
     health = await drv.test_connection()
@@ -425,7 +372,7 @@ async def test_tapo_cloud_test_with_a_dead_network_is_an_error_not_a_500(monkeyp
 
 async def test_tapo_write_before_configuration_is_a_clear_502(monkeypatch):
     drv = TapoDriver()  # never configured
-    monkeypatch.setattr(_actions._registry, "registered_drivers", lambda: {"tapo": drv})
+    use_drivers(monkeypatch, drv)
     with pytest.raises(HTTPException) as exc:
         await _actions.dispatch("tapo", "set_power", {"ip": "10.0.0.30", "on": False})
     assert exc.value.status_code == 502
@@ -436,12 +383,12 @@ async def test_tapo_refused_write_is_a_502_and_keeps_the_session(monkeypatch):
     def answer(host, body):
         if body["method"] == "set_device_info":
             return {"error_code": -1008}  # PARAMS_ERROR
-        return _ok({"device_on": True})
+        return tapo_ok({"device_on": True})
 
-    _route_httpx(monkeypatch, FakePlugs(answer))
+    route_httpx(monkeypatch, FakeKlapPlugs(answer))
     drv = TapoDriver()
-    await drv.configure(_tapo_cfg("10.0.0.30"))
-    monkeypatch.setattr(_actions._registry, "registered_drivers", lambda: {"tapo": drv})
+    await drv.configure(tapo_cfg("10.0.0.30"))
+    use_drivers(monkeypatch, drv)
     with pytest.raises(HTTPException) as exc:
         await _actions.dispatch("tapo", "set_power", {"ip": "10.0.0.30", "on": False})
     assert exc.value.status_code == 502
@@ -450,18 +397,18 @@ async def test_tapo_refused_write_is_a_502_and_keeps_the_session(monkeypatch):
 
 
 async def test_tapo_session_error_code_drops_the_session(monkeypatch):
-    _route_httpx(monkeypatch, FakePlugs(lambda host, body: {"error_code": 9999}))
+    route_httpx(monkeypatch, FakeKlapPlugs(lambda host, body: {"error_code": 9999}))
     drv = TapoDriver()
-    await drv.configure(_tapo_cfg("10.0.0.30"))
+    await drv.configure(tapo_cfg("10.0.0.30"))
     with pytest.raises(TapoError, match="error_code 9999"):
         await drv.set_power("10.0.0.30", True)
     assert "10.0.0.30" not in drv._sessions  # the next call handshakes again
 
 
 async def test_tapo_poll_with_an_in_band_error_is_a_failed_plug(monkeypatch):
-    _route_httpx(monkeypatch, FakePlugs(lambda host, body: {"error_code": -1501}))
+    route_httpx(monkeypatch, FakeKlapPlugs(lambda host, body: {"error_code": -1501}))
     drv = TapoDriver()
-    await drv.configure(_tapo_cfg("10.0.0.30"))
+    await drv.configure(tapo_cfg("10.0.0.30"))
     rows, diag = await drv.poll_once()
     assert rows == 0
     assert "error_code -1501" in diag["failed"]["10.0.0.30"]
@@ -472,23 +419,32 @@ async def test_tapo_concurrent_calls_to_one_plug_each_get_their_own_reply(monkey
     must decrypt under its own request's sequence number."""
     def answer(host, body):
         if body["method"] == "set_device_info":
-            return _ok({"applied": body["params"]})
-        return _ok({"device_on": False})
+            return tapo_ok({"applied": body["params"]})
+        return tapo_ok({"device_on": False})
 
-    plugs = FakePlugs(answer, slow={"set_device_info": 0.2})
-    _route_httpx(monkeypatch, plugs)
+    reply_to_write = asyncio.Event()
+    plugs = FakeKlapPlugs(answer, hold={"set_device_info": reply_to_write})
+    route_httpx(monkeypatch, plugs)
     drv = TapoDriver()
-    cfg = _tapo_cfg("10.0.0.30")
+    cfg = tapo_cfg("10.0.0.30")
     await drv.configure(cfg)
     await drv._klap_call(cfg, "10.0.0.30", {"method": "get_device_info"})  # session up
 
     write = asyncio.create_task(drv.set_power("10.0.0.30", False))
-    await asyncio.sleep(0.05)  # the write is waiting for its (slow) reply
-    read = await drv._klap_call(cfg, "10.0.0.30", {"method": "get_device_info"})
+    while len(plugs.calls) < 2:  # the write is out, waiting for its reply
+        await asyncio.sleep(0)
+    read = asyncio.create_task(
+        drv._klap_call(cfg, "10.0.0.30", {"method": "get_device_info"}))
+    for _ in range(10):  # let the read run as far as it can
+        await asyncio.sleep(0)
+    assert not read.done(), "a second exchange started before the first one's reply"
+    assert len(plugs.calls) == 2
+    reply_to_write.set()
     assert await write == {"ip": "10.0.0.30", "state": "off"}
-    assert read["result"] == {"device_on": False}
+    assert (await read)["result"] == {"device_on": False}
     # The plug saw one exchange at a time, in order.
-    assert [m for _h, m in plugs.calls] == ["get_device_info", "set_device_info", "get_device_info"]
+    assert [body["method"] for _h, body in plugs.calls] == [
+        "get_device_info", "set_device_info", "get_device_info"]
 
 
 # ── Bearer-token vendor clouds: Trane, Fluence, Fohse ────────────────
@@ -526,7 +482,7 @@ async def test_expired_token_is_renewed_and_the_poll_succeeds(monkeypatch, drv_c
             return httpx.Response(401, text="token expired")
         return httpx.Response(200, json=[])
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = drv_cls()
     await drv.configure(cfg_cls(email="a@x.co", password="pw"))
     drv._token = "expired"  # an earlier login's token
@@ -548,7 +504,7 @@ async def test_write_after_token_expiry_is_retried_once(monkeypatch, drv_cls, cf
             return httpx.Response(401)
         return httpx.Response(200, json={})
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = drv_cls()
     await drv.configure(cfg_cls(email="a@x.co", password="pw"))
     drv._token = "expired"
@@ -567,7 +523,7 @@ async def test_refused_login_is_not_resent_every_poll(monkeypatch, drv_cls, cfg_
             return httpx.Response(401, text="bad credentials")
         raise AssertionError("no data request without a token")
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = drv_cls()
     await drv.configure(cfg_cls(email="a@x.co", password="wrong"))
     for _ in range(3):
@@ -590,6 +546,49 @@ async def test_refused_login_is_not_resent_every_poll(monkeypatch, drv_cls, cfg_
     assert _logins(calls) == ["wrong", "right", "right", "right"]
 
 
+@pytest.mark.parametrize("login_reply,error,remembered", [
+    (lambda: httpx.Response(500, text="maintenance"), "HTTP 500 on login", False),
+    (lambda: httpx.Response(200, text="<html>sign in</html>"), "non-JSON login", False),
+    (lambda: httpx.Response(200, json={"user": "a@x.co"}), "no token", True),
+], ids=["vendor-outage", "not-json", "no-token"])
+async def test_a_login_without_a_token_is_remembered_but_a_vendor_outage_is_retried(
+    monkeypatch, login_reply, error, remembered,
+):
+    logins: list[httpx.Request] = []
+
+    def handler(request):
+        if request.url.path.endswith("/auth/login"):
+            logins.append(request)
+            return login_reply()
+        raise AssertionError("no data request without a token")
+
+    route_httpx(monkeypatch, handler)
+    drv = FluenceDriver()
+    await drv.configure(FluenceConfig(email="a@x.co", password="pw"))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match=error):
+            await drv.poll_once()
+    assert len(logins) == (1 if remembered else 2)
+
+
+async def test_a_401_right_after_a_fresh_login_fails_the_poll_instead_of_looping(monkeypatch):
+    paths: list[str] = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth/login"):
+            return httpx.Response(200, json={"token": "fresh"})
+        return httpx.Response(401)
+
+    route_httpx(monkeypatch, handler)
+    drv = TraneDriver()
+    await drv.configure(TraneConfig(email="a@x.co", password="pw"))
+    drv._token = "expired"
+    with pytest.raises(RuntimeError, match="right after a fresh login"):
+        await drv.poll_once()
+    assert paths == ["/api/houses", "/api/auth/login", "/api/houses"]
+
+
 @pytest.mark.parametrize("drv_cls,cfg_cls,read_path", _BEARER)
 async def test_network_errors_are_retried_every_poll(monkeypatch, drv_cls, cfg_cls, read_path):
     attempts = []
@@ -598,7 +597,7 @@ async def test_network_errors_are_retried_every_poll(monkeypatch, drv_cls, cfg_c
         attempts.append(request.url.path)
         raise httpx.ConnectError("network unreachable", request=request)
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = drv_cls()
     await drv.configure(cfg_cls(email="a@x.co", password="pw"))
     for _ in range(3):
@@ -608,18 +607,19 @@ async def test_network_errors_are_retried_every_poll(monkeypatch, drv_cls, cfg_c
 
 
 async def test_login_that_finishes_after_a_config_change_installs_no_token(monkeypatch):
-    release = asyncio.Event()
+    sent, release = asyncio.Event(), asyncio.Event()
 
     async def handler(request):
+        sent.set()
         await release.wait()
         return httpx.Response(200, json={"token": "old-account-token"})
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = FluenceDriver()
     old = FluenceConfig(email="old@x.co", password="pw")
     await drv.configure(old)
     login = asyncio.create_task(drv._login(old))
-    await asyncio.sleep(0.05)
+    await sent.wait()  # the login is at the vendor
     await drv.configure(FluenceConfig(email="new@x.co", password="pw2"))
     release.set()
     assert await login == "old-account-token"
@@ -642,7 +642,7 @@ async def test_trane_reads_the_configured_house(monkeypatch):
             return httpx.Response(200, json={"token": "t"})
         return httpx.Response(200, json={"thermostats": []})
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = TraneDriver()
     await drv.configure(TraneConfig(email="a@x.co", password="pw", house_id="12345"))
     await drv.poll_once()
@@ -653,7 +653,7 @@ async def test_trane_house_id_saved_before_validation_never_reaches_the_vendor(m
     def handler(request):  # pragma: no cover — must not be called
         raise AssertionError(f"request sent: {request.url}")
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = TraneDriver()
     await drv.configure(TraneConfig.model_construct(
         email="a@x.co", password="pw", house_id="../admin?x=",
@@ -674,7 +674,7 @@ async def test_tapo_refused_cloud_login_is_not_resent_every_poll(monkeypatch):
         logins.append(json.loads(request.content)["params"]["cloudPassword"])
         return httpx.Response(200, json={"error_code": -20601, "msg": "Incorrect email or password"})
 
-    _route_httpx(monkeypatch, handler)
+    route_httpx(monkeypatch, handler)
     drv = TapoDriver()
     await drv.configure(TapoConfig(transport="cloud", email=EMAIL, password="wrong"))
     for _ in range(3):
@@ -763,73 +763,27 @@ async def test_pulse_local_unusable_url_is_a_pulse_error(monkeypatch):
 # ── Saved config is used after a restart ─────────────────────────────
 
 
-@pytest.fixture
-def routes_client(fresh_keystore):
+def test_test_uses_the_saved_config_after_a_restart(monkeypatch):
+    drv = _registry.registered_drivers()["quest"]
+    monkeypatch.setattr(drv, "_cfg", drv._cfg)  # the singleton gets its own config back
     app = FastAPI()
     app.include_router(_registry.router, prefix="/api/integrations")
-    app.include_router(aranet_router, prefix="/api/integrations/aranet")
-    app.include_router(pulse_router, prefix="/api/integrations/pulse")
     with TestClient(app) as client:
-        yield client
+        saved = client.put(
+            "/api/integrations/quest/config",
+            json={"enabled": False, "config": {"base_url": "http://10.0.0.40"}},
+        )
+        assert saved.status_code == 200
+        urls: list[str] = []
 
+        async def fake_get(self, url):
+            urls.append(str(url))
+            return httpx.Response(200, json={"humidity": 55.0})
 
-def test_discover_uses_the_saved_config_after_a_restart(routes_client, monkeypatch):
-    drv = _registry.registered_drivers()["aranet"]
-    saved = routes_client.put(
-        "/api/integrations/aranet/config",
-        json={"enabled": False, "config": {"base_url": "http://10.0.0.42", "api_key": "k"}},
-    )
-    assert saved.status_code == 200
-    seen: dict = {}
-
-    async def fake_fetch(self):
-        seen["base_url"] = self._base_url
-        return AranetMeasurementsResponse(sensors=[])
-
-    monkeypatch.setattr(AranetClient, "fetch_latest", fake_fetch)
-    # A restart: disabled drivers are not configured at boot.
-    drv._cfg = drv.config_schema()
-    resp = routes_client.get("/api/integrations/aranet/discover")
-    assert resp.status_code == 200, resp.text
-    assert seen["base_url"] == "http://10.0.0.42"
-
-
-def test_pulse_devices_uses_the_saved_config_after_a_restart(routes_client, monkeypatch):
-    drv = _registry.registered_drivers()["pulse"]
-    saved = routes_client.put(
-        "/api/integrations/pulse/config",
-        json={"enabled": False, "config": {"email": "a@x.co", "password": "pw"}},
-    )
-    assert saved.status_code == 200
-
-    async def fake_request(self, method, url, headers, json=None):
-        if "/v2/auth/login" in url:
-            return httpx.Response(200, json={"token": "t"})
-        return httpx.Response(200, json=[{"id": "d1", "name": "Pulse One"}])
-
-    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-    drv._cfg = drv.config_schema()
-    resp = routes_client.get("/api/integrations/pulse/devices")
-    assert resp.status_code == 200, resp.text
-    assert [d["id"] for d in resp.json()["devices"]] == ["d1"]
-
-
-def test_test_uses_the_saved_config_after_a_restart(routes_client, monkeypatch):
-    drv = _registry.registered_drivers()["quest"]
-    saved = routes_client.put(
-        "/api/integrations/quest/config",
-        json={"enabled": False, "config": {"base_url": "http://10.0.0.40"}},
-    )
-    assert saved.status_code == 200
-    urls: list[str] = []
-
-    async def fake_get(self, url):
-        urls.append(str(url))
-        return httpx.Response(200, json={"humidity": 55.0})
-
-    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
-    drv._cfg = QuestConfig()
-    resp = routes_client.post("/api/integrations/quest/test")
+        monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+        # A restart: disabled drivers are not configured at boot.
+        drv._cfg = QuestConfig()
+        resp = client.post("/api/integrations/quest/test")
     assert resp.status_code == 200
     assert resp.json()["state"] == "ok"
     assert urls == ["http://10.0.0.40/api/status"]

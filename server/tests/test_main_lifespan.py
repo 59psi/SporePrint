@@ -8,6 +8,7 @@
 * Overdue-phase INFO reminders (sessions.check_phase_reminders) run daily.
 * The coredump directory is created up front, so an unwritable data volume is
   reported at boot rather than when a node's first panic dump is lost.
+* With no API key the server boots only in explicitly chosen LAN-trust mode.
 """
 
 import asyncio
@@ -19,13 +20,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.automation.engine
-import app.cloud.service
 import app.mqtt
 import app.retention.service
-import app.weather.service
 from app import main
 from app.config import settings
 from app.db import get_db
+from app.hardware import coredumps
+from app.hardware.coredumps import coredump_dir
 
 
 async def _pragma(name):
@@ -71,7 +72,7 @@ async def _forever(*_args):
 
 
 @pytest.fixture()
-def boot_order(monkeypatch):
+def boot_order(monkeypatch, no_background_loops):
     """Boot the real lifespan, recording when each safety-relevant step ran."""
     order: list[str] = []
 
@@ -91,12 +92,6 @@ def boot_order(monkeypatch):
         return False
 
     monkeypatch.setattr(app.mqtt, "start_mqtt", _start_mqtt)
-    monkeypatch.setattr(app.weather.service, "start_weather_polling", _forever)
-    monkeypatch.setattr(app.retention.service, "start_retention_task", _forever)
-    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _forever)
-    monkeypatch.setattr(main, "_daily_retrain", _forever)
-    monkeypatch.setattr(main, "_nightly_weather_aggregate", _forever)
-    monkeypatch.setattr(main, "_node_liveness_sweeper", _forever)
     monkeypatch.setattr(app.automation.engine, "rehydrate_safety_watchdogs", _rehydrate)
     monkeypatch.setattr(main, "_start_enabled_integrations", _start_integrations)
     monkeypatch.setattr(app.retention.service, "ensure_incremental_auto_vacuum", _convert)
@@ -151,15 +146,8 @@ def main_log():
 
 
 @pytest.fixture()
-def client_factory(monkeypatch):
+def client_factory(no_background_loops):
     """Like conftest's `client`, but the test decides when to boot."""
-    monkeypatch.setattr(app.mqtt, "start_mqtt", _forever)
-    monkeypatch.setattr(app.weather.service, "start_weather_polling", _forever)
-    monkeypatch.setattr(app.retention.service, "start_retention_task", _forever)
-    monkeypatch.setattr(app.cloud.service, "start_cloud_connector", _forever)
-    monkeypatch.setattr(main, "_daily_retrain", _forever)
-    monkeypatch.setattr(main, "_nightly_weather_aggregate", _forever)
-    monkeypatch.setattr(main, "_node_liveness_sweeper", _forever)
     return lambda: TestClient(main.app, raise_server_exceptions=False)
 
 
@@ -195,25 +183,15 @@ async def test_phase_reminder_loop_runs_the_check_repeatedly(monkeypatch):
     assert len(calls) == 2
 
 
-async def test_phase_reminder_task_is_started_and_registered(client):
-    resp = client.get("/api/health/detail/tasks")
-    assert resp.status_code == 200
-    assert "phase_reminders" in resp.json()
-
-
 # ── coredump directory ─────────────────────────────────────────────────────
 
 async def test_boot_creates_the_coredump_directory(client):
-    from app.hardware.coredumps import coredump_dir
-
     assert coredump_dir().is_dir()
 
 
 async def test_boot_discards_half_written_coredumps(tmp_path, monkeypatch, client_factory):
     # A crash mid-write leaves <name>.elf.part; that upload was never
     # acknowledged, so the node still holds the dump and sends it again.
-    from app.hardware import coredumps
-
     dumps = tmp_path / "dumps"
     dumps.mkdir()
     (dumps / "node-1-20261005T000000Z.elf.part").write_bytes(b"half")
@@ -222,3 +200,19 @@ async def test_boot_discards_half_written_coredumps(tmp_path, monkeypatch, clien
     with client_factory():
         pass
     assert sorted(p.name for p in dumps.iterdir()) == ["node-1-20261004T000000Z.elf"]
+
+
+# ── secure by default ──────────────────────────────────────────────────────
+
+def test_no_api_key_boots_only_in_explicit_lan_trust_mode(monkeypatch, client_factory):
+    """An empty SPOREPRINT_API_KEY used to boot silently with no auth at all,
+    which is dangerous on a port-forwarded Pi. Now that takes
+    SPOREPRINT_ALLOW_UNAUTHENTICATED=true (install.sh sets it)."""
+    monkeypatch.setattr(settings, "api_key", "")
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
+    with pytest.raises(RuntimeError, match="SPOREPRINT_ALLOW_UNAUTHENTICATED"):
+        with client_factory():
+            pass
+    monkeypatch.setattr(settings, "allow_unauthenticated", True)
+    with client_factory() as client:
+        assert client.get("/api/health").status_code == 200

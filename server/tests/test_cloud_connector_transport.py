@@ -11,6 +11,7 @@ import tomllib
 from pathlib import Path
 
 import socketio
+from engineio import async_client
 
 SERVER = Path(__file__).resolve().parents[1]
 
@@ -23,13 +24,9 @@ def test_the_asyncio_client_transport_is_a_declared_dependency():
     assert 'name = "aiohttp"' in lock
 
 
-def test_aiohttp_is_importable_where_the_connector_runs():
-    import aiohttp  # noqa: F401 — the engineio asyncio client imports it at connect
-
-
 def test_the_connector_client_can_build_its_transport():
-    from engineio import async_client
-
+    """engineio's asyncio client imports aiohttp at connect; None here is the
+    "aiohttp package not installed" failure."""
     client = socketio.AsyncClient(reconnection=False)
     assert async_client.aiohttp is not None
     assert client.eio is not None

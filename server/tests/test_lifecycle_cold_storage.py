@@ -1,4 +1,4 @@
-"""Cold storage, the colonization fork, and sealed-container gating.
+"""Cold storage, the advance suggestion's forks, and sealed-container gating.
 
 The product spec: a user inoculates something (agar / LC / grain / bag) and
 colonizes it. A grow BAG then goes on to fruit (pinning → flushes). Everything
@@ -6,14 +6,15 @@ else is pulled once colonized and parked in the FRIDGE until used. And because
 the CO2/RH sensors read chamber air — not the inside of a sealed vessel — the
 chamber's environmental control is meaningless for a sealed bag or jar and must
 not churn the fans against it.
+
+The whole suggested_next_phase table (both forks, the flush loop, the phases a
+species profile skips, shiitake browning) lives here.
 """
 
 import json
 
 import pytest
 
-import app.automation.engine as engine
-import app.cloud.service as cloud_service
 from app.automation.engine import (
     _acts_on_chamber_environment,
     _cold_storage_params,
@@ -23,12 +24,12 @@ from app.automation.engine import (
 from app.automation.models import RuleAction
 from app.automation.service import seed_builtin_rules
 from app.automation.smart_plugs import register_plug
-from app.chambers.models import ChamberUpdate
-from app.chambers.service import update_chamber
 from app.db import get_db
 from app.sessions.models import (
+    BAG_CONTAINERS,
     CULTURE_CONTAINERS,
     FRUITING_CONTAINERS,
+    OPEN_CONTAINERS,
     PhaseAdvance,
     SessionCreate,
 )
@@ -39,33 +40,50 @@ from app.sessions.service import (
     suggested_next_phase,
 )
 from app.species.models import GrowPhase
+from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import seed_builtins
 
+_PHASES = {p.id: [ph.value for ph in p.phases] for p in BUILTIN_PROFILES}
+_PINK = _PHASES["pink_oyster"]          # pinning folded into fruiting, no rest
+_BLUE = _PHASES["blue_oyster"]          # defines primordia induction
+_SHIITAKE = _PHASES["shiitake"]         # browns before it pins
+_GRAIN_ONLY = ["grain_colonization"]    # a sclerotia species
 
-# ── the colonization fork ─────────────────────────────────────────────────
-
-
-def test_colonized_bag_advances_to_fruiting():
-    for phase in ("grain_colonization", "substrate_colonization"):
-        assert suggested_next_phase(phase, "grow_bag") == "primordia_induction"
-
-
-def test_colonized_monotub_and_tray_fruit_in_place():
-    # Bulk substrate (monotub, tray) fruits in place like a cut bag — it must not
-    # be parked in cold storage. Regression for the container-fork fix.
-    for container in ("monotub", "tray"):
-        assert suggested_next_phase("substrate_colonization", container) == "primordia_induction"
+# ── the advance suggestion ────────────────────────────────────────────────
 
 
-def test_colonized_jar_and_agar_go_to_cold_storage():
-    assert suggested_next_phase("grain_colonization", "jar") == "cold_storage"
-    assert suggested_next_phase("agar", "agar_plate") == "cold_storage"
-    assert suggested_next_phase("liquid_culture", "jar") == "cold_storage"
-
-
-def test_non_colonization_transitions_stay_linear():
-    assert suggested_next_phase("primordia_induction", "grow_bag") == "fruiting"
-    assert suggested_next_phase("fruiting", "grow_bag") == "rest"
+@pytest.mark.parametrize(("current", "container", "more_flushes", "profile_phases", "expected"), [
+    # The colonization fork: bulk substrate goes on to pin, a culture vessel
+    # to the fridge (every container spelling: test_every_container_is_classified).
+    ("substrate_colonization", "grow_bag", True, None, "primordia_induction"),
+    ("grain_colonization", "jar", True, None, "cold_storage"),
+    # You rest after every flush, then go again until the bag is spent.
+    ("fruiting", "grow_bag", True, None, "rest"),
+    ("rest", "grow_bag", True, None, "fruiting"),
+    ("rest", "grow_bag", False, None, "complete"),
+    # Phases the profile does not define are skipped ...
+    ("substrate_colonization", "grow_bag", True, _PINK, "fruiting"),
+    ("substrate_colonization", "grow_bag", True, _BLUE, "primordia_induction"),
+    ("grain_colonization", "grow_bag", True, _GRAIN_ONLY, "complete"),
+    ("cold_storage", None, True, _GRAIN_ONLY, "complete"),
+    # ... but rest runs on fruiting's setpoints, so the flush loop is kept.
+    ("fruiting", "grow_bag", True, _PINK, "rest"),
+    ("rest", "grow_bag", True, _PINK, "fruiting"),
+    # Browning is suggested only to a profile that defines it.
+    ("substrate_colonization", "grow_bag", True, _SHIITAKE, "browning"),
+    ("browning", "grow_bag", True, _SHIITAKE, "primordia_induction"),
+    ("browning", "grow_bag", True, None, "primordia_induction"),
+    ("grain_colonization", "jar", True, _SHIITAKE, "cold_storage"),
+    ("cold_storage", "jar", True, _SHIITAKE, "primordia_induction"),
+], ids=[
+    "bag-pins", "jar-to-fridge", "fruiting-rests", "rest-refruits", "spent-bag-completes",
+    "pink-skips-pinning", "blue-keeps-pinning", "grain-only-completes", "fridge-with-nothing-after",
+    "pink-still-rests", "pink-rest-refruits", "shiitake-browns", "browned-block-pins",
+    "browning-without-profile", "shiitake-jar-to-fridge", "fridge-is-not-followed-by-browning",
+])
+def test_suggested_next_phase(current, container, more_flushes, profile_phases, expected):
+    assert suggested_next_phase(current, container, more_flushes,
+                                profile_phases=profile_phases) == expected
 
 
 # ── cold storage params ───────────────────────────────────────────────────
@@ -83,30 +101,25 @@ def test_cold_storage_is_a_fridge_with_nothing_else_running():
 # ── sealed-container gating ────────────────────────────────────────────────
 
 
-def test_a_sealed_bag_during_colonization_is_sealed():
-    assert _container_is_sealed("grow_bag", "substrate_colonization") is True
+def test_culture_vessels_are_sealed_in_every_phase():
+    unsealed = [(c, p.value) for c in CULTURE_CONTAINERS for p in GrowPhase
+                if not _container_is_sealed(c, p.value)]
+    assert unsealed == []
 
 
-def test_the_bag_is_open_once_it_fruits():
-    """You cut the bag to fruit — CO2 control becomes real again."""
-    assert _container_is_sealed("grow_bag", "fruiting") is False
-    assert _container_is_sealed("grow_bag", "primordia_induction") is False
+def test_a_bag_is_sealed_until_it_is_opened_to_brown_or_fruit():
+    """You cut the bag to fruit (and a shiitake block comes out of it to
+    brown): CO2 control becomes real again."""
+    expected = {"grain_colonization": True, "substrate_colonization": True,
+                "browning": False, "primordia_induction": False, "fruiting": False}
+    for bag in BAG_CONTAINERS:
+        assert {p: _container_is_sealed(bag, p) for p in expected} == expected, bag
 
 
-def test_jars_and_agar_are_always_sealed():
-    assert _container_is_sealed("jar", "fruiting") is True
-    assert _container_is_sealed("agar_plate", "primordia_induction") is True
-
-
-def test_a_monotub_is_never_sealed():
-    for phase in ("substrate_colonization", "fruiting"):
-        assert _container_is_sealed("monotub", phase) is False
-        assert _container_is_sealed("tray", phase) is False
-
-
-def test_unknown_container_is_treated_as_open():
-    """Don't over-gate — an unknown/legacy container keeps full control."""
-    assert _container_is_sealed(None, "fruiting") is False
+def test_open_and_unknown_containers_are_never_sealed():
+    """Don't over-gate: an unknown or legacy container keeps full control."""
+    for container in (*OPEN_CONTAINERS, None, "bucket"):
+        assert not any(_container_is_sealed(container, p.value) for p in GrowPhase), container
 
 
 def test_environmental_actions_are_recognised():
@@ -127,11 +140,6 @@ _OFFERED = ("agar_plate", "liquid_culture", "grain_jar", "grow_bag", "monotub", 
 _ACCEPTED = _OFFERED + ("jar", "agar", "bag", "bulk_bag")
 
 
-@pytest.mark.parametrize("phase", [p.value for p in GrowPhase])
-def test_a_liquid_culture_is_sealed_in_every_phase(phase):
-    assert _container_is_sealed("liquid_culture", phase) is True
-
-
 @pytest.mark.parametrize("container", _ACCEPTED)
 def test_every_container_is_classified(container):
     """A culture vessel goes to cold storage, bulk substrate fruits — the
@@ -143,28 +151,6 @@ def test_every_container_is_classified(container):
 
 
 # ── a jar in cold storage has left the chamber it grew in ──────────────────
-
-
-@pytest.fixture
-def alerts(monkeypatch):
-    sent: list[str] = []
-
-    async def _page(title, message, tags=None, **kw):
-        sent.append(title)
-
-    async def _forward(event_type, data):
-        sent.append(event_type)
-
-    async def _co2(ppm, *args, **kw):
-        sent.append("co2")
-
-    monkeypatch.setattr(engine, "notify_critical", _page)
-    monkeypatch.setattr(engine, "notify_warning", _page)
-    monkeypatch.setattr(engine, "co2_alert", _co2)
-    monkeypatch.setattr(cloud_service, "forward_event", _forward)
-    engine._paused = False
-    engine._pause_loaded = False
-    return sent
 
 
 async def _chamber(name, ids):
@@ -196,7 +182,7 @@ async def test_a_jar_in_cold_storage_does_not_drive_the_closet_it_left(
     await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
     await evaluate_rules("climate-1", {"temp_f": 72, "humidity": 45})
     assert mock_mqtt_raw == [], "the closet ran the fridge's 35-40 °F band"
-    assert alerts == []
+    assert not any(alerts.values()), alerts
 
 
 async def test_a_grow_sharing_the_closet_stays_managed(mock_mqtt, mock_mqtt_raw, alerts):
@@ -208,17 +194,6 @@ async def test_a_grow_sharing_the_closet_stays_managed(mock_mqtt, mock_mqtt_raw,
     await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
     await evaluate_rules("climate-1", {"temp_f": 50})  # the tub's band is 55-65 °F
     assert ("tasmota/h1/cmnd/POWER", "ON") in mock_mqtt_raw
-
-
-async def test_a_fridge_chamber_linked_to_the_jar_runs_cold_storage(alerts):
-    await _closet_with_plugs()
-    closet = await _chamber("Closet", ["climate-1"])
-    fridge = await _chamber("Fridge", ["fridge-1"])
-    jar = await _grow("spawn jar", "grain_colonization", "grain_jar", chamber_id=closet)
-    await advance_phase(jar["id"], PhaseAdvance(phase="cold_storage"))
-    await update_chamber(fridge, ChamberUpdate(active_session_id=jar["id"]))
-    await evaluate_rules("fridge-1", {"temp_f": 52})  # far above the 35-40 °F band
-    assert "temperature_alert" in alerts
 
 
 async def test_a_jar_already_in_cold_storage_is_released_at_start_up(mock_mqtt_raw, alerts):
@@ -233,4 +208,4 @@ async def test_a_jar_already_in_cold_storage_is_released_at_start_up(mock_mqtt_r
         await db.commit()
     assert await release_cold_storage_links() == 1
     await evaluate_rules("climate-1", {"temp_f": 72})
-    assert mock_mqtt_raw == [] and alerts == []
+    assert mock_mqtt_raw == [] and not any(alerts.values()), alerts

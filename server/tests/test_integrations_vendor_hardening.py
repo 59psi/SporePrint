@@ -1,25 +1,26 @@
-"""Vendor-driver correctness/safety regressions from the v5 audit.
+"""Vendor-driver correctness and safety.
 
-* #6  string booleans ("false"/"off"/"0") must not switch a plug ON, and the
-      cloud automation pause must not treat "false" as truthy.
-* #7  caller-supplied device IDs / IPs must not be able to rewrite the
-      request URL (path traversal with the operator's vendor bearer token,
-      arbitrary host/port/path POSTs).
-* #14 Pulse cloud polling must reuse its session token instead of a fresh
-      email+password login every cycle.
-* #15 Wemo must find a plug whose UPnP port moved off 49153.
-* #16 Tapo cloud transport must not log in every poll while reporting "ok"
-      with zero telemetry, and cloud-only (ip-less) writes must fail clearly.
-* #18 Kasa must read the whole length-prefixed frame, not one TCP segment.
-* #19 A credential change must drop cached vendor tokens / KLAP sessions.
+* String booleans ("false"/"off"/"0") never switch a plug ON, and the cloud
+  automation pause never reads "false" as truthy.
+* Caller-supplied device ids and IPs cannot rewrite the request URL (path
+  traversal with the operator's vendor bearer token, arbitrary
+  host/port/path POSTs).
+* Pulse cloud polling reuses its session token instead of an email+password
+  login every cycle, until the credentials change.
+* Wemo finds a plug whose UPnP port moved off 49153.
+* The Tapo cloud transport does not log in every poll while reporting "ok"
+  with zero telemetry, and cloud-only (ip-less) writes fail clearly.
+* Kasa reads the whole length-prefixed frame, not one TCP segment, and
+  refuses a frame header claiming more than any plug sends.
+* A credential change drops cached vendor tokens and KLAP sessions.
 """
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import struct
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -27,18 +28,17 @@ from fastapi import HTTPException
 
 import app.automation.engine as engine
 from app.cloud import service
-from app.config import settings
 from app.integrations import _actions
-from app.integrations._keystore import reset_fernet_cache
 from app.integrations.fluence.driver import FluenceConfig, FluenceDriver
 from app.integrations.fohse.driver import FohseConfig, FohseDriver
-from app.integrations.kasa.driver import KasaConfig, KasaDriver
+from app.integrations.kasa.driver import KasaConfig, KasaDriver, KasaError
 from app.integrations.pulse.config import PulseConfig
 from app.integrations.pulse.driver import PulseDriver
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import _TAPO_CLOUD_BASE_BY_REGION, TapoDriver, TapoError
 from app.integrations.trane.driver import TraneConfig, TraneDriver
 from app.integrations.wemo.driver import WemoConfig, WemoDriver
+from tests._fakes import use_drivers
 
 # The vendor packages bind a driver INSTANCE to the name `driver`, shadowing
 # the submodule attribute — resolve the modules themselves.
@@ -47,34 +47,21 @@ wemo_mod = importlib.import_module("app.integrations.wemo.driver")
 
 
 @pytest.fixture
-def fresh_keystore(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / ".int-key"))
-    reset_fernet_cache()
-    yield
-    reset_fernet_cache()
+def drivers(monkeypatch):
+    """Fresh Kasa, Wemo and Fohse drivers behind the dispatcher."""
+    found = SimpleNamespace(kasa=KasaDriver(), wemo=WemoDriver(), fohse=FohseDriver())
+    use_drivers(monkeypatch, found.kasa, found.wemo, found.fohse)
+    return found
 
 
-@pytest.fixture
-def kasa_driver(monkeypatch):
-    drv = KasaDriver()
-    monkeypatch.setattr(
-        _actions._registry, "registered_drivers", lambda: {"kasa": drv, "wemo": _WEMO, "fohse": _FOHSE}
-    )
-    return drv
-
-
-_WEMO = WemoDriver()
-_FOHSE = FohseDriver()
-
-
-# ── #6 string booleans ───────────────────────────────────────────────
+# ── String booleans ──────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("raw,expected_state", [
     ("false", 0), ("off", 0), ("0", 0), (0, 0), (False, 0),
     ("true", 1), ("on", 1), (1, 1), (True, 1),
 ])
-async def test_kasa_set_power_coerces_string_booleans(kasa_driver, monkeypatch, raw, expected_state):
+async def test_kasa_set_power_coerces_string_booleans(drivers, monkeypatch, raw, expected_state):
     sent: list[dict] = []
 
     async def fake_query(ip, payload, timeout):
@@ -86,7 +73,7 @@ async def test_kasa_set_power_coerces_string_booleans(kasa_driver, monkeypatch, 
     assert sent == [{"system": {"set_relay_state": {"state": expected_state}}}]
 
 
-async def test_kasa_set_power_rejects_ambiguous_boolean(kasa_driver, monkeypatch):
+async def test_kasa_set_power_rejects_ambiguous_boolean(drivers, monkeypatch):
     async def fake_query(ip, payload, timeout):  # pragma: no cover — must not run
         raise AssertionError("device must not be actuated on an ambiguous value")
 
@@ -96,34 +83,30 @@ async def test_kasa_set_power_rejects_ambiguous_boolean(kasa_driver, monkeypatch
     assert exc.value.status_code == 400
 
 
-async def test_cloud_automation_pause_string_false_resumes(monkeypatch):
+@pytest.mark.parametrize("raw,outcome", [("false", [False]), ("sometimes", None)],
+                         ids=["string-false-resumes", "garbage-is-refused"])
+async def test_cloud_automation_pause_reads_a_lax_bool(monkeypatch, raw, outcome):
     seen: list[bool] = []
 
     async def fake_set_paused(value):
         seen.append(value)
 
     monkeypatch.setattr(engine, "set_paused", fake_set_paused)
-    ok, err = await service._dispatch_system_command("automation", {"paused": "false"})
-    assert ok is True, err
-    assert seen == [False]
+    ok, err = await service._dispatch_system_command("automation", {"paused": raw})
+    if outcome is None:
+        assert ok is False and "paused" in err
+        assert seen == []  # never toggled on an ambiguous value
+    else:
+        assert ok is True, err
+        assert seen == outcome
 
 
-async def test_cloud_automation_pause_rejects_garbage(monkeypatch):
-    async def fake_set_paused(value):  # pragma: no cover
-        raise AssertionError("must not toggle on an ambiguous value")
-
-    monkeypatch.setattr(engine, "set_paused", fake_set_paused)
-    ok, err = await service._dispatch_system_command("automation", {"paused": "sometimes"})
-    assert ok is False
-    assert "paused" in err
+# ── IDs / IPs can't rewrite the request URL ──────────────────────────
 
 
-# ── #7 IDs / IPs can't rewrite the request URL ───────────────────────
-
-
-async def test_fohse_fixture_id_path_traversal_rejected(kasa_driver, monkeypatch):
-    await _FOHSE.configure(FohseConfig(email="a@b.co", password="pw"))
-    _FOHSE._token = "operator-bearer"
+async def test_fohse_fixture_id_path_traversal_rejected(drivers, monkeypatch):
+    await drivers.fohse.configure(FohseConfig(email="a@b.co", password="pw"))
+    drivers.fohse._token = "operator-bearer"
     urls: list[str] = []
 
     async def fake_put(self, url, **kw):
@@ -138,22 +121,12 @@ async def test_fohse_fixture_id_path_traversal_rejected(kasa_driver, monkeypatch
     assert exc.value.status_code == 400
     assert urls == []
 
-
-async def test_fohse_numeric_fixture_id_still_works(kasa_driver, monkeypatch):
-    await _FOHSE.configure(FohseConfig(email="a@b.co", password="pw"))
-    _FOHSE._token = "operator-bearer"
-    urls: list[str] = []
-
-    async def fake_put(self, url, **kw):
-        urls.append(str(url))
-        return httpx.Response(200)
-
-    monkeypatch.setattr(httpx.AsyncClient, "put", fake_put)
+    # A numeric id is still one path segment.
     await _actions.dispatch("fohse", "set_dim", {"fixture_id": 42, "percent": 10})
-    assert urls and urls[0].endswith("/fixtures/42/intensity")
+    assert len(urls) == 1 and urls[0].endswith("/fixtures/42/intensity")
 
 
-async def test_wemo_ip_url_injection_rejected(kasa_driver, monkeypatch):
+async def test_wemo_ip_url_injection_rejected(drivers, monkeypatch):
     posted: list[str] = []
 
     async def fake_post(self, url, **kw):
@@ -167,19 +140,17 @@ async def test_wemo_ip_url_injection_rejected(kasa_driver, monkeypatch):
     assert posted == []
 
 
-def test_wemo_config_rejects_url_in_ip():
+@pytest.mark.parametrize("cfg_cls,ip", [
+    (WemoConfig, "10.0.0.5:80/latest#"),
+    (KasaConfig, "10.0.0.5/x?y"),
+    (TapoConfig, "user@10.0.0.5"),
+], ids=["wemo", "kasa", "tapo"])
+def test_a_device_ip_that_is_a_url_is_refused_on_save(cfg_cls, ip):
     with pytest.raises(ValueError):
-        WemoConfig.model_validate({"devices": [{"ip": "10.0.0.5:80/latest#"}]})
+        cfg_cls.model_validate({"devices": [{"ip": ip}]})
 
 
-def test_kasa_and_tapo_config_reject_url_in_ip():
-    with pytest.raises(ValueError):
-        KasaConfig.model_validate({"devices": [{"ip": "10.0.0.5/x?y"}]})
-    with pytest.raises(ValueError):
-        TapoConfig.model_validate({"devices": [{"ip": "user@10.0.0.5"}]})
-
-
-# ── #15 Wemo port discovery ──────────────────────────────────────────
+# ── Wemo port discovery ──────────────────────────────────────────────
 
 
 async def test_wemo_falls_back_to_other_upnp_ports_and_caches(monkeypatch):
@@ -240,36 +211,65 @@ async def test_wemo_unreachable_host_does_not_probe_every_port(monkeypatch):
     assert len(attempts) == 1
 
 
-# ── #18 Kasa full-frame read ─────────────────────────────────────────
+# ── Kasa full-frame read ─────────────────────────────────────────────
+
+
+class _SegmentedReader:
+    """A plug reply arriving in TCP segments of at most ``segment`` bytes:
+    ``read(n)`` returns one segment, ``readexactly(n)`` waits for n bytes
+    (asyncio.StreamReader's own semantics)."""
+
+    def __init__(self, data: bytes, segment: int = 1000):
+        self._buf = data
+        self._segment = segment
+
+    async def read(self, n: int = -1) -> bytes:
+        take = min(n if n >= 0 else len(self._buf), self._segment)
+        chunk, self._buf = self._buf[:take], self._buf[take:]
+        return chunk
+
+    async def readexactly(self, n: int) -> bytes:
+        chunk, self._buf = self._buf[:n], self._buf[n:]
+        return chunk
+
+
+class _Writer:
+    def write(self, data):
+        pass
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
+
+def _plug_replying(monkeypatch, wire: bytes) -> None:
+    async def fake_open(host, port):
+        return _SegmentedReader(wire), _Writer()
+
+    monkeypatch.setattr(kasa_mod.asyncio, "open_connection", fake_open)
 
 
 async def test_kasa_reads_frame_split_across_segments(monkeypatch):
     big = {"system": {"get_sysinfo": {"relay_state": 1, "pad": "x" * 6000}}}
-    body = kasa_mod._encrypt(json.dumps(big))
-
-    async def handle(reader, writer):
-        hdr = await reader.readexactly(4)
-        await reader.readexactly(struct.unpack("!I", hdr)[0])
-        writer.write(body[:1000])
-        await writer.drain()
-        await asyncio.sleep(0.05)
-        writer.write(body[1000:])
-        await writer.drain()
-        await asyncio.sleep(0.05)
-        writer.close()
-
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    monkeypatch.setattr(kasa_mod, "_KASA_PORT", port)
-    try:
-        resp = await kasa_mod._kasa_query("127.0.0.1", {"system": {"get_sysinfo": {}}}, 2.0)
-    finally:
-        server.close()
-        await server.wait_closed()
+    _plug_replying(monkeypatch, kasa_mod._encrypt(json.dumps(big)))
+    resp = await kasa_mod._kasa_query("10.0.0.20", {"system": {"get_sysinfo": {}}}, 2.0)
     assert resp["system"]["get_sysinfo"]["relay_state"] == 1
 
 
-# ── #19 credential change drops cached auth ──────────────────────────
+async def test_kasa_refuses_a_frame_larger_than_any_plug_sends(monkeypatch):
+    # A header claiming a huge body is not buffered (a LAN device cannot make
+    # the Pi allocate gigabytes).
+    _plug_replying(monkeypatch, struct.pack("!I", kasa_mod._MAX_FRAME_BYTES + 1) + b"x" * 64)
+    with pytest.raises(KasaError, match="too large"):
+        await kasa_mod._kasa_query("10.0.0.20", {"system": {"get_sysinfo": {}}}, 2.0)
+
+
+# ── Credential change drops cached auth ──────────────────────────────
 
 
 @pytest.mark.parametrize("drv_cls,cfg_cls", [
@@ -293,10 +293,10 @@ async def test_tapo_credential_change_drops_sessions_and_cloud_token():
     assert drv._cloud_token is None
 
 
-# ── #16 Tapo cloud transport ─────────────────────────────────────────
+# ── Tapo cloud transport ─────────────────────────────────────────────
 
 
-async def test_tapo_cloud_poll_logs_in_once_and_reports_unimplemented(fresh_keystore, monkeypatch):
+async def test_tapo_cloud_poll_logs_in_once_and_reports_unimplemented(monkeypatch):
     logins: list[str] = []
 
     async def fake_post(self, url, json=None, **kw):
@@ -323,36 +323,27 @@ def test_tapo_us_region_is_not_the_apac_host():
     assert "aps1" not in _TAPO_CLOUD_BASE_BY_REGION["us"]
 
 
-# ── #14 Pulse cloud token reuse ──────────────────────────────────────
+# ── Pulse cloud token reuse ──────────────────────────────────────────
 
 
-async def test_pulse_cloud_poll_reuses_session_token(monkeypatch):
-    calls: list[str] = []
+async def test_pulse_cloud_reuses_its_token_until_the_credentials_change(monkeypatch):
+    calls: list[tuple[str, dict | None, str | None]] = []
 
     async def fake_request(self, method, url, headers, json=None):
-        calls.append(url)
+        calls.append((url, json, headers.get("Authorization")))
         if "/v2/auth/login" in url:
-            return httpx.Response(200, json={"token": "tok-1"})
+            return httpx.Response(200, json={"token": f"tok-{json['password']}"})
         return httpx.Response(200, json=[])
 
     monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-
     drv = PulseDriver()
     await drv.configure(PulseConfig(transport="cloud", email="a@x.co", password="pw"))
-
     for _ in range(3):
         await drv.poll_once()
-    assert sum(1 for u in calls if "/v2/auth/login" in u) == 1
-    assert sum(1 for u in calls if u.endswith("/v2/devices")) == 3
+    # A password change must not keep using the old account's session.
+    await drv.configure(PulseConfig(transport="cloud", email="a@x.co", password="other"))
+    await drv.poll_once()
 
-
-async def test_pulse_client_rebuilt_when_credentials_change():
-    drv = PulseDriver()
-    cfg1 = PulseConfig(transport="cloud", email="a@x.co", password="pw")
-    await drv.configure(cfg1)
-    c1 = drv._client_for(cfg1)
-    assert drv._client_for(cfg1) is c1
-    cfg2 = PulseConfig(transport="cloud", email="a@x.co", password="other")
-    await drv.configure(cfg2)
-    assert drv._client_for(cfg2) is not c1
-    assert drv._client_for(PulseConfig(transport="local")) is None
+    assert [body["password"] for url, body, _ in calls if "/v2/auth/login" in url] == ["pw", "other"]
+    device_lists = [auth for url, _, auth in calls if url.endswith("/v2/devices")]
+    assert device_lists == ["Bearer tok-pw"] * 3 + ["Bearer tok-other"]

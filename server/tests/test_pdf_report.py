@@ -1,13 +1,28 @@
-"""Tests for session report generation (Markdown + CSV)."""
+"""Tests for session report generation (Markdown + CSV). An unknown session's
+reports: tests/test_sessions.py::test_every_route_on_an_unknown_session_is_404."""
 
+import csv
+import io
 import json
 
 from app.contamination.service import record_event
 from app.db import get_db
-from app.sessions.models import SessionCreate, HarvestCreate
-from app.sessions.service import create_session, add_harvest, generate_session_report_md, generate_session_report_csv
+from app.sessions.models import SessionCreate, HarvestCreate, PhaseAdvance
+from app.sessions.service import (
+    add_harvest,
+    advance_phase,
+    create_session,
+    generate_session_report_csv,
+    generate_session_report_md,
+)
 from app.species.profiles import BUILTIN_PROFILES
 from app.species.service import create_profile, seed_builtins
+
+
+def _make_session_data(**overrides):
+    defaults = dict(name="Report Test", species_profile_id="blue_oyster")
+    defaults.update(overrides)
+    return SessionCreate(**defaults)
 
 
 async def test_md_report_lists_the_grows_contamination():
@@ -41,49 +56,48 @@ async def test_md_report_compares_flushes_with_a_custom_profile_too():
     assert "Fewer flushes (1) than typical for this species (4)" in md
 
 
-def _make_session_data(**overrides):
-    defaults = dict(name="Report Test", species_profile_id="blue_oyster")
-    defaults.update(overrides)
-    return SessionCreate(**defaults)
-
-
 async def test_md_report_with_harvest():
     """Markdown report for a session with harvests should contain yield table."""
     s = await create_session(_make_session_data(name="MD Test"))
     await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0, dry_weight_g=20.0))
     md = await generate_session_report_md(s["id"])
-    assert md is not None
-    assert "# SporePrint Grow Report" in md
+    assert md.startswith("# SporePrint Grow Report")
     assert "MD Test" in md
-    assert "200.0" in md
     assert "## Yield Per Flush" in md
+    assert "| #1 | 200.0 | 20.0 |" in md
 
 
-async def test_md_report_nonexistent_session():
-    md = await generate_session_report_md(99999)
-    assert md is None
+async def test_md_report_recommends_from_efficiency_flush_decline_and_colonization_time():
+    """5 quarts giving 300 g then 100 g is ~28 % biological efficiency and a
+    67 % drop after flush 1; 25 days of colonization is long."""
+    s = await create_session(_make_session_data(name="Slow", substrate_volume="5 quarts"))
+    await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE phase_history SET entered_at = exited_at - ? "
+            "WHERE session_id = ? AND phase = 'substrate_colonization'", (25 * 86400, s["id"]))
+        await db.commit()
+    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=300.0))
+    await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=100.0))
 
-
-async def test_md_report_session_without_harvest():
-    s = await create_session(_make_session_data(name="No Harvest"))
     md = await generate_session_report_md(s["id"])
-    assert md is not None
-    assert "# SporePrint Grow Report" in md
+    recommendations = md.split("## Recommendations for Next Grow", 1)[1]
+    assert "Low biological efficiency" in recommendations
+    assert "Sharp yield decline after flush 1" in recommendations
+    assert "Extended colonization (25 days)" in recommendations
+    timeline = md.split("## Phase Timeline", 1)[1].split("\n## ", 1)[0]
+    assert "| Substrate Colonization |" in timeline and "| 25.0 days |" in timeline
+    assert "| Fruiting |" in timeline and "| ongoing |" in timeline
 
 
-async def test_csv_report_with_harvest():
+async def test_csv_report_has_one_row_per_harvest():
     s = await create_session(_make_session_data(name="CSV Test"))
     await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=150.0))
-    await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=100.0))
-    csv_data = await generate_session_report_csv(s["id"])
-    assert csv_data is not None
-    assert "session_id" in csv_data
-    assert "150.0" in csv_data
-    assert "100.0" in csv_data
-
-
-async def test_csv_report_nonexistent():
-    assert await generate_session_report_csv(99999) is None
+    await add_harvest(s["id"], HarvestCreate(flush_number=2, wet_weight_g=100.0, dry_weight_g=10.0))
+    rows = list(csv.DictReader(io.StringIO(await generate_session_report_csv(s["id"]))))
+    assert [(r["session_id"], r["session_name"], r["flush_number"], r["wet_weight_g"], r["dry_weight_g"])
+            for r in rows] == [(str(s["id"]), "CSV Test", "1", "150.0", ""),
+                               (str(s["id"]), "CSV Test", "2", "100.0", "10.0")]
 
 
 async def test_md_report_lists_the_newest_analyses_by_their_summary():
@@ -122,3 +136,15 @@ async def test_md_report_lists_the_newest_analyses_by_their_summary():
     assert "Summary number 1." not in section
     assert items[-1].endswith("healthy: Summary number 11.")
     assert "{" not in section
+
+
+def test_the_report_routes_download_markdown_and_csv(client):
+    s = client.post("/api/sessions", json={"name": "Download", "species_profile_id": "blue_oyster"}).json()
+    client.post(f"/api/sessions/{s['id']}/harvest", json={"flush_number": 1, "wet_weight_g": 120.0})
+    for ext, media_type, first_line in (("md", "text/markdown", "# SporePrint Grow Report"),
+                                        ("csv", "text/csv", "session_id,session_name")):
+        r = client.get(f"/api/sessions/{s['id']}/report.{ext}")
+        assert r.status_code == 200, ext
+        assert r.headers["content-type"].startswith(media_type)
+        assert r.headers["content-disposition"] == f"attachment; filename=sporeprint-session-{s['id']}.{ext}"
+        assert r.text.startswith(first_line)

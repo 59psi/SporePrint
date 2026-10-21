@@ -19,40 +19,12 @@ import pytest
 from fastapi import HTTPException
 
 from app.cloud import integrations_proxy
-from app.cloud import service as cloud_service
 from app.config import settings
 from app.integrations import _actions, _registry
+from tests._fakes import RecordingSio
 
-kasa_mod = importlib.import_module("app.integrations.kasa.driver")
-agrowtek_mod = importlib.import_module("app.integrations.agrowtek.driver")
 fluence_mod = importlib.import_module("app.integrations.fluence.driver")
 fohse_mod = importlib.import_module("app.integrations.fohse.driver")
-
-
-@pytest.fixture
-def kasa_wire(monkeypatch):
-    sent: list[tuple[str, dict]] = []
-
-    async def fake_query(ip, payload, timeout):
-        sent.append((ip, payload))
-        return {}
-
-    monkeypatch.setattr(kasa_mod, "_kasa_query", fake_query)
-    return sent
-
-
-@pytest.fixture
-def agrowtek_wire(monkeypatch):
-    drv = _registry.registered_drivers()["agrowtek"]
-    monkeypatch.setattr(drv, "_cfg", agrowtek_mod.AgrowtekConfig(base_url="http://10.0.0.30", api_key="k"))
-    sent: list[tuple[str, dict]] = []
-
-    async def fake_put(self, url, headers=None, json=None, **kwargs):
-        sent.append((str(url), json))
-        return httpx.Response(200, json={})
-
-    monkeypatch.setattr(httpx.AsyncClient, "put", fake_put)
-    return sent
 
 
 @pytest.mark.parametrize("raw,wire", [
@@ -110,26 +82,17 @@ def test_the_actions_route_names_a_missing_parameter_with_a_400(client, kasa_wir
 
 async def test_the_cloud_proxy_names_a_missing_parameter_with_a_400(monkeypatch, kasa_wire):
     monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    cloud_service._seen_command_ids.clear()
 
-    class _Sio:
-        def __init__(self) -> None:
-            self.emits: list[dict] = []
-
-        async def emit(self, event, data):
-            self.emits.append(data)
-
-    sio = _Sio()
+    sio = RecordingSio()
     await integrations_proxy.handle_request(sio, {
         "id": "va-1", "action": "vendor_action", "slug": "kasa",
         "payload": {"action": "set_power", "on": False},
     })
-    (reply,) = sio.emits
+    ((_, reply),) = sio.events
     assert reply["success"] is False
     assert reply["status"] == 400
     assert "'ip'" in reply["error"]
     assert kasa_wire == []
-    cloud_service._seen_command_ids.clear()
 
 
 def test_action_params_are_what_the_driver_gets():

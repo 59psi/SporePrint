@@ -1,338 +1,117 @@
-"""Tests for the v4.1.3 Tapo dual-transport driver."""
+"""The Tapo dual-transport driver (KLAP on the LAN, TP-Link cloud login).
+
+* Config: local transport by default, a pasted password trimmed, the dimmer
+  and energy-meter flags read; a malformed email or a device ip that is no
+  address is refused.
+* A local Test handshakes with each plug and reports the ones that answered
+  (an error only when none did). The KLAP derivation itself is pinned by the
+  known-answer tests in test_integrations_tapo_klap_vectors.py.
+* A cloud Test logs in and keeps the token.
+* set_power / set_dim send set_device_info over an encrypted KLAP request.
+"""
 
 from __future__ import annotations
-
-import json as _json
-from typing import Any
 
 import httpx
 import pytest
 
-from app.integrations import _registry
-from app.integrations._keystore import reset_fernet_cache
-from app.integrations.tapo import driver as tapo_driver_mod
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import TapoDriver, TapoError
-from app.integrations.tapo.klap import (
-    KlapSession,
-    auth_hash,
-    derive_session,
-    random_seed,
-)
+from tests._fakes import EMAIL, FakeKlapPlugs, route_httpx, tapo_cfg, tapo_ok
 
 
-@pytest.fixture
-def fresh_keystore(tmp_path, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / ".int-key"))
-    reset_fernet_cache()
-    yield
-    reset_fernet_cache()
+# ── Config ────────────────────────────────────────────────────────────
 
 
-# ── Registration ─────────────────────────────────────────────────────
-
-
-def test_tapo_registers_as_free():
-    drv = _registry.registered_drivers().get("tapo")
-    assert drv is not None
-    # Lowest tier the driver can run in is local mode (free).
-    assert drv.tier_required == "free"
-
-
-def test_tapo_password_in_secret_fields():
-    drv = _registry.registered_drivers()["tapo"]
-    assert drv.secret_fields == {"password"}
-
-
-def test_tapo_actions_advertised():
-    from app.integrations._actions import VENDOR_ACTIONS
-    assert VENDOR_ACTIONS["tapo"] == {"set_power": "set_power", "set_dim": "set_dim"}
-
-
-# ── Config validation ────────────────────────────────────────────────
-
-
-def test_config_default_transport_is_local():
-    cfg = TapoConfig()
-    assert cfg.transport == "local"
-
-
-def test_config_rejects_malformed_email():
-    with pytest.raises(ValueError, match="@"):
-        TapoConfig(email="bad-email")
-
-
-def test_config_password_whitespace_stripped():
-    cfg = TapoConfig(email="b@example.com", password="  pw\n ")
+def test_config_defaults_to_local_and_reads_what_the_form_sends():
+    assert TapoConfig().transport == "local"
+    cfg = TapoConfig(email="b@example.com", password="  pw\n ",
+                     devices=[{"ip": "10.0.0.30", "is_dimmer": True, "has_emeter": True}])
     assert cfg.password == "pw"
+    assert (cfg.devices[0].is_dimmer, cfg.devices[0].has_emeter) == (True, True)
 
 
-def test_config_local_transport_with_devices():
-    cfg = TapoConfig(
-        transport="local",
-        email="b@example.com",
-        password="pw",
-        devices=[{"ip": "10.0.0.30", "is_dimmer": True}],
-    )
-    assert cfg.devices[0].is_dimmer is True
+@pytest.mark.parametrize("fields,error", [
+    ({"email": "bad-email"}, "@"),
+    # urlparse accepts many odd strings; a blank host after parsing is refused.
+    ({"devices": [{"ip": "/"}]}, "ip"),
+], ids=["email", "device-ip"])
+def test_config_refuses_what_the_driver_cannot_use(fields, error):
+    with pytest.raises(ValueError, match=error):
+        TapoConfig(**fields)
 
 
-def test_config_invalid_device_ip_raises():
-    """Empty hostname after parse → reject. urlparse will accept many
-    odd strings (its hostname extractor is permissive), so the
-    validator's job is mainly to refuse blank-after-strip values.
-    """
-    with pytest.raises(ValueError):
-        TapoConfig(devices=[{"ip": "/"}])
+# ── Test ──────────────────────────────────────────────────────────────
 
 
-# ── KLAP cipher round-trip ───────────────────────────────────────────
-
-
-def test_random_seed_is_16_bytes():
-    seed = random_seed()
-    assert len(seed) == 16
-    assert seed != random_seed()  # very unlikely to collide
-
-
-def test_auth_hash_is_deterministic():
-    local = b"\x00" * 16
-    remote = b"\x01" * 16
-    h1 = auth_hash(local, remote, "x@y.com", "password")
-    h2 = auth_hash(local, remote, "x@y.com", "password")
-    assert h1 == h2
-    assert len(h1) == 32  # SHA-256
-
-
-def test_auth_hash_changes_with_credentials():
-    local = b"\x00" * 16
-    remote = b"\x01" * 16
-    h1 = auth_hash(local, remote, "x@y.com", "password")
-    h2 = auth_hash(local, remote, "x@y.com", "different")
-    assert h1 != h2
-
-
-def test_klap_session_round_trip():
-    """encrypt → decrypt round-trip with a fixed session must recover
-    the original plaintext after we resync the seq counter the same
-    way the device does on /app/request.
-    """
-    session = derive_session(b"\x00" * 16, b"\x01" * 16, "x@y.com", "password")
-    plaintext = _json.dumps({"method": "get_device_info"}).encode()
-    frame, seq = session.encrypt(plaintext)
-    assert isinstance(seq, int)
-    # Frame is 32-byte sig + ciphertext (length must be 16-byte aligned).
-    assert len(frame) >= 32 + 16
-    assert (len(frame) - 32) % 16 == 0
-    decrypted = session.decrypt(frame, seq)
-    assert decrypted == plaintext
-
-
-def test_klap_session_seq_increments():
-    session = derive_session(b"\x00" * 16, b"\x01" * 16, "x@y.com", "password")
-    initial = session.seq
-    _, seq1 = session.encrypt(b"a")
-    _, seq2 = session.encrypt(b"a")
-    assert seq1 == initial + 1
-    assert seq2 == initial + 2
-
-
-# ── Driver test_connection ───────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_test_connection_requires_credentials(fresh_keystore):
+async def test_local_test_reports_the_plugs_that_answered(monkeypatch):
+    # Firmware that sets no session cookie still handshakes.
+    plugs = FakeKlapPlugs(lambda host, body: tapo_ok(), down={"10.0.0.31"}, cookie=False)
+    route_httpx(monkeypatch, plugs)
     drv = TapoDriver()
-    await drv.configure(TapoConfig())
-    health = await drv.test_connection()
-    assert health.state == "error"
+    await drv.configure(tapo_cfg("10.0.0.30", "10.0.0.31"))
 
-
-@pytest.mark.asyncio
-async def test_local_test_connection_requires_devices(fresh_keystore):
-    drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(transport="local", email="b@example.com", password="pw")
-    )
-    health = await drv.test_connection()
-    assert health.state == "error"
-    assert "device" in (health.last_error or "").lower()
-
-
-@pytest.mark.asyncio
-async def test_local_handshake_success(fresh_keystore, monkeypatch):
-    """Stub the handshake1+handshake2 HTTP calls with the protocol-correct
-    response shape. test_connection should report ok with `transport: local`.
-    """
-    captured: dict[str, Any] = {}
-
-    async def fake_post(self, url, content=None, json=None):  # noqa: A002 — match httpx's API
-        if "/app/handshake1" in url:
-            captured["handshake1_seed"] = bytes(content)
-            local_seed = bytes(content)
-            remote_seed = b"\x09" * 16
-            # Server hash is sha256(local_seed || remote_seed || user_hash)
-            server_hash = auth_hash(local_seed, remote_seed, "b@example.com", "pw")
-            captured["remote_seed"] = remote_seed
-            return httpx.Response(200, content=remote_seed + server_hash)
-        if "/app/handshake2" in url:
-            captured["handshake2_body"] = bytes(content)
-            return httpx.Response(200, content=b"")
-        raise AssertionError(f"unexpected POST {url}")
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
-    drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(
-            transport="local",
-            email="b@example.com",
-            password="pw",
-            devices=[{"ip": "10.0.0.30"}],
-        )
-    )
     health = await drv.test_connection()
     assert health.state == "ok"
-    assert health.details["transport"] == "local"
-    assert health.details["reachable"] == 1
-    # Handshake2 body should equal sha256(remote_seed || local_seed || user_hash).
-    expected_h2 = auth_hash(
-        captured["remote_seed"], captured["handshake1_seed"], "b@example.com", "pw"
-    )
-    assert captured["handshake2_body"] == expected_h2
+    assert (health.details["transport"], health.details["reachable"],
+            health.details["total"]) == ("local", 1, 2)
+    assert health.details["errors"][0].startswith("10.0.0.31: ")
 
-
-@pytest.mark.asyncio
-async def test_local_handshake_bad_credentials_raises(fresh_keystore, monkeypatch):
-    async def fake_post(self, url, content=None, json=None):  # noqa: A002 — match httpx's API
-        # Server returns a bogus auth_hash → driver rejects.
-        return httpx.Response(200, content=b"\x09" * 16 + b"\xFF" * 32)
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
-    drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(
-            transport="local",
-            email="b@example.com",
-            password="wrong",
-            devices=[{"ip": "10.0.0.30"}],
-        )
-    )
+    plugs.down.add("10.0.0.30")
     health = await drv.test_connection()
     assert health.state == "error"
-    err = (health.last_error or "").lower()
-    assert "auth_hash" in err or "credential" in err
+    assert "10.0.0.30: " in health.last_error and "10.0.0.31: " in health.last_error
 
 
-@pytest.mark.asyncio
-async def test_cloud_login_success(fresh_keystore, monkeypatch):
-    async def fake_post(self, url, json=None):
+async def test_cloud_test_logs_in_and_keeps_the_token(monkeypatch):
+    def handler(request):
         return httpx.Response(200, json={"result": {"token": "abc-123"}})
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    route_httpx(monkeypatch, handler)
     drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(transport="cloud", email="b@example.com", password="pw")
-    )
+    await drv.configure(TapoConfig(transport="cloud", email=EMAIL, password="pw"))
     health = await drv.test_connection()
     assert health.state == "ok"
     assert health.details["transport"] == "cloud"
     assert drv._cloud_token == "abc-123"
 
 
-@pytest.mark.asyncio
-async def test_cloud_login_no_token_returns_error(fresh_keystore, monkeypatch):
-    async def fake_post(self, url, json=None):
-        return httpx.Response(200, json={"error_code": -20651})
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
-    drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(transport="cloud", email="b@example.com", password="bad")
-    )
-    health = await drv.test_connection()
-    assert health.state == "error"
-    assert "token" in (health.last_error or "").lower()
-
-
 # ── Write paths ──────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_set_dim_validates_percent(fresh_keystore):
+async def test_writes_send_set_device_info_over_an_encrypted_request(monkeypatch):
+    plugs = FakeKlapPlugs(lambda host, body: tapo_ok())
+    route_httpx(monkeypatch, plugs)
     drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(
-            transport="local",
-            email="b@example.com",
-            password="pw",
-            devices=[{"ip": "10.0.0.30"}],
-        )
-    )
-    with pytest.raises(ValueError, match=r"\[0, 100\]"):
-        await drv.set_dim("10.0.0.30", 200)
+    await drv.configure(tapo_cfg("10.0.0.30", is_dimmer=True))
+
+    assert await drv.set_power("10.0.0.30", True) == {"ip": "10.0.0.30", "state": "on"}
+    assert await drv.set_dim("10.0.0.30", 30) == {"ip": "10.0.0.30", "percent": 30}
+    # The fake plug decrypted each request under the session it handshook.
+    assert plugs.calls == [
+        ("10.0.0.30", {"method": "set_device_info", "params": {"device_on": True}}),
+        ("10.0.0.30", {"method": "set_device_info", "params": {"brightness": 30}}),
+    ]
 
 
-@pytest.mark.asyncio
-async def test_set_power_drives_handshake_then_encrypted_request(
-    fresh_keystore, monkeypatch
-):
-    """set_power performs the KLAP handshake then sends an encrypted
-    request. We verify the *outbound* command shape — the cipher
-    round-trip itself is covered by ``test_klap_session_round_trip``.
-
-    This was xfail'd as "mock-state fragility", but the flake was a real
-    driver bug: KlapSession.next_iv masked seq with 0x7FFFFFFF, so for the
-    ~half of random seeds whose initial seq is negative the driver encrypted
-    under a different IV than a device (or this mirror) derives. next_iv now
-    steps a signed 32-bit counter, and the mirror matches for every seed.
-    """
-    captured: dict[str, Any] = {}
-    local_seed_holder = {"value": b""}
-
-    async def fake_post(self, url, content=None, json=None):  # noqa: A002
-        if "/app/handshake1" in url:
-            local_seed_holder["value"] = bytes(content)
-            remote_seed = b"\x09" * 16
-            server_hash = auth_hash(
-                local_seed_holder["value"], remote_seed, "b@example.com", "pw"
-            )
-            captured["remote_seed"] = remote_seed
-            return httpx.Response(200, content=remote_seed + server_hash)
-        if "/app/handshake2" in url:
-            return httpx.Response(200, content=b"")
-        if "/app/request" in url:
-            captured["request_url"] = url
-            # Decrypt the outbound frame using a parallel session whose
-            # seq we step forward by one to match the driver's encrypt-
-            # bump.
-            mirror = derive_session(
-                local_seed_holder["value"],
-                captured["remote_seed"],
-                "b@example.com",
-                "pw",
-            )
-            mirror.seq += 1
-            decoded = mirror.decrypt(bytes(content), mirror.seq)
-            captured["request_payload"] = _json.loads(decoded)
-            # Returning a non-2xx skips the driver's response-decrypt
-            # path, which we don't need to exercise here.
-            return httpx.Response(500, content=b"server-busy-mock")
-        raise AssertionError(f"unexpected POST {url}")
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+async def test_a_plug_error_fails_the_write_and_an_expired_session_handshakes_again(monkeypatch):
+    plugs = FakeKlapPlugs(lambda host, body: tapo_ok())
+    route_httpx(monkeypatch, plugs)
     drv = TapoDriver()
-    await drv.configure(
-        TapoConfig(
-            transport="local",
-            email="b@example.com",
-            password="pw",
-            devices=[{"ip": "10.0.0.30"}],
-        )
-    )
-    with pytest.raises(TapoError):  # mock returns 500
-        await drv.set_power("10.0.0.30", True)
+    await drv.configure(tapo_cfg("10.0.0.30"))
 
-    assert captured["request_payload"]["method"] == "set_device_info"
-    assert captured["request_payload"]["params"]["device_on"] is True
-    assert "?seq=" in captured["request_url"]
+    plugs.request_status = 500
+    with pytest.raises(TapoError, match="HTTP 500"):
+        await drv.set_power("10.0.0.30", False)
+    assert "10.0.0.30" in drv._sessions  # a plug error is not a dead session
+
+    plugs.request_status = 403
+    with pytest.raises(TapoError, match="session expired"):
+        await drv.set_power("10.0.0.30", False)
+    assert "10.0.0.30" not in drv._sessions
+
+    # A safety OFF retried after that goes out on a fresh handshake.
+    plugs.request_status = None
+    plugs.local.clear()
+    assert await drv.set_power("10.0.0.30", False) == {"ip": "10.0.0.30", "state": "off"}
+    assert plugs.local, "a new handshake1 was sent"

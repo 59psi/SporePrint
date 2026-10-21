@@ -69,6 +69,8 @@ static std::string hexs(const uint8_t* b, size_t n) {
 static JsonDocument g_vectors;
 static uint8_t g_pub[32];
 static uint8_t g_secret[64];  // Monocypher's secret key: seed || public key
+static uint8_t g_derived_pub[32];
+static bool g_loaded = false;
 
 static bool load_vectors() {
     const char* candidates[] = {
@@ -89,20 +91,28 @@ static bool load_vectors() {
     return false;
 }
 
-void test_fixture_loads_and_seed_derives_the_pinned_key() {
+// Every test that needs the fixture, its public key or the test signing key
+// calls this first: no test depends on another having run before it.
+static void need_fixture() {
+    if (g_loaded) return;
     TEST_ASSERT_TRUE_MESSAGE(load_vectors(), "ota_manifest_vectors.json not found");
-    TEST_ASSERT_EQUAL_STRING("sporeprint.ota.manifest.v1",
-                             g_vectors["schema"].as<const char*>());
     const char* b64 = g_vectors["public_key_b64"].as<const char*>();
+    TEST_ASSERT_NOT_NULL(b64);
     size_t n = 0;
     TEST_ASSERT_TRUE(sp::base64_decode(b64, strlen(b64), g_pub, sizeof(g_pub), &n));
     TEST_ASSERT_EQUAL(32, n);
-
     std::vector<uint8_t> seed = unhex(g_vectors["private_seed_hex"].as<const char*>());
     TEST_ASSERT_EQUAL(32, seed.size());
-    uint8_t derived[32];
-    crypto_ed25519_key_pair(g_secret, derived, seed.data());  // wipes seed
-    TEST_ASSERT_EQUAL_MEMORY(g_pub, derived, 32);
+    crypto_ed25519_key_pair(g_secret, g_derived_pub, seed.data());  // wipes seed
+    g_loaded = true;
+}
+
+void test_fixture_loads_and_seed_derives_the_pinned_key() {
+    need_fixture();
+    TEST_ASSERT_EQUAL_STRING("sporeprint.ota.manifest.v1",
+                             g_vectors["schema"].as<const char*>());
+    // Node and Pi agree on the key bytes.
+    TEST_ASSERT_EQUAL_MEMORY(g_pub, g_derived_pub, 32);
 }
 
 // ── Ed25519 (RFC 8032 §7.1) ────────────────────────────────────
@@ -150,6 +160,7 @@ static void add_group_order(uint8_t s[32]) {
 }
 
 void test_ed25519_refuses_a_malleated_signature() {
+    need_fixture();
     // RFC 8032 test 1 with S + L, as Python computes it (S + L < 2^256).
     std::vector<uint8_t> pub = unhex(
         "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
@@ -187,6 +198,7 @@ static ManifestStatus verify_case(JsonObject c, OtaManifest* m) {
 }
 
 void test_valid_vectors_verify() {
+    need_fixture();
     JsonArray valid = g_vectors["valid"].as<JsonArray>();
     TEST_ASSERT_TRUE(valid.size() >= 3);
     for (JsonObject c : valid) {
@@ -209,6 +221,7 @@ void test_valid_vectors_verify() {
 }
 
 void test_tampered_vectors_fail_the_signature() {
+    need_fixture();
     JsonArray tampered = g_vectors["tampered"].as<JsonArray>();
     TEST_ASSERT_TRUE(tampered.size() >= 8);
     for (JsonObject c : tampered) {
@@ -220,6 +233,7 @@ void test_tampered_vectors_fail_the_signature() {
 }
 
 void test_signed_but_invalid_vectors_are_refused() {
+    need_fixture();
     JsonArray bad = g_vectors["signed_but_invalid"].as<JsonArray>();
     TEST_ASSERT_TRUE(bad.size() >= 15);
     for (JsonObject c : bad) {
@@ -254,6 +268,7 @@ static std::string sign_text(const std::string& text, uint8_t sig[64]) {
 }
 
 void test_canonical_bytes_match_python() {
+    need_fixture();
     // The Pi's stable vector re-encodes to exactly its signed bytes.
     JsonObject c = g_vectors["valid"][0];
     OtaManifest m;
@@ -266,6 +281,7 @@ void test_canonical_bytes_match_python() {
 }
 
 void test_node_manifest_round_trip() {
+    need_fixture();
     OtaManifest m = node_manifest();
     char text[512];
     sp::manifest_canonical(m, text, sizeof(text));
@@ -303,6 +319,7 @@ static std::string with_field(const char* key, const char* raw_value) {
 }
 
 void test_field_grammar() {
+    need_fixture();
     ASSERT_STATUS(ManifestStatus::Ok, signed_status(with_field("version", "\"v5.1.0\"")));
     ASSERT_STATUS(ManifestStatus::Ok, signed_status(with_field("version", "\"5.2.0-beta.1\"")));
     ASSERT_STATUS(ManifestStatus::Ok, signed_status(with_field("version", "\"5.2.0.dev7\"")));
@@ -411,8 +428,22 @@ void test_gate_unarmed_is_unverified_unless_required() {
     g.update((const uint8_t*)"x", 1);
     TEST_ASSERT_EQUAL((int)OtaGate::End::Unverified, (int)g.finish());
     TEST_ASSERT_EQUAL((int)OtaGate::Begin::RefuseNoManifest, (int)g.begin(0, 0, 1000, true));
-    TEST_ASSERT_EQUAL_STRING("manifest_required",
-                             sp::ota_gate_begin_str(OtaGate::Begin::RefuseNoManifest));
+}
+
+// The node answers a refused push with these reasons and the Pi turns each
+// into an operator hint (server/app/hardware/ota_push.py
+// _PUSH_REFUSAL_HINTS): renaming one silently drops the hint.
+void test_gate_refusal_reasons_are_the_pis_hint_keys() {
+    struct {
+        OtaGate::Begin b;
+        const char* reason;
+    } cases[] = {
+        {OtaGate::Begin::RefuseNoManifest, "manifest_required"},
+        {OtaGate::Begin::RefuseSize, "manifest_size_mismatch"},
+        {OtaGate::Begin::RefuseFilesystem, "manifest_not_firmware"},
+    };
+    for (auto& c : cases)
+        TEST_ASSERT_EQUAL_STRING(c.reason, sp::ota_gate_begin_str(c.b));
 }
 
 void test_gate_verifies_the_streamed_image() {
@@ -520,6 +551,7 @@ int main(int, char**) {
     RUN_TEST(test_policy);
     RUN_TEST(test_floor_rises_only_for_the_confirmed_pending_image);
     RUN_TEST(test_gate_unarmed_is_unverified_unless_required);
+    RUN_TEST(test_gate_refusal_reasons_are_the_pis_hint_keys);
     RUN_TEST(test_gate_verifies_the_streamed_image);
     RUN_TEST(test_gate_refuses_a_different_image);
     RUN_TEST(test_gate_arming_expires_after_five_minutes);

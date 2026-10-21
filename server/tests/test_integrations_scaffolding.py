@@ -1,19 +1,21 @@
-"""Tests for the v4.1 integrations scaffolding.
+"""The integrations scaffolding: registry, settings store and routes.
 
-Covers:
-  - Driver registration + duplicate-slug rejection
-  - Encrypted at-rest round-trip for secret fields
-  - Settings store load/save/health-update
-  - Router list / get_config / put_config / test / enable / disable
-  - Lifespan boot of enabled drivers
+* A slug registers once; a second driver under it is refused.
+* Secret fields are encrypted at rest and come back out of every response
+  only as a fingerprint keyed by this Pi's integration key, never any of
+  their characters.
+* PUT validates (400 with the validator's message, never echoing the
+  config), persists, then starts or stops the driver; an omitted field or
+  flag keeps what is stored, and a failed save puts the driver back.
+* The listing shows each driver's live health; a Test persists its result.
+* Boot starts every enabled driver, skips the disabled ones and survives one
+  that fails; shutdown stops every driver even when one fails to stop.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
-from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +29,8 @@ from app.integrations import (
     register,
     router,
 )
+from app.config import settings
+from app.db import get_db
 from app.integrations import _registry, _settings_store as store
 from app.integrations._keystore import reset_fernet_cache
 
@@ -42,16 +46,6 @@ def fresh_registry():
     yield
     _registry._drivers.clear()
     _registry._drivers.update(saved)
-
-
-@pytest.fixture
-def fresh_keystore(tmp_path, monkeypatch):
-    """Point the keystore at a temp path and reset the lru_cache."""
-    from app.config import settings
-    monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / ".int-key"))
-    reset_fernet_cache()
-    yield
-    reset_fernet_cache()
 
 
 # ── Dummy driver ──────────────────────────────────────────────────────
@@ -110,23 +104,21 @@ class DummyDriver(IntegrationDriver):
 # ── Registration ──────────────────────────────────────────────────────
 
 
-def test_register_succeeds_once(fresh_registry):
+def test_a_slug_registers_once(fresh_registry):
     driver = DummyDriver()
     register(driver)
-    assert "dummy" in _registry.registered_drivers()
-
-
-def test_register_rejects_duplicate(fresh_registry):
-    register(DummyDriver())
+    assert _registry.registered_drivers() == {"dummy": driver}
+    # A second driver under the same slug must not silently shadow it.
     with pytest.raises(RuntimeError, match="already registered"):
         register(DummyDriver())
+    assert _registry.registered_drivers()["dummy"] is driver
 
 
 # ── Encryption round-trip ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_secret_field_round_trips_through_save_and_load(fresh_keystore):
+async def test_secret_field_round_trips_through_save_and_load():
     plain = {"base_url": "http://10.0.0.5", "api_key": "supersecret-key-xyz"}
     await store.save("dummy", True, plain, secret_fields={"api_key"})
     loaded = await store.load("dummy", secret_fields={"api_key"})
@@ -137,10 +129,9 @@ async def test_secret_field_round_trips_through_save_and_load(fresh_keystore):
 
 
 @pytest.mark.asyncio
-async def test_secret_field_is_encrypted_on_disk(fresh_keystore):
+async def test_secret_field_is_encrypted_on_disk():
     plain = {"api_key": "supersecret-key-xyz"}
     await store.save("dummy", False, plain, secret_fields={"api_key"})
-    from app.db import get_db
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT config FROM integration_settings WHERE slug = 'dummy'"
@@ -153,7 +144,7 @@ async def test_secret_field_is_encrypted_on_disk(fresh_keystore):
 
 
 @pytest.mark.asyncio
-async def test_redact_for_response_returns_a_fingerprint_preview(fresh_keystore):
+async def test_redact_for_response_returns_a_fingerprint_preview():
     redacted = store.redact_for_response(
         {"api_key": "abcdefghij", "base_url": "http://x"},
         secret_fields={"api_key"},
@@ -170,7 +161,7 @@ async def test_redact_for_response_returns_a_fingerprint_preview(fresh_keystore)
 
 
 @pytest.mark.asyncio
-async def test_redact_never_returns_a_short_secret(fresh_keystore):
+async def test_redact_never_returns_a_short_secret():
     redacted = store.redact_for_response(
         {"api_key": "ab"},
         secret_fields={"api_key"},
@@ -181,7 +172,6 @@ async def test_redact_never_returns_a_short_secret(fresh_keystore):
 
 @pytest.mark.asyncio
 async def test_preview_depends_on_the_pis_key(tmp_path, monkeypatch):
-    from app.config import settings
     previews = []
     for name in ("key-a", "key-b"):
         monkeypatch.setattr(settings, "integration_key_path", str(tmp_path / name))
@@ -193,7 +183,7 @@ async def test_preview_depends_on_the_pis_key(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_health_update_persists(fresh_keystore):
+async def test_health_update_persists():
     await store.save("dummy", True, {"api_key": "x"}, secret_fields={"api_key"})
     await store.update_health(
         "dummy", IntegrationHealth(state="error", last_error="timeout")
@@ -215,7 +205,7 @@ def _make_app() -> FastAPI:
 
 
 @pytest.fixture
-def driver_and_client(fresh_registry, fresh_keystore):
+def driver_and_client(fresh_registry):
     driver = DummyDriver()
     register(driver)
     app = _make_app()
@@ -282,18 +272,22 @@ def test_put_config_disables_calls_stop(driver_and_client):
     assert driver.stop_calls >= 1
 
 
-def test_get_config_returns_redacted_secret(driver_and_client):
+def test_get_config_and_the_listing_return_only_a_fingerprint_of_a_secret(driver_and_client):
     _, client = driver_and_client
     client.put(
         "/api/integrations/dummy/config",
-        json={"enabled": True, "config": {"api_key": "topsecret-1234"}},
+        json={"enabled": True, "config": {"base_url": "http://10.0.0.5",
+                                          "api_key": "topsecret-1234"}},
     )
-    resp = client.get("/api/integrations/dummy/config")
-    body = resp.json()
-    assert body["config"]["api_key"] == store.secret_preview("topsecret-1234")
-    assert "1234" not in body["config"]["api_key"]
+    preview = store.secret_preview("topsecret-1234")
+    assert "1234" not in preview
+    body = client.get("/api/integrations/dummy/config").json()
+    assert body["config"]["api_key"] == preview
     # Schema is included for the UI to render the form.
     assert "properties" in body["schema"]
+    [listed] = client.get("/api/integrations").json()
+    assert listed["config"] == {"base_url": "http://10.0.0.5", "api_key": preview,
+                                "poll_seconds": 60}
 
 
 def test_put_config_custom_validator_error_is_a_400_with_its_message(driver_and_client):
@@ -370,7 +364,7 @@ def test_put_config_without_enabled_keeps_the_stored_flag(driver_and_client):
 
 
 async def test_put_config_puts_the_driver_back_when_the_save_fails(
-    fresh_registry, fresh_keystore, monkeypatch,
+    fresh_registry, monkeypatch,
 ):
     driver = DummyDriver()
     register(driver)
@@ -414,17 +408,15 @@ def test_listing_flags_an_enabled_driver_that_is_not_running(driver_and_client):
     assert "not running" in health["last_error"]
 
 
-def test_test_connection_persists_health(driver_and_client):
-    driver, client = driver_and_client
-    client.put(
-        "/api/integrations/dummy/config",
-        json={"enabled": False, "config": {"api_key": "x"}},
-    )
+async def test_test_connection_persists_health(fresh_registry):
+    driver = DummyDriver()
+    register(driver)
+    await _registry.put_config("dummy", {"enabled": False, "config": {"api_key": "x"}})
     driver.test_result = IntegrationHealth(state="degraded", last_error="slow")
-    resp = client.post("/api/integrations/dummy/test")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["state"] == "degraded"
+    assert (await _registry.test_connection("dummy")).state == "degraded"
+    stored = await store.load("dummy", secret_fields={"api_key"})
+    assert (stored.last_health_state, stored.last_error) == ("degraded", "slow")
+    assert stored.last_health_at is not None
 
 
 def test_enable_without_prior_config_returns_409(driver_and_client):
@@ -448,76 +440,57 @@ def test_unknown_slug_returns_404(driver_and_client):
 # ── Lifespan boot ─────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_start_enabled_drivers_skips_disabled(fresh_registry, fresh_keystore):
-    driver = DummyDriver()
-    register(driver)
-    await store.save("dummy", False, {"api_key": "x"}, secret_fields={"api_key"})
-    await _registry.start_enabled_drivers()
-    assert driver.start_calls == 0
+class _OffDriver(DummyDriver):
+    name = "dummy_off"
 
 
-@pytest.mark.asyncio
-async def test_start_enabled_drivers_starts_enabled(fresh_registry, fresh_keystore):
-    driver = DummyDriver()
-    register(driver)
-    await store.save(
-        "dummy", True, {"base_url": "http://10.0.0.5", "api_key": "x"},
-        secret_fields={"api_key"},
-    )
-    await _registry.start_enabled_drivers()
-    assert driver.start_calls == 1
-    assert len(driver.configure_calls) == 1
+class BoomConfig(BaseModel):
+    pass
 
 
-@pytest.mark.asyncio
-async def test_start_enabled_drivers_isolates_failures(
-    fresh_registry, fresh_keystore
-):
-    """A failing driver must not block the others from starting."""
+class BoomDriver(IntegrationDriver):
+    """Fails to configure at boot and to stop at shutdown."""
 
-    class BoomConfig(BaseModel):
+    name = "boom"
+    tier_required = "free"
+    config_schema = BoomConfig
+    secret_fields: set[str] = set()
+
+    async def configure(self, config):
+        raise RuntimeError("boom on configure")
+
+    async def start(self):
         pass
 
-    class BoomDriver(IntegrationDriver):
-        name = "boom"
-        tier_required = "free"
-        config_schema = BoomConfig
-        secret_fields: set[str] = set()
+    async def stop(self):
+        raise RuntimeError("boom on stop")
 
-        async def configure(self, config):
-            raise RuntimeError("boom on configure")
+    async def test_connection(self):
+        return IntegrationHealth(state="error")
 
-        async def start(self):
-            pass
+    async def health(self):
+        return IntegrationHealth(state="error")
 
-        async def stop(self):
-            pass
 
-        async def test_connection(self):
-            return IntegrationHealth(state="error")
-
-        async def health(self):
-            return IntegrationHealth(state="error")
-
-    boom = BoomDriver()
-    healthy = DummyDriver()
-    register(boom)
-    register(healthy)
+async def test_boot_starts_each_enabled_driver_and_survives_one_that_fails(fresh_registry):
+    boom, enabled, disabled = BoomDriver(), DummyDriver(), _OffDriver()
+    for driver in (boom, enabled, disabled):
+        register(driver)
     await store.save("boom", True, {}, secret_fields=set())
-    await store.save(
-        "dummy", True, {"api_key": "x"}, secret_fields={"api_key"}
-    )
-    # Should not raise — registry catches per-driver failures.
-    await _registry.start_enabled_drivers()
-    assert healthy.start_calls == 1
+    await store.save("dummy", True, {"base_url": "http://10.0.0.5", "api_key": "x"},
+                     secret_fields={"api_key"})
+    await store.save("dummy_off", False, {"api_key": "x"}, secret_fields={"api_key"})
+
+    await _registry.start_enabled_drivers()  # must not raise
+
+    assert enabled.start_calls == 1
+    assert [c.base_url for c in enabled.configure_calls] == ["http://10.0.0.5"]
+    assert disabled.start_calls == 0 and disabled.configure_calls == []
 
 
-@pytest.mark.asyncio
-async def test_stop_all_is_idempotent(fresh_registry, fresh_keystore):
-    driver = DummyDriver()
+async def test_shutdown_stops_every_driver_even_when_one_fails_to_stop(fresh_registry):
+    boom, driver = BoomDriver(), DummyDriver()
+    register(boom)
     register(driver)
-    await _registry.stop_all_drivers()
-    await _registry.stop_all_drivers()
-    # Stop is called once per stop_all invocation, not gated by start state.
-    assert driver.stop_calls == 2
+    await _registry.stop_all_drivers()  # must not raise
+    assert driver.stop_calls == 1

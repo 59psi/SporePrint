@@ -75,13 +75,24 @@ def test_a_concurrent_creator_keeps_the_key_that_won(key_path, monkeypatch):
     assert [p.name for p in key_path.parent.iterdir()] == [".integration-key"]
 
 
-def test_a_filesystem_without_hard_links_still_gets_a_key(key_path, monkeypatch):
+@pytest.mark.parametrize("racing", [False, True], ids=["alone", "another-process-wins"])
+def test_a_filesystem_without_hard_links_still_gets_one_key(key_path, monkeypatch, racing):
+    # Without link() the name is claimed with an exclusive create; a process
+    # that created it first keeps its key, the same as on a filesystem with
+    # hard links.
     key_path.parent.mkdir(parents=True)
+    winner = Fernet.generate_key()
 
     def no_links(src, dst):
+        if racing:
+            with open(dst, "xb") as f:
+                f.write(winner)
         raise PermissionError("hard links not supported")
 
     monkeypatch.setattr(_keystore.os, "link", no_links)
-    Fernet(_keystore._key())
-    assert Fernet(key_path.read_bytes())
+    key = _keystore._key()
+    Fernet(key)
+    assert key_path.read_bytes() == key
+    if racing:
+        assert key == winner
     assert [p.name for p in key_path.parent.iterdir()] == [".integration-key"]

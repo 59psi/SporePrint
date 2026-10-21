@@ -14,53 +14,32 @@ from app.db import get_db
 from app.mqtt import _handle_message
 
 
-async def test_channel_report_writes_actuator_event():
-    await _handle_message(
-        AsyncMock(),
-        "sporeprint/relay-01/telemetry/exhaust",
-        {"channel": "exhaust", "state": "on", "pwm": 255, "trigger": "command"},
-    )
+async def test_a_channel_report_is_an_actuator_event_not_a_reading():
+    """Stored as the actuator event its columns mirror, sent to clients as
+    actuator state, and never a sensor reading: no telemetry row, no
+    telemetry event, no rule evaluation."""
+    sio = AsyncMock()
+    with patch("app.automation.engine.evaluate_rules", new=AsyncMock()) as rules:
+        await _handle_message(
+            sio,
+            "sporeprint/relay-01/telemetry/exhaust",
+            {"channel": "exhaust", "state": "on", "pwm": 255, "trigger": "command"},
+        )
+    rules.assert_not_awaited()
 
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT node_id, channel, action, value, trigger FROM actuator_events"
         )
-        row = await cursor.fetchone()
-
-    assert row is not None, "no actuator_events row written"
-    assert row["node_id"] == "relay-01"
-    assert row["channel"] == "exhaust"
-    assert row["action"] == "on"
-    assert row["value"] == 255
-    assert row["trigger"] == "command"
-
-
-async def test_channel_report_emits_actuator_state_not_telemetry():
-    """The frame is actuator state, not a sensor reading — clients get it on
-    its own event, and it must not run the automation engine."""
-    sio = AsyncMock()
-    with patch("app.automation.engine.evaluate_rules", new=AsyncMock()) as rules:
-        await _handle_message(
-            sio,
-            "sporeprint/relay-01/telemetry/fae",
-            {"channel": "fae", "state": "off", "pwm": 0, "trigger": "safety_cutoff"},
-        )
-        rules.assert_not_awaited()
-
+        events = [dict(r) for r in await cursor.fetchall()]
+        cursor = await db.execute("SELECT COUNT(*) AS n FROM telemetry_readings")
+        readings = (await cursor.fetchone())["n"]
+    assert events == [{"node_id": "relay-01", "channel": "exhaust", "action": "on",
+                       "value": 255, "trigger": "command"}]
+    assert readings == 0
     event_names = [c.args[0] for c in sio.emit.await_args_list]
     assert "actuator_state" in event_names
     assert "telemetry" not in event_names
-
-
-async def test_channel_report_does_not_pollute_readings():
-    await _handle_message(
-        AsyncMock(),
-        "sporeprint/relay-01/telemetry/aux",
-        {"channel": "aux", "state": "on", "pwm": 255, "trigger": "command"},
-    )
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) AS n FROM telemetry_readings")
-        assert (await cursor.fetchone())["n"] == 0
 
 
 async def test_heartbeat_persists_reset_reason_and_reconnects():

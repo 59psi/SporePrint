@@ -14,6 +14,7 @@ import pytest
 
 from app.config import settings
 from app.db import get_db
+from app.species.service import seed_builtins
 from app.vision import service
 from app.vision.service import (
     analyze_frame_claude,
@@ -153,6 +154,7 @@ async def test_reanalysing_an_older_frame_is_not_the_latest_read(tmp_path, claud
 
 
 async def test_two_consecutive_ready_reads_of_one_camera_fire_once(tmp_path, claude, monkeypatch):
+    await seed_builtins()  # the page names the species, not its id
     forward = AsyncMock()
     monkeypatch.setattr("app.cloud.service.forward_event", forward)
     sid = await _fruiting_session()
@@ -162,7 +164,10 @@ async def test_two_consecutive_ready_reads_of_one_camera_fire_once(tmp_path, cla
     latest = await _camera_frame(tmp_path, sid, 2_000.0)
     await _analyse(latest, claude, _frame("ready", "slowing"))
     claude["harvest"].assert_awaited_once()
-    assert claude["harvest"].await_args.kwargs["dedup_key"] == f"harvest:{sid}"
+    page = claude["harvest"].await_args
+    # notifications.harvest_ready(species, session name), one per grow per 12 h.
+    assert page.args == ("Blue Oyster", "Flush")
+    assert page.kwargs["reason"] and page.kwargs["dedup_key"] == f"harvest:{sid}"
 
     # The event and the cloud payload keep their shape.
     async with get_db() as db:

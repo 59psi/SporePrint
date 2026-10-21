@@ -1,139 +1,200 @@
-"""safety_max_on_seconds enforcement (P14 / R15).
+"""safety_max_on_seconds: the fire-risk ceiling on an actuator automation switched ON.
 
-A rule with `safety_max_on_seconds` must schedule an auto-off publish after
-the declared delay so a stuck-on heater can't become a fire. The tests
-monkeypatch `asyncio.sleep` through a short-circuit so we don't actually
-wait in test time.
+A rule with a ceiling arms a watchdog when its ON goes out. Unless an OFF
+ends it first, the watchdog switches the actuator OFF when the ceiling runs
+out, over the actuator's own transport, and records the trip. An actuator
+held ON (a plug, a vendor device, a native channel commanded without a
+duration) is a real breach: automation is locked out of it for 15 minutes so
+the next frame cannot switch it straight back on, and the operator is paged.
+
+Rehydration after a reboot, re-fires, races and failures:
+tests/test_safety_watchdog_hardening.py. Holds: tests/test_automation_holds_and_ceilings.py.
 """
 
-import asyncio
+import contextlib
+import json
+
+import pytest
 
 import app.automation.engine as engine
-from app.automation.engine import _fire_rule, _safety_tasks, set_override
-from app.automation.models import (
-    AutomationRule,
-    ConditionType,
-    ManualOverride,
-    RuleAction,
-    RuleCondition,
-    ThresholdCondition,
-)
-from app.db import get_db
-from app.sessions.models import SessionCreate
-from app.sessions.service import create_session
+from app.automation.engine import _fire_rule, is_overridden
+from app.automation.models import RuleAction
+from tests._builders import firings, insert_plug, make_rule, watchdog_rows
+from tests._timing import REAL_SLEEP, drain, ended
+
+OFF = {"state": "off", "reason": "safety_max_on_seconds"}
 
 
-async def _make_session():
-    return await create_session(SessionCreate(
-        name="safety-max-on",
-        species_profile_id="blue_oyster",
-        substrate="CVG",
-        substrate_volume="1 quart",
-    ))
+def _kasa(on) -> RuleAction:
+    return RuleAction(target="vendor:kasa:10.0.0.20", vendor_slug="kasa", vendor_action="set_power",
+                      vendor_params={"ip": "10.0.0.20", "on": on})
 
 
-def _rule(state: str, safety_max: int | None):
-    return AutomationRule(
-        id=1,
-        name="heater-watchdog",
-        condition=RuleCondition(
-            type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="temp_f", operator="lt", value=60),
-        ),
-        action=RuleAction(target="relay-01", channel="heater", state=state),
-        safety_max_on_seconds=safety_max,
-    )
+def _wire(raw: list[tuple[str, str]]) -> list[tuple[str, object]]:
+    """Raw plug publishes, a Gen2 JSON-RPC frame read as (method, params)."""
+    out = []
+    for topic, payload in raw:
+        if topic.endswith("/rpc"):
+            frame = json.loads(payload)
+            payload = (frame["method"], frame["params"])
+        out.append((topic, payload))
+    return out
 
 
-_real_sleep = asyncio.sleep
+async def test_a_held_on_channel_trips_after_its_ceiling_and_is_locked_out(
+        fast_sleep, mock_mqtt, alerts):
+    await _fire_rule(make_rule(RuleAction(target="relay-01", channel="heater"), ceiling=1800,
+                               name="heat"), {"temp_f": 55}, None)
+    await drain("relay-01:heater")
+
+    assert fast_sleep == [1800], "the watchdog waits exactly the rule's ceiling"
+    assert mock_mqtt == [("sporeprint/relay-01/cmd/heater", {"state": "on"}),
+                         ("sporeprint/relay-01/cmd/heater", OFF)]
+    assert is_overridden("relay-01", "heater"), "the next frame must not switch it back on"
+    assert [t for t, _ in alerts["warning"]] == ["Safety cutoff: relay-01:heater"]
+    assert await firings("safety_max_on_seconds:heat") == [
+        {"rule_name": "safety_max_on_seconds:heat", "status": "sent", "error": None}]
 
 
-async def _wait_done(task: asyncio.Task, timeout: float = 1.0) -> None:
-    """Wait for a task to fully finish (including cancelling→cancelled transition)."""
-    try:
-        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+async def test_a_pulse_trip_is_a_benign_redundant_off(fast_sleep, mock_mqtt, alerts):
+    """A native ON with a duration is a firmware-timed pulse that has ended by
+    itself: the trip's OFF is redundant, so no lockout and no page."""
+    await _fire_rule(make_rule(RuleAction(target="relay-01", channel="aux", pwm=255,
+                                          duration_sec=8), ceiling=30, name="Mist"), {}, None)
+    await drain("relay-01:aux")
+
+    assert mock_mqtt[-1] == ("sporeprint/relay-01/cmd/aux", OFF)
+    assert not is_overridden("relay-01", "aux")
+    assert alerts["warning"] == [] and alerts["critical"] == []
 
 
-async def test_safety_auto_off_publishes_off_after_delay(monkeypatch, mock_mqtt):
-    """A rule with safety_max_on_seconds must publish OFF when the delay elapses."""
-    sleep_calls: list[float] = []
-
-    async def fast_sleep(delay):
-        sleep_calls.append(delay)
-        # Use the captured real sleep so we don't recurse into ourselves.
-        await _real_sleep(0)
-
-    monkeypatch.setattr("app.automation.engine.asyncio.sleep", fast_sleep)
-
-    session = await _make_session()
-    rule = _rule(state="on", safety_max=1800)
-    await _fire_rule(rule, {"temp_f": 55}, session)
-
-    task = _safety_tasks.get("relay-01:heater")
-    assert task is not None
-    await _wait_done(task)
-
-    assert sleep_calls == [1800], "scheduled delay should match rule.safety_max_on_seconds"
-    # First call is the heater ON, second is the auto-off.
-    assert len(mock_mqtt) >= 2
-    last_topic, last_payload = mock_mqtt[-1]
-    assert last_topic == "sporeprint/relay-01/cmd/heater"
-    assert last_payload == {"state": "off", "reason": "safety_max_on_seconds"}
-
-
-async def test_off_action_cancels_pending_watchdog(monkeypatch, mock_mqtt):
-    """A subsequent OFF rule must cancel the pending auto-off task."""
-    async def never_finishes(_delay):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr("app.automation.engine.asyncio.sleep", never_finishes)
-
-    session = await _make_session()
-    on_rule = _rule(state="on", safety_max=1800)
-    off_rule = _rule(state="off", safety_max=None)
-
-    await _fire_rule(on_rule, {"temp_f": 55}, session)
-    assert "relay-01:heater" in _safety_tasks
-    pending = _safety_tasks["relay-01:heater"]
-
-    await _fire_rule(off_rule, {"temp_f": 75}, session)
-    await _wait_done(pending)
-    assert pending.cancelled() or pending.done()
+# Each actuator kind: (its paired plug row, the rule's action, the ceiling's
+# key, what reaches the native nodes, the plug's topics, the vendor dispatcher).
+_TRANSPORTS = {
+    "native channel": (
+        None, RuleAction(target="relay-01", channel="heater"), "relay-01:heater",
+        [("sporeprint/relay-01/cmd/heater", {"state": "on"}),
+         ("sporeprint/relay-01/cmd/heater", OFF)], [], []),
+    # A scene rule's OFF is the light's all-off scene on cmd/scene: on
+    # cmd/config (which reads no on/off) the light stayed on while the trip
+    # read as sent.
+    "native scene": (
+        None, RuleAction(target="light-01", scene="fruiting_standard"), "light-01:*",
+        [("sporeprint/light-01/cmd/scene", {"state": "on", "scene": "fruiting_standard"}),
+         ("sporeprint/light-01/cmd/scene", {**OFF, "scene": "colonization_dark"})], [], []),
+    # A plug's OFF goes out on its own topic tree: sent to sporeprint/plug-*
+    # it reached nothing and the heater stayed on.
+    "tasmota plug": (
+        ("plug-a1b2c3", "tasmota", "tasmota/a1b2c3"), RuleAction(target="plug-heater"),
+        "plug-a1b2c3:*", [],
+        [("tasmota/a1b2c3/cmnd/POWER", "ON"), ("tasmota/a1b2c3/cmnd/POWER", "OFF")], []),
+    "shelly plug": (
+        ("plug-9f7e", "shelly", "shellies/9f7e"), RuleAction(target="plug-heater"),
+        "plug-9f7e:*", [],
+        [("shellies/9f7e/relay/0/command", "on"), ("shellies/9f7e/relay/0/command", "off")], []),
+    "shelly gen2 plug": (
+        ("plug-plugsg3-b1", "shelly_gen2", "shellies/plugsg3-b1"), RuleAction(target="plug-heater"),
+        "plug-plugsg3-b1:*", [],
+        [("shellies/plugsg3-b1/rpc", ("Switch.Set", {"id": 0, "on": True})),
+         ("shellies/plugsg3-b1/rpc", ("Switch.Set", {"id": 0, "on": False}))], []),
+    # A vendor device's OFF goes through the integrations dispatcher: a
+    # publish to sporeprint/vendor:*/cmd/config reached no subscriber.
+    "kasa plug": (
+        None, _kasa(True), "vendor:kasa:10.0.0.20:*", [], [],
+        [("kasa", "set_power", {"ip": "10.0.0.20", "on": True}),
+         ("kasa", "set_power", {"ip": "10.0.0.20", "on": False})]),
+}
 
 
-async def test_manual_override_keeps_watchdog_armed(monkeypatch, mock_mqtt):
-    """A hold stops automation sending NEW commands; it must not remove the
-    fire-risk ceiling on an actuator automation already switched ON.
-    The in-process task keeps running and its persisted row survives a reboot."""
-    async def never_finishes(_delay):
-        await asyncio.Event().wait()
+@pytest.mark.parametrize("kind", list(_TRANSPORTS))
+async def test_the_ceiling_switches_off_every_kind_of_actuator(
+        kind, fast_sleep, mock_mqtt, mock_mqtt_raw, dispatch_calls, quiet_alerts):
+    plug, action, key, native, plugs, vendor = _TRANSPORTS[kind]
+    if plug:
+        await insert_plug(*plug, role="heater")
+    await _fire_rule(make_rule(action, ceiling=1, name="heat"), {"temp_f": 50}, None)
+    await drain(key)
 
-    monkeypatch.setattr("app.automation.engine.asyncio.sleep", never_finishes)
-
-    session = await _make_session()
-    await _fire_rule(_rule(state="on", safety_max=1800), {"temp_f": 55}, session)
-    pending = _safety_tasks.get("relay-01:heater")
-    assert pending is not None and not pending.done()
-
-    await set_override(ManualOverride(target="relay-01", channel="heater", reason="operator holds"))
-
-    await _wait_done(pending, timeout=0.05)
-    assert not pending.done(), "override must not cancel the safety watchdog"
-    assert _safety_tasks.get("relay-01:heater") is pending
-    async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT COUNT(*) AS n FROM safety_watchdogs WHERE target = 'relay-01' AND channel = 'heater'"
-        )
-        assert (await cursor.fetchone())["n"] == 1
+    assert mock_mqtt == native
+    assert _wire(mock_mqtt_raw) == plugs
+    assert dispatch_calls == vendor
+    assert await watchdog_rows() == []
+    assert [f["status"] for f in await firings("safety_max_on_seconds:heat")] == ["sent"]
 
 
-async def test_no_watchdog_when_publish_failed(monkeypatch, mock_mqtt):
-    """If the ON publish failed, don't schedule a phantom auto-off."""
-    mock_mqtt.mock.return_value = False
+# (the ON's action, the OFF's action, the ceiling's key)
+_ON_THEN_OFF = {
+    "native": (RuleAction(target="relay-01", channel="heater"),
+               RuleAction(target="relay-01", channel="heater", state="off"), "relay-01:heater"),
+    # The model reads states in any case and spacing; the engine used to read
+    # only "on"/"off" literally.
+    "plug, any case": (RuleAction(target="plug-heater", state="ON"),
+                       RuleAction(target="plug-heater", state=" OFF"), "plug-a1b2c3:*"),
+    # A plug is one actuator whichever name a rule gives it.
+    "plug by role, then by id": (RuleAction(target="plug-heater", state="on"),
+                                 RuleAction(target="plug-a1b2c3", state="off"), "plug-a1b2c3:*"),
+    # A vendor rule's state is always "on"; set_power(on=False) is its OFF,
+    # and the dispatcher reads "false" / "off" / "0" as False too.
+    "kasa": (_kasa(True), _kasa(False), "vendor:kasa:10.0.0.20:*"),
+    "kasa, text false": (_kasa(True), _kasa("false"), "vendor:kasa:10.0.0.20:*"),
+}
 
-    session = await _make_session()
-    await _fire_rule(_rule(state="on", safety_max=1800), {"temp_f": 55}, session)
 
-    assert "relay-01:heater" not in _safety_tasks
+@pytest.mark.parametrize("case", list(_ON_THEN_OFF))
+async def test_an_off_ends_the_ceiling_its_on_armed(
+        case, frozen_sleep, mock_mqtt, mock_mqtt_raw, dispatch_calls):
+    on, off, key = _ON_THEN_OFF[case]
+    await insert_plug("plug-a1b2c3", "tasmota", "tasmota/a1b2c3", role="heater")
+    await _fire_rule(make_rule(on, ceiling=3600, name="on"), {}, None)
+    armed = engine._safety_tasks[key]
+    assert len(await watchdog_rows()) == 1
+
+    await _fire_rule(make_rule(off, ceiling=3600, name="off", rule_id=2), {}, None)
+    await REAL_SLEEP(0)
+
+    assert ended(armed)
+    assert key not in engine._safety_tasks, "an OFF arms nothing"
+    assert await watchdog_rows() == []
+
+
+@pytest.mark.parametrize("failure", ["broker down", "plug not paired"])
+async def test_an_on_that_never_went_out_arms_no_ceiling(mock_mqtt, mock_mqtt_raw, failure):
+    """An OFF with no ON before it would be a phantom trip."""
+    if failure == "broker down":
+        mock_mqtt.mock.return_value = False
+        action, key = RuleAction(target="relay-01", channel="heater"), "relay-01:heater"
+    else:
+        action, key = RuleAction(target="plug-heater"), "plug-heater:*"
+    await _fire_rule(make_rule(action, ceiling=1800), {"temp_f": 55}, None)
+    assert key not in engine._safety_tasks
+    assert await watchdog_rows() == []
+    assert [f["status"] for f in await firings()] == ["failed"]
+
+
+async def test_an_off_with_no_ceiling_touches_no_watchdog_row(mock_mqtt, monkeypatch):
+    """Most OFFs have no ceiling; each used to cost a connection, a DELETE and
+    a commit on the telemetry path."""
+    statements: list[str] = []
+    real_get_db = engine.get_db
+
+    class _Spy:
+        def __init__(self, db):
+            self._db = db
+
+        def __getattr__(self, name):
+            return getattr(self._db, name)
+
+        async def execute(self, sql, *args):
+            statements.append(sql)
+            return await self._db.execute(sql, *args)
+
+    @contextlib.asynccontextmanager
+    async def _get_db():
+        async with real_get_db() as db:
+            yield _Spy(db)
+
+    monkeypatch.setattr(engine, "get_db", _get_db)
+    await _fire_rule(make_rule(RuleAction(target="relay-01", channel="heater", state="off")),
+                     {}, None)
+    assert mock_mqtt == [("sporeprint/relay-01/cmd/heater", {"state": "off"})]
+    assert not [s for s in statements if "DELETE FROM safety_watchdogs" in s]

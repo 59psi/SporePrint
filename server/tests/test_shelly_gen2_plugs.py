@@ -13,31 +13,21 @@ ACL lets the plug login and the server use), it:
   * publishes <prefix>/online true/false (retained; the LWT).
 
 These tests pin the command frames, the status parsing (Gen2 Plus and the
-Gen3 / Gen4 field shapes), routing through the real MQTT loop, online/offline,
-and parity with Gen1/Tasmota for the automation engine: rule firing, the
-safety_max_on_seconds watchdog, manual OFFs clearing a ceiling, and a plug
-reported back ON re-arming a cutoff's OFF.
+Gen3 / Gen4 field shapes), routing through the real MQTT loop and
+online/offline. Gen2 works like Gen1 and Tasmota everywhere else, tested
+across all three transports: the prefixes the broker grants, resolution by
+role and switch id (tests/test_smart_plug_transport.py), a rule reaching
+the plug (tests/test_automation_routing.py), the safety ceiling's OFF
+(tests/test_safety_max_on.py) and a manual OFF ending it
+(tests/test_safety_watchdog_hardening.py).
 """
 
-import asyncio
 import json
 import logging
 
 import pytest
-from fastapi import HTTPException
 
-import app.automation.engine as engine
-import app.automation.smart_plugs as smart_plugs
 import app.mqtt
-from app.automation.engine import _fire_rule, _safety_auto_off
-from app.automation.models import (
-    AutomationRule,
-    ConditionType,
-    RuleAction,
-    RuleCondition,
-    ThresholdCondition,
-)
-from app.automation.router import command_plug
 from app.automation.smart_plugs import (
     PLUG_TYPE_SHELLY,
     PLUG_TYPE_SHELLY_GEN2,
@@ -45,10 +35,9 @@ from app.automation.smart_plugs import (
     handle_plug_message,
     register_plug,
     send_plug_command,
-    target_is_present,
 )
-from app.db import get_db
-from app.mqtt import _decode_payload, start_mqtt
+from tests._builders import insert_plug, plug_row as _row, rows
+from tests._fakes import FakeBroker, Message, RecordingSio as _Sio, run_mqtt_loop
 
 # Real payloads, as the devices publish them (trimmed of unrelated components).
 PLUS_PLUG_S_FULL_STATUS = {
@@ -99,38 +88,10 @@ def _notify_status(prefix: str, switches: dict) -> dict:
             "method": "NotifyStatus", "params": {"ts": 1759622461.5, **switches}}
 
 
-class _Sio:
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.events.append((event, data))
-
-
-@pytest.fixture(autouse=True)
-def _reset_gen2_state():
-    smart_plugs._gen2_errors_seen.clear()
-    yield
-    smart_plugs._gen2_errors_seen.clear()
-
-
-async def _row(plug_id: str) -> dict | None:
-    async with get_db() as db:
-        cursor = await db.execute("SELECT * FROM smart_plugs WHERE plug_id = ?", (plug_id,))
-        row = await cursor.fetchone()
-    return dict(row) if row else None
-
-
 async def _register_gen2(plug_id: str, prefix: str, role: str | None = None,
                          switch_id: int | None = None) -> None:
-    config = json.dumps({"switch_id": switch_id}) if switch_id is not None else None
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO smart_plugs (plug_id, plug_type, mqtt_topic_prefix, name, "
-            "device_role, config) VALUES (?, ?, ?, ?, ?, ?)",
-            (plug_id, PLUG_TYPE_SHELLY_GEN2, prefix, plug_id, role, config),
-        )
-        await db.commit()
+    await insert_plug(plug_id, PLUG_TYPE_SHELLY_GEN2, prefix, role=role,
+                      config=None if switch_id is None else {"switch_id": switch_id})
 
 
 def _frames(raw_calls) -> list[tuple[str, dict]]:
@@ -164,23 +125,6 @@ async def test_request_ids_are_unique(mock_mqtt_raw):
     assert len(set(ids)) == 2
 
 
-async def test_role_registered_gen2_plug_resolves_by_device_role(mock_mqtt_raw):
-    """Paired under its hardware prefix with a role: the seeded rule's friendly
-    target reaches it, exactly as for Gen1/Tasmota."""
-    await _register_gen2("plug-shellyplugsg3-b1", "shellies/shellyplugsg3-b1", role="heater")
-    assert await target_is_present("plug-heater") is True
-    assert await send_plug_command("plug-heater", "off") is True
-    [(topic, frame)] = _frames(mock_mqtt_raw)
-    assert topic == "shellies/shellyplugsg3-b1/rpc"
-    assert frame["params"] == {"id": 0, "on": False}
-
-
-async def test_multi_channel_switch_id_comes_from_the_row(mock_mqtt_raw):
-    await _register_gen2("plug-closet-2", "shellies/closet", role="cooler", switch_id=2)
-    assert await send_plug_command("plug-cooler", "on") is True
-    [(topic, frame)] = _frames(mock_mqtt_raw)
-    assert topic == "shellies/closet/rpc"
-    assert frame["params"] == {"id": 2, "on": True}
 
 
 async def test_toggle_maps_to_switch_toggle(mock_mqtt_raw):
@@ -201,22 +145,6 @@ async def test_state_without_a_switch_meaning_is_not_sent(mock_mqtt_raw, state):
     assert mock_mqtt_raw == []
 
 
-@pytest.mark.parametrize("prefix", [
-    "shellyplusplugs-a8032ab12345",   # the factory prefix: a top-level tree
-    "shellies/closet/humidifier",     # more than one level under shellies/
-    "shellies/+",
-    "",
-])
-async def test_prefix_the_broker_would_drop_is_refused(mock_mqtt_raw, prefix, caplog):
-    """The server may publish only shellies/+/rpc and Mosquitto drops anything
-    else silently — so a publish elsewhere would be logged 'sent' while no
-    relay moved. Refuse it and say how to fix the device."""
-    await _register_gen2("plug-humidifier", prefix)
-    with caplog.at_level(logging.WARNING, logger="app.automation.smart_plugs"):
-        assert await send_plug_command("plug-humidifier", "on") is False
-    assert mock_mqtt_raw == []
-    assert "shellies/<role>" in caplog.text
-
 
 async def test_broker_down_is_not_sent(monkeypatch):
     await _register_gen2("plug-humidifier", "shellies/humidifier")
@@ -224,12 +152,10 @@ async def test_broker_down_is_not_sent(monkeypatch):
     assert await send_plug_command("plug-humidifier", "on") is False
 
 
-async def test_bad_switch_id_in_config_falls_back_to_zero(mock_mqtt_raw):
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO smart_plugs (plug_id, plug_type, mqtt_topic_prefix, name, config) "
-            "VALUES ('plug-x', ?, 'shellies/x', 'x', '[not json')", (PLUG_TYPE_SHELLY_GEN2,))
-        await db.commit()
+@pytest.mark.parametrize("config", ["[not json", '{"switch_id": -1}', '{"switch_id": true}',
+                                    '{"switch_id": "2"}'])
+async def test_a_switch_id_it_cannot_read_falls_back_to_zero(mock_mqtt_raw, config):
+    await insert_plug("plug-x", PLUG_TYPE_SHELLY_GEN2, "shellies/x", config=config)
     assert await send_plug_command("plug-x", "on") is True
     assert _frames(mock_mqtt_raw)[0][1]["params"]["id"] == 0
 
@@ -251,9 +177,7 @@ async def test_full_status_registers_the_plug_with_state_and_power():
     assert json.loads(row["config"]) == {"switch_id": 0}
     assert ("plug_state", {"plug_id": "plug-humidifier", "state": "on"}) in sio.events
     # Only the switch is a plug — sys / wifi / mqtt never register anything.
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) AS n FROM smart_plugs")
-        assert (await cursor.fetchone())["n"] == 1
+    assert len(await rows("SELECT plug_id FROM smart_plugs")) == 1
 
 
 async def test_notify_status_delta_keeps_what_it_does_not_mention():
@@ -357,9 +281,7 @@ async def test_status_topic_switch_id_comes_from_the_topic():
 async def test_non_switch_frames_register_nothing(topic, payload):
     sio = _Sio()
     await handle_plug_message(sio, topic, payload)
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) AS n FROM smart_plugs")
-        assert (await cursor.fetchone())["n"] == 0
+    assert await rows("SELECT plug_id FROM smart_plugs") == []
     assert sio.events == []
 
 
@@ -537,41 +459,6 @@ async def test_gen1_relay_1_and_bad_power_are_not_plug_reports():
 # ── through the real MQTT loop (raw bytes in, frames out) ──────────────
 
 
-class _Message:
-    def __init__(self, topic: str, payload: bytes):
-        self.topic = topic
-        self.payload = payload
-
-
-def _client_factory(messages: list[_Message], published: list[tuple[str, str]]):
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def subscribe(self, topic):
-            return None
-
-        async def publish(self, topic, payload):
-            published.append((topic, payload))
-
-        @property
-        def messages(self):
-            async def _gen():
-                for m in messages:
-                    yield m
-                raise asyncio.CancelledError
-
-            return _gen()
-
-    return _Client
-
-
 async def test_real_loop_registers_a_gen2_plug_from_its_retained_online_and_reply(monkeypatch):
     """What a server (re)start sees: the retained `online` (JSON true), then the
     device's reply to the status query that triggers, then a live delta."""
@@ -580,113 +467,19 @@ async def test_real_loop_registers_a_gen2_plug_from_its_retained_online_and_repl
                        "result": PLUS_PLUG_S_FULL_STATUS["params"]}).encode()
     delta = json.dumps(_notify_status(
         "shellies/humidifier", {"switch:0": {"id": 0, "output": False}})).encode()
-    published: list[tuple[str, str]] = []
-    monkeypatch.setattr(app.mqtt.aiomqtt, "Client", _client_factory([
-        _Message("shellies/humidifier/online", b"true"),
-        _Message("shellies/humidifier/sporeprint/rpc", full),
-        _Message("shellies/humidifier/events/rpc", delta),
-    ], published))
+    broker = FakeBroker([
+        Message("shellies/humidifier/online", b"true"),
+        Message("shellies/humidifier/sporeprint/rpc", full),
+        Message("shellies/humidifier/events/rpc", delta),
+    ])
     sio = _Sio()
-    await asyncio.wait_for(start_mqtt(sio), timeout=5)
+    await run_mqtt_loop(monkeypatch, broker, sio)
 
-    assert [(t, json.loads(p)["method"]) for t, p in published] == [
+    assert [(t, json.loads(p)["method"]) for t, p in broker.published] == [
         ("shellies/humidifier/rpc", "Shelly.GetStatus")]
     row = await _row("plug-humidifier")
     assert row["plug_type"] == PLUG_TYPE_SHELLY_GEN2
     assert row["last_state"] == "off" and row["last_power_w"] == pytest.approx(31.4)
     # Never mistaken for a SporePrint node.
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) AS n FROM hardware_nodes")
-        assert (await cursor.fetchone())["n"] == 0
+    assert await rows("SELECT node_id FROM hardware_nodes") == []
 
-
-@pytest.mark.parametrize("topic,raw,expected", [
-    ("shellies/humidifier/online", b"true", True),
-    ("shellies/humidifier/online", b"false", False),
-    ("shellies/humidifier/events/rpc", b'{"method":"NotifyStatus","params":{}}',
-     {"method": "NotifyStatus", "params": {}}),
-    ("shellies/humidifier/status/switch:0", b'{"id":0,"output":true}', {"id": 0, "output": True}),
-])
-def test_decode_gen2_payloads(topic, raw, expected):
-    assert _decode_payload(topic, raw) == expected
-
-
-# ── automation-engine parity with Gen1 / Tasmota ───────────────────────
-
-
-def _rule(action: RuleAction, *, safety_max_on_seconds: int | None = None) -> AutomationRule:
-    return AutomationRule(
-        id=1,
-        name="gen2",
-        condition=RuleCondition(
-            type=ConditionType.THRESHOLD,
-            threshold=ThresholdCondition(sensor="temp_f", operator="lt", value=70),
-        ),
-        action=action,
-        safety_max_on_seconds=safety_max_on_seconds,
-        log_to_session=False,
-    )
-
-
-async def test_rule_reaches_the_gen2_rpc_topic(mock_mqtt, mock_mqtt_raw):
-    await _register_gen2("plug-shellyplugus-c4", "shellies/shellyplugus-c4", role="humidifier")
-    await _fire_rule(_rule(RuleAction(target="plug-humidifier", state="on")),
-                     {"temp_f": 60}, session=None)
-
-    assert mock_mqtt == []  # nothing on sporeprint/*, nothing signed
-    [(topic, frame)] = _frames(mock_mqtt_raw)
-    assert topic == "shellies/shellyplugus-c4/rpc"
-    assert (frame["method"], frame["params"]) == ("Switch.Set", {"id": 0, "on": True})
-    async with get_db() as db:
-        cursor = await db.execute("SELECT status FROM automation_firings")
-        assert (await cursor.fetchone())["status"] == "sent"
-
-
-async def test_safety_auto_off_reaches_a_gen2_plug(mock_mqtt, mock_mqtt_raw):
-    """The fire-risk watchdog's OFF must reach a stuck-on Gen2 heater too."""
-    await _register_gen2("plug-plugsg3-b1", "shellies/plugsg3-b1", role="heater")
-    await _safety_auto_off("plug-heater", None, 0, "heater-guard")
-    assert mock_mqtt == []
-    assert ("shellies/plugsg3-b1/rpc", "Switch.Set", {"id": 0, "on": False}) in [
-        (t, f["method"], f["params"]) for t, f in _frames(mock_mqtt_raw)]
-
-
-async def test_ceiling_armed_by_a_gen2_on_is_cleared_by_a_manual_off(mock_mqtt, mock_mqtt_raw):
-    """A plug ON is held on (plugs ignore duration_sec), so a ceiling arms —
-    under the plug's own id, whichever name the rule used; a manual OFF
-    through the plug endpoint ends it (note_actuator_off over both names)."""
-    await _register_gen2("plug-plugsg3-b1", "shellies/plugsg3-b1", role="heater")
-    await _fire_rule(_rule(RuleAction(target="plug-heater", state="on"),
-                           safety_max_on_seconds=600), {"temp_f": 60}, session=None)
-    key = engine._override_key("plug-plugsg3-b1", None)
-    assert key in engine._safety_tasks and not engine._safety_tasks[key].done()
-
-    result = await command_plug("plug-plugsg3-b1", {"state": "off"})
-    assert result["status"] == "sent"
-    await asyncio.sleep(0)
-    assert key not in engine._safety_tasks
-    assert [f["params"]["on"] for _, f in _frames(mock_mqtt_raw)] == [True, False]
-
-
-async def test_reported_on_reasserts_a_suppressed_off(mock_mqtt, mock_mqtt_raw):
-    """A cutoff's repeat OFF is suppressed for 15 min — unless the plug reports
-    it is ON again (switched on at the device). A Gen2 status report must feed
-    that check exactly as a Gen1/Tasmota state report does."""
-    await _register_gen2("plug-heater", "shellies/heater")
-    off_rule = _rule(RuleAction(target="plug-heater", state="off"))
-
-    await _fire_rule(off_rule, {"temp_f": 60}, session=None)
-    await _fire_rule(off_rule, {"temp_f": 60}, session=None)
-    assert len(mock_mqtt_raw) == 1  # the repeat OFF was suppressed
-
-    await handle_plug_message(_Sio(), "shellies/heater/events/rpc", _notify_status(
-        "shellies/heater", {"switch:0": {"id": 0, "output": True, "source": "button"}}))
-    await _fire_rule(off_rule, {"temp_f": 60}, session=None)
-    assert [f["params"] for _, f in _frames(mock_mqtt_raw)] == [{"id": 0, "on": False}] * 2
-
-
-async def test_manual_endpoint_refuses_an_unpaired_gen2_plug(mock_mqtt_raw):
-    with pytest.raises(HTTPException) as exc:
-        await command_plug("plug-humidifier", {"state": "on"})
-    assert exc.value.status_code == 409
-    assert mock_mqtt_raw == []

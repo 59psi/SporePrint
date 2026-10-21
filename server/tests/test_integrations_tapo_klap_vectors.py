@@ -33,6 +33,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from app.integrations.tapo import klap
 from app.integrations.tapo.config import TapoConfig
 from app.integrations.tapo.driver import TapoDriver
+from tests._fakes import route_httpx
 
 
 EMAIL = "user@example.com"
@@ -135,6 +136,7 @@ async def test_session_cookie_is_carried_through_handshake_and_requests(monkeypa
         seen_cookies[path] = cookie
         if path == "/app/handshake1":
             local = request.content
+            assert len(local) == 16  # KLAP's client seed is 16 random bytes
             state["local"] = local
             server_proof = _sha256(local + REMOTE + REF_AUTH)
             return httpx.Response(
@@ -157,15 +159,7 @@ async def test_session_cookie_is_carried_through_handshake_and_requests(monkeypa
             return httpx.Response(200, content=b"\x00" * 32 + ct)
         return httpx.Response(404)
 
-    transport = httpx.MockTransport(handler)
-    real_client = httpx.AsyncClient
-
-    def client_factory(*args, **kwargs):
-        kwargs["transport"] = transport
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
-
+    route_httpx(monkeypatch, handler)
     drv = TapoDriver()
     await drv.configure(TapoConfig(email=EMAIL, password=PASSWORD,
                                    devices=[{"ip": "10.0.0.30"}]))
@@ -177,17 +171,22 @@ async def test_session_cookie_is_carried_through_handshake_and_requests(monkeypa
 
 
 async def test_wrong_password_fails_handshake1(monkeypatch):
+    """The plug proves it knows the real credentials first: with a wrong
+    password that proof cannot match, so handshake2 (which carries a value
+    derived from the password) is never sent."""
+    paths: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
         server_proof = _sha256(request.content + REMOTE + REF_AUTH)
         return httpx.Response(200, content=REMOTE + server_proof)
 
-    transport = httpx.MockTransport(handler)
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        httpx, "AsyncClient", lambda *a, **k: real_client(*a, **{**k, "transport": transport})
-    )
+    route_httpx(monkeypatch, handler)
     drv = TapoDriver()
     await drv.configure(TapoConfig(email=EMAIL, password="wrong",
                                    devices=[{"ip": "10.0.0.30"}]))
     with pytest.raises(Exception, match="auth_hash mismatch"):
         await drv._klap_handshake(drv.config, "10.0.0.30")
+    health = await drv.test_connection()
+    assert health.state == "error" and "auth_hash mismatch" in health.last_error
+    assert set(paths) == {"/app/handshake1"}

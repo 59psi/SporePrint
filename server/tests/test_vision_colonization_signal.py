@@ -69,16 +69,26 @@ async def _colonization_events(session_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def test_full_colonization_emits_event_notify_and_forward(monkeypatch):
+async def test_full_colonization_pages_once_with_its_event_and_cloud_payload(monkeypatch):
     sid = await _make_session()
     notify = AsyncMock()
     forward = AsyncMock()
     monkeypatch.setattr(service, "notify_warning", notify)
     monkeypatch.setattr("app.cloud.service.forward_event", forward)
+    grow = await _load_frame_grow(sid)
+
+    # A frame below the completion threshold raises nothing.
+    await _maybe_colonization_alert(
+        {"id": 1, "session_id": sid, "node_id": "cam-01"},
+        {"colonization_percent": 60, "surface": "jar"}, grow,
+    )
+    assert await _colonization_events(sid) == []
+    notify.assert_not_awaited()
+    forward.assert_not_awaited()
 
     frame = {"id": 7, "session_id": sid, "node_id": "cam-01"}
     result = {"colonization_percent": 98, "surface": "bag", "summary": "fully run"}
-    await _maybe_colonization_alert(frame, result, await _load_frame_grow(sid))
+    await _maybe_colonization_alert(frame, result, grow)
 
     events = await _colonization_events(sid)
     assert len(events) == 1
@@ -86,6 +96,8 @@ async def test_full_colonization_emits_event_notify_and_forward(monkeypatch):
     assert data["colonization_percent"] == 98
     assert data["surface"] == "bag"
     assert data["frame_id"] == 7
+    assert events[0]["source"] == "vision"
+    assert events[0]["description"].startswith("Colonization complete: ")
 
     notify.assert_awaited_once()
     assert notify.await_args.kwargs["dedup_key"] == f"colonization:{sid}"
@@ -98,44 +110,12 @@ async def test_full_colonization_emits_event_notify_and_forward(monkeypatch):
     assert set(fwd_payload) == {"node_id", "session_id", "species", "reason",
                                 "colonization_percent", "surface", "frame_id"}
     assert set(data) == {"reason", "colonization_percent", "surface", "frame_id"}
-    assert events[0]["source"] == "vision"
-    assert events[0]["description"].startswith("Colonization complete: ")
 
-
-async def test_below_threshold_emits_nothing(monkeypatch):
-    sid = await _make_session()
-    notify = AsyncMock()
-    forward = AsyncMock()
-    monkeypatch.setattr(service, "notify_warning", notify)
-    monkeypatch.setattr("app.cloud.service.forward_event", forward)
-
+    # A later fully-colonized frame for the same session does not re-fire.
     await _maybe_colonization_alert(
-        {"id": 1, "session_id": sid, "node_id": "cam-01"},
-        {"colonization_percent": 60, "surface": "jar"},
-        await _load_frame_grow(sid),
+        {"id": 8, "session_id": sid, "node_id": "cam-01"},
+        {"colonization_percent": 100, "surface": "agar"}, grow,
     )
-
-    assert await _colonization_events(sid) == []
-    notify.assert_not_awaited()
-    forward.assert_not_awaited()
-
-
-async def test_second_completion_is_deduped_within_window(monkeypatch):
-    sid = await _make_session()
-    notify = AsyncMock()
-    forward = AsyncMock()
-    monkeypatch.setattr(service, "notify_warning", notify)
-    monkeypatch.setattr("app.cloud.service.forward_event", forward)
-
-    frame = {"id": 1, "session_id": sid, "node_id": "cam-01"}
-    result = {"colonization_percent": 100, "surface": "agar"}
-    grow = await _load_frame_grow(sid)
-    await _maybe_colonization_alert(frame, result, grow)
-    # A later fully-colonized frame for the same session must not re-fire.
-    await _maybe_colonization_alert(
-        {"id": 2, "session_id": sid, "node_id": "cam-01"}, result, grow
-    )
-
     assert len(await _colonization_events(sid)) == 1
     notify.assert_awaited_once()
     forward.assert_awaited_once()

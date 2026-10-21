@@ -8,43 +8,18 @@ from app.species.service import get_profile, seed_builtins
 from app.transcript.service import export_json, export_markdown
 
 
-async def test_export_json_structure():
+async def test_export_json_carries_every_section_and_the_harvests():
     await seed_builtins()
     s = await create_session(SessionCreate(name="Transcript Test", species_profile_id="blue_oyster"))
     await advance_phase(s["id"], PhaseAdvance(phase="fruiting"))
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=100.0))
+    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=150.0, dry_weight_g=15.0))
 
     data = await export_json(s["id"])
     assert data["version"] == "1.0"
-    assert "exported_at" in data
     assert data["session"]["name"] == "Transcript Test"
-    assert "species_profile" in data
-    assert "phase_timeline" in data
-    assert "phase_telemetry" in data
-    assert "events" in data
-    assert "harvests" in data
-    assert "notes" in data
-    assert "vision_analyses" in data
-    assert "automation_summary" in data
-    assert "analysis_prompt_hint" in data
-
-
-async def test_export_json_has_harvest():
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="Harvest Test", species_profile_id="blue_oyster"))
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=150.0, dry_weight_g=15.0))
-    data = await export_json(s["id"])
-    assert len(data["harvests"]) == 1
-    assert data["harvests"][0]["wet_weight_g"] == 150.0
-
-
-async def test_export_markdown_format():
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="MD Test", species_profile_id="blue_oyster"))
-    md = await export_markdown(s["id"])
-    assert md.startswith("# Session: MD Test")
-    assert "## Yield" in md
-    assert "## Phase Timeline" in md
+    assert {"exported_at", "species_profile", "phase_timeline", "phase_telemetry", "events", "harvests",
+            "notes", "vision_analyses", "automation_summary", "analysis_prompt_hint"} <= set(data)
+    assert [(h["flush_number"], h["wet_weight_g"]) for h in data["harvests"]] == [(1, 150.0)]
 
 
 async def test_export_markdown_header_omits_unset_fields():
@@ -76,17 +51,10 @@ async def test_export_markdown_header_keeps_set_details():
         )
     )
     md = await export_markdown(s["id"])
+    assert md.startswith("# Session: Full")
     assert "- **Substrate**: straw (10 L)" in md
     assert "- **Inoculated**: 2026-09-01 (grain spawn)" in md
-
-
-async def test_export_markdown_includes_harvest():
-    await seed_builtins()
-    s = await create_session(SessionCreate(name="Harvest MD", species_profile_id="blue_oyster"))
-    await add_harvest(s["id"], HarvestCreate(flush_number=1, wet_weight_g=200.0))
-    md = await export_markdown(s["id"])
-    assert "## Harvests" in md
-    assert "Flush #1" in md
+    assert "## Yield" in md and "## Phase Timeline" in md
 
 
 async def test_export_markdown_marks_an_unweighed_harvest_with_a_question_mark():
@@ -98,6 +66,7 @@ async def test_export_markdown_marks_an_unweighed_harvest_with_a_question_mark()
     await add_harvest(s["id"], HarvestCreate(flush_number=2, dry_weight_g=20.0))
     md = await export_markdown(s["id"])
     assert "None" not in md
+    assert "## Harvests" in md
     assert "- Flush #1: 200.0g wet, ?g dry" in md
     assert "- Flush #2: ?g wet, 20.0g dry" in md
 

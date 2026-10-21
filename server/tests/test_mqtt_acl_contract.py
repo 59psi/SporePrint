@@ -10,9 +10,9 @@ caught it.
 
 This test parses config/mosquitto/acl.conf, implements Mosquitto's topic-
 matching rules, and asserts the grants cover exactly what the code does:
-the server's real subscriptions (parsed from mqtt.py), the command topics
-the automation engine publishes, the plug command/state topics, and the
-per-node pattern scoping.
+the server's real subscriptions (recorded from the start_mqtt loop), the
+command topics the automation engine publishes, the plug command/state
+topics, and the per-node pattern scoping.
 """
 
 from __future__ import annotations
@@ -33,10 +33,11 @@ from app.mqtt import (
     is_service_account,
     purge_reserved_nodes,
 )
+from tests._builders import node_ids
+from tests._fakes import FakeBroker, RecordingSio, run_mqtt_loop
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACL = REPO_ROOT / "config" / "mosquitto" / "acl.conf"
-MQTT_PY = REPO_ROOT / "server" / "app" / "mqtt.py"
 SETUP_SH = REPO_ROOT / "setup.sh"
 ADD_NODE_SH = REPO_ROOT / "scripts" / "add-node-mqtt-user.sh"
 
@@ -120,28 +121,26 @@ def can_subscribe(user: str, sub: str) -> bool:
 # ── the server account ───────────────────────────────────────────────────
 
 
-def test_server_can_make_every_subscription_the_code_makes():
-    """Subscriptions are parsed from mqtt.py — if the code adds one, this
-    test forces the ACL to grant it."""
-    subs = re.findall(r'client\.subscribe\(\s*"([^"]+)"', MQTT_PY.read_text())
-    assert subs, "no client.subscribe() calls parsed from mqtt.py — parser broken"
+async def _server_subscriptions(monkeypatch) -> list[str]:
+    """Every subscription the real start_mqtt loop makes on connect."""
+    broker = FakeBroker([])
+    await run_mqtt_loop(monkeypatch, broker)
+    assert broker.subscriptions, "the loop subscribed to nothing"
+    return broker.subscriptions
+
+
+async def test_server_can_make_every_subscription_the_code_makes(monkeypatch):
+    """Recorded from the loop itself, the $SYS broker-stats topics included
+    (aiomqtt does not raise on a refused SUBACK, so a missing grant leaves
+    GET /api/health/detail/mqtt at {}): if the code adds a subscription,
+    this test forces the ACL to grant it."""
+    subs = await _server_subscriptions(monkeypatch)
+    assert any(s.startswith("$SYS/") for s in subs)
     denied = [s for s in subs if not can_subscribe("server", s)]
     assert not denied, (
         f"the server subscribes to {denied} but the ACL denies it — Mosquitto "
         f"denies silently, so this ships as 'the Pi hears nothing'"
     )
-
-
-def test_server_can_subscribe_to_the_broker_stats_it_asks_for():
-    """mqtt.py subscribes to each `_SYS_TOPICS` entry in a loop over a
-    variable, so the string-literal parser above never saw them. Without a
-    $SYS grant Mosquitto refuses every one silently (aiomqtt does not raise
-    on a failure SUBACK) and GET /api/health/detail/mqtt stays {}."""
-    from app.mqtt import _SYS_TOPICS
-
-    assert _SYS_TOPICS, "no $SYS topics — the stats feed was removed?"
-    denied = [t for t in _SYS_TOPICS if not can_subscribe("server", t)]
-    assert not denied, f"the ACL denies the server's $SYS subscriptions: {denied}"
 
 
 def test_server_can_publish_node_commands():
@@ -187,7 +186,7 @@ async def test_every_plug_command_the_code_builds_is_granted(mock_mqtt_raw, plug
     for state in ("on", "off"):
         assert await send_plug_command("plug-x", state) is True
     if prefix.startswith("shellies/"):
-        await handle_plug_message(_Sio(), f"{prefix}/online", True)
+        await handle_plug_message(RecordingSio(), f"{prefix}/online", True)
     assert mock_mqtt_raw, "nothing was published"
     denied = sorted({t for t, _ in mock_mqtt_raw if not can_publish("server", t)})
     assert not denied, f"the ACL denies the server's plug publishes {denied}"
@@ -225,11 +224,7 @@ def test_plug_account_covers_what_a_plug_does():
         assert can_subscribe("sp-3p", sub), f"sp-3p denied subscribe to {sub}"
 
 
-def _server_subscriptions() -> list[str]:
-    return re.findall(r'client\.subscribe\(\s*"([^"]+)"', MQTT_PY.read_text())
-
-
-def test_plug_account_covers_what_a_gen2_shelly_does():
+async def test_plug_account_covers_what_a_gen2_shelly_does(monkeypatch):
     """A Shelly Gen2+ with its MQTT prefix set to shellies/<role> publishes
     its notifications, status, online flag and RPC replies there and
     subscribes to its own rpc / command topics (plus the shellies/command
@@ -241,9 +236,10 @@ def test_plug_account_covers_what_a_gen2_shelly_does():
         "shellies/humidifier/online",           # retained online flag + LWT
         "shellies/humidifier/sporeprint/rpc",   # replies (src = <prefix>/sporeprint)
     )
+    subscriptions = await _server_subscriptions(monkeypatch)
     for topic in reports:
         assert can_publish("sp-3p", topic), f"sp-3p denied publish to {topic}"
-        assert any(_filter_matches(sub, topic) for sub in _server_subscriptions()), (
+        assert any(_filter_matches(sub, topic) for sub in subscriptions), (
             f"the server never subscribes to {topic}")
     for sub in (
         "shellies/humidifier/rpc",
@@ -314,10 +310,10 @@ async def test_plug_logins_never_become_nodes_and_stay_plugs(monkeypatch):
     monkeypatch.setattr(settings, "mqtt_plug_users", "heater, Humidifier")
     assert is_reserved_node_id("HEATER") and is_reserved_node_id("humidifier")
     assert not is_service_account("heater")
-    sio = _Sio()
+    sio = RecordingSio()
     await _handle_message(sio, "sporeprint/heater/status/heartbeat", {"type": "relay", "ip": "10.0.0.9"})
     await _handle_message(sio, "sporeprint/humidifier/telemetry", {"temp_f": 50.0, "ts": 5000})
-    assert await _node_rows() == []
+    assert await node_ids() == []
     await _handle_message(sio, "tasmota/heater/stat/POWER", "ON")
     async with get_db() as db:
         rows = await (await db.execute("SELECT plug_id FROM smart_plugs")).fetchall()
@@ -328,7 +324,7 @@ async def test_service_accounts_never_become_plugs(monkeypatch):
     """The per-plug patterns let every login post under tasmota/<its name>/
     and shellies/<its name>/: a service account's frames there are dropped."""
     monkeypatch.setattr(settings, "mqtt_username", "pi-core")
-    sio = _Sio()
+    sio = RecordingSio()
     for account in (*sorted(RESERVED_NODE_IDS), "pi-core", "SP-Telemetry"):
         await _handle_message(sio, f"tasmota/{account}/stat/POWER", "ON")
         await _handle_message(sio, f"shellies/{account}/relay/0", "on")
@@ -336,17 +332,6 @@ async def test_service_accounts_never_become_plugs(monkeypatch):
     async with get_db() as db:
         rows = await (await db.execute("SELECT plug_id FROM smart_plugs")).fetchall()
     assert rows == [] and sio.events == []
-
-
-async def test_plug_login_rows_registered_earlier_are_purged(monkeypatch):
-    monkeypatch.setattr(settings, "mqtt_plug_users", "heater")
-    async with get_db() as db:
-        for node_id in ("heater", "climate-01"):
-            await db.execute("INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
-                             "VALUES (?, 'relay', 1)", (node_id,))
-        await db.commit()
-    assert await purge_reserved_nodes() == 1
-    assert await _node_rows() == ["climate-01"]
 
 
 # ── per-node pattern scoping ─────────────────────────────────────────────
@@ -508,20 +493,6 @@ def test_add_node_script_refuses_exactly_the_reserved_ids():
     assert re.search(r'sp_service_account "\$ROOT" "\$NODE_ID"', ADD_NODE_SH.read_text())
 
 
-class _Sio:
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.events.append((event, data))
-
-
-async def _node_rows() -> list[str]:
-    async with get_db() as db:
-        cursor = await db.execute("SELECT node_id FROM hardware_nodes")
-        return [r["node_id"] for r in await cursor.fetchall()]
-
-
 async def test_service_accounts_never_become_nodes(monkeypatch):
     reached: list[str] = []
 
@@ -539,7 +510,7 @@ async def test_service_accounts_never_become_nodes(monkeypatch):
     monkeypatch.setattr("app.mqtt.forward_event", _forward)
     monkeypatch.setattr("app.mqtt.forward_component_health", _forward)
     monkeypatch.setattr("app.mqtt.notify", _notify)
-    sio = _Sio()
+    sio = RecordingSio()
     for account in sorted(RESERVED_NODE_IDS):
         base = f"sporeprint/{account}"
         await _handle_message(sio, f"{base}/status/heartbeat",
@@ -550,9 +521,13 @@ async def test_service_accounts_never_become_nodes(monkeypatch):
         await _handle_message(sio, f"{base}/telemetry/heater", {"state": "on"})
         await _handle_message(sio, f"{base}/alert", {"type": "temperature", "value": 99})
         await _handle_message(sio, f"{base}/ota", {"status": "start"})
-    assert await _node_rows() == []
+    assert await node_ids() == []
     assert reached == []
     assert sio.events == []
+    # A real node's frames still register it.
+    await _handle_message(sio, "sporeprint/relay-01/status/heartbeat",
+                          {"type": "relay", "ip": "10.0.0.5"})
+    assert await node_ids() == ["relay-01"]
 
 
 def test_reserved_id_check_is_case_insensitive_and_covers_the_mqtt_user(monkeypatch):
@@ -564,21 +539,18 @@ def test_reserved_id_check_is_case_insensitive_and_covers_the_mqtt_user(monkeypa
     assert not is_reserved_node_id("sp-3p-plug")
 
 
-async def test_real_node_frames_still_register():
-    await _handle_message(_Sio(), "sporeprint/relay-01/status/heartbeat",
-                          {"type": "relay", "ip": "10.0.0.5"})
-    assert await _node_rows() == ["relay-01"]
-
-
 async def test_rows_registered_before_the_filter_are_purged(monkeypatch):
+    """Service accounts (any case), the server's own login and the per-plug
+    logins an older server registered as nodes are removed; real nodes stay."""
     monkeypatch.setattr(settings, "mqtt_username", "pi-core")
+    monkeypatch.setattr(settings, "mqtt_plug_users", "heater")
     async with get_db() as db:
-        for node_id in ("sp-3p", "Server", "pi-core", "climate-01"):
+        for node_id in ("sp-3p", "Server", "pi-core", "heater", "climate-01"):
             await db.execute("INSERT INTO hardware_nodes (node_id, node_type, last_seen) "
                              "VALUES (?, 'relay', 1)", (node_id,))
         await db.commit()
-    assert await purge_reserved_nodes() == 3
-    assert await _node_rows() == ["climate-01"]
+    assert await purge_reserved_nodes() == 4
+    assert await node_ids() == ["climate-01"]
     assert await purge_reserved_nodes() == 0
 
 

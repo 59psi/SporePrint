@@ -7,6 +7,8 @@ Holds that pin no ON (rule suspensions, safety lockouts, OFF pins) stay.
 import time
 from unittest.mock import AsyncMock
 
+import pytest
+
 import app.automation.engine as engine
 from app.automation.engine import _safety_lockout, get_overrides, is_overridden, set_override
 from app.automation.models import ManualOverride, OverrideRequest
@@ -34,9 +36,16 @@ async def _stored(target: str, channel: str):
         return [r["held_state"] for r in await cursor.fetchall()]
 
 
-async def test_a_safety_cutoff_ends_a_manual_on_pin():
-    await _pin("relay-a1", "aux", "on")
-    assert is_overridden("relay-a1", "aux")
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_safety_cutoff_ends_a_manual_on_pin(restart):
+    """Also a pin read back from the table after a restart: its pinned state
+    is stored (as the firmware reads it), not only cached."""
+    await _pin("relay-a1", "aux", " ON ")
+    assert await _stored("relay-a1", "aux") == ["on"]
+    if restart:
+        engine._overrides.clear()
+        engine._overrides_loaded = False
+    assert [o.held_state for o in await get_overrides()] == ["on"]
     await _cutoff("relay-a1", "aux")
     assert not is_overridden("relay-a1", "aux")
     assert await _stored("relay-a1", "aux") == []
@@ -59,17 +68,6 @@ async def test_only_the_safety_cutoff_trigger_ends_the_pin():
     assert is_overridden("relay-a1", "aux")
     await _cutoff("relay-a2", "aux")  # another node's cutoff
     assert is_overridden("relay-a1", "aux")
-
-
-async def test_the_pinned_state_survives_a_restart():
-    await _pin("relay-a1", "aux", " ON ")
-    assert await _stored("relay-a1", "aux") == ["on"]
-    engine._overrides.clear()
-    engine._overrides_loaded = False
-    (held,) = await get_overrides()
-    assert held.held_state == "on"
-    await _cutoff("relay-a1", "aux")
-    assert await get_overrides() == []
 
 
 def test_a_pin_state_is_read_the_way_the_firmware_reads_a_command():

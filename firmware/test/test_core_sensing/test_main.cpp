@@ -197,15 +197,21 @@ void test_scale_tare_averages_fresh_samples_only() {
                           (int)c.poll(1000));
 }
 
-void test_scale_tare_negative_counts_round_correctly() {
-    sp::ScaleCalibrator c;
-    c.start_tare(0);
-    c.add_sample(0);  // discarded
-    for (int i = 0; i < sp::ScaleCalibrator::kSamples; ++i)
-        c.add_sample(i < 4 ? -80001 : -80002);  // mean -80001.5
-    TEST_ASSERT_EQUAL_INT((int)sp::ScaleCalibrator::Status::Done,
-                          (int)c.poll(1000));
-    TEST_ASSERT_TRUE(c.tare() == -80001 || c.tare() == -80002);
+void test_scale_tare_rounds_half_away_from_zero() {
+    // Raw HX711 counts are signed (a load cell mounted either way): a mean of
+    // ±80001.5 rounds to ±80002, the same magnitude for both signs, not
+    // toward +infinity (C division truncates toward zero).
+    const int32_t signs[] = {1, -1};
+    for (int32_t sign : signs) {
+        sp::ScaleCalibrator c;
+        c.start_tare(0);
+        c.add_sample(0);  // discarded
+        for (int i = 0; i < sp::ScaleCalibrator::kSamples; ++i)
+            c.add_sample(sign * (i < 4 ? 80001 : 80002));  // mean ±80001.5
+        TEST_ASSERT_EQUAL_INT((int)sp::ScaleCalibrator::Status::Done,
+                              (int)c.poll(1000));
+        TEST_ASSERT_EQUAL_INT32(sign * 80002, c.tare());
+    }
 }
 
 void test_scale_calibrate_computes_counts_per_gram() {
@@ -415,7 +421,7 @@ int main(int, char**) {
     RUN_TEST(test_threshold_alert_nan_clears);
     RUN_TEST(test_scale_idle_ignores_samples);
     RUN_TEST(test_scale_tare_averages_fresh_samples_only);
-    RUN_TEST(test_scale_tare_negative_counts_round_correctly);
+    RUN_TEST(test_scale_tare_rounds_half_away_from_zero);
     RUN_TEST(test_scale_calibrate_computes_counts_per_gram);
     RUN_TEST(test_scale_calibrate_rejects_noise_level_delta);
     RUN_TEST(test_scale_calibrate_rejects_bad_known_mass);

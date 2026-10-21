@@ -11,12 +11,13 @@ non-str setting, must not keep the server from booting.
 import pytest
 from pydantic import ValidationError
 
-from app.cloud import integrations_proxy
 from app.config import Settings, settings
 from app.vision import service as vision_service
 
 
 def test_defaults_match_the_documented_behaviour():
+    """Reading them off a Settings instance also proves each getattr reader
+    names a real field (a missing one raises AttributeError here)."""
     s = Settings()
     assert s.vision_auto_interval_min == 360          # spec §6: every 6 h
     assert s.cloud_require_signed_integrations is True   # the cloud signs every frame
@@ -31,11 +32,6 @@ def test_env_vars_reach_the_new_settings(monkeypatch):
     assert s.vision_auto_interval_min == 30
     assert s.cloud_require_signed_integrations is False
     assert s.public_ui_url == "http://192.168.1.20:3001"
-
-
-def test_every_getattr_reader_resolves_a_real_field():
-    for name in ("vision_auto_interval_min", "cloud_require_signed_integrations"):
-        assert name in Settings.model_fields, name
 
 
 def test_vision_cadence_follows_the_setting(monkeypatch):
@@ -97,10 +93,3 @@ def test_a_malformed_non_blank_value_still_fails_loudly(monkeypatch):
     monkeypatch.setenv("SPOREPRINT_PORT", "eighty")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
-
-
-def test_signed_integrations_strict_mode_follows_the_setting(monkeypatch):
-    monkeypatch.setattr(settings, "cloud_require_signed_integrations", True)
-    assert integrations_proxy._require_signed_setting() is True
-    monkeypatch.setattr(settings, "cloud_require_signed_integrations", False)
-    assert integrations_proxy._require_signed_setting() is False

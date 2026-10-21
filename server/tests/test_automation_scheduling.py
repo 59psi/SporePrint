@@ -1,37 +1,33 @@
-"""The schedule must be driven by the species profile, and cron must work.
+"""Schedule conditions: cron, the species photoperiod, intervals, time ranges.
 
-Three silent failures this pins:
+What this pins, each once a silent failure:
 
-1. `cron` was a declared, documented field that NOTHING read — `_eval_schedule`
-   handled only interval_min and time_range, so any cron rule fell through to
-   `return False` and never fired.
-
-2. The species photoperiod was written and never read. Every profile specifies
-   light_hours_on / light_hours_off per phase; the seeded light rules just
-   re-asserted a fixed scene every 60 minutes. Fruiting lights ran 24/7 and the
-   dark period didn't exist. For mushrooms the photoperiod is a fruiting
-   trigger, not decoration.
-
-3. FAE period/duration were hardcoded (20 min / 300 s) while every profile
-   specifies fae_interval_min and fae_duration_sec per phase — so a species
-   asking for 30-minute cycles got 20.
-
-Plus: interval schedules were wall-clock modulo (`(h*60+m) % n == 0`), which
-only matched when an evaluation landed exactly on a matching minute. Rules are
-evaluated on telemetry arrival (~60 s, and it drifts), so one late frame skipped
-the cycle entirely and the fan never ran that round.
+1. `cron` was a declared, documented field that nothing read: every cron rule
+   fell through to False and never fired. It is a real 5-field cron now, and
+   a minute that falls between two telemetry frames still counts.
+2. The species photoperiod (light_hours_on per phase) was written and never
+   read: fruiting lights ran 24/7 and the dark period did not exist.
+3. FAE period/duration were hardcoded (20 min / 300 s) though every profile
+   gives fae_interval_min per phase.
+4. Interval schedules were wall-clock modulo (`(h*60+m) % n == 0`), matching
+   only when a frame landed on an exact minute: one late frame skipped the
+   cycle. "Every 20 minutes" now means 20 minutes since the rule last fired.
 """
 
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.automation.engine import _eval_cron, _eval_schedule
+import pytest
+
+from app.automation.engine import _eval_schedule
 from app.automation.models import ScheduleCondition
+from tests._timing import clock, local
 
 
 def _phase(**kw):
-    """A stand-in for species PhaseParams — only the fields schedules read."""
+    """A stand-in for species PhaseParams: only the fields schedules read."""
     return SimpleNamespace(
         light_hours_on=kw.get("light_hours_on", 12),
         fae_interval_min=kw.get("fae_interval_min", 20),
@@ -39,182 +35,170 @@ def _phase(**kw):
     )
 
 
-def _at(hour, minute=0, wday=0):
-    """Freeze localtime at a given clock time (Monday by default)."""
-    st = time.struct_time((2026, 7, 13, hour, minute, 0, wday, 194, 0))
+def _at(year, month, day, hour, minute=0):
+    """Freeze localtime at a local date and time."""
+    st = time.localtime(time.mktime((year, month, day, hour, minute, 0, 0, 0, -1)))
     return patch("app.automation.engine.time.localtime", return_value=st)
+
+
+# 2026-07-13 is a Monday, 2026-07-19 a Sunday.
+_MON, _SUN = (2026, 7, 13), (2026, 7, 19)
 
 
 # ── cron ────────────────────────────────────────────────────────────────
 
 
-def test_cron_every_20_minutes():
+@pytest.mark.parametrize("expr,when,expected", [
+    ("*/20 * * * *", (*_MON, 9, 20), True),
+    ("*/20 * * * *", (*_MON, 9, 21), False),
+    ("30 6 * * *", (*_MON, 6, 30), True),
+    ("30 6 * * *", (*_MON, 7, 30), False),
+    ("15 8-10 * * 1-5", (*_MON, 9, 15), True),
+    ("0,15,30 * * * *", (*_MON, 9, 15), True),
+    ("15 9 * * 0", (*_MON, 9, 15), False),
+    ("15 9 * * 0", (*_SUN, 9, 15), True),     # day-of-week 0 is Sunday ...
+    ("15 9 * * 7", (*_SUN, 9, 15), True),     # ... and so is 7
+    # Both day fields restricted: either day matches (POSIX / Vixie cron).
+    ("0 8 1 * 1", (2026, 10, 5, 8), True),    # a Monday, the 5th
+    ("0 8 1 * 1", (2026, 10, 1, 8), True),    # a Thursday, the 1st
+    ("0 8 1 * 1", (2026, 10, 6, 8), False),   # a Tuesday, the 6th
+    # A day field starting with "*" (even "*/2") is unrestricted: both must match.
+    ("0 8 */2 * 1", (2026, 10, 12, 8), True),   # Monday, even day
+    ("0 8 */2 * 1", (2026, 10, 5, 8), False),   # Monday, odd day
+    ("0 8 */2 * 1", (2026, 10, 6, 8), False),   # even day, Tuesday
+    # A cron that cannot be read never fires.
+    ("not a cron", (*_MON, 9, 20), False),
+    ("*/0 * * * *", (*_MON, 9, 20), False),
+    ("*/x * * * *", (*_MON, 9, 20), False),
+    ("1-x * * * *", (*_MON, 9, 20), False),
+    ("x * * * *", (*_MON, 9, 20), False),
+])
+def test_a_cron_schedule_matches_its_minute(expr, when, expected):
+    with _at(*when):
+        assert _eval_schedule(ScheduleCondition(cron=expr)) is expected
+
+
+def test_a_cron_matches_a_minute_between_two_frames():
+    """With the time the rule was last evaluated, a matching minute that
+    started since then counts, and is never counted twice."""
     sched = ScheduleCondition(cron="*/20 * * * *")
-    with _at(9, 20):
-        assert _eval_schedule(sched) is True
-    with _at(9, 21):
-        assert _eval_schedule(sched) is False
-
-
-def test_cron_specific_hour_and_minute():
-    sched = ScheduleCondition(cron="30 6 * * *")   # 06:30 daily
-    with _at(6, 30):
-        assert _eval_schedule(sched) is True
-    with _at(7, 30):
-        assert _eval_schedule(sched) is False
-
-
-def test_cron_ranges_lists_and_dow():
-    with _at(9, 15, wday=0):  # Monday
-        assert _eval_schedule(ScheduleCondition(cron="15 8-10 * * 1-5")) is True
-        assert _eval_schedule(ScheduleCondition(cron="15 9 * * 0")) is False   # Sunday only
-        assert _eval_schedule(ScheduleCondition(cron="0,15,30 * * * *")) is True
-    with _at(9, 15, wday=6):  # Sunday — cron dow 0 AND 7
-        assert _eval_schedule(ScheduleCondition(cron="15 9 * * 0")) is True
-        assert _eval_schedule(ScheduleCondition(cron="15 9 * * 7")) is True
-
-
-def test_malformed_cron_does_not_fire():
-    assert _eval_schedule(ScheduleCondition(cron="not a cron")) is False
-
-
-def _day(year, month, day, hour=8, minute=0):
-    return time.localtime(time.mktime((year, month, day, hour, minute, 0, 0, 0, -1)))
-
-
-def test_cron_with_both_day_fields_matches_either_day():
-    """POSIX / Vixie cron: day-of-month OR day-of-week when both are set."""
-    assert _eval_cron("0 8 1 * 1", _day(2026, 10, 5)) is True    # a Monday, the 5th
-    assert _eval_cron("0 8 1 * 1", _day(2026, 10, 1)) is True    # a Thursday, the 1st
-    assert _eval_cron("0 8 1 * 1", _day(2026, 10, 6)) is False   # a Tuesday, the 6th
-
-
-def test_cron_with_a_starred_day_field_needs_both_days():
-    """A day field starting with "*" (even "*/2") does not count as set."""
-    assert _eval_cron("0 8 */2 * 1", _day(2026, 10, 12)) is True   # Monday, even day
-    assert _eval_cron("0 8 */2 * 1", _day(2026, 10, 5)) is False   # Monday, odd day
-    assert _eval_cron("0 8 */2 * 1", _day(2026, 10, 6)) is False   # even day, Tuesday
+    with clock(local(12, 21, 0.3)):
+        assert _eval_schedule(sched, None, None, cron_since=local(12, 19, 59.6)) is True
+        assert _eval_schedule(sched, None, None, cron_since=local(12, 20, 5)) is False
+        assert _eval_schedule(ScheduleCondition(cron="*/20 * *"), None, None,
+                              cron_since=local(12, 19)) is False
 
 
 # ── species-driven photoperiod ──────────────────────────────────────────
 
 
-def test_photoperiod_reads_the_same_in_any_case():
-    sched = ScheduleCondition(photoperiod=" ON ")
-    assert sched.photoperiod == "on"
-    with _at(12):
-        assert _eval_schedule(sched, _phase(light_hours_on=12)) is True
-    with _at(22):
-        assert _eval_schedule(sched, _phase(light_hours_on=12)) is False
+@pytest.mark.parametrize("photoperiod,start,hours_on,hhmm,expected", [
+    # 12/12 from 06:00: lit 06:00-18:00.
+    ("on", "06:00", 12, (12, 0), True),
+    ("on", "06:00", 12, (22, 0), False),
+    ("on", "06:00", 12, (5, 59), False),
+    ("on", "06:00", 12, (6, 0), True),
+    ("on", "06:00", 12, (18, 0), False),
+    ("off", "06:00", 12, (12, 0), False),
+    ("off", "06:00", 12, (22, 0), True),
+    # The same rule follows the species: 16/8 is still lit at 20:00.
+    ("on", "06:00", 16, (20, 0), True),
+    ("on", "06:00", 12, (20, 0), False),
+    # A dark phase (colonization) never opens the window; continuous light
+    # never closes it.
+    ("on", "06:00", 0, (12, 0), False),
+    ("off", "06:00", 0, (12, 0), True),
+    ("on", "06:00", 24, (3, 0), True),
+    ("off", "06:00", 24, (3, 0), False),
+    # A window that wraps past midnight: 20:00 → 08:00.
+    ("on", "20:00", 12, (23, 0), True),
+    ("on", "20:00", 12, (2, 0), True),
+    ("on", "20:00", 12, (9, 0), False),
+    # Read in any case and spacing.
+    (" ON ", "06:00", 12, (12, 0), True),
+    (" ON ", "06:00", 12, (22, 0), False),
+    # A start it cannot read opens the window at 06:00.
+    ("on", "noon", 12, (7, 0), True),
+    ("on", "noon", 12, (5, 0), False),
+    # Anything but on/off never matches: it used to read as "off" and ran
+    # the rule through the dark period (and all day in a dark phase).
+    ("bogus", "06:00", 0, (3, 0), False),
+    ("bogus", "06:00", 12, (12, 0), False),
+    ("bogus", "06:00", 12, (22, 0), False),
+    ("bogus", "06:00", 24, (22, 0), False),
+])
+def test_the_photoperiod_follows_the_species_light_window(photoperiod, start, hours_on,
+                                                         hhmm, expected):
+    sched = ScheduleCondition(photoperiod=photoperiod, photoperiod_start=start)
+    with _at(*_MON, *hhmm):
+        assert _eval_schedule(sched, _phase(light_hours_on=hours_on)) is expected
 
 
-def test_an_unreadable_photoperiod_never_matches():
-    """It used to read as "off": the rule ran through the dark period, and in
-    a dark phase all day."""
-    sched = ScheduleCondition(photoperiod="bogus")
-    for hours_on in (0, 12, 24):
-        for hour in (3, 12, 22):
-            with _at(hour):
-                assert _eval_schedule(sched, _phase(light_hours_on=hours_on)) is False
+def test_an_unreadable_photoperiod_is_logged_once_not_on_every_frame(caplog):
+    """Every telemetry frame evaluates the schedule: a stored bad value warns
+    once per process, then never fires quietly."""
+    sched = ScheduleCondition(photoperiod="sunset", photoperiod_start="06:00")
+    with caplog.at_level(logging.WARNING, logger="app.automation.engine"), _at(*_MON, 12):
+        for _ in range(3):
+            assert _eval_schedule(sched, _phase(light_hours_on=12)) is False
+    assert sum("'sunset'" in r.getMessage() for r in caplog.records) == 1
 
 
-def test_photoperiod_12_12_is_a_real_cycle():
-    """06:00 start, 12h on → lights on 06:00-18:00, off 18:00-06:00."""
-    on = ScheduleCondition(photoperiod="on", photoperiod_start="06:00")
-    off = ScheduleCondition(photoperiod="off", photoperiod_start="06:00")
-    phase = _phase(light_hours_on=12)
-
-    with _at(12, 0):   # midday — inside the window
-        assert _eval_schedule(on, phase) is True
-        assert _eval_schedule(off, phase) is False
-    with _at(22, 0):   # night — outside it
-        assert _eval_schedule(on, phase) is False
-        assert _eval_schedule(off, phase) is True
-    with _at(5, 59):   # one minute before dawn
-        assert _eval_schedule(on, phase) is False
-    with _at(6, 0):    # window opens
-        assert _eval_schedule(on, phase) is True
-    with _at(18, 0):   # window closes
-        assert _eval_schedule(on, phase) is False
-
-
-def test_photoperiod_follows_the_species_not_the_rule():
-    """The SAME rule yields 16/8 for a 16-hour species. That's the point."""
-    on = ScheduleCondition(photoperiod="on", photoperiod_start="06:00")
-    with _at(20, 0):  # 8pm
-        assert _eval_schedule(on, _phase(light_hours_on=12)) is False  # 12/12 → dark
-        assert _eval_schedule(on, _phase(light_hours_on=16)) is True   # 16/8  → still lit
-
-
-def test_dark_phase_never_opens_the_window():
-    """Colonization has light_hours_on=0 — no special-casing needed."""
+def test_a_photoperiod_with_no_light_hours_never_fires():
+    """No profile, or one with no light hours: never guess a light cycle."""
     on = ScheduleCondition(photoperiod="on")
     off = ScheduleCondition(photoperiod="off")
-    dark = _phase(light_hours_on=0)
-    for hour in (0, 6, 12, 18):
-        with _at(hour):
-            assert _eval_schedule(on, dark) is False
-            assert _eval_schedule(off, dark) is True
+    with _at(*_MON, 12):
+        assert _eval_schedule(on, None) is False
+        assert _eval_schedule(on, SimpleNamespace()) is False
+        assert _eval_schedule(off, SimpleNamespace()) is False
 
 
-def test_continuous_light_never_closes_the_window():
-    on = ScheduleCondition(photoperiod="on")
-    always = _phase(light_hours_on=24)
-    with _at(3, 0):
-        assert _eval_schedule(on, always) is True
-        assert _eval_schedule(ScheduleCondition(photoperiod="off"), always) is False
+# ── intervals: species-driven, elapsed since the last fire ──────────────
 
 
-def test_photoperiod_window_wraps_past_midnight():
-    """A 20:00 start with 12h on runs 20:00 → 08:00."""
-    on = ScheduleCondition(photoperiod="on", photoperiod_start="20:00")
-    phase = _phase(light_hours_on=12)
-    with _at(23, 0):
-        assert _eval_schedule(on, phase) is True
-    with _at(2, 0):     # after midnight, still lit
-        assert _eval_schedule(on, phase) is True
-    with _at(9, 0):     # after the window closed
-        assert _eval_schedule(on, phase) is False
+@pytest.mark.parametrize("sched,phase,minutes_ago,expected", [
+    (ScheduleCondition(interval_min=20), None, 21, True),
+    (ScheduleCondition(interval_min=20), None, 3, False),
+    (ScheduleCondition(interval_min=20), None, None, True),   # never fired: fires now
+    # The species' period wins over the rule's literal: 25 min is due under
+    # the literal 20, not under the species' 30.
+    (ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20),
+     _phase(fae_interval_min=30), 25, False),
+    (ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20),
+     _phase(fae_interval_min=30), 31, True),
+    # A profile silent on the period falls back to the literal.
+    (ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20),
+     SimpleNamespace(), 21, True),
+    (ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20),
+     SimpleNamespace(), 5, False),
+])
+def test_an_interval_counts_from_the_last_fire_not_the_wall_clock(sched, phase, minutes_ago,
+                                                                  expected):
+    last_fired = None if minutes_ago is None else time.time() - minutes_ago * 60
+    with _at(*_MON, 9, 7):  # not a multiple of 20: the old modulo form never matched here
+        assert _eval_schedule(sched, phase, last_fired=last_fired) is expected
 
 
-def test_photoperiod_without_a_species_profile_does_not_fire():
-    """No profile = no opinion. Never guess a light cycle."""
-    assert _eval_schedule(ScheduleCondition(photoperiod="on"), None) is False
+# ── time ranges ─────────────────────────────────────────────────────────
 
 
-# ── species-driven interval + elapsed semantics ─────────────────────────
+@pytest.mark.parametrize("time_range,hhmm,expected", [
+    (("08:00", "20:00"), (12, 0), True),
+    (("08:00", "20:00"), (8, 0), True),      # the start is in the range ...
+    (("08:00", "20:00"), (20, 0), False),    # ... the end is not
+    (("08:00", "20:00"), (22, 0), False),
+    (("22:00", "06:00"), (23, 0), True),     # overnight
+    (("22:00", "06:00"), (2, 0), True),
+    (("22:00", "06:00"), (6, 0), False),
+    (("22:00", "06:00"), (12, 0), False),
+])
+def test_a_time_range_matches_inside_it(time_range, hhmm, expected):
+    with _at(*_MON, *hhmm):
+        assert _eval_schedule(ScheduleCondition(time_range=time_range)) is expected
 
 
-def test_interval_comes_from_the_species_profile():
-    """profile_interval_ref wins over the literal fallback."""
-    sched = ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20)
-    phase = _phase(fae_interval_min=30)
-    now = time.time()
-
-    # 25 min since last fire: due under the rule's literal 20, NOT under the
-    # species' 30. The species must win.
-    assert _eval_schedule(sched, phase, last_fired=now - 25 * 60) is False
-    assert _eval_schedule(sched, phase, last_fired=now - 31 * 60) is True
-
-
-def test_interval_falls_back_to_the_literal_when_the_profile_is_silent():
-    sched = ScheduleCondition(profile_interval_ref="fae_interval_min", interval_min=20)
-    phase = SimpleNamespace()  # profile with no FAE fields at all
-    now = time.time()
-    assert _eval_schedule(sched, phase, last_fired=now - 21 * 60) is True
-    assert _eval_schedule(sched, phase, last_fired=now - 5 * 60) is False
-
-
-def test_interval_is_elapsed_based_not_wall_clock_modulo():
-    """The old modulo form only matched on an exact minute boundary, so a
-    telemetry frame arriving a minute late skipped the whole cycle."""
-    sched = ScheduleCondition(interval_min=20)
-    now = time.time()
-    with _at(9, 7):   # NOT a multiple of 20 — the old code returned False here
-        assert _eval_schedule(sched, None, last_fired=now - 21 * 60) is True
-        assert _eval_schedule(sched, None, last_fired=now - 3 * 60) is False
-
-
-def test_never_fired_rule_fires_immediately():
-    with _at(9, 7):
-        assert _eval_schedule(ScheduleCondition(interval_min=20), None, last_fired=None) is True
+def test_a_schedule_that_says_nothing_never_fires():
+    with _at(*_MON, 12):
+        assert _eval_schedule(None) is False
+        assert _eval_schedule(ScheduleCondition()) is False

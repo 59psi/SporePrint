@@ -1,18 +1,19 @@
-"""Hardware + vision cross-cluster follow-ups (hardware audit, pass 2).
+"""Manual node commands, node peripherals and the camera frame ingest.
 
 Hardware:
 - a manual node OFF never carries pwm/level (deployed firmware let pwm win),
-  and clears the automation safety ceiling on that channel (automation-safety
-  #3a) only when it was actually published;
+  and clears the automation safety ceiling on that channel only when it was
+  actually published;
 - POST /api/hardware/nodes/{id}/peripherals sends a validated cmd/config
-  {"peripherals": {...}} (fw-node-provisioning #4).
+  {"peripherals": {...}} with exactly the keys the node firmware applies.
 
-Vision (fw-drivers-cam #1, cloud-integrations-auth #5, sessions-species #2):
+Vision ingest:
 - a missing / unparseable / < 1e9 X-Timestamp is stamped with arrival time;
 - X-Camera-Sensor is recorded on the node and named in the Claude prompt;
 - an oversized upload is refused without buffering it;
-- frames from a camera listed in a chamber are tagged with that chamber's grow;
-- a vision harvest-readiness read goes out through notifications.harvest_ready.
+- frames from a camera listed in a chamber are tagged with that chamber's
+  grow, and a camera in no chamber never with another chamber's grow.
+(The harvest-readiness page: test_vision_harvest_signal.py.)
 """
 
 import asyncio
@@ -48,19 +49,9 @@ from app.hardware.service import (
 )
 from app.sessions.models import SessionCreate
 from app.sessions.service import create_session
-from app.species.service import seed_builtins
 from app.telemetry.service import active_session_for_node
 
 JPEG = b"\xff\xd8\xff\xe0" + b"fake-jpeg-body"
-
-
-@pytest.fixture(autouse=True)
-def _reset_pause_state():
-    engine._paused = False
-    engine._pause_loaded = False
-    yield
-    engine._paused = False
-    engine._pause_loaded = False
 
 
 @pytest.fixture(autouse=True)
@@ -151,10 +142,13 @@ async def test_manual_scene_off_clears_a_scene_ceiling(mock_mqtt, monkeypatch):
 # ── peripherals ────────────────────────────────────────────────────────────
 
 
-def test_peripherals_command_validation():
-    assert peripherals_command({"mhz19": True, "reed": False}) == {
-        "peripherals": {"mhz19": True, "reed": False}}
-    for bad in ({}, {"mhz19": "yes"}, {"hx711": 1}, {"co2": True}, []):
+def test_peripherals_command_takes_known_boolean_keys_only():
+    # reed_inv is applied live by the firmware (apply_peripheral_cmd) and the
+    # build guide tells operators to send it; the endpoint used to 422 it.
+    for valid in ({"mhz19": True, "reed": False}, {"reed_inv": True},
+                  {"reed": True, "reed_inv": False}):
+        assert peripherals_command(valid) == {"peripherals": valid}
+    for bad in ({}, {"mhz19": "yes"}, {"hx711": 1}, {"co2": True}, [], {"reed_inv": "yes"}):
         with pytest.raises(ValueError):
             peripherals_command(bad)
 
@@ -180,22 +174,6 @@ def test_peripherals_endpoint_503_when_not_published(client, mock_mqtt):
     assert r.status_code == 503
 
 
-def test_peripherals_accepts_reed_inv():
-    """Firmware apply_peripheral_cmd takes reed_inv (applied live, no reboot)
-    and the build guide tells operators to send it; the endpoint 422'd it."""
-    assert peripherals_command({"reed_inv": True}) == {"peripherals": {"reed_inv": True}}
-    assert peripherals_command({"reed": True, "reed_inv": False}) == {
-        "peripherals": {"reed": True, "reed_inv": False}}
-    with pytest.raises(ValueError):
-        peripherals_command({"reed_inv": "yes"})
-
-
-def test_peripherals_endpoint_publishes_reed_inv(client, mock_mqtt):
-    r = client.post("/api/hardware/nodes/node-1/peripherals", json={"reed_inv": True})
-    assert r.status_code == 200, r.text
-    assert mock_mqtt == [("sporeprint/node-1/cmd/config", {"peripherals": {"reed_inv": True}})]
-
-
 def test_peripheral_keys_match_the_firmware():
     """PERIPHERAL_KEYS is exactly the key set node firmware applies."""
     src = (Path(__file__).resolve().parents[2] / "firmware" / "src" / "node"
@@ -215,7 +193,9 @@ def _post(client, headers=None, **kw):
     return client.post("/api/vision/frame", content=kw.pop("content", JPEG), headers=hdrs, **kw)
 
 
-@pytest.mark.parametrize("raw", ["garbage", "nan", "inf", "-5", "1e30", ""])
+# "900": a cam without NTP sends uptime seconds; anything < 1e9 is unsynced
+# and would file the frame in 1970.
+@pytest.mark.parametrize("raw", ["900", "garbage", "nan", "inf", "-5", "1e30", ""])
 def test_unusable_x_timestamp_is_stamped_with_arrival_time(client, raw):
     before = time.time()
     r = _post(client, {"X-Timestamp": raw})
@@ -341,32 +321,3 @@ def test_unlisted_camera_is_never_tagged_with_one_of_two_chambers_grows(client):
     assert client.get(f"/api/vision/frames/{loose}").json()["session_id"] is None
     tagged = asyncio.run(active_session_for_node("cam-z", time.time() + 5))
     assert tagged is None
-
-
-# ── harvest readiness → notifications.harvest_ready ────────────────────────
-
-
-async def test_harvest_signal_notifies_through_harvest_ready(monkeypatch):
-    await seed_builtins()
-    sent = []
-
-    async def _harvest_ready(species, session_name, *, reason=None, dedup_key=None):
-        sent.append((species, session_name, reason, dedup_key))
-
-    async def _forward(event_type, data):
-        return None
-
-    monkeypatch.setattr(vision_service, "harvest_ready", _harvest_ready)
-    monkeypatch.setattr("app.cloud.service.forward_event", _forward)
-    s = await create_session(SessionCreate(name="Flush 1", species_profile_id="blue_oyster",
-                                           current_phase="fruiting"))
-    frame = {"id": 7, "session_id": s["id"], "node_id": "cam-01"}
-    grow = await vision_service._load_frame_grow(s["id"])
-    await vision_service._maybe_harvest_alert(
-        frame, {"harvest_readiness": "overdue", "growth_rate": "stalled"}, grow)
-    assert sent == [("Blue Oyster", "Flush 1", "fruit body is overdue for harvest",
-                     f"harvest:{s['id']}")]
-    # One per session per 12 h.
-    await vision_service._maybe_harvest_alert(
-        frame, {"harvest_readiness": "overdue"}, grow)
-    assert len(sent) == 1

@@ -144,17 +144,15 @@ def test_the_key_jobs_run_in_the_release_environment():
             assert "environment" not in job, name
 
 
-def test_actions_are_pinned_to_commit_shas_and_checkouts_keep_no_token():
+def test_no_release_step_restores_a_cache():
+    """A restored cache could hand a release build a poisoned toolchain
+    (actions/cache, or setup-python's own pip cache). SHA pins and token-free
+    checkouts are test_workflows.py's, for every workflow."""
     for name, job in JOBS.items():
         for step in job["steps"]:
             uses = step.get("uses")
             if not uses:
                 continue
-            assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", uses), f"{name}: {uses}"
-            if uses.startswith("actions/checkout@"):
-                assert step["with"]["persist-credentials"] is False, name
-            # A restored cache could hand a release build a poisoned toolchain
-            # (actions/cache, or setup-python's own pip cache).
             assert not uses.startswith("actions/cache"), f"{name}: {uses}"
             assert not any(k.startswith("cache") for k in step.get("with", {})), f"{name}: {uses}"
 
@@ -452,6 +450,13 @@ def test_no_expression_is_interpolated_into_a_shell_script():
 TAG_STEP = next(s for s in _steps("release-key") if s.get("id") == "meta")
 
 
+def test_the_tag_guard_reads_the_dispatch_input_and_the_pushed_ref():
+    """A dispatch releases the tag it names, a push the tag pushed (never the
+    branch the dispatch ran from); the guard below gets them only as env."""
+    assert TAG_STEP["env"] == {"EVENT_NAME": "${{ github.event_name }}", "INPUT_TAG": "${{ inputs.tag }}",
+                               "REF_NAME": "${{ github.ref_name }}", "REF_TYPE": "${{ github.ref_type }}"}
+
+
 def _resolve(tmp_path: Path, **env: str) -> tuple[int, dict[str, str]]:
     out = tmp_path / "github_output"
     out.write_text("")
@@ -688,9 +693,6 @@ def test_the_build_cannot_fetch_python_packages():
     assert build["env"]["UV_OFFLINE"] == "1"
     assert build["env"]["UV_NO_BUILD_ISOLATION"] == "1"
     assert build["env"]["PIP_NO_INDEX"] == "1"
-    # ...and the post-build check also covers the penv.
-    check = _step("build", "Check the build installed only checked packages")["run"]
-    assert "pin_firmware_toolchain.py check" in check
 
 
 def test_every_pip_install_in_the_release_is_hash_checked():

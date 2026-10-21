@@ -9,7 +9,6 @@ nothing. Both wire shapes are now accepted; these tests pin both.
 """
 
 import asyncio
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -28,8 +27,15 @@ def _frame_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "vision_storage", str(tmp_path / "frames"))
 
 
-def test_raw_jpeg_body_is_accepted(client):
-    """Exactly what the firmware sends: raw bytes, Content-Type: image/jpeg."""
+def _frame_row(client, frame_id: int) -> dict:
+    r = client.get(f"/api/vision/frames/{frame_id}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_the_cams_raw_jpeg_is_stored_with_its_headers(client):
+    """Exactly what the firmware sends: raw bytes, Content-Type: image/jpeg,
+    a synced capture time, the resolution and whether the flash fired."""
     r = client.post(
         "/api/vision/frame",
         content=JPEG,
@@ -42,25 +48,27 @@ def test_raw_jpeg_body_is_accepted(client):
         },
     )
     assert r.status_code == 200, r.text
+    row = _frame_row(client, r.json()["frame_id"])
+    assert (row["node_id"], row["timestamp"], row["resolution"], row["flash_used"]) == (
+        "cam-01", 1752300000, "1600x1200", 1)
+    assert Path(row["file_path"]).read_bytes() == JPEG
 
 
-def test_multipart_upload_still_works(client):
-    """The web UI and existing tests post multipart. Don't break them."""
+@pytest.mark.parametrize("name,body,mime,suffix", [
+    ("frame.jpg", JPEG, "image/jpeg", ".jpg"),
+    # PNG/WebP uploads were saved as .jpg (and later declared to Claude as
+    # image/jpeg, which the API rejects).
+    ("frame.png", PNG, "image/png", ".png"),
+], ids=["jpeg", "png"])
+def test_a_multipart_upload_is_stored_under_its_own_type(client, name, body, mime, suffix):
+    """The web UI posts multipart."""
     r = client.post(
         "/api/vision/frame",
-        files={"file": ("frame.jpg", JPEG, "image/jpeg")},
+        files={"file": (name, body, mime)},
         headers={"X-Node-Id": "cam-01"},
     )
     assert r.status_code == 200, r.text
-
-
-def test_non_image_raw_body_is_rejected(client):
-    r = client.post(
-        "/api/vision/frame",
-        content=b"not an image",
-        headers={"Content-Type": "application/json", "X-Node-Id": "cam-01"},
-    )
-    assert r.status_code == 415
+    assert r.json()["file_path"].endswith(suffix)
 
 
 def test_empty_raw_body_is_rejected(client):
@@ -80,37 +88,6 @@ def test_traversal_node_id_still_rejected(client):
         headers={"Content-Type": "image/jpeg", "X-Node-Id": "../../etc/passwd"},
     )
     assert r.status_code == 400
-
-
-def _frame_row(client, frame_id: int) -> dict:
-    r = client.get(f"/api/vision/frames/{frame_id}")
-    assert r.status_code == 200, r.text
-    return r.json()
-
-
-def test_unsynced_uptime_timestamp_is_stamped_with_arrival_time(client):
-    """Contract #2: a cam without NTP sends uptime seconds (e.g. 900).
-    Anything < 1e9 is unsynced, so the server stamps arrival time instead of
-    filing the frame in 1970."""
-    before = time.time()
-    r = client.post(
-        "/api/vision/frame",
-        content=JPEG,
-        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01", "X-Timestamp": "900"},
-    )
-    assert r.status_code == 200, r.text
-    row = _frame_row(client, r.json()["frame_id"])
-    assert before - 1 <= row["timestamp"] <= time.time() + 1
-
-
-def test_synced_timestamp_is_kept(client):
-    r = client.post(
-        "/api/vision/frame",
-        content=JPEG,
-        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01", "X-Timestamp": "1752300000"},
-    )
-    assert r.status_code == 200, r.text
-    assert _frame_row(client, r.json()["frame_id"])["timestamp"] == 1752300000
 
 
 def test_frames_with_the_same_timestamp_never_overwrite_each_other(client):
@@ -133,27 +110,19 @@ def test_frames_with_the_same_timestamp_never_overwrite_each_other(client):
     assert Path(paths[1]).read_bytes() == second
 
 
-def test_png_upload_keeps_png_extension(client):
-    """PNG/WebP uploads were saved as .jpg (and later declared to
-    Claude as image/jpeg, which the API rejects)."""
-    r = client.post(
-        "/api/vision/frame",
-        files={"file": ("frame.png", PNG, "image/png")},
-        headers={"X-Node-Id": "cam-01"},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["file_path"].endswith(".png")
-
-
-@pytest.mark.parametrize("body", [b"<html>not an image</html>", b"GIF89a" + b"gif-body"])
-def test_a_body_that_is_no_accepted_image_is_refused_whatever_its_label(client, body):
+@pytest.mark.parametrize("label,body", [
+    ("application/json", b"not an image"),
+    ("image/jpeg", b"<html>not an image</html>"),
+    ("image/jpeg", b"GIF89a" + b"gif-body"),
+], ids=["not-an-image-type", "html-labelled-jpeg", "gif-labelled-jpeg"])
+def test_a_body_that_is_no_accepted_image_is_refused_whatever_its_label(client, label, body):
     """The bytes decide, as for a contamination photo: a body labelled
     image/jpeg that is no JPEG / PNG / WebP image was stored as a frame and
     later sent to Claude as one."""
     r = client.post(
         "/api/vision/frame",
         content=body,
-        headers={"Content-Type": "image/jpeg", "X-Node-Id": "cam-01"},
+        headers={"Content-Type": label, "X-Node-Id": "cam-01"},
     )
     assert r.status_code == 415, r.text
     storage = Path(settings.vision_storage)

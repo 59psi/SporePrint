@@ -22,23 +22,13 @@ from app import main
 from app.db import get_db
 from app.health.service import _task_registry, register_task
 from app.mqtt import _handle_message
-
-
-class _Sio:
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event, data):
-        self.events.append((event, data))
-
-    def named(self, event):
-        return [d for e, d in self.events if e == event]
+from tests._fakes import RecordingSio
 
 
 @pytest.fixture()
 def paged(monkeypatch):
     """Record the sweeper's pages, cloud events and local emits."""
-    record = {"ntfy": [], "cloud": [], "sio": _Sio()}
+    record = {"ntfy": [], "cloud": [], "sio": RecordingSio()}
 
     async def _node_offline(node_id):
         record["ntfy"].append(node_id)
@@ -73,7 +63,7 @@ async def _heartbeat(sio, node_id: str) -> None:
 
 
 async def _online_then_lwt(node_id: str) -> None:
-    sio = _Sio()
+    sio = RecordingSio()
     await _handle_message(sio, f"sporeprint/{node_id}/status", {"status": "online"})
     await _heartbeat(sio, node_id)
     # ~22 s after the node dies the broker publishes its will.
@@ -107,7 +97,7 @@ async def test_a_node_that_just_went_quiet_is_not_paged_yet(paged):
 
 
 async def test_a_node_silent_without_a_will_is_still_paged(paged):
-    await _heartbeat(_Sio(), "climate-b")
+    await _heartbeat(RecordingSio(), "climate-b")
     await _set_last_seen("climate-b", 20 * 60)
     await main._sweep_stale_nodes()
     assert paged["ntfy"] == ["climate-b"]
@@ -119,7 +109,7 @@ async def test_a_heartbeat_re_arms_the_page(paged):
     await _set_last_seen("relay-a", 30 * 60)
     await main._sweep_stale_nodes()
 
-    sio = _Sio()
+    sio = RecordingSio()
     await _heartbeat(sio, "relay-a")  # back
     assert await _row("relay-a") == {"status": "online", "offline_notified_at": None}
     assert sio.named("node_status") == [{"node_id": "relay-a", "status": "online"}]
@@ -137,16 +127,16 @@ async def test_a_live_online_status_re_arms_but_a_replayed_one_does_not(paged):
 
     # The broker replays the stored 'online' on every Pi (re)subscribe; a dead
     # node must not be paged again after each restart.
-    await _handle_message(_Sio(), "sporeprint/relay-a/status", {"status": "online"},
+    await _handle_message(RecordingSio(), "sporeprint/relay-a/status", {"status": "online"},
                           retained=True)
     assert (await _row("relay-a"))["offline_notified_at"] is not None
 
-    await _handle_message(_Sio(), "sporeprint/relay-a/status", {"status": "online"})
+    await _handle_message(RecordingSio(), "sporeprint/relay-a/status", {"status": "online"})
     assert (await _row("relay-a"))["offline_notified_at"] is None
 
 
 async def test_a_steady_heartbeat_emits_no_status_change(paged):
-    sio = _Sio()
+    sio = RecordingSio()
     await _heartbeat(sio, "relay-a")   # first heard: news
     await _heartbeat(sio, "relay-a")   # steady: not news
     assert sio.named("node_status") == [{"node_id": "relay-a", "status": "online"}]
@@ -177,18 +167,29 @@ async def test_pages_go_out_after_the_rows_are_committed(monkeypatch, paged):
     assert seen == [2, 2]
 
 
-async def test_a_failing_page_does_not_stop_the_others(monkeypatch, paged):
+@pytest.mark.parametrize("failing", ["socket", "page", "cloud"])
+async def test_one_failing_notice_does_not_stop_the_others(monkeypatch, paged, failing):
+    """Each swept node still gets every other notice: the local socket, the
+    ntfy page and the cloud's node_offline event fail independently."""
     for node_id in ("relay-a", "relay-b"):
         await _online_then_lwt(node_id)
         await _set_last_seen(node_id, 30 * 60)
 
-    async def _boom(node_id):
-        raise RuntimeError("ntfy down")
+    async def _boom(*args, **kwargs):
+        raise RuntimeError(f"{failing} down")
 
-    monkeypatch.setattr(main, "node_offline", _boom)
+    if failing == "socket":
+        monkeypatch.setattr(paged["sio"], "emit", _boom)
+    else:
+        monkeypatch.setattr(main, "node_offline" if failing == "page" else "forward_event", _boom)
     stale = await main._sweep_stale_nodes()
     assert {r["node_id"] for r in stale} == {"relay-a", "relay-b"}
-    assert len(paged["cloud"]) == 2
+    delivered = {
+        "socket": len(paged["sio"].named("node_status")),
+        "page": len(paged["ntfy"]),
+        "cloud": len(paged["cloud"]),
+    }
+    assert delivered == {channel: 0 if channel == failing else 2 for channel in delivered}
 
 
 # ── the loop reports its state to the task registry ───────────────────────
@@ -221,20 +222,18 @@ async def _run_once(monkeypatch, sweep) -> None:
         await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_a_failing_sweep_shows_as_an_error(monkeypatch, sweeper_task):
-    async def _fail():
-        raise RuntimeError("database is locked")
-
-    await _run_once(monkeypatch, _fail)
-    entry = _task_registry["node_liveness_sweeper"]
-    assert entry["status"] == "error"
-    assert "database is locked" in entry["error"]
-
-
-async def test_a_good_sweep_shows_as_idle(monkeypatch, sweeper_task):
-    async def _ok():
+@pytest.mark.parametrize("fails", [False, True], ids=["good-sweep", "failing-sweep"])
+async def test_each_sweep_reports_its_outcome_to_the_task_registry(
+        monkeypatch, sweeper_task, fails):
+    async def _sweep():
+        if fails:
+            raise RuntimeError("database is locked")
         return []
 
-    await _run_once(monkeypatch, _ok)
+    await _run_once(monkeypatch, _sweep)
     entry = _task_registry["node_liveness_sweeper"]
-    assert entry["status"] == "idle" and entry["last_run"] is not None
+    assert entry["last_run"] is not None
+    if fails:
+        assert entry["status"] == "error" and "database is locked" in entry["error"]
+    else:
+        assert entry["status"] == "idle" and entry["error"] is None

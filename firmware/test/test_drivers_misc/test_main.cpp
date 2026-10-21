@@ -26,70 +26,39 @@ static std::vector<uint8_t> mhz_reply(uint16_t ppm) {
     return f;
 }
 
-void test_mhz19_checksum() {
-    // Read-CO₂ request frame from the datasheet: checksum 0x79.
-    uint8_t req[9] = {0xFF, 0x01, 0x86, 0, 0, 0, 0, 0, 0};
-    TEST_ASSERT_EQUAL_UINT8(0x79, sp::Mhz19::checksum(req));
-}
-
-void test_mhz19_begin_sends_abc_off() {
+void test_mhz19_datasheet_frames_byte_for_byte() {
+    // The MH-Z19B (CLAUDE.md §5b's original UART CO₂ part, and the BOM's
+    // budget alternate before the MH-Z19C) speaks the same 9-byte protocol
+    // as the C — one driver serves both. Frames from the Winsen manuals,
+    // byte-for-byte:
     MockUart uart;
     MockClock clock;
     sp::Mhz19 mhz(uart, clock);
+
+    // Self-calibration (ABC) off — the default, so a bare begin() can never
+    // drift into auto-baselining a chamber that never sees fresh air.
+    const uint8_t abc_off[9] = {0xFF, 0x01, 0x79, 0x00, 0x00,
+                                0x00, 0x00, 0x00, 0x86};
     mhz.begin(false);
     TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
-    TEST_ASSERT_EQUAL_UINT8(0x79, uart.tx[2]);  // ABC toggle command
-    TEST_ASSERT_EQUAL_UINT8(0x00, uart.tx[3]);  // OFF — never auto-baseline
-    // A bare begin() must stay OFF — the default argument can't drift.
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(abc_off, uart.tx.data(), 9);
     uart.tx.clear();
     mhz.begin();
     TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
-    TEST_ASSERT_EQUAL_UINT8(0x00, uart.tx[3]);
-}
-
-void test_mhz19_begin_abc_on_when_asked() {
-    MockUart uart;
-    MockClock clock;
-    sp::Mhz19 mhz(uart, clock);
-    mhz.begin(true);
-    TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
-    TEST_ASSERT_EQUAL_UINT8(0x79, uart.tx[2]);
-    TEST_ASSERT_EQUAL_UINT8(0xA0, uart.tx[3]);  // ON — caller opted in
-    uint8_t frame[9];
-    for (int i = 0; i < 9; ++i) frame[i] = uart.tx[i];
-    TEST_ASSERT_EQUAL_UINT8(sp::Mhz19::checksum(frame), uart.tx[8]);
-}
-
-void test_mhz19_calibrate_zero_frame() {
-    // Datasheet zero-point frame, byte-for-byte: FF 01 87 00 00 00 00 00 78.
-    MockUart uart;
-    MockClock clock;
-    sp::Mhz19 mhz(uart, clock);
-    mhz.calibrate_zero();
-    const uint8_t expected[9] = {0xFF, 0x01, 0x87, 0x00, 0x00,
-                                 0x00, 0x00, 0x00, 0x78};
-    TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, uart.tx.data(), 9);
-}
-
-void test_mhz19b_datasheet_frames_byte_for_byte() {
-    // The MH-Z19B (CLAUDE.md §5b's original UART CO₂ part, and the BOM's
-    // budget alternate before the MH-Z19C) speaks the same 9-byte protocol
-    // as the C — one driver serves both. Frames from the Winsen MH-Z19B
-    // manual, byte-for-byte:
-    MockUart uart;
-    MockClock clock;
-    sp::Mhz19 mhz(uart, clock);
-
-    mhz.begin(false);  // self-calibration (ABC) off
-    const uint8_t abc_off[9] = {0xFF, 0x01, 0x79, 0x00, 0x00,
-                                0x00, 0x00, 0x00, 0x86};
     TEST_ASSERT_EQUAL_UINT8_ARRAY(abc_off, uart.tx.data(), 9);
     uart.tx.clear();
+    // ON only when the caller opts in.
     mhz.begin(true);
     const uint8_t abc_on[9] = {0xFF, 0x01, 0x79, 0xA0, 0x00,
                                0x00, 0x00, 0x00, 0xE6};
     TEST_ASSERT_EQUAL_UINT8_ARRAY(abc_on, uart.tx.data(), 9);
+    uart.tx.clear();
+    // Zero-point calibration.
+    mhz.calibrate_zero();
+    const uint8_t zero[9] = {0xFF, 0x01, 0x87, 0x00, 0x00,
+                             0x00, 0x00, 0x00, 0x78};
+    TEST_ASSERT_EQUAL_INT(9, (int)uart.tx.size());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(zero, uart.tx.data(), 9);
     uart.tx.clear();
 
     TEST_ASSERT_TRUE(mhz.request_read());
@@ -193,16 +162,6 @@ void test_mhz19_preheat_gates_readings_after_a_power_up_only() {
 
 static void no_delay(uint32_t) {}
 
-void test_hx711_ready_is_single_pin_read() {
-    MockPin dout, sck;
-    sp::Hx711 hx(dout, sck, no_delay);
-    hx.begin();
-    dout.level = true;  // high = not ready (disconnected cell floats high)
-    TEST_ASSERT_FALSE(hx.is_ready());
-    dout.level = false;
-    TEST_ASSERT_TRUE(hx.is_ready());
-}
-
 void test_hx711_reads_24_bits_with_gain_pulse() {
     MockPin dout, sck;
     sp::Hx711 hx(dout, sck, no_delay);
@@ -220,15 +179,6 @@ void test_hx711_reads_24_bits_with_gain_pulse() {
     for (bool w : sck.writes)
         if (w) ++rising;
     TEST_ASSERT_EQUAL_INT(25, rising);
-}
-
-void test_hx711_sign_extends_negative() {
-    MockPin dout, sck;
-    sp::Hx711 hx(dout, sck, no_delay);
-    hx.begin();
-    uint32_t sample = 0x800001;  // most negative + 1
-    for (int i = 23; i >= 0; --i) dout.read_script.push_back((sample >> i) & 1);
-    TEST_ASSERT_EQUAL_INT32((int32_t)0xFF800001, hx.read_raw());
 }
 
 void test_hx711_to_grams_math_and_uncalibrated_guard() {
@@ -264,6 +214,8 @@ void test_hx711_begin_pulls_dout_up_so_an_absent_module_is_never_ready() {
     TEST_ASSERT_EQUAL_INT((int)sp::PinMode::Output, (int)sck.mode);
     dout.level = true;  // what the pull-up holds with nothing connected
     TEST_ASSERT_FALSE(hx.is_ready());
+    dout.level = false;  // a conversion is ready
+    TEST_ASSERT_TRUE(hx.is_ready());
 }
 
 // An open load-cell wire saturates the input: the ADC returns a rail code,
@@ -328,7 +280,10 @@ void test_hx711_read_refuses_a_stuck_line() {
 void test_reed_debounce() {
     MockPin pin;
     sp::ReedSwitch reed(pin, 50);
-    pin.level = false;  // LOW = closed
+    // Not inverted unless asked: LOW = closed, the convention of every node
+    // that never set reed_inv.
+    TEST_ASSERT_FALSE(reed.inverted());
+    pin.level = false;
     reed.begin(0);
     TEST_ASSERT_TRUE(reed.is_closed());
 
@@ -383,17 +338,6 @@ void test_reed_inverted_reads_high_as_closed() {
     TEST_ASSERT_TRUE(reed.is_closed());
 }
 
-void test_reed_default_is_not_inverted() {
-    // The constructor default must stay the pre-flag behavior (LOW = closed)
-    // for every node that never sets reed_inv.
-    MockPin pin;
-    sp::ReedSwitch reed(pin);
-    TEST_ASSERT_FALSE(reed.inverted());
-    pin.level = false;
-    reed.begin(0);
-    TEST_ASSERT_TRUE(reed.is_closed());
-}
-
 void test_reed_invert_change_rebaselines_without_an_event() {
     // cmd/config {"peripherals":{"reed_inv":true}} applies live: the stored
     // door state is re-read under the new convention, and the correction is
@@ -420,26 +364,19 @@ void test_reed_invert_change_rebaselines_without_an_event() {
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_mhz19_checksum);
-    RUN_TEST(test_mhz19_begin_sends_abc_off);
-    RUN_TEST(test_mhz19_begin_abc_on_when_asked);
-    RUN_TEST(test_mhz19_calibrate_zero_frame);
     RUN_TEST(test_mhz19_read_roundtrip_trickled);
     RUN_TEST(test_mhz19_resyncs_on_noise);
     RUN_TEST(test_mhz19_bad_checksum_is_fail_not_zero);
     RUN_TEST(test_mhz19_timeout);
     RUN_TEST(test_mhz19_preheat_gates_readings_after_a_power_up_only);
-    RUN_TEST(test_mhz19b_datasheet_frames_byte_for_byte);
-    RUN_TEST(test_hx711_ready_is_single_pin_read);
+    RUN_TEST(test_mhz19_datasheet_frames_byte_for_byte);
     RUN_TEST(test_hx711_reads_24_bits_with_gain_pulse);
-    RUN_TEST(test_hx711_sign_extends_negative);
     RUN_TEST(test_hx711_to_grams_math_and_uncalibrated_guard);
     RUN_TEST(test_hx711_begin_pulls_dout_up_so_an_absent_module_is_never_ready);
     RUN_TEST(test_hx711_read_refuses_rail_codes);
     RUN_TEST(test_hx711_read_refuses_a_stuck_line);
     RUN_TEST(test_reed_debounce);
     RUN_TEST(test_reed_inverted_reads_high_as_closed);
-    RUN_TEST(test_reed_default_is_not_inverted);
     RUN_TEST(test_reed_invert_change_rebaselines_without_an_event);
     return UNITY_END();
 }

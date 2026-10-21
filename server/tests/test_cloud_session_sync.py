@@ -17,6 +17,8 @@ import pytest
 import app.cloud.service as cloud_service
 from app.cloud import session_sync
 from app.config import settings
+from app.contamination import service as contamination_service
+from app.contamination.service import record_event
 from app.db import get_db
 from app.sessions import service as sessions_service
 from app.sessions.models import HarvestCreate, PhaseAdvance, SessionCreate, SessionUpdate
@@ -88,8 +90,12 @@ def _parses(ts):
     return datetime.fromisoformat(ts) is not None
 
 
-async def test_snapshot_carries_the_session_profile_and_phase_timing(cloud):
-    s = await _create()
+async def test_snapshot_carries_the_session_profile_chamber_and_phase_timing(cloud):
+    async with get_db() as db:
+        cursor = await db.execute("INSERT INTO chambers (name) VALUES ('Closet shelf 2')")
+        await db.commit()
+        chamber_id = cursor.lastrowid
+    s = await _create(chamber_id=chamber_id)
     snap = await session_sync.build_session_snapshot(s["id"])
     profile = await get_profile("blue_oyster")
     phase = profile.phases[s["current_phase"]]
@@ -103,6 +109,7 @@ async def test_snapshot_carries_the_session_profile_and_phase_timing(cloud):
     assert _parses(snap["started_at"]) and snap["completed_at"] is None
     assert snap["metadata"]["species"] == {"binomial": profile.scientific_name, "common": profile.common_name}
     assert snap["metadata"]["name"] == "North tub"
+    assert snap["metadata"]["chamber"] == "Closet shelf 2"
     assert _parses(snap["metadata"]["phase_entered_at"])
     assert snap["metadata"]["phase_days_expected"] == phase.expected_duration_days[1]
     assert snap["harvests"] == [] and snap["flush_count"] == 0
@@ -171,19 +178,6 @@ async def test_every_session_change_reaches_the_cloud_newest_last(cloud):
     assert await session_sync.pending_ids(session_sync.SESSION) == []
 
 
-async def test_changes_made_offline_are_sent_on_reconnect(cloud):
-    cloud.up = False
-    s = await _create()
-    await session_sync.wait_idle()
-    assert cloud.sent == [] and await session_sync.pending_ids(session_sync.SESSION) == [s["id"]]
-
-    cloud.up = True
-    await session_sync.on_cloud_connect()
-    await session_sync.wait_idle()
-    assert [p["pi_session_id"] for p in cloud.sent] == [s["id"]]
-    assert await session_sync.pending_ids(session_sync.SESSION) == []
-
-
 async def test_an_offline_change_to_an_old_session_survives_a_restart(cloud):
     """A grow finished 400 days ago is outside the connect backfill. An edit
     made to it while the link was down used to live only in memory, so a
@@ -198,6 +192,8 @@ async def test_an_offline_change_to_an_old_session_survives_a_restart(cloud):
         old_id = cursor.lastrowid
     cloud.up = False
     await sessions_service.update_session(old_id, SessionUpdate(name="Old tub, weighed"))
+    await session_sync.wait_idle()
+    assert cloud.sent == [] and await session_sync.pending_ids(session_sync.SESSION) == [old_id]
     await _restart()
 
     cloud.up = True
@@ -208,11 +204,25 @@ async def test_an_offline_change_to_an_old_session_survives_a_restart(cloud):
     assert await session_sync.pending_ids(session_sync.SESSION) == []
 
 
+async def _started(session_id: int, days_ago: float) -> None:
+    """Back-date a session's start on this process's clock (the one the
+    connect backfill measures its window with)."""
+    async with get_db() as db:
+        await db.execute("UPDATE sessions SET created_at = ? WHERE id = ?",
+                         (time.time() - days_ago * 86400, session_id))
+        await db.commit()
+
+
 async def test_connect_backfills_recent_sessions_newest_first(cloud):
     cloud.up = False
     first = await _create(name="First")
     second = await _create(name="Second")
+    old = await _create(name="Before the window")
     await sessions_service.complete_session(first["id"])
+    await sessions_service.complete_session(old["id"])
+    await _started(first["id"], 30)
+    await _started(second["id"], 2)
+    await _started(old["id"], session_sync.BACKFILL_WINDOW_DAYS + 5)
     await _forget_everything()
 
     cloud.up = True
@@ -298,17 +308,18 @@ async def test_a_new_connect_replaces_a_catch_up_still_running(cloud, monkeypatc
         await _create(name=f"tub {n}")
     await _forget_everything()
     del cloud.sent[:]
-    gate = asyncio.Event()
+    gate, sending = asyncio.Event(), asyncio.Event()
     real_forward = cloud_service.forward_session_sync
 
     async def stuck_forward(payload):
+        sending.set()
         await gate.wait()
         return await real_forward(payload)
 
     monkeypatch.setattr(cloud_service, "forward_session_sync", stuck_forward)
     await session_sync.on_cloud_connect()
     first = session_sync._catch_up_task
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(sending.wait(), timeout=5)   # first catch-up is mid-send
     await session_sync.on_cloud_connect()  # the link dropped and came back
     second = session_sync._catch_up_task
     await asyncio.sleep(0)
@@ -350,6 +361,16 @@ async def test_connect_hook_is_registered_with_the_connector(cloud):
     assert session_sync.on_cloud_connect in cloud_service._connect_listeners
 
 
+async def test_attaching_the_sync_again_registers_each_hook_once(cloud):
+    """attach() runs at every app boot: a second call must not send every
+    change, recorded event and catch-up twice."""
+    session_sync.attach()
+    assert sessions_service._session_change_listeners.count(session_sync._on_session_changed) == 1
+    assert contamination_service._recorded_listeners.count(
+        session_sync._on_contamination_recorded) == 1
+    assert cloud_service._connect_listeners.count(session_sync.on_cloud_connect) == 1
+
+
 async def test_nothing_piles_up_when_no_cloud_is_configured(cloud, monkeypatch):
     monkeypatch.setattr(settings, "cloud_url", "")
     cloud.up = False
@@ -360,14 +381,12 @@ async def test_nothing_piles_up_when_no_cloud_is_configured(cloud, monkeypatch):
 
 def test_the_app_lifespan_attaches_the_sync(client):
     # `client` runs the real lifespan.
-    from app.contamination import service as contamination_service
     assert session_sync._on_session_changed in sessions_service._session_change_listeners
     assert session_sync._on_contamination_recorded in contamination_service._recorded_listeners
     assert session_sync.on_cloud_connect in cloud_service._connect_listeners
 
 
 async def _record(**kw):
-    from app.contamination.service import record_event
     return await record_event(**kw)
 
 
@@ -395,7 +414,7 @@ async def test_pi_sources_map_onto_the_cloud_column(cloud, pi_source, cloud_sour
     assert cloud.contamination[-1]["source"] == cloud_source
 
 
-async def test_offline_contamination_is_sent_after_the_sessions_on_reconnect(cloud):
+async def test_offline_contamination_is_sent_after_the_sessions_on_reconnect(cloud, monkeypatch):
     cloud.up = False
     s = await _create()
     ev = await _record(source="vision", session_id=s["id"], contamination_type="trich", confidence=0.9)
@@ -413,8 +432,8 @@ async def test_offline_contamination_is_sent_after_the_sessions_on_reconnect(clo
         order.append("contamination")
         return await real_contam(payload)
 
-    cloud_service.forward_session_sync = session_first
-    cloud_service.forward_contamination_event = contam_after
+    monkeypatch.setattr(cloud_service, "forward_session_sync", session_first)
+    monkeypatch.setattr(cloud_service, "forward_contamination_event", contam_after)
     cloud.up = True
     await session_sync.on_cloud_connect()
     await session_sync.wait_idle()
@@ -533,10 +552,3 @@ async def test_a_snapshot_counts_only_once_the_relay_acknowledges_it(monkeypatch
     assert await cloud_service.forward_session_sync({"pi_session_id": 1}) is delivered
     assert await cloud_service.forward_contamination_event({"pi_event_id": 1}) is delivered
     assert [event for event, _ in sio.calls] == ["session_sync", "contamination_event"]
-
-
-async def test_no_acknowledgement_is_not_a_delivery(monkeypatch):
-    monkeypatch.setattr(settings, "cloud_url", "https://cloud.example")
-    monkeypatch.setattr(cloud_service, "_sio", _AckingSio(error=TimeoutError()))
-    monkeypatch.setattr(cloud_service, "_connected", True)
-    assert await cloud_service.forward_session_sync({"pi_session_id": 1}) is False

@@ -11,15 +11,16 @@ api_key, so the gate is OFF by default; each gating test monkeypatches
 ``settings.api_key`` to switch it on, and the key-unset path is tested too.
 """
 
-import collections
-
 import pytest
+from engineio.async_drivers.asgi import translate_request
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.auth as auth
 import app.cloud.router as cloud_router_mod
 import app.cloud.service as cloud_service
+import app.health.service as health_service
+from app import main
 from app.auth import (
     ApiKeyMiddleware,
     _connect_rate_ok,
@@ -34,11 +35,11 @@ from app.db import get_db
 _KEY = "s3cret-lan-key"
 
 
-@pytest.fixture
-def gated_client(monkeypatch):
-    """A minimal app behind ApiKeyMiddleware with the key gate switched ON."""
-    monkeypatch.setattr(settings, "api_key", _KEY)
+def _auth(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
+
+def _gated_app() -> FastAPI:
     app = FastAPI()
     app.add_middleware(ApiKeyMiddleware)
 
@@ -51,6 +52,10 @@ def gated_client(monkeypatch):
         return {"ok": True}
 
     @app.get("/api/vision/frame")
+    async def vision_frame_get():
+        return {"ok": True}
+
+    @app.post("/api/vision/frame")
     async def vision_frame():
         return {"ok": True}
 
@@ -58,32 +63,45 @@ def gated_client(monkeypatch):
     async def public():
         return {"ok": True}
 
-    return TestClient(app)
+    return app
 
 
-def _auth(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+@pytest.fixture
+def gated_client(monkeypatch):
+    """A minimal app behind ApiKeyMiddleware with the key gate switched ON."""
+    monkeypatch.setattr(settings, "api_key", _KEY)
+    return TestClient(_gated_app())
 
 
 # ── ApiKeyMiddleware.dispatch — the 401 gate ───────────────────────────────
 
-def test_no_bearer_is_401(gated_client):
-    assert gated_client.get("/api/private").status_code == 401
+@pytest.mark.parametrize("method, path, headers, status", [
+    ("GET", "/api/private", {}, 401),
+    ("GET", "/api/private", _auth("nope"), 401),
+    ("GET", "/api/private", _auth(_KEY), 200),
+    # Header bytes are decoded as latin-1, so \xe9 arrives as a non-ASCII
+    # str: still just a wrong token, never a 500.
+    ("GET", "/api/private", {"Authorization": b"Bearer \xe9\xe9"}, 401),
+    # The whitelisted probe answers without a bearer.
+    ("GET", "/api/health", {}, 200),
+    # Only the camera's POST is exempt, not the path.
+    ("GET", "/api/vision/frame", {}, 401),
+    # The middleware only guards /api/*.
+    ("GET", "/public", {}, 200),
+    # CORS preflight carries no auth: it reaches the app (no route → 405),
+    # it is not turned into a 401.
+    ("OPTIONS", "/api/private", {}, 405),
+], ids=["no-bearer", "wrong-bearer", "right-bearer", "non-ascii-bearer", "health",
+        "vision-get", "non-api", "preflight"])
+def test_the_gate_lets_through_only_the_key_and_its_public_routes(
+        gated_client, method, path, headers, status):
+    assert gated_client.request(method, path, headers=headers).status_code == status
 
 
-def test_wrong_bearer_is_401(gated_client):
-    assert gated_client.get("/api/private", headers=_auth("nope")).status_code == 401
-
-
-def test_correct_bearer_passes(gated_client):
-    r = gated_client.get("/api/private", headers=_auth(_KEY))
-    assert r.status_code == 200
-    assert r.json() == {"ok": True}
-
-
-def test_public_health_path_bypasses_auth(gated_client):
-    # No Authorization header, yet the whitelisted probe must answer.
-    assert gated_client.get("/api/health").status_code == 200
+def test_gate_is_off_when_key_unset(monkeypatch):
+    monkeypatch.setattr(settings, "api_key", "")
+    # No bearer, but with no key configured the LAN-trust mode lets it through.
+    assert TestClient(_gated_app()).get("/api/private").status_code == 200
 
 
 # ── /api/vision/frame — the camera's keyless upload path ───────────────────
@@ -93,20 +111,7 @@ def test_public_health_path_bypasses_auth(gated_client):
 # with the body size bounded BEFORE it is read into RAM (the whitelist
 # comment always claimed this; the check didn't exist).
 
-@pytest.fixture
-def frame_client(monkeypatch):
-    monkeypatch.setattr(settings, "api_key", _KEY)
-    app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware)
-
-    @app.post("/api/vision/frame")
-    async def vision_frame():
-        return {"ok": True}
-
-    return TestClient(app)
-
-
-async def _register_node(node_id: str) -> None:
+async def _register_camera(node_id: str) -> None:
     async with get_db() as db:
         await db.execute(
             "INSERT INTO hardware_nodes (node_id, node_type, last_seen) VALUES (?, 'camera', 0)",
@@ -115,43 +120,25 @@ async def _register_node(node_id: str) -> None:
         await db.commit()
 
 
-async def test_registered_camera_frame_bypasses_bearer(frame_client):
-    await _register_node("cam-attic")
-    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
-                          headers={"X-Node-Id": "cam-attic", "Content-Type": "image/jpeg"})
-    assert r.status_code == 200
-
-
-def test_unregistered_camera_frame_is_rejected(frame_client):
-    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
-                          headers={"X-Node-Id": "rogue-cam", "Content-Type": "image/jpeg"})
-    assert r.status_code == 403
-
-
-def test_camera_frame_without_node_id_is_401(frame_client):
-    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
-                          headers={"Content-Type": "image/jpeg"})
-    assert r.status_code == 401
-
-
-async def test_oversized_camera_frame_rejected_before_body_read(frame_client):
-    await _register_node("cam-attic")
-    r = frame_client.post(
-        "/api/vision/frame", content=b"x",
-        headers={"X-Node-Id": "cam-attic", "Content-Type": "image/jpeg",
-                 "Content-Length": str(auth._MAX_FRAME_UPLOAD_BYTES + 1)},
-    )
-    assert r.status_code == 413
-
-
-def test_bearer_holder_can_upload_frames_for_any_node(frame_client):
-    r = frame_client.post("/api/vision/frame", content=b"\xff\xd8jpeg",
-                          headers={"X-Node-Id": "ui-upload", **_auth(_KEY)})
-    assert r.status_code == 200
-
-
-def test_vision_frame_get_is_not_public(gated_client):
-    assert gated_client.get("/api/vision/frame").status_code == 401
+@pytest.mark.parametrize("headers, body, status", [
+    ({"X-Node-Id": "cam-attic"}, b"\xff\xd8jpeg", 200),
+    ({"X-Node-Id": "rogue-cam"}, b"\xff\xd8jpeg", 403),          # not registered
+    ({}, b"\xff\xd8jpeg", 401),                                  # no node id
+    ({"X-Node-Id": "cam-attic",
+      "Content-Length": str(auth._MAX_FRAME_UPLOAD_BYTES + 1)}, b"x", 413),
+    ({"X-Node-Id": "cam-attic", "Content-Length": "lots"}, b"x", 400),
+    # Streamed without a declared length: nothing bounds it before the read.
+    ({"X-Node-Id": "cam-attic"}, iter([b"\xff\xd8", b"jpeg"]), 411),
+    # A bearer holder may upload for any node (the dashboard's own upload).
+    ({"X-Node-Id": "ui-upload", **_auth(_KEY)}, b"\xff\xd8jpeg", 200),
+], ids=["registered", "unregistered", "no-node-id", "too-big", "bad-length",
+        "no-length", "bearer"])
+async def test_a_keyless_frame_upload_is_taken_only_from_a_registered_camera_within_the_cap(
+        gated_client, headers, body, status):
+    await _register_camera("cam-attic")
+    r = gated_client.post("/api/vision/frame", content=body,
+                          headers={"Content-Type": "image/jpeg", **headers})
+    assert r.status_code == status
 
 
 # ── cloud pairing endpoints — method-aware whitelist ───────────────────────
@@ -160,39 +147,6 @@ def test_vision_frame_get_is_not_public(gated_client):
 def pairing_client(monkeypatch):
     monkeypatch.setattr(settings, "api_key", _KEY)
     monkeypatch.setattr(cloud_router_mod, "_pairing_code", None)
-    app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware)
-    app.include_router(cloud_router_mod.router, prefix="/api/cloud")
-    return TestClient(app)
-
-
-def test_pairing_code_mint_requires_bearer(pairing_client):
-    # Unauthenticated minting replaced the operator's code and reset the
-    # 8-attempt lockout at will.
-    assert pairing_client.post("/api/cloud/pairing-code").status_code == 401
-    assert pairing_client.post("/api/cloud/pairing-code",
-                               headers=_auth(_KEY)).status_code == 200
-
-
-def test_pairing_code_read_requires_bearer(pairing_client):
-    assert pairing_client.get("/api/cloud/pairing-code").status_code == 401
-    assert pairing_client.get("/api/cloud/pairing-code",
-                              headers=_auth(_KEY)).status_code == 200
-
-
-def test_pair_handshake_stays_public(pairing_client):
-    # No code active → the handler's own 400, not the auth gate's 401.
-    r = pairing_client.post("/api/cloud/pair", json={"code": "000000"})
-    assert r.status_code == 400
-
-
-# The cloud calls pair-verify and configure back while pairing (and rotating
-# the device token). It never has the Pi's API key, so behind the gate pairing
-# could not finish in API-key mode — the mode the docs say to use while the Pi
-# is on the public address pairing needs.
-
-@pytest.fixture
-def cloud_callback_client(monkeypatch, pairing_client):
     monkeypatch.setattr(cloud_router_mod, "_pairing_attempts", 0)
     monkeypatch.setattr(cloud_router_mod, "_pairing_lockout_until", 0.0)
     monkeypatch.setattr(cloud_router_mod, "_configure_tokens", {})
@@ -200,8 +154,35 @@ def cloud_callback_client(monkeypatch, pairing_client):
         monkeypatch.setattr(settings, attr, getattr(settings, attr))
     monkeypatch.setattr(settings, "cloud_device_id", "dev-42")
     monkeypatch.setattr(cloud_service, "_connector_running", False)
-    return pairing_client
+    app = FastAPI()
+    app.add_middleware(ApiKeyMiddleware)
+    app.include_router(cloud_router_mod.router, prefix="/api/cloud")
+    return TestClient(app)
 
+
+@pytest.mark.parametrize("method, path, auth_header, status", [
+    # Unauthenticated minting replaced the operator's code and reset the
+    # 8-attempt lockout at will; the GET leaked the live code.
+    ("POST", "/api/cloud/pairing-code", {}, 401),
+    ("POST", "/api/cloud/pairing-code", _auth(_KEY), 200),
+    ("GET", "/api/cloud/pairing-code", {}, 401),
+    ("GET", "/api/cloud/pairing-code", _auth(_KEY), 200),
+    # No code active → the handler's own 400, not the auth gate's 401.
+    ("POST", "/api/cloud/pair", {}, 400),
+    # Only the callback methods are public.
+    ("POST", "/api/cloud/pair-verify", {}, 401),
+    ("GET", "/api/cloud/configure", {}, 401),
+])
+def test_pairing_routes_are_public_only_where_pairing_needs_it(
+        pairing_client, method, path, auth_header, status):
+    kwargs = {"json": {"code": "000000"}} if path.endswith("/pair") else {}
+    assert pairing_client.request(method, path, headers=auth_header, **kwargs).status_code == status
+
+
+# The cloud calls pair-verify and configure back while pairing (and rotating
+# the device token). It never has the Pi's API key, so behind the gate pairing
+# could not finish in API-key mode — the mode the docs say to use while the Pi
+# is on the public address pairing needs.
 
 def _configure_token(client: TestClient) -> str:
     code = client.post("/api/cloud/pairing-code", headers=_auth(_KEY)).json()["code"]
@@ -210,15 +191,14 @@ def _configure_token(client: TestClient) -> str:
     return r.json()["configure_token"]
 
 
-def test_cloud_pairing_callbacks_need_no_bearer(cloud_callback_client):
-    client = cloud_callback_client
-    token = _configure_token(client)
+def test_cloud_pairing_callbacks_need_no_bearer(pairing_client):
+    token = _configure_token(pairing_client)
 
-    verify = client.get("/api/cloud/pair-verify", params={"configure_token": token})
+    verify = pairing_client.get("/api/cloud/pair-verify", params={"configure_token": token})
     assert verify.status_code == 200, verify.text
     assert verify.json()["valid"] is True
 
-    configure = client.post("/api/cloud/configure", json={
+    configure = pairing_client.post("/api/cloud/configure", json={
         "configure_token": token, "cloud_device_id": "dev-42",
         "device_token": "tok-42", "cloud_url": "https://relay.sporeprint.ai",
     })
@@ -226,8 +206,8 @@ def test_cloud_pairing_callbacks_need_no_bearer(cloud_callback_client):
     assert "SPOREPRINT_CLOUD_TOKEN=tok-42" in cloud_service.env_path().read_text()
 
 
-def test_cloud_pairing_callbacks_still_need_a_live_configure_token(cloud_callback_client):
-    client = cloud_callback_client
+def test_cloud_pairing_callbacks_still_need_a_live_configure_token(pairing_client):
+    client = pairing_client
     # The handlers' own 401s: public route, no token.
     assert client.get("/api/cloud/pair-verify",
                       params={"configure_token": "forged"}).status_code == 401
@@ -242,37 +222,6 @@ def test_cloud_pairing_callbacks_still_need_a_live_configure_token(cloud_callbac
     body = {"configure_token": token, "cloud_device_id": "dev-42", "device_token": "tok"}
     assert client.post("/api/cloud/configure", json=body).status_code == 200
     assert client.post("/api/cloud/configure", json=body).status_code == 401
-
-
-def test_only_the_callback_methods_are_public(cloud_callback_client):
-    client = cloud_callback_client
-    assert client.post("/api/cloud/pair-verify").status_code == 401
-    assert client.get("/api/cloud/configure").status_code == 401
-
-
-def test_non_api_path_is_not_gated(gated_client):
-    # The middleware only guards /api/*; a non-/api route is untouched.
-    assert gated_client.get("/public").status_code == 200
-
-
-def test_options_preflight_bypasses_auth(gated_client):
-    # CORS preflight carries no auth; it must NOT be turned into a 401.
-    r = gated_client.options("/api/private")
-    assert r.status_code != 401
-
-
-def test_gate_is_off_when_key_unset(monkeypatch):
-    monkeypatch.setattr(settings, "api_key", "")
-    app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware)
-
-    @app.get("/api/private")
-    async def private():
-        return {"ok": True}
-
-    client = TestClient(app)
-    # No bearer, but with no key configured the LAN-trust mode lets it through.
-    assert client.get("/api/private").status_code == 200
 
 
 # ── _extract_bearer — header parsing edge cases ────────────────────────────
@@ -299,36 +248,21 @@ def test_valid_token_unset_key_accepts_anything(monkeypatch):
     assert _valid_token("whatever") is True
 
 
-def test_valid_token_set_key(monkeypatch):
+def test_valid_token_accepts_only_the_key_and_never_raises(monkeypatch):
+    """compare_digest raises TypeError on non-ASCII str and on mixed types,
+    which turned a wrong token into a 500; a length mismatch must not crash
+    either. Every odd token is simply wrong."""
     monkeypatch.setattr(settings, "api_key", _KEY)
     assert _valid_token(_KEY) is True
-    assert _valid_token("wrong") is False
-    assert _valid_token(None) is False
-    # Length mismatch must not crash compare_digest — just returns False.
-    assert _valid_token(_KEY + "x") is False
-
-
-def test_valid_token_rejects_non_ascii_and_non_str_without_raising(monkeypatch):
-    # compare_digest raises TypeError on non-ASCII str and on mixed types;
-    # every odd token must simply be wrong.
-    monkeypatch.setattr(settings, "api_key", _KEY)
-    assert _valid_token("éé") is False
-    assert _valid_token("s3cret-lan-kéy") is False
-    for odd in (123, 1.5, b"s3cret-lan-key", ["s3cret-lan-key"], {"t": 1}, True):
-        assert _valid_token(odd) is False, odd
+    for wrong in ("wrong", None, _KEY + "x", "éé", "s3cret-lan-kéy",
+                  123, 1.5, b"s3cret-lan-key", ["s3cret-lan-key"], {"t": 1}, True):
+        assert _valid_token(wrong) is False, wrong
 
 
 def test_non_ascii_key_matches_itself(monkeypatch):
     monkeypatch.setattr(settings, "api_key", "tök€n-key")
     assert _valid_token("tök€n-key") is True
     assert _valid_token("tok€n-key") is False
-
-
-def test_non_ascii_bearer_is_401_not_500(gated_client):
-    # Header bytes are decoded as latin-1, so \xe9 arrives as a non-ASCII str.
-    client = TestClient(gated_client.app, raise_server_exceptions=False)
-    r = client.get("/api/private", headers={"Authorization": b"Bearer \xe9\xe9"})
-    assert r.status_code == 401
 
 
 # ── _connect_rate_ok — sliding-window limiter ──────────────────────────────
@@ -432,20 +366,14 @@ def test_socketio_auth_unset_key_accepts(monkeypatch):
     assert socketio_auth_ok(None) is True
 
 
-def test_socketio_auth_checks_token(monkeypatch):
-    monkeypatch.setattr(settings, "api_key", _KEY)
-    assert socketio_auth_ok({"token": _KEY}) is True
-    assert socketio_auth_ok({"token": "wrong"}) is False
-    assert socketio_auth_ok({}) is False
-    assert socketio_auth_ok(None) is False
-
-
-def test_socketio_auth_odd_tokens_are_refused_not_raised(monkeypatch):
+def test_socketio_auth_accepts_only_the_key_and_never_raises(monkeypatch):
     # The Socket.IO auth payload is client JSON: the token can be any type.
     monkeypatch.setattr(settings, "api_key", _KEY)
-    for odd in ("éé", "\ud800", 42, None, [_KEY], {"k": _KEY}, True):
+    assert socketio_auth_ok({"token": _KEY}) is True
+    for odd in ("wrong", "éé", "\ud800", 42, None, [_KEY], {"k": _KEY}, True):
         assert socketio_auth_ok({"token": odd}) is False, odd
-    assert socketio_auth_ok("not-a-dict") is False
+    for payload in ({}, None, "not-a-dict"):
+        assert socketio_auth_ok(payload) is False, payload
 
 
 def test_socketio_auth_rate_limited_even_with_valid_token(monkeypatch):
@@ -468,8 +396,6 @@ def test_socketio_auth_rate_limited_even_with_valid_token(monkeypatch):
 # These build the environ with the real driver so the placeholder is exercised.
 
 async def _engineio_environ(client, headers=()):
-    from engineio.async_drivers.asgi import translate_request
-
     scope = {
         "type": "http",
         "path": "/socket.io/",
@@ -508,9 +434,6 @@ def test_socketio_client_addr_falls_back_to_remote_addr():
 
 
 async def test_sio_connect_rate_limits_each_client_separately():
-    import app.health.service as health_service
-    from app import main
-
     health_service._sio_clients.clear()
     try:
         first = await _engineio_environ(("192.168.1.50", 40000))

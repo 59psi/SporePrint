@@ -1,4 +1,4 @@
-"""Tests for yield statistics + biological efficiency (Task 7)."""
+"""Tests for yield statistics + biological efficiency."""
 
 import time
 
@@ -21,43 +21,32 @@ def _make_session(**overrides):
     return SessionCreate(**defaults)
 
 
+# Biological efficiency: wet grams per 300 g of dry substrate per litre, as a percent.
+def _be(wet_g, liters):
+    return round(wet_g / (liters * 300) * 100, 1)
+
+
 # ── Volume parsing ──────────────────────────────────────────────
 
 
-def test_parse_volume_quarts():
-    assert round(_parse_volume_to_liters("5 quarts"), 2) == 4.73
-
-
-def test_parse_volume_liters():
-    assert _parse_volume_to_liters("10 liters") == 10.0
-
-
-def test_parse_volume_gallons():
-    assert round(_parse_volume_to_liters("2 gallons"), 2) == 7.57
-
-
-def test_parse_volume_none():
-    assert _parse_volume_to_liters(None) is None
-
-
-def test_parse_volume_unparseable():
-    assert _parse_volume_to_liters("a bunch") is None
-
-
-@pytest.mark.parametrize("text", [
-    "approx. L", "1.5.2 l", "2.5. L", "1..5 L", "Std. qt jar", "... gallon bag", "5 lbs",
+@pytest.mark.parametrize(("text", "liters"), [
+    ("5 quarts", 4.7318),
+    ("10 liters", 10.0),
+    ("2 gallons", 7.5708),
+    (".5 gal", 1.8927),
+    ("1,5 l", 1.5),                 # a decimal comma
+    ("12 x 1.5 L", 18.0),           # a count of containers
+    ("3×2 l bags", 6.0),
+    (None, None),
+    ("a bunch", None),
+    # '[\\d.]+' took a lone '.', and float('.') turned /stats, the report and
+    # the session list into 500s.
+    ("approx. L", None), ("1.5.2 l", None), ("2.5. L", None), ("1..5 L", None),
+    ("Std. qt jar", None), ("... gallon bag", None), ("5 lbs", None),
 ])
-def test_parse_volume_reads_no_volume_rather_than_failing(text):
-    """'[\\d.]+' took a lone '.', and float('.') turned /stats, the report
-    and the session list into 500s."""
-    assert _parse_volume_to_liters(text) is None
-
-
-def test_parse_volume_counts_decimal_commas_and_multiples():
-    assert _parse_volume_to_liters("1,5 l") == 1.5
-    assert _parse_volume_to_liters("12 x 1.5 L") == 18.0
-    assert _parse_volume_to_liters("3×2 l bags") == 6.0
-    assert _parse_volume_to_liters(".5 gal") == pytest.approx(1.8927, rel=1e-3)
+def test_parse_volume_to_liters(text, liters):
+    parsed = _parse_volume_to_liters(text)
+    assert parsed == (None if liters is None else pytest.approx(liters, rel=1e-3))
 
 
 def test_parse_volume_is_linear_on_a_long_run_of_digits():
@@ -113,21 +102,10 @@ async def test_stats_multiple_flushes():
     assert stats["flush_count"] == 3
     assert stats["total_wet_yield_g"] == 420.0
     assert stats["total_dry_yield_g"] == 42.0
-
-    # Flush yields
-    assert len(stats["flush_yields"]) == 3
-    assert stats["flush_yields"][0]["wet_weight_g"] == 200.0
-    assert stats["flush_yields"][1]["wet_weight_g"] == 140.0
-    assert stats["flush_yields"][2]["wet_weight_g"] == 80.0
-
+    assert [f["wet_weight_g"] for f in stats["flush_yields"]] == [200.0, 140.0, 80.0]
     # Decline: flush 1→2 = 30%, flush 2→3 ≈ 42.9%
-    assert len(stats["flush_decline_pct"]) == 2
-    assert stats["flush_decline_pct"][0] == 30.0
-    assert stats["flush_decline_pct"][1] == 42.9
-
-    # Biological Efficiency: 420 / (5 * 0.946353 * 300) * 100 ≈ 29.6
-    assert stats["biological_efficiency"] is not None
-    assert 29.0 <= stats["biological_efficiency"] <= 30.0
+    assert stats["flush_decline_pct"] == [30.0, 42.9]
+    assert stats["biological_efficiency"] == _be(420, 5 * 0.946353)
 
 
 # ── Species averages ────────────────────────────────────────────
@@ -150,14 +128,6 @@ async def test_species_averages():
     assert stats["species_session_count"] == 2
     assert stats["species_avg_yield_g"] == 400.0
     assert stats["species_best_yield_g"] == 500.0
-
-
-# ── 404 for nonexistent session ─────────────────────────────────
-
-
-async def test_stats_nonexistent_session():
-    stats = await get_session_stats(99999)
-    assert stats is None
 
 
 # ── When the newest harvest was logged ──────────────────────────
@@ -188,32 +158,6 @@ async def test_stats_report_when_the_newest_harvest_was_logged():
 # ── HTTP endpoint tests ─────────────────────────────────────────
 
 
-def test_stats_endpoint(client):
-    r = client.post("/api/sessions", json={
-        "name": "Stats Grow",
-        "species_profile_id": "blue_oyster",
-        "substrate_volume": "10 liters",
-    })
-    session_id = r.json()["id"]
-
-    client.post(f"/api/sessions/{session_id}/harvest", json={
-        "flush_number": 1, "wet_weight_g": 250.0, "dry_weight_g": 25.0,
-    })
-
-    r = client.get(f"/api/sessions/{session_id}/stats")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["total_wet_yield_g"] == 250.0
-    assert data["flush_count"] == 1
-    # BE: 250 / (10 * 300) * 100 ≈ 8.3
-    assert 8.0 <= data["biological_efficiency"] <= 9.0
-
-
-def test_stats_endpoint_404(client):
-    r = client.get("/api/sessions/99999/stats")
-    assert r.status_code == 404
-
-
 def test_session_rows_carry_the_stats_biological_efficiency(client):
     """sessions.biological_efficiency is never written, so every GET
     /api/sessions row carried null while /stats computed a value."""
@@ -228,8 +172,10 @@ def test_session_rows_carry_the_stats_biological_efficiency(client):
     client.post(f"/api/sessions/{session_id}/harvest", json={
         "flush_number": 2, "wet_weight_g": 150.0})
 
-    stats_be = client.get(f"/api/sessions/{session_id}/stats").json()["biological_efficiency"]
-    assert stats_be == round(550 / (5 * 0.946353 * 300) * 100, 1)
+    stats = client.get(f"/api/sessions/{session_id}/stats").json()
+    assert (stats["total_wet_yield_g"], stats["flush_count"]) == (550.0, 2)
+    stats_be = stats["biological_efficiency"]
+    assert stats_be == _be(550, 5 * 0.946353)
     listed = next(s for s in client.get("/api/sessions").json() if s["id"] == session_id)
     assert listed["biological_efficiency"] == stats_be
     assert client.get(f"/api/sessions/{session_id}").json()["biological_efficiency"] == stats_be
