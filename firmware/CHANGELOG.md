@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.4] - 2026-10-20
+
+### Security
+
+- **The release build's pinned toolchain takes patched certifi and uv.**
+  `firmware/requirements-pio.txt` and `requirements-penv.txt` move certifi to
+  2026.10.19 and uv to 0.13.4, both carrying critical advisories in the
+  versions pinned before. Every other hash-pinned package is unchanged, and
+  the firmware source is the same as 5.2.3's.
+
 ## [5.2.3] - 2026-10-20
 
 ### Changed
