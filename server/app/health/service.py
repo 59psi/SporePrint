@@ -79,6 +79,7 @@ async def _table_counts() -> dict:
     try:
         async with get_db() as db:
             for name in _COUNTED_TABLES:
+                # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query, python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — table names come from the fixed _COUNTED_TABLES tuple
                 cursor = await db.execute(f"SELECT COUNT(*) AS cnt FROM {name}")
                 counts[name] = (await cursor.fetchone())["cnt"]
     except Exception as e:

@@ -437,6 +437,7 @@ async def update_session(session_id: int, data: SessionUpdate) -> dict | None:
     # The column names come from _UPDATE_SESSION_COLUMNS, never from the request.
     assignments = ", ".join(f"{column} = ?" for column in changes)
     async with get_db() as db:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — column names come from _UPDATE_SESSION_COLUMNS, never the request; every value is a bound parameter
         await db.execute(f"UPDATE sessions SET {assignments} WHERE id = ?",
                          (*changes.values(), session_id))
         await db.commit()
@@ -821,6 +822,7 @@ async def chamber_occupant(db, chamber_id: int, besides: int | None = None) -> d
     linked from it, other than session `besides`; None when it runs none. On
     the caller's connection, inside its transaction (create_session and the
     chamber PATCH refuse to bind a second grow to a busy chamber)."""
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — a constant query (_CHAMBER_OCCUPANT_SQL) with named bound parameters
     cursor = await db.execute(_CHAMBER_OCCUPANT_SQL, {
         "ids": json.dumps([int(chamber_id)]), "besides": besides})
     row = await cursor.fetchone()
@@ -1697,6 +1699,7 @@ async def get_session_stats(session_id: int) -> dict | None:
         # Species averages via SQL aggregate (instead of loading all rows),
         # over the species' completed grows in any id spelling.
         species_id = session["species_profile_id"]
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — _SAME_SPECIES is a constant fragment; the species id is a bound parameter
         cursor = await db.execute(
             "SELECT COUNT(*) as cnt, AVG(total_wet_yield_g) as avg_yield, "
             "MAX(total_wet_yield_g) as best_yield FROM sessions WHERE " + _SAME_SPECIES +

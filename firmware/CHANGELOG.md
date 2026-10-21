@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.3] - 2026-10-20
+
 ### Changed
 
 - **A firmware release runs the host tests before it builds anything.**
