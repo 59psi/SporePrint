@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.3] - 2026-10-20
+
 ### Changed
 
 - `docs/cloud-relay-flow.md` documents the relay's session and device-token

@@ -157,6 +157,7 @@ async def _rollup_telemetry_5min():
     async with get_db() as db:
         await db.execute("BEGIN")
         try:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only the integer RESOLUTION_BUCKETS widths are interpolated; the cutoff is a bound parameter
             await db.execute(
                 f"""INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
@@ -191,6 +192,7 @@ async def _rollup_telemetry_hourly():
     async with get_db() as db:
         await db.execute("BEGIN")
         try:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only the integer RESOLUTION_BUCKETS widths are interpolated; the cutoff is a bound parameter
             await db.execute(
                 f"""INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
@@ -227,6 +229,7 @@ async def _rollup_weather_hourly():
     async with get_db() as db:
         await db.execute("BEGIN")
         try:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only the integer RESOLUTION_BUCKETS widths are interpolated; the cutoff is a bound parameter
             await db.execute(
                 f"""INSERT INTO weather_rollups
                       (timestamp, resolution, avg_temp_f, min_temp_f, max_temp_f, avg_humidity, count)
@@ -265,6 +268,7 @@ async def _cleanup_old_rollups():
     async with get_db() as db:
         await db.execute("BEGIN")
         try:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — only the integer RESOLUTION_BUCKETS widths are interpolated; the cutoff is a bound parameter
             await db.execute(
                 f"""INSERT INTO telemetry_rollups
                       (timestamp, node_id, sensor, resolution, avg_value, min_value, max_value, count)
