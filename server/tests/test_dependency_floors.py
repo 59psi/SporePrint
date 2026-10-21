@@ -28,7 +28,7 @@ SECURITY_FLOORS = {
     "python-engineio": ("4.13.2", "4.13.1"),   # unbounded thread allocation / payload-size DoS
     "anyio": ("4.14.2", "4.13.0"),             # TLS IDNA host-name spoofing
     "pydantic-settings": ("2.14.2", "2.13.1"),  # secrets_dir symlink escape
-    "pillow": ("12.3.0", "11.3.0"),            # PSD / paste / ImageCms OOB writes
+    "pillow": ("13.0.0", "12.3.0"),            # PSD / paste / ImageCms OOB writes; advisories open against every 12.x
     "cryptography": ("50.0.2", "50.0.1"),      # bundled OpenSSL < 4.0.3 (High) + 46.x–50.x advisories
 }
 

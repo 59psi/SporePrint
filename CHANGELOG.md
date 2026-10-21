@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Pillow 13.0.0, certifi 2026.10.19 and uv 0.13.4.** The server's Pillow floor moves to
+  13.0.0 (no 12.x release carries the fixes; Pillow is used only for QR-code labels) and the
+  lockfile to certifi 2026.10.19. The hash-pinned build files move uv to 0.13.4
+  (`server/requirements-build.txt`, the firmware penv) and certifi to 2026.10.19 (the
+  firmware PlatformIO and penv sets); every other pin is unchanged.
+
 ## [5.2.3] - 2026-10-20
 
 ### Changed
