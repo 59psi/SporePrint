@@ -212,6 +212,7 @@ async def get_latest(node_id: str | None = None) -> list[dict]:
     """The newest reading of each (node, sensor), for one node or all."""
     pairs = _LATEST_PAIRS_NODE if node_id else _LATEST_PAIRS_ALL
     async with get_db() as db:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query — the CTE fragments are module constants; the node id is a bound parameter
         cursor = await db.execute(
             f"WITH RECURSIVE {pairs} {_LATEST_ROWS} ORDER BY r.node_id, r.sensor",
             {"node": node_id} if node_id else {},

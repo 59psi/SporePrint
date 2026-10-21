@@ -1049,6 +1049,7 @@ def _enter_standing_refusal(reason: str) -> None:
             _STANDING_REFUSAL_RETRY_SECONDS,
         )
     else:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure — logs the relay's refusal reason code only, never the token
         log.warning(
             "Cloud: the relay refused this Pi's device token (%s: the device was "
             "removed or its token revoked or rotated) — cloud sync paused (local "
