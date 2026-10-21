@@ -1718,7 +1718,7 @@ wheels = [
 
 [[package]]
 name = "sporeprint-server"
-version = "5.2.3"
+version = "5.2.4"
 source = { virtual = "." }
 dependencies = [
     { name = "aiomqtt" },

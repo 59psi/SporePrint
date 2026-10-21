@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.4] - 2026-10-20
+
 ### Security
 
 - **Pillow 13.0.0, certifi 2026.10.19 and uv 0.13.4.** The server's Pillow floor moves to
