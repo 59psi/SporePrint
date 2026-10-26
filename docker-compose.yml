@@ -289,7 +289,7 @@ services:
     restart: unless-stopped
 
   ntfy:
-    image: binwiederhier/ntfy:v2.30.0
+    image: binwiederhier/ntfy:v2.32.0
     # No logins: whoever can reach 8080 and knows the topic reads and posts
     # alerts. install.sh gives a new install an unguessable
     # SPOREPRINT_NTFY_TOPIC (the server's `sporeprint` default is only for a
