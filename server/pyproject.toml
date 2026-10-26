@@ -7,7 +7,7 @@ dependencies = [
     # Floor is the tested minimum; ceiling is the next known-breaking
     # major. A future FastAPI 1.x or Pydantic 3.x cannot land silently on
     # `pip install -U` without a deliberate cap bump + test run.
-    "fastapi>=0.143.0,<1.0",
+    "fastapi>=0.148.0,<1.0",
     "uvicorn[standard]>=0.54.0,<1.0",
     "aiosqlite>=0.20,<1.0",
     "aiomqtt>=2.0,<3.0",
@@ -20,20 +20,20 @@ dependencies = [
     # anthropic 1.x (httpx2-based). Only plain AsyncAnthropic(api_key=...)
     # .messages.create(model, max_tokens, system, messages) is used — none of
     # the parameters/aliases 1.0 removed.
-    "anthropic>=1.13.0,<2.0",
+    "anthropic>=1.15.0,<2.0",
     "httpx>=0.27,<1.0",
     # Pillow does not backport fixes; 13.0.0 closes the advisories open
     # against every 12.x release. Only reached via qrcode labels.
     "pillow>=13.0.0,<14.0",
     "pydantic>=2.14.1,<3.0",
-    "pydantic-settings>=2.14.2,<3.0",
+    "pydantic-settings>=2.16.0,<3.0",
     "python-multipart>=0.0.31,<1.0",
     # Transitive (FastAPI / httpx) but security-relevant, so floored here:
     # starlette < 1.0.1 lets a crafted Host header poison request.url.path
     # and skip ApiKeyMiddleware's public-path check (GHSA-86qp-5c8j-p5mr);
     # 1.3.1 also fixes the form-limit DoS. anyio 4.14.2 fixes TLS host-name
     # spoofing (GHSA-82r6-8w77-94w6).
-    "starlette>=1.3.1,<2.0",
+    "starlette>=1.9.0,<2.0",
     "anyio>=4.14.2,<5.0",
     "psutil>=5.9,<8.0",
     "qrcode[pil]>=8.2,<9.0",
