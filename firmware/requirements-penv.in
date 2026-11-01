@@ -19,7 +19,7 @@ pyelftools>=0.32
 # installed into the penv by penv_setup.py
 uv>=0.1.0
 # tool-esptoolpy 5.4.0 (installed editable, built without isolation)
-setuptools>=64
+setuptools>=84.1.0
 bitstring>=3.1.6,!=4.2.0
 cryptography>=43.0.0
 pyserial>=3.3
